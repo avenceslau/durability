@@ -117,6 +117,15 @@ export const durabilityMigrations = [
     `,
     down: 'ALTER TABLE durability_calls DROP COLUMN execution_mode;',
   },
+  {
+    name: 'durability_0004_pending_mode_index',
+    up: `
+      CREATE INDEX IF NOT EXISTS durability_calls_pending_mode_idx
+      ON durability_calls (execution_mode, next_attempt_at)
+      WHERE status = 'pending';
+    `,
+    down: 'DROP INDEX IF EXISTS durability_calls_pending_mode_idx;',
+  },
 ] satisfies DurableMigrations;
 
 export type DurabilityMigrationResult = {
@@ -265,14 +274,52 @@ export const createDurability = <Handlers extends HandlerMap>(
     return { status: 'completed', result: deserialize(call.result) };
   };
 
-  const listPending = (): CallRow[] =>
+  const listDueIds = (
+    executionMode: CallRow['execution_mode'],
+    now: number,
+    limit: number
+  ): string[] =>
+    (
+      qb
+        .fetchAll<Pick<CallRow, 'id'>>({
+          tableName,
+          fields: 'id',
+          where: {
+            conditions:
+              "status = 'pending' AND execution_mode = ? AND next_attempt_at <= ?",
+            params: [executionMode, now],
+          },
+          orderBy: 'next_attempt_at ASC',
+          limit,
+        })
+        .execute().results ?? []
+    ).map((call) => call.id);
+
+  const hasDue = (
+    executionMode: CallRow['execution_mode'],
+    now: number
+  ): boolean =>
     qb
-      .fetchAll<CallRow>({
+      .fetchOne<Pick<CallRow, 'id'>>({
         tableName,
+        fields: 'id',
+        where: {
+          conditions:
+            "status = 'pending' AND execution_mode = ? AND next_attempt_at <= ?",
+          params: [executionMode, now],
+        },
+      })
+      .execute().results !== undefined;
+
+  const getNextPendingAt = (): number | undefined =>
+    qb
+      .fetchOne<Pick<CallRow, 'next_attempt_at'>>({
+        tableName,
+        fields: 'next_attempt_at',
         where: { conditions: "status = 'pending'" },
         orderBy: 'next_attempt_at ASC',
       })
-      .execute().results ?? [];
+      .execute().results?.next_attempt_at;
 
   const runConcurrent = async <Item>(
     items: Item[],
@@ -314,13 +361,28 @@ export const createDurability = <Handlers extends HandlerMap>(
     }
   };
 
-  const scheduleNextAlarm = async () => {
-    const next = listPending()[0];
-    if (!next) {
-      await context.storage.deleteAlarm();
-      return;
+  let alarmRefresh: Promise<void> | undefined;
+  const scheduleNextAlarm = (): Promise<void> => {
+    if (alarmRefresh) {
+      return alarmRefresh;
     }
-    await armIfMissing(next.next_attempt_at);
+
+    alarmRefresh = context.storage
+      .transaction(async (transaction) => {
+        const nextAttemptAt = getNextPendingAt();
+        const currentAlarm = await transaction.getAlarm();
+        if (nextAttemptAt === undefined) {
+          if (currentAlarm !== null) {
+            await transaction.deleteAlarm();
+          }
+        } else if (currentAlarm === null) {
+          await transaction.setAlarm(nextAttemptAt);
+        }
+      })
+      .finally(() => {
+        alarmRefresh = undefined;
+      });
+    return alarmRefresh;
   };
 
   const execute = (id: string): Promise<unknown> => {
@@ -425,17 +487,11 @@ export const createDurability = <Handlers extends HandlerMap>(
 
     backgroundBatch = new Promise<void>((resolve) => {
       setTimeout(async () => {
-        const due = listPending()
-          .filter(
-            (call) =>
-              call.execution_mode === 'background' &&
-              call.next_attempt_at <= Date.now()
-          )
-          .slice(0, 100);
+        const due = listDueIds('background', Date.now(), 100);
 
-        await runConcurrent(due, backgroundConcurrency, async (call) => {
+        await runConcurrent(due, backgroundConcurrency, async (id) => {
           try {
-            await execute(call.id);
+            await execute(id);
           } catch {
             return;
           }
@@ -444,11 +500,7 @@ export const createDurability = <Handlers extends HandlerMap>(
         backgroundBatch = undefined;
         resolve();
 
-        const moreDue = listPending().some(
-          (call) =>
-            call.execution_mode === 'background' &&
-            call.next_attempt_at <= Date.now()
-        );
+        const moreDue = hasDue('background', Date.now());
         if (moreDue) {
           void scheduleBackground();
         }
@@ -509,25 +561,23 @@ export const createDurability = <Handlers extends HandlerMap>(
 
   const alarm = async (_alarmInfo?: AlarmInvocationInfo): Promise<void> => {
     const startedAt = Date.now();
-    const due = listPending().filter(
-      (call) => call.next_attempt_at <= startedAt
-    );
-    if (due.length === 0) {
+    const immediate = listDueIds('immediate', startedAt, 100);
+    const hasBackground = hasDue('background', startedAt);
+    if (immediate.length === 0 && !hasBackground) {
       await scheduleNextAlarm();
       return;
     }
 
-    const immediate = due.filter((call) => call.execution_mode === 'immediate');
     const executions: Promise<void>[] = [
-      runConcurrent(immediate, alarmConcurrency, async (call) => {
+      runConcurrent(immediate, alarmConcurrency, async (id) => {
         try {
-          await execute(call.id);
+          await execute(id);
         } catch {
           return;
         }
       }),
     ];
-    if (due.some((call) => call.execution_mode === 'background')) {
+    if (hasBackground) {
       executions.push(scheduleBackground());
     }
 

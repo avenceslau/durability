@@ -91,12 +91,14 @@ describe('migrateDurability', () => {
         'durability_0001_create_calls',
         'durability_0002_pending_index',
         'durability_0003_execution_mode',
+        'durability_0004_pending_mode_index',
       ],
       rolledBack: [],
     });
     expect(migrateDurability(context, 'durability_0001_create_calls')).toEqual({
       applied: [],
       rolledBack: [
+        'durability_0004_pending_mode_index',
         'durability_0003_execution_mode',
         'durability_0002_pending_index',
       ],
@@ -110,6 +112,7 @@ describe('migrateDurability', () => {
         'durability_0001_create_calls',
         'durability_0002_pending_index',
         'durability_0003_execution_mode',
+        'durability_0004_pending_mode_index',
       ],
       rolledBack: [],
     });
@@ -317,7 +320,7 @@ describe('createDurability', () => {
     expect(handler).toHaveBeenCalledTimes(101);
   });
 
-  it('bounds concurrency for calls recovered by an alarm', async () => {
+  it('bounds alarm batches and concurrency', async () => {
     const storage = new FakeStorage();
     let active = 0;
     let maxActive = 0;
@@ -333,7 +336,7 @@ describe('createDurability', () => {
       { alarmConcurrency: 2 }
     );
 
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 101; index += 1) {
       storage.sql.exec(
         `INSERT INTO durability_calls
           (id, operation, payload, status, attempt, next_attempt_at, execution_mode)
@@ -345,8 +348,13 @@ describe('createDurability', () => {
 
     await durability.alarm();
 
-    expect(handler).toHaveBeenCalledTimes(5);
+    expect(handler).toHaveBeenCalledTimes(100);
     expect(maxActive).toBe(2);
+    expect(storage.alarmAt).toBe(0);
+
+    storage.alarmAt = null;
+    await durability.alarm();
+    expect(handler).toHaveBeenCalledTimes(101);
   });
 
   it('hands a long-running alarm execution to the next alarm', async () => {

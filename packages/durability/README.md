@@ -69,7 +69,7 @@ await durability.background.resizeImage({
 });
 ```
 
-Each durability instance keeps at most one background timer active. A timer callback claims at most 100 due calls and runs them with `backgroundConcurrency`. Additional calls receive another timer callback. Immediate calls recovered by an alarm use `alarmConcurrency`; background calls recovered by an alarm continue through the timer pool.
+Each durability instance keeps at most one background timer active. A timer callback claims at most 100 due calls and runs them with `backgroundConcurrency`. Additional calls receive another timer callback. Each alarm invocation also claims at most 100 immediate calls and runs them with `alarmConcurrency`; background calls recovered by an alarm continue through the timer pool.
 
 Background results use the same operation-level API:
 
