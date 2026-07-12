@@ -1,17 +1,51 @@
-const propertyName = (node) => {
+type AstNode = {
+  type: string;
+  name?: string;
+  value?: string | number | boolean | null | AstNode;
+  argument?: AstNode;
+  arguments?: AstNode[];
+  body?: AstNode | AstNode[];
+  callee?: AstNode;
+  key?: AstNode;
+  object?: AstNode;
+  properties?: AstNode[];
+  property?: AstNode;
+};
+
+type RuleContext = {
+  report: (input: {
+    node: AstNode;
+    messageId: 'delegateOnly' | 'tableName';
+  }) => void;
+};
+
+const bodyMembers = (node: AstNode | undefined): AstNode[] => {
+  if (!node?.body || Array.isArray(node.body)) {
+    return [];
+  }
+  return Array.isArray(node.body.body) ? node.body.body : [];
+};
+
+const nodeValue = (value: AstNode['value']): AstNode | undefined =>
+  typeof value === 'object' && value !== null ? value : undefined;
+
+const propertyName = (node: AstNode | undefined) => {
   if (!node) {
     return undefined;
   }
   if (node.type === 'Identifier' || node.type === 'PrivateIdentifier') {
     return node.name;
   }
-  if (node.type === 'Literal' || node.type === 'StringLiteral') {
+  if (
+    (node.type === 'Literal' || node.type === 'StringLiteral') &&
+    typeof node.value === 'string'
+  ) {
     return node.value;
   }
   return undefined;
 };
 
-const isDurabilityAlarmCall = (node) => {
+const isDurabilityAlarmCall = (node: AstNode | undefined) => {
   const value = node?.type === 'AwaitExpression' ? node.argument : node;
   if (value?.type !== 'CallExpression') {
     return false;
@@ -43,9 +77,9 @@ const alarmRunnerRule = {
         'A durability alarm runner must only return durability.alarm(alarmInfo).',
     },
   },
-  create(context) {
-    const checkClass = (node) => {
-      const members = node.body?.body ?? [];
+  create(context: RuleContext) {
+    const checkClass = (node: AstNode) => {
+      const members = bodyMembers(node);
       const alarm = members.find(
         (member) =>
           member.type === 'MethodDefinition' &&
@@ -55,14 +89,15 @@ const alarmRunnerRule = {
         return;
       }
 
-      const statements = alarm.value?.body?.body ?? [];
+      const statements = bodyMembers(nodeValue(alarm.value));
       const usesDurability =
         members.some(
           (member) =>
             member.type === 'PropertyDefinition' &&
             (propertyName(member.key) === 'durability' ||
-              (member.value?.type === 'CallExpression' &&
-                propertyName(member.value.callee) === 'createDurability'))
+              (nodeValue(member.value)?.type === 'CallExpression' &&
+                propertyName(nodeValue(member.value)?.callee) ===
+                  'createDurability'))
         ) ||
         statements.some(
           (statement) =>
@@ -99,9 +134,9 @@ const durabilityMigrationsRule = {
         'workers-qb migrations must use the durability_migrations table.',
     },
   },
-  create(context) {
+  create(context: RuleContext) {
     return {
-      CallExpression(node) {
+      CallExpression(node: AstNode) {
         if (node.callee?.type !== 'MemberExpression') {
           return;
         }
@@ -120,7 +155,7 @@ const durabilityMigrationsRule = {
             : undefined;
         if (
           !tableName ||
-          propertyName(tableName.value) !== 'durability_migrations'
+          propertyName(nodeValue(tableName.value)) !== 'durability_migrations'
         ) {
           context.report({ node, messageId: 'tableName' });
         }

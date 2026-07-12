@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
-const pluginPath = fileURLToPath(new URL('./index.mjs', import.meta.url));
+const pluginPath = fileURLToPath(new URL('./index.ts', import.meta.url));
 const oxlintPath = resolve(process.cwd(), 'node_modules/.bin/oxlint');
 
 const lint = (source: string, rule: string) => {

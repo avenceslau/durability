@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/index.mjs"
+    ".": "./src/index.ts"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
