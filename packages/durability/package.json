@@ -1,0 +1,26 @@
+{
+  "name": "@repo/durability",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "lint": "oxlint",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@durability/storage": "workspace:*",
+    "workers-qb": "^1.11.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^24.12.0",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.5"
+  }
+}
