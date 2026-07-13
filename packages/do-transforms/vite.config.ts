@@ -14,13 +14,16 @@ export default defineConfig({
           rollupOptions: {
             external: ['cloudflare:workers'],
             preserveEntrySignatures: 'strict',
-            input: resolve(import.meta.dirname, 'src/cross-worker-service.ts'),
+            input: resolve(
+              import.meta.dirname,
+              'tests/cross-worker-service.ts'
+            ),
           },
         },
       });
       const outputs = Array.isArray(result) ? result : [result];
       const serviceModule = outputs
-        .flatMap((output) => output.output)
+        .flatMap((output) => ('output' in output ? output.output : []))
         .find((output) => output.type === 'chunk');
 
       if (serviceModule === undefined) {

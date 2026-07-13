@@ -1,7 +1,11 @@
 import { env } from 'cloudflare:test';
 import { Result } from 'better-result';
 import { describe, expect, it } from 'vitest';
-import { abortAsSuccess, betterResultCodec, largeObjectStream } from './index';
+import {
+  abortAsSuccess,
+  betterResultCodec,
+  largeObjectStream,
+} from '../src/index';
 import { crossWorkerObservability } from './cross-worker-service';
 import { observability, serviceObservability } from './test-worker';
 

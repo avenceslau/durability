@@ -803,26 +803,20 @@ export const largeObjectStream = defineTransform<
 
 export type RetryOptions = {
   retries: number;
-  baseDelayMs?: number;
-  exponential?: boolean;
+  delay?: (context: {
+    error: unknown;
+    attempt: number;
+  }) => number | Promise<number>;
 };
 
 export const retry = defineTransform<object, EmptyTransformContext>().caller(
   (options: RetryOptions | number) =>
     async ({ next }) => {
-      const {
-        retries,
-        baseDelayMs = 0,
-        exponential = false,
-      } = typeof options === 'number' ? { retries: options } : options;
+      const { retries, delay } =
+        typeof options === 'number' ? { retries: options } : options;
 
       if (!Number.isInteger(retries) || retries < 0) {
         throw new RangeError('retries must be a non-negative integer');
-      }
-      if (!Number.isFinite(baseDelayMs) || baseDelayMs < 0) {
-        throw new RangeError(
-          'baseDelayMs must be a non-negative finite number'
-        );
       }
 
       for (let attempt = 0; ; attempt += 1) {
@@ -834,12 +828,20 @@ export const retry = defineTransform<object, EmptyTransformContext>().caller(
             throw error;
           }
 
-          if (baseDelayMs > 0) {
-            const delay = exponential
-              ? baseDelayMs * 2 ** attempt
-              : baseDelayMs;
+          const pendingDelay = delay?.({
+            error,
+            attempt: attempt + 1,
+          });
+          // eslint-disable-next-line no-await-in-loop -- Retry delays may depend on the current failure.
+          const delayMs = (await pendingDelay) ?? 0;
+          if (!Number.isFinite(delayMs) || delayMs < 0) {
+            throw new RangeError(
+              'retry delay must be a non-negative finite number'
+            );
+          }
+          if (delayMs > 0) {
             // eslint-disable-next-line no-await-in-loop -- Backoff must finish before the next attempt.
-            await new Promise((resolve) => setTimeout(resolve, delay));
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
           }
         }
       }

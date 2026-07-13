@@ -5,7 +5,7 @@ import {
   defineTransform,
   registerTransform,
   withTransforms,
-} from './index';
+} from '../src/index';
 
 type ObservabilityContext = {
   requestId?: string;

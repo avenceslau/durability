@@ -12,7 +12,7 @@ import {
   registerTransform,
   retry,
   timeout,
-} from './index';
+} from '../src/index';
 
 class ResultService {
   async success() {
@@ -45,6 +45,30 @@ applyTransforms(LargeObjectService, {
     }),
   ],
 });
+
+function assertRetryOptionTypes() {
+  const service = createTransformStub({ operation: async () => 'done' });
+
+  service.with(retry, {
+    retries: 3,
+    delay: ({ error, attempt }) => {
+      expectTypeOf(error).toEqualTypeOf<unknown>();
+      expectTypeOf(attempt).toEqualTypeOf<number>();
+      return attempt * 10;
+    },
+  });
+  service.with(retry, {
+    retries: 3,
+    // @ts-expect-error delay must return milliseconds
+    delay: () => '10',
+  });
+  service.with(retry, {
+    retries: 3,
+    // @ts-expect-error removed retry option
+    baseDelayMs: 100,
+  });
+}
+void assertRetryOptionTypes;
 
 describe('built-in transforms', () => {
   it('serializes and rehydrates Better Result values', async () => {
@@ -137,17 +161,37 @@ describe('built-in transforms', () => {
     await expect(service.fail()).rejects.toBe(failure);
   });
 
-  it('retries failures up to the configured limit', async () => {
+  it('retries failures with an attempt-aware delay', async () => {
+    const firstFailure = new Error('first');
+    const secondFailure = new Error('second');
     const operation = vi
       .fn<() => Promise<string>>()
-      .mockRejectedValueOnce(new Error('first'))
-      .mockRejectedValueOnce(new Error('second'))
+      .mockRejectedValueOnce(firstFailure)
+      .mockRejectedValueOnce(secondFailure)
       .mockResolvedValue('done');
-    const service = createTransformStub({ operation }).with(retry, 2);
+    const delay =
+      vi.fn<(context: { error: unknown; attempt: number }) => void>();
+    const service = createTransformStub({ operation }).with(retry, {
+      retries: 2,
+      delay: ({ error, attempt }) => {
+        expectTypeOf(error).toEqualTypeOf<unknown>();
+        expectTypeOf(attempt).toEqualTypeOf<number>();
+        delay({ error, attempt });
+        return 0;
+      },
+    });
 
     expectTypeOf(service.operation).returns.toEqualTypeOf<Promise<string>>();
     await expect(service.operation()).resolves.toBe('done');
     expect(operation).toHaveBeenCalledTimes(3);
+    expect(delay).toHaveBeenNthCalledWith(1, {
+      error: firstFailure,
+      attempt: 1,
+    });
+    expect(delay).toHaveBeenNthCalledWith(2, {
+      error: secondFailure,
+      attempt: 2,
+    });
   });
 
   it('preserves the final retry error', async () => {
