@@ -90,6 +90,9 @@ switch (result.status) {
   case 'pending':
     console.log(result.attempt, result.nextAttemptAt, result.lastError);
     break;
+  case 'failed':
+    console.error(result.error.name, result.error.message);
+    break;
   case 'completed':
     console.log(result.result);
     break;
@@ -97,6 +100,47 @@ switch (result.status) {
 ```
 
 The completed result type is inferred from the operation handler. Looking up a key belonging to another operation throws `DuplicateDurableCallError` rather than returning a result with the wrong type.
+
+## Retries, timeouts, and terminal failures
+
+Attempts use exponential backoff with equal jitter, stop after five attempts, and time out after five minutes by default. Defaults can be overridden globally and per operation:
+
+```ts
+const durability = createDurability(this.ctx, handlers, {
+  attemptTimeoutMs: 60_000,
+  retries: {
+    maxAttempts: 5,
+    jitter: 'equal',
+  },
+  methods: {
+    resizeImage: {
+      attemptTimeoutMs: 10 * 60_000,
+      retries: { maxAttempts: 2, jitter: 'full' },
+    },
+  },
+});
+```
+
+Each attempt receives its own `AbortSignal`:
+
+```ts
+const handlers = {
+  sendEmail: async ({ payload, signal }: DurableCall<EmailPayload>) =>
+    fetch(payload.url, { method: 'POST', signal }),
+};
+```
+
+A timed-out attempt aborts its signal and follows the normal retry policy. Abort-aware APIs stop promptly; arbitrary handler code cannot be forcibly terminated.
+
+Throw `NonRetryableError` to move a call directly to `failed` without another attempt:
+
+```ts
+import { NonRetryableError } from '@repo/durability';
+
+throw new NonRetryableError('Recipient permanently rejected');
+```
+
+Errors created by `NonRetryableError` from `cloudflare:workflows` are also recognized.
 
 ## Delivery semantics
 

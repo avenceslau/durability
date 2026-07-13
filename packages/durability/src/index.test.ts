@@ -4,6 +4,7 @@ import {
   createDurability,
   DuplicateDurableCallError,
   migrateDurability,
+  NonRetryableError,
   type DurableCall,
 } from './index';
 
@@ -187,7 +188,7 @@ describe('createDurability', () => {
     const durability = createDurability(
       contextFor(storage),
       { deliver: handler },
-      { retryDelay: () => 1_000 }
+      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
     );
 
     const retryAt = Date.now() + 1_000;
@@ -227,7 +228,7 @@ describe('createDurability', () => {
           throw new Error('offline');
         },
       },
-      { retryDelay: () => 1_000 }
+      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
     );
 
     const retryAt = Date.now() + 1_000;
@@ -247,18 +248,21 @@ describe('createDurability', () => {
     const recovered = createDurability(
       contextFor(storage),
       { send: recoveredHandler },
-      { retryDelay: () => 1_000 }
+      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
     );
     vi.advanceTimersByTime(1_000);
 
     await recovered.alarm();
 
-    expect(recoveredHandler).toHaveBeenCalledWith({
-      id: 'message:1',
-      operation: 'send',
-      payload: { message: 'hello' },
-      attempt: 2,
-    });
+    expect(recoveredHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'message:1',
+        operation: 'send',
+        payload: { message: 'hello' },
+        attempt: 2,
+        signal: expect.any(AbortSignal),
+      })
+    );
   });
 
   it('runs background batches inside one timer with bounded concurrency', async () => {
@@ -298,11 +302,25 @@ describe('createDurability', () => {
   });
 
   it('runs at most 100 background calls in each timer callback', async () => {
-    const callbacks: Array<() => Promise<void>> = [];
+    const callbacks = new Map<number, () => Promise<void>>();
+    let nextTimer = 0;
     vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback) => {
-      callbacks.push(callback as () => Promise<void>);
-      return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+      nextTimer += 1;
+      callbacks.set(nextTimer, callback as () => Promise<void>);
+      return nextTimer as unknown as ReturnType<typeof setTimeout>;
     });
+    vi.spyOn(globalThis, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as unknown as number);
+    });
+    const runNextTimer = async () => {
+      const next = callbacks.entries().next().value;
+      if (!next) {
+        return;
+      }
+      const [timer, callback] = next;
+      callbacks.delete(timer);
+      await callback();
+    };
     const storage = new FakeStorage();
     const handler = vi.fn(async ({ id }: DurableCall<null>) => id);
     const durability = createDurability(contextFor(storage), { work: handler });
@@ -312,11 +330,11 @@ describe('createDurability', () => {
         durability.background.work({ id: `batch:${index}`, payload: null })
       )
     );
-    await callbacks.shift()?.();
+    await runNextTimer();
 
     expect(handler).toHaveBeenCalledTimes(100);
-    expect(callbacks).toHaveLength(1);
-    await callbacks.shift()?.();
+    expect(callbacks.size).toBe(1);
+    await runNextTimer();
     expect(handler).toHaveBeenCalledTimes(101);
   });
 
@@ -368,7 +386,7 @@ describe('createDurability', () => {
           throw new Error('retry from alarm');
         },
       },
-      { retryDelay: () => 1_000 }
+      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
     );
 
     const retryAt = Date.now() + 1_000;
@@ -420,6 +438,107 @@ describe('createDurability', () => {
     });
     expect(handler).toHaveBeenCalledTimes(1);
     expect(storage.alarmAt).toBeNull();
+  });
+
+  it('applies default retry jitter and per-method attempt limits', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const storage = new FakeStorage();
+    const durability = createDurability(
+      contextFor(storage),
+      {
+        retryable: async (_call: DurableCall<null>) => {
+          throw new Error('retry');
+        },
+        terminal: async (_call: DurableCall<null>) => {
+          throw new Error('terminal');
+        },
+      },
+      {
+        retryDelay: () => 1_000,
+        methods: { terminal: { retries: { maxAttempts: 1 } } },
+      }
+    );
+
+    await durability.retryable({ id: 'retryable:1', payload: null });
+    storage.alarmAt = null;
+    await durability.alarm();
+    expect(storage.alarmAt).toBe(Date.now() + 750);
+
+    await durability.terminal({ id: 'terminal:1', payload: null });
+    await vi.waitFor(async () => {
+      await expect(
+        durability.terminal.getResult('terminal:1')
+      ).resolves.toEqual({
+        status: 'failed',
+        attempt: 1,
+        error: { name: 'Error', message: 'terminal' },
+      });
+    });
+  });
+
+  it('aborts timed-out handlers and stops non-retryable failures', async () => {
+    vi.useFakeTimers();
+    const storage = new FakeStorage();
+    let timeoutSignal: AbortSignal | undefined;
+    const WorkflowNonRetryableError = class NonRetryableError extends Error {};
+    const durability = createDurability(
+      contextFor(storage),
+      {
+        timeout: async ({ signal }: DurableCall<null>) => {
+          timeoutSignal = signal;
+          await new Promise(() => undefined);
+        },
+        rejected: async (_call: DurableCall<null>) => {
+          throw new NonRetryableError('invalid recipient');
+        },
+        workflowRejected: async (_call: DurableCall<null>) => {
+          throw new WorkflowNonRetryableError('invalid workflow input');
+        },
+      },
+      {
+        methods: {
+          timeout: { attemptTimeoutMs: 100, retries: { maxAttempts: 1 } },
+        },
+      }
+    );
+
+    await durability.timeout({ id: 'timeout:1', payload: null });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(timeoutSignal?.aborted).toBe(true);
+    await expect(durability.timeout.getResult('timeout:1')).resolves.toEqual({
+      status: 'failed',
+      attempt: 1,
+      error: {
+        name: 'DurableAttemptTimeoutError',
+        message: 'Durable operation "timeout" timed out after 100ms',
+      },
+    });
+
+    await durability.rejected({ id: 'rejected:1', payload: null });
+    await vi.waitFor(async () => {
+      await expect(
+        durability.rejected.getResult('rejected:1')
+      ).resolves.toEqual({
+        status: 'failed',
+        attempt: 1,
+        error: {
+          name: 'NonRetryableError',
+          message: 'invalid recipient',
+        },
+      });
+    });
+
+    await durability.workflowRejected({
+      id: 'workflow-rejected:1',
+      payload: null,
+    });
+    await vi.waitFor(async () => {
+      await expect(
+        durability.workflowRejected.getResult('workflow-rejected:1')
+      ).resolves.toMatchObject({ status: 'failed', attempt: 1 });
+    });
   });
 
   it('rejects reuse of an ID for a different operation', async () => {

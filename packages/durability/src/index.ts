@@ -7,20 +7,39 @@ export type DurableCall<Payload> = {
   operation: string;
   payload: Payload;
   attempt: number;
+  signal: AbortSignal;
 };
 
 export type DurableHandler<Payload, Result> = (
   call: DurableCall<Payload>
 ) => Result | Promise<Result>;
 
-export type DurabilityOptions = {
-  alarmConcurrency?: number;
-  alarmHandoffMs?: number;
-  backgroundConcurrency?: number;
-  retryDelay?: (attempt: number) => number;
+export type RetryJitter = 'none' | 'equal' | 'full';
+
+export type DurabilityRetryOptions = {
+  delay?: (attempt: number) => number;
+  jitter?: RetryJitter;
+  maxAttempts?: number;
 };
 
 type HandlerMap = Record<string, (...args: never[]) => unknown>;
+
+export type DurabilityMethodOptions = {
+  attemptTimeoutMs?: number;
+  retries?: DurabilityRetryOptions;
+};
+
+export type DurabilityOptions<Handlers extends HandlerMap = HandlerMap> = {
+  alarmConcurrency?: number;
+  alarmHandoffMs?: number;
+  attemptTimeoutMs?: number;
+  backgroundConcurrency?: number;
+  methods?: Partial<
+    Record<Extract<keyof Handlers, string>, DurabilityMethodOptions>
+  >;
+  retries?: DurabilityRetryOptions;
+  retryDelay?: (attempt: number) => number;
+};
 
 type HandlerPayload<Handler> = Handler extends (
   call: DurableCall<infer Payload>
@@ -32,11 +51,12 @@ type CallRow = {
   id: string;
   operation: string;
   payload: string;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'failed';
   result: string | null;
   attempt: number;
   next_attempt_at: number;
   last_error: string | null;
+  last_error_name: string | null;
   execution_mode: 'immediate' | 'background';
 };
 
@@ -56,6 +76,11 @@ export type DurableOperationResult<Result> =
       attempt: number;
       nextAttemptAt: number;
       lastError: string | null;
+    }
+  | {
+      status: 'failed';
+      attempt: number;
+      error: { name: string; message: string };
     }
   | { status: 'completed'; result: Result };
 
@@ -90,11 +115,12 @@ export const durabilityMigrations = [
         id TEXT PRIMARY KEY,
         operation TEXT NOT NULL,
         payload TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
         result TEXT,
         attempt INTEGER NOT NULL DEFAULT 0,
         next_attempt_at INTEGER NOT NULL,
         last_error TEXT,
+        last_error_name TEXT,
         completed_at INTEGER
       );
     `,
@@ -187,6 +213,20 @@ export const migrateDurability = (
   return { applied, rolledBack };
 };
 
+export class NonRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonRetryableError';
+  }
+}
+
+export class DurableAttemptTimeoutError extends Error {
+  constructor(operation: string, timeoutMs: number) {
+    super(`Durable operation "${operation}" timed out after ${timeoutMs}ms`);
+    this.name = 'DurableAttemptTimeoutError';
+  }
+}
+
 export class DuplicateDurableCallError extends Error {
   constructor(
     id: string,
@@ -203,7 +243,7 @@ export class DuplicateDurableCallError extends Error {
 export const createDurability = <Handlers extends HandlerMap>(
   context: Pick<DurableObjectState, 'storage'>,
   handlers: Handlers,
-  options: DurabilityOptions = {}
+  options: DurabilityOptions<Handlers> = {}
 ) => {
   migrateDurability(context);
   const qb = new DOQB(context.storage.sql);
@@ -212,15 +252,91 @@ export const createDurability = <Handlers extends HandlerMap>(
   const alarmConcurrency = options.alarmConcurrency ?? 10;
   const alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
   const backgroundConcurrency = options.backgroundConcurrency ?? 10;
+  const defaultAttemptTimeoutMs = options.attemptTimeoutMs ?? 5 * 60_000;
+  const defaultRetryDelay =
+    options.retries?.delay ??
+    options.retryDelay ??
+    ((attempt: number) => Math.min(1_000 * 2 ** (attempt - 1), 300_000));
+  const defaultRetryJitter = options.retries?.jitter ?? 'equal';
+  const defaultMaxAttempts = options.retries?.maxAttempts ?? 5;
   if (!Number.isInteger(alarmConcurrency) || alarmConcurrency < 1) {
     throw new RangeError('alarmConcurrency must be a positive integer');
   }
   if (!Number.isInteger(backgroundConcurrency) || backgroundConcurrency < 1) {
     throw new RangeError('backgroundConcurrency must be a positive integer');
   }
-  const retryDelay =
-    options.retryDelay ??
-    ((attempt: number) => Math.min(1_000 * 2 ** (attempt - 1), 300_000));
+  if (
+    !Number.isInteger(defaultAttemptTimeoutMs) ||
+    defaultAttemptTimeoutMs < 1
+  ) {
+    throw new RangeError('attemptTimeoutMs must be a positive integer');
+  }
+  if (!Number.isInteger(defaultMaxAttempts) || defaultMaxAttempts < 1) {
+    throw new RangeError('retries.maxAttempts must be a positive integer');
+  }
+  if (!['none', 'equal', 'full'].includes(defaultRetryJitter)) {
+    throw new RangeError('retries.jitter must be none, equal, or full');
+  }
+
+  const methodOptions = (options.methods ?? {}) as Record<
+    string,
+    DurabilityMethodOptions | undefined
+  >;
+  for (const [operation, method] of Object.entries(methodOptions)) {
+    if (
+      method?.attemptTimeoutMs !== undefined &&
+      (!Number.isInteger(method.attemptTimeoutMs) ||
+        method.attemptTimeoutMs < 1)
+    ) {
+      throw new RangeError(
+        `methods.${operation}.attemptTimeoutMs must be a positive integer`
+      );
+    }
+    if (
+      method?.retries?.maxAttempts !== undefined &&
+      (!Number.isInteger(method.retries.maxAttempts) ||
+        method.retries.maxAttempts < 1)
+    ) {
+      throw new RangeError(
+        `methods.${operation}.retries.maxAttempts must be a positive integer`
+      );
+    }
+    if (
+      method?.retries?.jitter !== undefined &&
+      !['none', 'equal', 'full'].includes(method.retries.jitter)
+    ) {
+      throw new RangeError(
+        `methods.${operation}.retries.jitter must be none, equal, or full`
+      );
+    }
+  }
+
+  const executionPolicy = (operation: string) => {
+    const method = methodOptions[operation];
+    return {
+      attemptTimeoutMs: method?.attemptTimeoutMs ?? defaultAttemptTimeoutMs,
+      delay: method?.retries?.delay ?? defaultRetryDelay,
+      jitter: method?.retries?.jitter ?? defaultRetryJitter,
+      maxAttempts: method?.retries?.maxAttempts ?? defaultMaxAttempts,
+    };
+  };
+
+  const isNonRetryable = (error: unknown): boolean => {
+    if (error instanceof NonRetryableError) {
+      return true;
+    }
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+    const value = error as {
+      constructor?: { name?: string };
+      name?: string;
+    };
+    return (
+      value.name === 'NonRetryableError' ||
+      value.constructor?.name === 'NonRetryableError'
+    );
+  };
 
   const serialize = (value: unknown): string =>
     JSON.stringify(
@@ -264,6 +380,16 @@ export const createDurability = <Handlers extends HandlerMap>(
         attempt: call.attempt,
         nextAttemptAt: call.next_attempt_at,
         lastError: call.last_error,
+      };
+    }
+    if (call.status === 'failed') {
+      return {
+        status: 'failed',
+        attempt: call.attempt,
+        error: {
+          name: call.last_error_name ?? 'Error',
+          message: call.last_error ?? 'Durable operation failed',
+        },
       };
     }
     if (call.result === null) {
@@ -402,31 +528,15 @@ export const createDurability = <Handlers extends HandlerMap>(
         }
         return deserialize(call.result);
       }
+      if (call.status === 'failed') {
+        return undefined;
+      }
 
       const handler = handlers[call.operation] as
         | ((durableCall: DurableCall<unknown>) => unknown)
         | undefined;
       const attempt = call.attempt + 1;
-
-      if (!handler) {
-        const message = `No handler registered for operation "${call.operation}"`;
-        const nextAttemptAt = Date.now() + retryDelay(attempt);
-        await context.storage.transaction(async (transaction) => {
-          qb.update({
-            tableName,
-            data: {
-              attempt,
-              next_attempt_at: nextAttemptAt,
-              last_error: message,
-            },
-            where: { conditions: 'id = ?', params: [id] },
-          }).execute();
-          if ((await transaction.getAlarm()) === null) {
-            await transaction.setAlarm(nextAttemptAt);
-          }
-        });
-        throw new Error(message);
-      }
+      const policy = executionPolicy(call.operation);
 
       qb.update({
         tableName,
@@ -434,13 +544,35 @@ export const createDurability = <Handlers extends HandlerMap>(
         where: { conditions: 'id = ?', params: [id] },
       }).execute();
 
+      let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
-        const result = await handler({
-          id,
-          operation: call.operation,
-          payload: deserialize(call.payload),
-          attempt,
+        if (!handler) {
+          throw new NonRetryableError(
+            `No handler registered for operation "${call.operation}"`
+          );
+        }
+
+        const controller = new AbortController();
+        const handlerResult = Promise.resolve().then(() =>
+          handler({
+            id,
+            operation: call.operation,
+            payload: deserialize(call.payload),
+            attempt,
+            signal: controller.signal,
+          })
+        );
+        const timeoutResult = new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            const error = new DurableAttemptTimeoutError(
+              call.operation,
+              policy.attemptTimeoutMs
+            );
+            controller.abort(error);
+            reject(error);
+          }, policy.attemptTimeoutMs);
         });
+        const result = await Promise.race([handlerResult, timeoutResult]);
 
         qb.update({
           tableName,
@@ -448,29 +580,49 @@ export const createDurability = <Handlers extends HandlerMap>(
             status: 'completed',
             result: serialize(result),
             last_error: null,
+            last_error_name: null,
             completed_at: Date.now(),
           },
           where: { conditions: 'id = ?', params: [id] },
         }).execute();
         return result;
       } catch (error) {
-        const nextAttemptAt = Date.now() + retryDelay(attempt);
+        const terminal = isNonRetryable(error) || attempt >= policy.maxAttempts;
+        const baseDelay = terminal ? 0 : policy.delay(attempt);
+        if (!Number.isFinite(baseDelay) || baseDelay < 0) {
+          throw new RangeError(
+            `Retry delay for operation "${call.operation}" must be a non-negative finite number`
+          );
+        }
+        const jitteredDelay =
+          terminal || policy.jitter === 'none'
+            ? baseDelay
+            : policy.jitter === 'full'
+              ? Math.random() * baseDelay
+              : baseDelay / 2 + Math.random() * (baseDelay / 2);
+        const nextAttemptAt = Date.now() + Math.round(jitteredDelay);
         await context.storage.transaction(async (transaction) => {
           qb.update({
             tableName,
             data: {
+              status: terminal ? 'failed' : 'pending',
               attempt,
               next_attempt_at: nextAttemptAt,
               last_error:
                 error instanceof Error ? error.message : String(error),
+              last_error_name: error instanceof Error ? error.name : 'Error',
             },
             where: { conditions: 'id = ?', params: [id] },
           }).execute();
-          if ((await transaction.getAlarm()) === null) {
+          if (!terminal && (await transaction.getAlarm()) === null) {
             await transaction.setAlarm(nextAttemptAt);
           }
         });
         throw error;
+      } finally {
+        if (timeout !== undefined) {
+          clearTimeout(timeout);
+        }
       }
     })();
 
@@ -523,7 +675,7 @@ export const createDurability = <Handlers extends HandlerMap>(
           `Durable call "${input.id}" belongs to ${existing.execution_mode} execution, not ${input.executionMode}`
         );
       }
-      if (existing.status === 'completed') {
+      if (existing.status === 'completed' || existing.status === 'failed') {
         return;
       }
       await context.storage.transaction(async (transaction) => {
