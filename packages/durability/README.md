@@ -148,6 +148,12 @@ Calls are delivered at least once and deduplicated by ID after completion. Arbit
 
 Completion records are retained indefinitely so IDs remain deduplicated. The helper owns the Durable Object's alarm; compose unrelated scheduled work through the same alarm handler instead of independently replacing its alarm.
 
+## Durable Object-to-Object coordination
+
+When an operation spans multiple Durable Objects, a durability-enabled coordinator can retry each step after a crash, while durability-enabled participants deduplicate those retries using stable operation IDs. This supports sagas and other two-phase coordination scenarios with eventual consistency; it does not create one atomic storage transaction across the objects.
+
+Intermediate states may be visible until every participant completes. Persist the coordination state, propagate stable IDs to every participant, and explicitly handle terminal failures or compensating operations when the operation can be aborted.
+
 ## Long-running alarm calls
 
 Alarm invocations have a 15-minute wall-time limit. If a handler is still pending after 14 minutes, the helper retains its promise in memory, arms an immediate alarm, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again:
