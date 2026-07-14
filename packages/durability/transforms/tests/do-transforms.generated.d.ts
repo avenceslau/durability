@@ -16,20 +16,20 @@ type TransformDurableObjectNamespace<
 declare global {
   interface Env {
     CONTEXT_DO: TransformDurableObjectNamespace<
-      import("./test-worker").ContextDO
+      import('./test-worker').ContextDO
     >;
     CONTEXT_SERVICE: TransformStub<
-      Service<typeof import("./test-worker").ContextService>
+      Service<typeof import('./test-worker').ContextService>
     >;
   }
 
   namespace Cloudflare {
     interface Env {
       CONTEXT_DO: TransformDurableObjectNamespace<
-        import("./test-worker").ContextDO
+        import('./test-worker').ContextDO
       >;
       CONTEXT_SERVICE: TransformStub<
-        Service<typeof import("./test-worker").ContextService>
+        Service<typeof import('./test-worker').ContextService>
       >;
     }
   }
