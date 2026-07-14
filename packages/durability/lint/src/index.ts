@@ -6,10 +6,16 @@ type AstNode = {
   arguments?: AstNode[];
   body?: AstNode | AstNode[];
   callee?: AstNode;
+  id?: AstNode;
+  imported?: AstNode;
+  init?: AstNode;
   key?: AstNode;
+  local?: AstNode;
   object?: AstNode;
   properties?: AstNode[];
   property?: AstNode;
+  source?: AstNode;
+  specifiers?: AstNode[];
 };
 
 type RuleContext = {
@@ -135,12 +141,53 @@ const durabilityMigrationsRule = {
     },
   },
   create(context: RuleContext) {
+    const queryBuilderConstructors = new Set<string>();
+    const queryBuilders = new Set<string>();
+
     return {
-      CallExpression(node: AstNode) {
-        if (node.callee?.type !== 'MemberExpression') {
+      ImportDeclaration(node: AstNode) {
+        if (propertyName(node.source) !== 'workers-qb') {
           return;
         }
-        if (propertyName(node.callee.property) !== 'migrations') {
+
+        for (const specifier of node.specifiers ?? []) {
+          if (
+            specifier.type === 'ImportSpecifier' &&
+            propertyName(specifier.imported) === 'DOQB'
+          ) {
+            const localName = propertyName(specifier.local);
+            if (localName) {
+              queryBuilderConstructors.add(localName);
+            }
+          }
+        }
+      },
+      VariableDeclarator(node: AstNode) {
+        if (
+          node.id?.type === 'Identifier' &&
+          node.init?.type === 'NewExpression' &&
+          node.init.callee?.type === 'Identifier' &&
+          queryBuilderConstructors.has(node.init.callee.name ?? '')
+        ) {
+          queryBuilders.add(node.id.name ?? '');
+        }
+      },
+      CallExpression(node: AstNode) {
+        if (
+          node.callee?.type !== 'MemberExpression' ||
+          propertyName(node.callee.property) !== 'migrations'
+        ) {
+          return;
+        }
+
+        const receiver = node.callee.object;
+        const isWorkersQueryBuilder =
+          (receiver?.type === 'Identifier' &&
+            queryBuilders.has(receiver.name ?? '')) ||
+          (receiver?.type === 'NewExpression' &&
+            receiver.callee?.type === 'Identifier' &&
+            queryBuilderConstructors.has(receiver.callee.name ?? ''));
+        if (!isWorkersQueryBuilder) {
           return;
         }
 

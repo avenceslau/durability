@@ -81,6 +81,8 @@ describe('durability-migrations-only', () => {
   it('accepts the durability migration table', () => {
     const result = lint(
       `
+        import { DOQB } from 'workers-qb';
+        const qb = new DOQB(storage.sql);
         qb.migrations({
           migrations,
           tableName: 'durability_migrations',
@@ -93,14 +95,40 @@ describe('durability-migrations-only', () => {
   });
 
   it.each([
-    `qb.migrations({ migrations });`,
-    `qb.migrations({ migrations, tableName: 'migrations' });`,
-  ])('rejects a non-durability migration table', (source) => {
+    `
+      import { DOQB } from 'workers-qb';
+      const qb = new DOQB(storage.sql);
+      qb.migrations({ migrations });
+    `,
+    `
+      import { DOQB as QueryBuilder } from 'workers-qb';
+      new QueryBuilder(storage.sql).migrations({
+        migrations,
+        tableName: 'migrations',
+      });
+    `,
+  ])('rejects a non-durability workers-qb migration table', (source) => {
     const result = lint(source, 'durability-migrations-only');
 
     expect(result.status).toBe(1);
     expect(result.output).toContain(
       'workers-qb migrations must use the durability_migrations table.'
     );
+  });
+
+  it.each([
+    `
+      const qb = createApplicationQueryBuilder();
+      qb.migrations({ migrations });
+    `,
+    `
+      import { DOQB } from 'another-package';
+      const qb = new DOQB(storage.sql);
+      qb.migrations({ migrations });
+    `,
+  ])('ignores unrelated migration builders', (source) => {
+    const result = lint(source, 'durability-migrations-only');
+
+    expect(result).toEqual({ status: 0, output: '' });
   });
 });
