@@ -81,6 +81,8 @@ describe('durability-migrations-only', () => {
   it('accepts the durability migration table', () => {
     const result = lint(
       `
+        import { DOQB } from 'workers-qb';
+        const qb = new DOQB(storage.sql);
         qb.migrations({
           migrations,
           tableName: 'durability_migrations',
@@ -93,14 +95,87 @@ describe('durability-migrations-only', () => {
   });
 
   it.each([
-    `qb.migrations({ migrations });`,
-    `qb.migrations({ migrations, tableName: 'migrations' });`,
-  ])('rejects a non-durability migration table', (source) => {
+    `
+      import type { DurableMigrations } from '@durability/storage';
+      const migrations = [{
+        name: '0001_create_jobs',
+        up: \`CREATE TABLE jobs (id TEXT PRIMARY KEY);\`,
+        down: 'DROP TABLE jobs;',
+      }] satisfies DurableMigrations;
+    `,
+    `
+      import type { DurableMigrations as MigrationList } from '@durability/storage';
+      const migrations: MigrationList = [{
+        name: '0001_create_jobs',
+        up: 'create table jobs (id TEXT PRIMARY KEY);',
+        down: 'DROP TABLE jobs;',
+      }];
+    `,
+  ])('accepts tables declared in durable migrations', (source) => {
+    const result = lint(source, 'durability-migrations-only');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        constructor(readonly ctx: DurableObjectState) {
+          ctx.storage.sql.exec(\`CREATE TABLE jobs (id TEXT PRIMARY KEY);\`);
+        }
+      }
+    `,
+    `
+      import type { Migration } from 'workers-qb';
+      const migrations: Migration[] = [{
+        name: '0001_create_jobs',
+        sql: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+      }];
+    `,
+  ])('rejects tables outside durable migrations', (source) => {
+    const result = lint(source, 'durability-migrations-only');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'CREATE TABLE statements must be declared in DurableMigrations.'
+    );
+  });
+
+  it.each([
+    `
+      import { DOQB } from 'workers-qb';
+      const qb = new DOQB(storage.sql);
+      qb.migrations({ migrations });
+    `,
+    `
+      import { DOQB as QueryBuilder } from 'workers-qb';
+      new QueryBuilder(storage.sql).migrations({
+        migrations,
+        tableName: 'migrations',
+      });
+    `,
+  ])('rejects a non-durability workers-qb migration table', (source) => {
     const result = lint(source, 'durability-migrations-only');
 
     expect(result.status).toBe(1);
     expect(result.output).toContain(
       'workers-qb migrations must use the durability_migrations table.'
     );
+  });
+
+  it.each([
+    `
+      const qb = createApplicationQueryBuilder();
+      qb.migrations({ migrations });
+    `,
+    `
+      import { DOQB } from 'another-package';
+      const qb = new DOQB(storage.sql);
+      qb.migrations({ migrations });
+    `,
+  ])('ignores unrelated migration builders', (source) => {
+    const result = lint(source, 'durability-migrations-only');
+
+    expect(result).toEqual({ status: 0, output: '' });
   });
 });

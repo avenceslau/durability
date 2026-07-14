@@ -1,15 +1,44 @@
 {
   "name": "@durability/lint",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "Oxlint rules for Cloudflare Durable Object durability",
   "type": "module",
-  "private": true,
+  "license": "ISC",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "oxlint",
+    "prepack": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
+  "keywords": [
+    "cloudflare",
+    "durable-objects",
+    "lint",
+    "oxlint",
+    "workers"
+  ],
+  "peerDependencies": {
+    "oxlint": "1.73.0"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

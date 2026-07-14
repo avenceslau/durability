@@ -1,21 +1,38 @@
 type AstNode = {
   type: string;
   name?: string;
-  value?: string | number | boolean | null | AstNode;
+  value?:
+    | string
+    | number
+    | boolean
+    | null
+    | AstNode
+    | { cooked?: string | null; raw?: string };
   argument?: AstNode;
   arguments?: AstNode[];
   body?: AstNode | AstNode[];
   callee?: AstNode;
+  expression?: AstNode;
+  id?: AstNode;
+  imported?: AstNode;
+  init?: AstNode;
   key?: AstNode;
+  local?: AstNode;
   object?: AstNode;
   properties?: AstNode[];
   property?: AstNode;
+  quasis?: AstNode[];
+  range?: [number, number];
+  source?: AstNode;
+  specifiers?: AstNode[];
+  typeAnnotation?: AstNode;
+  typeName?: AstNode;
 };
 
 type RuleContext = {
   report: (input: {
     node: AstNode;
-    messageId: 'delegateOnly' | 'tableName';
+    messageId: 'delegateOnly' | 'tableCreation' | 'tableName';
   }) => void;
 };
 
@@ -27,7 +44,9 @@ const bodyMembers = (node: AstNode | undefined): AstNode[] => {
 };
 
 const nodeValue = (value: AstNode['value']): AstNode | undefined =>
-  typeof value === 'object' && value !== null ? value : undefined;
+  typeof value === 'object' && value !== null && 'type' in value
+    ? (value as AstNode)
+    : undefined;
 
 const propertyName = (node: AstNode | undefined) => {
   if (!node) {
@@ -130,17 +149,118 @@ const durabilityMigrationsRule = {
     type: 'problem',
     schema: [],
     messages: {
+      tableCreation:
+        'CREATE TABLE statements must be declared in DurableMigrations.',
       tableName:
         'workers-qb migrations must use the durability_migrations table.',
     },
   },
   create(context: RuleContext) {
+    const durableMigrationTypes = new Set<string>();
+    const durableMigrationRanges: [number, number][] = [];
+    const queryBuilderConstructors = new Set<string>();
+    const queryBuilders = new Set<string>();
+
     return {
-      CallExpression(node: AstNode) {
-        if (node.callee?.type !== 'MemberExpression') {
+      ImportDeclaration(node: AstNode) {
+        const source = propertyName(node.source);
+        for (const specifier of node.specifiers ?? []) {
+          if (specifier.type !== 'ImportSpecifier') {
+            continue;
+          }
+
+          const importedName = propertyName(specifier.imported);
+          const localName = propertyName(specifier.local);
+          if (!localName) {
+            continue;
+          }
+          if (source === 'workers-qb' && importedName === 'DOQB') {
+            queryBuilderConstructors.add(localName);
+          }
+          if (
+            source === '@durability/storage' &&
+            importedName === 'DurableMigrations'
+          ) {
+            durableMigrationTypes.add(localName);
+          }
+        }
+      },
+      VariableDeclarator(node: AstNode) {
+        if (
+          node.id?.type === 'Identifier' &&
+          node.init?.type === 'NewExpression' &&
+          node.init.callee?.type === 'Identifier' &&
+          queryBuilderConstructors.has(node.init.callee.name ?? '')
+        ) {
+          queryBuilders.add(node.id.name ?? '');
+        }
+
+        const satisfiesType =
+          node.init?.type === 'TSSatisfiesExpression'
+            ? propertyName(node.init.typeAnnotation?.typeName)
+            : undefined;
+        const declaredType = propertyName(
+          node.id?.typeAnnotation?.typeAnnotation?.typeName
+        );
+        if (
+          node.init?.range &&
+          ((satisfiesType && durableMigrationTypes.has(satisfiesType)) ||
+            (declaredType && durableMigrationTypes.has(declaredType)))
+        ) {
+          durableMigrationRanges.push(node.init.range);
+        }
+      },
+      Literal(node: AstNode) {
+        if (
+          typeof node.value !== 'string' ||
+          !/\bCREATE\s+TABLE\b/i.test(node.value)
+        ) {
           return;
         }
-        if (propertyName(node.callee.property) !== 'migrations') {
+        if (
+          !node.range ||
+          !durableMigrationRanges.some(
+            ([start, end]) => start <= node.range![0] && node.range![1] <= end
+          )
+        ) {
+          context.report({ node, messageId: 'tableCreation' });
+        }
+      },
+      TemplateElement(node: AstNode) {
+        const value =
+          typeof node.value === 'object' &&
+          node.value !== null &&
+          !('type' in node.value)
+            ? (node.value.cooked ?? node.value.raw)
+            : undefined;
+        if (typeof value !== 'string' || !/\bCREATE\s+TABLE\b/i.test(value)) {
+          return;
+        }
+        if (
+          !node.range ||
+          !durableMigrationRanges.some(
+            ([start, end]) => start <= node.range![0] && node.range![1] <= end
+          )
+        ) {
+          context.report({ node, messageId: 'tableCreation' });
+        }
+      },
+      CallExpression(node: AstNode) {
+        if (
+          node.callee?.type !== 'MemberExpression' ||
+          propertyName(node.callee.property) !== 'migrations'
+        ) {
+          return;
+        }
+
+        const receiver = node.callee.object;
+        const isWorkersQueryBuilder =
+          (receiver?.type === 'Identifier' &&
+            queryBuilders.has(receiver.name ?? '')) ||
+          (receiver?.type === 'NewExpression' &&
+            receiver.callee?.type === 'Identifier' &&
+            queryBuilderConstructors.has(receiver.callee.name ?? ''));
+        if (!isWorkersQueryBuilder) {
           return;
         }
 

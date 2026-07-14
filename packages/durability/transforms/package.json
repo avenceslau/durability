@@ -1,7 +1,7 @@
 {
-  "name": "durability",
-  "version": "2.0.0",
-  "description": "Alarm-backed durable operations for Cloudflare Durable Objects",
+  "name": "@durability/transforms",
+  "version": "0.1.0",
+  "description": "Typed caller and callee transforms for Cloudflare RPC",
   "type": "module",
   "license": "ISC",
   "sideEffects": false,
@@ -19,7 +19,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./utils": "./src/utils.ts"
+    "./vite": "./src/vite.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -29,37 +29,45 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       },
-      "./utils": {
-        "types": "./dist/utils.d.ts",
-        "import": "./dist/utils.js"
+      "./vite": {
+        "types": "./dist/vite.d.ts",
+        "import": "./dist/vite.js"
       }
     }
   },
   "keywords": [
     "cloudflare",
     "durable-objects",
-    "idempotency",
-    "retries",
+    "middleware",
+    "rpc",
     "workers"
   ],
   "dependencies": {
-    "workers-qb": "^1.11.2",
-    "zod": "^4.4.3"
+    "@babel/parser": "^7.28.5",
+    "better-result": "^2.9.2",
+    "jsonc-parser": "^3.3.1",
+    "magic-string": "^0.30.21"
   },
   "peerDependencies": {
-    "@cloudflare/workers-types": "^4.20260702.1"
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "@cloudflare/workers-types": {
       "optional": true
+    },
+    "vite": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.17.0",
     "@cloudflare/workers-types": "^4.20260702.1",
-    "@durability/storage": "workspace:*",
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^24.12.0",
     "typescript": "6.0.3",
-    "vitest": "^4.1.5"
+    "vite": "^8.0.0",
+    "vitest": "^4.1.5",
+    "wrangler": "4.107.0"
   }
 }

@@ -1,7 +1,7 @@
 import type { DurableMigrations } from '@durability/storage';
 import { z } from 'zod';
 import { DOQB, type Migration } from 'workers-qb';
-import { exponential, jitter } from './utils';
+import { exponential, jitter } from './utils.js';
 
 /**
  * The context passed to a durable operation handler for each attempt.
@@ -48,12 +48,12 @@ export type DurableHandler<Payload, Result> = (
  * Retry policy shared by all methods or overridden for one method.
  *
  * The delay callback owns the complete scheduling policy, so it can compose the
- * helpers exported from `@repo/durability/utils` or use an application-specific
+ * helpers exported from `durability/utils` or use an application-specific
  * strategy.
  *
  * @example
  * ```ts
- * import { exponential, jitter } from '@repo/durability/utils';
+ * import { exponential, jitter } from 'durability/utils';
  *
  * const retries: DurabilityRetryOptions = {
  *   maxAttempts: 5,
