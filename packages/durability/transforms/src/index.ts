@@ -259,7 +259,7 @@ export function defineTransform<
   TTarget extends object,
   TContext extends TransformContext = EmptyTransformContext,
 >(): TransformBuilder<TTarget, TContext> {
-  return {
+  const builder: TransformBuilder<TTarget, TContext> = {
     caller(callerFactory) {
       return {
         type: 'do-transform',
@@ -278,7 +278,8 @@ export function defineTransform<
         },
       };
     },
-  } as TransformBuilder<TTarget, TContext>;
+  };
+  return builder;
 }
 
 /** A callee transform paired with the options used to install it. */
@@ -850,7 +851,7 @@ const betterResultEnvelopeKey = '__durability_transforms_better_result_v1';
 
 /** Caller compatibility options for {@link betterResultCodec}. */
 export type BetterResultCodecOptions = {
-  /** Decode unmarked responses emitted by version 0.1.0. Defaults to false. */
+  /** Decode unmarked responses emitted by version 0.1.0. Defaults to true. */
   acceptLegacy?: boolean;
 };
 
@@ -897,7 +898,7 @@ export const betterResultCodec = Object.assign(
             }
           }
 
-          if (options?.acceptLegacy === true) {
+          if (options?.acceptLegacy !== false) {
             const legacy = Result.deserialize(value);
             if (
               !Result.isError(legacy) ||

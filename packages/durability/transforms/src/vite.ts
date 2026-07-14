@@ -14,8 +14,32 @@ export type DoTransformsPluginOptions = {
 
 type SyntaxNode = {
   type: string;
-  start?: number | null;
+  argument?: unknown;
+  callee?: unknown;
+  computed?: boolean;
+  declarations?: unknown;
+  elements?: unknown;
   end?: number | null;
+  expression?: unknown;
+  id?: unknown;
+  imported?: unknown;
+  init?: unknown;
+  key?: unknown;
+  kind?: unknown;
+  left?: unknown;
+  local?: unknown;
+  name?: unknown;
+  object?: unknown;
+  operator?: unknown;
+  param?: unknown;
+  parameter?: unknown;
+  params?: unknown;
+  properties?: unknown;
+  property?: unknown;
+  shorthand?: unknown;
+  source?: unknown;
+  start?: number | null;
+  value?: unknown;
   [key: string]: unknown;
 };
 
@@ -259,7 +283,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       writeFileSync(typesPath, contents);
     },
     transform(code, id) {
-      const cleanId = id.split('?')[0];
+      const cleanId = id.split('?')[0] ?? id;
       if (
         cleanId.includes('/node_modules/') ||
         !/\.[cm]?[jt]sx?$/.test(cleanId) ||

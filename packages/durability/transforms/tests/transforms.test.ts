@@ -98,13 +98,13 @@ describe('built-in transforms', () => {
       read: async () => ({ status: 'ok' as const, value: 42 }),
     });
 
-    await expect(service.with(betterResultCodec).read()).resolves.toEqual({
+    await expect(
+      service.with(betterResultCodec, { acceptLegacy: false }).read()
+    ).resolves.toEqual({
       status: 'ok',
       value: 42,
     });
-    const legacy = await service
-      .with(betterResultCodec, { acceptLegacy: true })
-      .read();
+    const legacy = await service.with(betterResultCodec).read();
     expect(Result.isOk(legacy)).toBe(true);
     expect(Result.unwrap(legacy)).toBe(42);
   });

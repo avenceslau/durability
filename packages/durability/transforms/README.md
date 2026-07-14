@@ -10,7 +10,7 @@ npm install @durability/transforms
 
 ## Vite setup
 
-The Vite plugin reads the configured Wrangler bindings, wraps matching RPC stubs, and generates declarations that add `.with(...)` to their types.
+The Vite plugin requires Wrangler, reads its validated binding configuration, wraps matching RPC stubs, and generates declarations that add `.with(...)` to their types.
 
 ```ts
 import { defineConfig } from 'vite';
@@ -93,7 +93,7 @@ A caller timeout stops waiting but does not cancel the remote operation. Each re
 
 Other built-ins include:
 
-- `betterResultCodec` to serialize and rehydrate `better-result` values.
+- `betterResultCodec` to serialize and rehydrate `better-result` values in a versioned envelope. It accepts legacy 0.1.0 payloads by default; set `acceptLegacy: false` after all callees are upgraded to avoid ambiguous unmarked payloads.
 - `errorBoundary` to convert caller-visible throws into Better Result errors.
 - `abortAsSuccess` to treat expected Durable Object resets as successful undefined results.
 - `largeObjectStream` to transfer large JSON object results. It enforces a caller decode limit and accepts an optional Standard Schema validator, but it still buffers the complete serialized representation; use native streams for unbounded data.
