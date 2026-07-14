@@ -1,22 +1,60 @@
 {
   "name": "@durability/transforms",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Typed caller and callee transforms for Cloudflare RPC",
   "type": "module",
-  "private": true,
+  "license": "ISC",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "oxlint",
+    "prepack": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./vite": "./src/vite.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js"
+    }
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "cloudflare",
+    "durable-objects",
+    "middleware",
+    "rpc",
+    "workers"
+  ],
   "dependencies": {
     "@babel/parser": "^7.28.5",
     "better-result": "^2.9.2",
     "jsonc-parser": "^3.3.1",
     "magic-string": "^0.30.21"
+  },
+  "peerDependencies": {
+    "@cloudflare/workers-types": ">=4.20240403.0",
+    "vite": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.17.0",
