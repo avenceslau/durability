@@ -9,19 +9,33 @@ type AsyncMethodKey<TTarget extends object> = {
 }[keyof TTarget] &
   string;
 
+/**
+ * Metadata accumulated by caller transforms and optionally sent across RPC.
+ *
+ * Context is shallow-merged as each transform calls `next`. If the final context
+ * is non-empty, the target must expose `setContext` and every value must be
+ * supported by Cloudflare RPC serialization.
+ */
 export type TransformContext = Record<string, unknown>;
 
+/** Values a transform can add or replace before invoking the next transform. */
 export type TransformNextInput<TContext extends TransformContext> = {
+  /** Context fields shallow-merged into the fields accumulated so far. */
   context?: Partial<TContext>;
 };
 
+/** Information available while a caller-side transform wraps an RPC method. */
 export type CallerTransformContext<
   TTarget extends object,
   TContext extends TransformContext,
 > = {
+  /** Name of the asynchronous target method being called. */
   method: AsyncMethodKey<TTarget>;
+  /** Arguments originally passed to the target method. */
   args: unknown[];
+  /** Context accumulated by earlier caller transforms. */
   context: TContext;
+  /** Continues the transform chain and eventually invokes the RPC method. */
   next(input?: TransformNextInput<TContext>): Promise<unknown>;
 };
 
@@ -29,20 +43,26 @@ type TargetEnv<TTarget extends object> = TTarget extends { env: infer TEnv }
   ? TEnv
   : Cloudflare.Env;
 
+/** Information available while a callee-side transform wraps an RPC method. */
 export type CalleeTransformContext<
   TTarget extends object,
   TContext extends TransformContext,
 > = CallerTransformContext<TTarget, TContext> & {
+  /** Durable Object or WorkerEntrypoint instance receiving the call. */
   instance: TTarget;
+  /** Environment bindings exposed by the receiving instance. */
   env: TargetEnv<TTarget>;
+  /** Receiving instance context, such as `DurableObjectState`. */
   state: unknown;
 };
 
+/** A configured caller-side transform handler. */
 export type CallerTransformHandler<
   TTarget extends object,
   TContext extends TransformContext,
 > = (context: CallerTransformContext<TTarget, TContext>) => Promise<unknown>;
 
+/** A configured callee-side transform handler. */
 export type CalleeTransformHandler<
   TTarget extends object,
   TContext extends TransformContext,
@@ -159,6 +179,27 @@ type TransformBuilder<
   };
 };
 
+/**
+ * Defines a typed transform with a caller side, a callee side, or both.
+ *
+ * Factories receive configuration when the transform is attached. Caller and
+ * callee configuration types are independent. A context-producing caller
+ * requires the target class to expose a compatible `setContext` method.
+ *
+ * @example
+ * ```ts
+ * type RequestContext = { requestId?: string };
+ *
+ * const observability = defineTransform<MyDurableObject, RequestContext>()
+ *   .caller((requestId: string) => async ({ next }) =>
+ *     next({ context: { requestId } })
+ *   )
+ *   .callee((metricName: string) => async ({ context, next }) => {
+ *     console.log(metricName, context.requestId);
+ *     return next();
+ *   });
+ * ```
+ */
 export function defineTransform<
   TTarget extends object,
   TContext extends TransformContext = TransformContext,
@@ -185,12 +226,26 @@ export function defineTransform<
   } as TransformBuilder<TTarget, TContext>;
 }
 
+/** A callee transform paired with the options used to install it. */
 export type RegisteredTransform<TTransform extends TransformIdentity> = {
+  /** Discriminator consumed by {@link applyTransforms}. */
   readonly type: 'registered-do-transform';
+  /** Transform definition containing the callee factory. */
   readonly transform: TTransform;
+  /** Options passed to the callee factory during installation. */
   readonly options: CalleeOptions<TTransform>;
 };
 
+/**
+ * Configures the callee side of a transform for {@link applyTransforms}.
+ *
+ * @example
+ * ```ts
+ * applyTransforms(MyDurableObject, {
+ *   all: [registerTransform(observability, 'rpc_calls')],
+ * });
+ * ```
+ */
 export function registerTransform<TTransform extends TransformIdentity>(
   transform: TTransform & {
     calleeFactory: (options: CalleeOptions<TTransform>) => unknown;
@@ -232,7 +287,9 @@ type ApplyCallerResult<TTarget extends object, TTransform> = {
     : TTarget[TKey];
 };
 
+/** Adds the typed `.with(transform, options)` method to an RPC target. */
 export type TransformWith<TTarget extends object> = {
+  /** Returns a new stub with the caller transform appended to its chain. */
   with<TTransform>(
     transform: TTransform &
       TransformIdentity &
@@ -243,6 +300,12 @@ export type TransformWith<TTarget extends object> = {
   ): TransformStub<ApplyCallerResult<TTarget, TTransform>>;
 };
 
+/**
+ * An RPC target that preserves the target API and supports caller transforms.
+ *
+ * `.with` does not mutate the original stub. Each call returns a new proxy whose
+ * transforms run in the order they were appended.
+ */
 export type TransformStub<TTarget extends object> = {
   [TKey in Exclude<keyof TTarget, 'with'>]: TTarget[TKey];
 } & TransformWith<TTarget>;
@@ -251,6 +314,7 @@ type NamespaceLike<TTarget extends object> = {
   get(...args: never[]): TTarget;
 };
 
+/** A Durable Object namespace whose `get` method returns transformable stubs. */
 export type TransformNamespace<TNamespace extends NamespaceLike<object>> = Omit<
   TNamespace,
   'get'
@@ -271,6 +335,19 @@ type ConfiguredCallerTransform = (
   context: RuntimeTransformContext
 ) => Promise<unknown>;
 
+/**
+ * Wraps an RPC target with caller-side transform support.
+ *
+ * The Vite plugin inserts this wrapper automatically for configured Durable
+ * Object and service bindings. Call it directly when the plugin is unavailable
+ * or when wrapping an RPC-like object in tests.
+ *
+ * @example
+ * ```ts
+ * const stub = createTransformStub(env.MY_SERVICE).with(timeout, 5_000);
+ * const value = await stub.read();
+ * ```
+ */
 export function createTransformStub<TTarget extends object>(
   target: TTarget,
   transforms: ConfiguredCallerTransform[] = []
@@ -352,6 +429,19 @@ export function createTransformStub<TTarget extends object>(
   }) as TransformStub<TTarget>;
 }
 
+/**
+ * Wraps a Durable Object namespace so every stub returned by `get` is
+ * transformable.
+ *
+ * Prefer the Vite plugin for application code because it also updates generated
+ * binding types. This helper is useful for manual integration and tests.
+ *
+ * @example
+ * ```ts
+ * const namespace = withTransforms(env.MY_DURABLE_OBJECT);
+ * const stub = namespace.get(id).with(timeout, 5_000);
+ * ```
+ */
 export function withTransforms<TNamespace extends NamespaceLike<object>>(
   namespace: TNamespace
 ): TransformNamespace<TNamespace> {
@@ -437,6 +527,12 @@ const transformContextTargets = new WeakMap<
   }
 >();
 
+/**
+ * RPC target that carries caller context to the original callee instance.
+ *
+ * Applications normally return this from a class's `setContext` method through
+ * {@link createTransformContextTarget}; callers should not construct it directly.
+ */
 export class TransformContextTarget<
   TTarget extends object,
   TContext extends TransformContext,
@@ -446,6 +542,7 @@ export class TransformContextTarget<
     transformContextTargets.set(this, { instance, context });
   }
 
+  /** Dispatches a pipelined method call with the context captured by this target. */
   invoke(method: string, args: unknown[]): Promise<unknown> {
     const target = transformContextTargets.get(this);
     if (!target) {
@@ -456,6 +553,22 @@ export class TransformContextTarget<
   }
 }
 
+/**
+ * Creates the `RpcTarget` used to continue a call with caller-provided context.
+ *
+ * A target only needs `setContext` when one of its caller transforms adds
+ * context. Cloudflare promise pipelining lets the caller invoke the returned
+ * target without another explicit application-level round trip.
+ *
+ * @example
+ * ```ts
+ * class MyDurableObject extends DurableObject {
+ *   setContext(context: RequestContext) {
+ *     return createTransformContextTarget(this, context);
+ *   }
+ * }
+ * ```
+ */
 export function createTransformContextTarget<
   TTarget extends object,
   TContext extends TransformContext,
@@ -512,6 +625,24 @@ type RuntimeCalleeRegistration = {
   readonly options: unknown;
 };
 
+/**
+ * Installs callee transforms on a Durable Object or WorkerEntrypoint class.
+ *
+ * Installation mutates the class prototype and is cumulative, so call this once
+ * during module initialization rather than per request or per instance. Global
+ * transforms run first, followed by transforms registered for the invoked method.
+ * `setContext` is reserved for context transport and is never wrapped.
+ *
+ * @example
+ * ```ts
+ * applyTransforms(MyDurableObject, {
+ *   all: [registerTransform(betterResultCodec)],
+ *   methods: {
+ *     greet: [registerTransform(observability, 'greet_calls')],
+ *   },
+ * });
+ * ```
+ */
 export function applyTransforms<
   TClass extends DOClass<object>,
   const TAll extends readonly unknown[] = readonly [],
@@ -588,6 +719,21 @@ export function applyTransforms<
 
 type EmptyTransformContext = Record<never, never>;
 
+/**
+ * Serializes Better Result values on the callee and rehydrates them on the caller.
+ *
+ * Register it on the target class and attach it to the caller stub. Values that
+ * are not serialized Better Results pass through unchanged.
+ *
+ * @example
+ * ```ts
+ * applyTransforms(MyDurableObject, {
+ *   all: [registerTransform(betterResultCodec)],
+ * });
+ *
+ * const result = await stub.with(betterResultCodec).read();
+ * ```
+ */
 export const betterResultCodec = Object.assign(
   defineTransform<object, EmptyTransformContext>()
     .caller((_options: void) => async ({ next }) => {
@@ -619,8 +765,15 @@ export const betterResultCodec = Object.assign(
   { callerResult: 'better-result-codec' as const }
 );
 
+/**
+ * Error thrown when a caller-side timeout expires.
+ *
+ * The remote RPC is not cancelled; only the caller stops waiting for it.
+ */
 export class CallerTimeoutError extends Error {
+  /** RPC method whose caller deadline expired. */
   readonly method: string;
+  /** Configured caller deadline in milliseconds. */
   readonly timeoutMs: number;
 
   constructor(method: string, timeoutMs: number) {
@@ -631,6 +784,17 @@ export class CallerTimeoutError extends Error {
   }
 }
 
+/**
+ * Rejects a caller RPC with {@link CallerTimeoutError} after a deadline.
+ *
+ * This transform does not abort the remote method. Use it to bound caller wait
+ * time, not as a guarantee that remote work or side effects stopped.
+ *
+ * @example
+ * ```ts
+ * await stub.with(timeout, 5_000).read();
+ * ```
+ */
 export const timeout = defineTransform<object, EmptyTransformContext>().caller(
   (timeoutMs: number) =>
     async ({ method, next }) => {
@@ -657,6 +821,17 @@ export const timeout = defineTransform<object, EmptyTransformContext>().caller(
     }
 );
 
+/**
+ * Converts caller-visible throws into `better-result` error values.
+ *
+ * @example
+ * ```ts
+ * const result = await stub.with(errorBoundary).read();
+ * if (Result.isError(result)) {
+ *   console.error(result.error);
+ * }
+ * ```
+ */
 export const errorBoundary = Object.assign(
   defineTransform<object, EmptyTransformContext>().caller(
     (_options: void) =>
@@ -671,6 +846,12 @@ export const errorBoundary = Object.assign(
   { callerResult: 'better-result' as const }
 );
 
+/**
+ * Converts Cloudflare Durable Object reset errors into successful undefined
+ * Better Results while preserving ordinary errors.
+ *
+ * Use this only when a reset is an expected success condition for the method.
+ */
 export const abortAsSuccess = Object.assign(
   defineTransform<object, EmptyTransformContext>().caller(
     (_options: void) =>
@@ -694,7 +875,9 @@ export const abortAsSuccess = Object.assign(
   { callerResult: 'abort-as-success' as const }
 );
 
+/** Configuration for {@link largeObjectStream}. */
 export type LargeObjectStreamOptions = {
+  /** Encoded size that switches an object result to streaming. Defaults to 32 MiB. */
   thresholdBytes?: number;
 };
 
@@ -702,6 +885,26 @@ const largeObjectStreamHeader = new TextEncoder().encode(
   'do-transforms-large-object-v1'
 );
 
+/**
+ * Streams large JSON object results and reconstructs them on the caller.
+ *
+ * Install the callee side with the desired threshold and attach the caller side
+ * to the stub. Existing `ReadableStream` results pass through unchanged. Object
+ * values use JSON serialization, so non-JSON values do not round-trip.
+ *
+ * @example
+ * ```ts
+ * applyTransforms(MyDurableObject, {
+ *   methods: {
+ *     snapshot: [
+ *       registerTransform(largeObjectStream, { thresholdBytes: 1_000_000 }),
+ *     ],
+ *   },
+ * });
+ *
+ * const snapshot = await stub.with(largeObjectStream).snapshot();
+ * ```
+ */
 export const largeObjectStream = defineTransform<
   object,
   EmptyTransformContext
@@ -801,14 +1004,34 @@ export const largeObjectStream = defineTransform<
     };
   });
 
+/** Configuration for the caller-side {@link retry} transform. */
 export type RetryOptions = {
+  /** Number of retries after the initial call. */
   retries: number;
+  /** Returns the delay before the next call; `attempt` is one-based. */
   delay?: (context: {
+    /** Error thrown by the preceding call. */
     error: unknown;
+    /** One-based retry attempt about to be scheduled. */
     attempt: number;
   }) => number | Promise<number>;
 };
 
+/**
+ * Repeats a failed RPC sequentially according to a caller-side retry policy.
+ *
+ * Each retry is a new RPC invocation. Only use this with idempotent methods or
+ * pass an idempotency key, because the caller cannot know whether a failed call
+ * performed remote side effects before its error was observed.
+ *
+ * @example
+ * ```ts
+ * await stub.with(retry, {
+ *   retries: 3,
+ *   delay: ({ attempt }) => Math.min(1_000 * 2 ** (attempt - 1), 30_000),
+ * }).write({ idempotencyKey: 'write:123' });
+ * ```
+ */
 export const retry = defineTransform<object, EmptyTransformContext>().caller(
   (options: RetryOptions | number) =>
     async ({ next }) => {

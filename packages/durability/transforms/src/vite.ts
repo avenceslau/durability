@@ -5,8 +5,11 @@ import { parse as parseJsonc } from 'jsonc-parser';
 import MagicString from 'magic-string';
 import type { Plugin, ResolvedConfig } from 'vite';
 
-type DoTransformsPluginOptions = {
+/** Configuration for the durability transforms Vite plugin. */
+export type DoTransformsPluginOptions = {
+  /** Wrangler config path relative to the Vite root. Defaults to `wrangler.jsonc`. */
   wrangler?: string;
+  /** Generated declaration path relative to the Vite root, or false to disable generation. */
   types?: string | false;
 };
 
@@ -37,6 +40,23 @@ function propertyName(node: SyntaxNode | undefined): string | undefined {
   return undefined;
 }
 
+/**
+ * Adds transform support to configured Durable Object and service bindings.
+ *
+ * The plugin reads Wrangler bindings, wraps matching binding access with
+ * `createTransformStub`, and generates declarations that add `.with(...)` to
+ * their inferred types. It must run before other source transforms.
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from 'vite';
+ * import { doTransforms } from '@durability/transforms/vite';
+ *
+ * export default defineConfig({
+ *   plugins: [doTransforms({ wrangler: './wrangler.jsonc' })],
+ * });
+ * ```
+ */
 export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
   let durableObjectBindingNames = new Set<string>();
   let serviceBindingNames = new Set<string>();
