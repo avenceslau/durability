@@ -131,6 +131,18 @@ const durabilityMethodOptionsSchema = z.object({
     .optional(),
 });
 
+/** Execution policy overrides for one named alarm. */
+export type DurabilityAlarmMethodOptions = DurabilityMethodOptions & {
+  /** Retry timed-out attempts only when their side effects are idempotent or reconciled. */
+  retryTimeouts?: boolean;
+};
+
+const durabilityAlarmMethodOptionsSchema = durabilityMethodOptionsSchema.extend(
+  {
+    retryTimeouts: z.boolean().optional(),
+  }
+);
+
 /**
  * Configuration for a durability instance.
  *
@@ -161,7 +173,7 @@ export type DurabilityOptions<
   /** Execution policy overrides keyed by named alarm. */
   alarmMethods?: [AlarmNames] extends [never]
     ? never
-    : Partial<Record<NoInfer<AlarmNames>, DurabilityMethodOptions>>;
+    : Partial<Record<NoInfer<AlarmNames>, DurabilityAlarmMethodOptions>>;
   /** Maximum immediate operations executed concurrently by an alarm. Defaults to 10. */
   alarmConcurrency?: number;
   /** Time before a running alarm hands unfinished work to a new alarm. Defaults to 14 minutes. */
@@ -665,7 +677,7 @@ export const createDurability = <
   const alarmMethodOptions = new Map(
     Object.entries(options.alarmMethods ?? {}).map(([name, method]) => [
       name,
-      durabilityMethodOptionsSchema.parse(method),
+      durabilityAlarmMethodOptionsSchema.parse(method),
     ])
   );
   for (const [name, method] of alarmMethodOptions) {
@@ -704,6 +716,7 @@ export const createDurability = <
       attemptTimeoutMs: method?.attemptTimeoutMs ?? defaultAttemptTimeoutMs,
       delay: method?.retries?.delay ?? defaultRetryDelay,
       maxAttempts: method?.retries?.maxAttempts ?? defaultMaxAttempts,
+      retryTimeouts: method?.retryTimeouts ?? false,
     };
   };
 
@@ -1029,7 +1042,9 @@ export const createDurability = <
         );
       } catch (error) {
         const terminal =
-          isNonRetryable(error) || updated.attempt >= policy.maxAttempts;
+          isNonRetryable(error) ||
+          updated.attempt >= policy.maxAttempts ||
+          (error instanceof DurableAlarmTimeoutError && !policy.retryTimeouts);
         const baseDelay = terminal ? 0 : policy.delay(updated.attempt);
         if (!Number.isFinite(baseDelay) || baseDelay < 0) {
           throw new RangeError(

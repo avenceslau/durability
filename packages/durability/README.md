@@ -70,6 +70,7 @@ class ImageJobs extends DurableObject<Env> {
             maxAttempts: 5,
             delay: (attempt) => jitter(exponential(attempt)),
           },
+          retryTimeouts: true,
         },
       },
     }
@@ -89,7 +90,7 @@ Scheduling the same name again replaces its pending occurrence. If that name is 
 
 Each schedule receives a new internal occurrence ID. Its generated `idempotencyKey` remains stable across retries, while `attempt` starts at one and increments for every execution of that occurrence. A successful handler removes only the occurrence it executed, so it cannot delete a replacement scheduled while it was running.
 
-Named alarms inherit the global attempt timeout and retry policy. `alarmMethods` overrides them for one name. Failures use the same jittered exponential delay as operations by default; `NonRetryableError` and exhausted attempts make the occurrence terminal. A timeout aborts the handler's `signal`. If a handler ignores that signal, the scheduler retains its per-name execution lock until the handler actually settles, preventing an overlapping retry.
+Named alarms inherit the global attempt timeout and retry policy. `alarmMethods` overrides them for one name. Failures use the same jittered exponential delay as operations by default; `NonRetryableError` and exhausted attempts make the occurrence terminal. A timeout aborts the handler's `signal` and is terminal by default because the external outcome may be unknown. Set `retryTimeouts: true` only when the handler's side effects use the generated idempotency key or reconcile their outcome before retrying. If a handler ignores the signal, the scheduler retains its per-name execution lock until the handler actually settles, preventing an overlapping retry.
 
 Named alarm handlers are still at-least-once across eviction or restart. Pass `idempotencyKey` to external systems that support deduplication.
 

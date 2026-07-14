@@ -684,6 +684,48 @@ describe('createDurability', () => {
     expect(cleanup).toHaveBeenCalledTimes(2);
   });
 
+  it('makes timed-out named alarms terminal by default', async () => {
+    vi.useFakeTimers();
+    const storage = new FakeStorage();
+    let finish: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const cleanup = vi.fn(async () => pending);
+    const durability = createDurability(
+      contextFor(storage),
+      {},
+      {
+        alarms: { cleanup },
+        alarmMethods: {
+          cleanup: {
+            attemptTimeoutMs: 100,
+            retries: { delay: () => 0, maxAttempts: 5 },
+          },
+        },
+      }
+    );
+
+    await durability.alarm.cleanup(Date.now());
+    storage.alarmAt = null;
+    const invocation = durability.alarm();
+    await vi.advanceTimersByTimeAsync(100);
+    await invocation;
+
+    const state = storage.sql
+      .exec<{ attempt: number; status: string }>(
+        `SELECT attempt, status FROM durability_alarms WHERE name = 'cleanup'`
+      )
+      .toArray();
+    expect(state).toEqual([{ attempt: 1, status: 'failed' }]);
+    expect(storage.alarmAt).toBeNull();
+
+    finish?.();
+    await vi.advanceTimersByTimeAsync(0);
+    await durability.alarm();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it('holds the named alarm lock until a timed-out handler settles', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
@@ -715,6 +757,7 @@ describe('createDurability', () => {
           cleanup: {
             attemptTimeoutMs: 100,
             retries: { delay: () => 0, maxAttempts: 2 },
+            retryTimeouts: true,
           },
         },
       }
