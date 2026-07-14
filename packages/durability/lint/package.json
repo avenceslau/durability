@@ -38,7 +38,7 @@
     "workers"
   ],
   "peerDependencies": {
-    "oxlint": ">=1.73.0"
+    "oxlint": "1.73.0"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

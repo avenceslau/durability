@@ -6,7 +6,7 @@ The package registers each operation and the first alarm in one Durable Object s
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
-import { createDurability, type DurableHandler } from '@repo/durability';
+import { createDurability, type DurableHandler } from 'durability';
 
 type ResizeInput = { imageId: string };
 
@@ -45,7 +45,7 @@ The Durable Object class must use SQLite storage:
 Rollbacks are explicit because rolling back the initial migration deletes durable call records:
 
 ```ts
-import { migrateDurability } from '@repo/durability';
+import { migrateDurability } from 'durability';
 
 migrateDurability(this.ctx, 'durability_0001_create_calls');
 migrateDurability(this.ctx, null); // roll back every durability migration
@@ -82,7 +82,7 @@ The completed result type is inferred from the operation handler. Looking up a k
 Attempts use exponential backoff with equal jitter, stop after five attempts, and time out after five minutes by default. The retry `delay` function fully controls scheduling and can be overridden globally or per operation. The package exports the default delay building blocks for custom policies:
 
 ```ts
-import { exponential, jitter } from '@repo/durability/utils';
+import { exponential, jitter } from 'durability/utils';
 
 const durability = createDurability(this.ctx, handlers, {
   attemptTimeoutMs: 60_000,
@@ -116,7 +116,7 @@ A timed-out attempt aborts its signal and follows the normal retry policy. Abort
 Throw `NonRetryableError` to move a call directly to `failed` without another attempt:
 
 ```ts
-import { NonRetryableError } from '@repo/durability';
+import { NonRetryableError } from 'durability';
 
 throw new NonRetryableError('Recipient permanently rejected');
 ```

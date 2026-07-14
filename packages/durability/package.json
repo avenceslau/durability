@@ -1,10 +1,19 @@
 {
-  "name": "@repo/durability",
-  "version": "0.0.1",
+  "name": "durability",
+  "version": "2.0.0",
+  "description": "Alarm-backed durable operations for Cloudflare Durable Objects",
   "type": "module",
-  "private": true,
+  "license": "ISC",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "oxlint",
+    "prepack": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -12,13 +21,42 @@
     ".": "./src/index.ts",
     "./utils": "./src/utils.ts"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./utils": {
+        "types": "./dist/utils.d.ts",
+        "import": "./dist/utils.js"
+      }
+    }
+  },
+  "keywords": [
+    "cloudflare",
+    "durable-objects",
+    "idempotency",
+    "retries",
+    "workers"
+  ],
   "dependencies": {
-    "@durability/storage": "workspace:*",
     "workers-qb": "^1.11.2",
     "zod": "^4.4.3"
   },
+  "peerDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
+    "@durability/storage": "workspace:*",
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^24.12.0",
     "typescript": "6.0.3",
