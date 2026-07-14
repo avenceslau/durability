@@ -38,7 +38,7 @@ class ImageJobs extends DurableObject<Env> {
 
 ## `durability-migrations-only`
 
-Every static `CREATE TABLE` statement must live in a migration list typed with `DurableMigrations`. The rule supports explicit annotations, `satisfies`, and aliased type imports.
+Every static `CREATE TABLE`, `CREATE TEMP TABLE`, or `CREATE TEMPORARY TABLE` statement must live in a migration list typed with `DurableMigrations`. Keywords are matched case-insensitively across whitespace. The rule supports explicit annotations, `satisfies`, and aliased type imports from `@durability/storage`.
 
 ```ts
 import type { DurableMigrations } from '@durability/storage';
@@ -58,6 +58,8 @@ Raw table creation is rejected:
 this.ctx.storage.sql.exec('CREATE TABLE jobs (id TEXT PRIMARY KEY);');
 ```
 
+Static analysis covers string literals, template literals whose substitutions are themselves static strings, and nested `+` concatenations of those expressions. The outermost static expression is reported once. Expressions containing identifiers, calls, or other values that cannot be resolved without executing the program are ignored.
+
 The rule also requires `DOQB` migration builders imported from `workers-qb` to use the namespaced migration-history table:
 
 ```ts
@@ -67,4 +69,4 @@ const builder = new DOQB(this.ctx.storage.sql).migrations({
 });
 ```
 
-Unrelated APIs with a method named `migrations` are ignored.
+Imported `DOQB` aliases, direct construction, local builder variables, and public or private class fields used through `this` are recognized. Simple assignments are followed only when every write can be proven to originate from the imported constructor. Lexically shadowed and unrelated same-name values are ignored.

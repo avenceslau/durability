@@ -111,6 +111,14 @@ describe('durability-migrations-only', () => {
         down: 'DROP TABLE jobs;',
       }];
     `,
+    `
+      import type { DurableMigrations as MigrationList } from '@durability/storage';
+      const migrations = [{
+        name: '0001_create_jobs',
+        up: 'CREATE ' + ('TEMP ' + 'TABLE jobs (id TEXT);'),
+        down: \`CREATE \${'TEMP' + 'ORARY'}   TABLE backup (id TEXT);\`,
+      }] satisfies MigrationList;
+    `,
   ])('accepts tables declared in durable migrations', (source) => {
     const result = lint(source, 'durability-migrations-only');
 
@@ -132,6 +140,16 @@ describe('durability-migrations-only', () => {
         sql: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
       }];
     `,
+    `
+      import type { DurableMigrations as MigrationList } from '@durability/storage';
+      function applicationMigrations() {
+        type MigrationList = Array<{ sql: string }>;
+        const migrations: MigrationList = [{
+          sql: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+        }];
+        return migrations;
+      }
+    `,
   ])('rejects tables outside durable migrations', (source) => {
     const result = lint(source, 'durability-migrations-only');
 
@@ -139,6 +157,36 @@ describe('durability-migrations-only', () => {
     expect(result.output).toContain(
       'CREATE TABLE statements must be declared in DurableMigrations.'
     );
+  });
+
+  it.each([
+    `'CREATE ' + ('TABLE ' + 'jobs (id TEXT PRIMARY KEY);');`,
+    '`CREATE ${`TEMP`}\n\tTABLE jobs (id TEXT PRIMARY KEY);`;',
+    '`create ${"TEMP" + "ORARY"} table jobs (id TEXT PRIMARY KEY);`;',
+  ])('reports the outermost static SQL expression once', (source) => {
+    const result = lint(source, 'durability-migrations-only');
+
+    expect(result.status).toBe(1);
+    expect(
+      result.output.match(
+        /CREATE TABLE statements must be declared in DurableMigrations\./g
+      ) ?? []
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    `
+      const table = 'jobs';
+      const sql = \`CREATE TABLE \${table} (id TEXT PRIMARY KEY);\`;
+    `,
+    `
+      const statement = 'CREATE ' + operation;
+      execute(statement);
+    `,
+  ])('ignores SQL expressions that cannot be statically resolved', (source) => {
+    const result = lint(source, 'durability-migrations-only');
+
+    expect(result).toEqual({ status: 0, output: '' });
   });
 
   it.each([
@@ -153,6 +201,42 @@ describe('durability-migrations-only', () => {
         migrations,
         tableName: 'migrations',
       });
+    `,
+    `
+      import { DOQB as QueryBuilder } from 'workers-qb';
+      let builder;
+      builder = new QueryBuilder(storage.sql);
+      builder.migrations({ migrations });
+    `,
+    `
+      import { DOQB } from 'workers-qb';
+      class Example {
+        qb = new DOQB(storage.sql);
+        migrate() {
+          this.qb.migrations({ migrations });
+        }
+      }
+    `,
+    `
+      import { DOQB as QueryBuilder } from 'workers-qb';
+      class Example {
+        #qb = new QueryBuilder(storage.sql);
+        migrate() {
+          this.#qb.migrations({ migrations, tableName: 'other' });
+        }
+      }
+    `,
+    `
+      import { DOQB } from 'workers-qb';
+      class Example {
+        private qb: DOQB;
+        constructor() {
+          this.qb = new DOQB(storage.sql);
+        }
+        migrate() {
+          this.qb.migrations({ migrations });
+        }
+      }
     `,
   ])('rejects a non-durability workers-qb migration table', (source) => {
     const result = lint(source, 'durability-migrations-only');
@@ -172,6 +256,35 @@ describe('durability-migrations-only', () => {
       import { DOQB } from 'another-package';
       const qb = new DOQB(storage.sql);
       qb.migrations({ migrations });
+    `,
+    `
+      import { DOQB } from 'workers-qb';
+      function migrate(DOQB: new (...args: unknown[]) => unknown) {
+        const qb = new DOQB(storage.sql);
+        qb.migrations({ migrations });
+      }
+    `,
+    `
+      import { DOQB } from 'workers-qb';
+      const qb = new DOQB(storage.sql);
+      function migrate(qb: { migrations: (value: unknown) => void }) {
+        qb.migrations({ migrations });
+      }
+    `,
+    `
+      import { DOQB } from 'workers-qb';
+      let qb = new DOQB(storage.sql);
+      qb = createApplicationQueryBuilder();
+      qb.migrations({ migrations });
+    `,
+    `
+      import { DOQB } from 'workers-qb';
+      class Example {
+        qb = createApplicationQueryBuilder();
+        migrate() {
+          this.qb.migrations({ migrations });
+        }
+      }
     `,
   ])('ignores unrelated migration builders', (source) => {
     const result = lint(source, 'durability-migrations-only');
