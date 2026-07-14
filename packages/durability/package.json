@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./utils": "./src/utils.ts"
   },
   "dependencies": {
     "@durability/storage": "workspace:*",

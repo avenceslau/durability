@@ -1,44 +1,127 @@
 import type { DurableMigrations } from '@durability/storage';
 import { z } from 'zod';
 import { DOQB, type Migration } from 'workers-qb';
+import { exponential, jitter } from './utils';
 
+/**
+ * The context passed to a durable operation handler for each attempt.
+ *
+ * @example
+ * ```ts
+ * const sendEmail = async ({ id, payload, signal }: DurableCall<EmailPayload>) =>
+ *   fetch(payload.url, {
+ *     method: 'POST',
+ *     headers: { 'Idempotency-Key': id },
+ *     signal,
+ *   });
+ * ```
+ */
 export type DurableCall<Payload> = {
+  /** The stable idempotency key supplied when the operation was registered. */
   id: string;
+  /** The handler name used to register the operation. */
   operation: string;
+  /** The JSON-serializable payload supplied when the operation was registered. */
   payload: Payload;
+  /** The one-based attempt number. */
   attempt: number;
+  /** Aborts when the attempt exceeds its configured timeout. */
   signal: AbortSignal;
 };
 
+/**
+ * A function that executes one attempt of a durable operation.
+ *
+ * @example
+ * ```ts
+ * const resizeImage: DurableHandler<ResizeInput, string> = async ({
+ *   id,
+ *   payload,
+ * }) => images.resize(payload.imageId, { idempotencyKey: id });
+ * ```
+ */
 export type DurableHandler<Payload, Result> = (
   call: DurableCall<Payload>
 ) => Result | Promise<Result>;
 
-export type RetryJitter = 'none' | 'equal' | 'full';
-
+/**
+ * Retry policy shared by all methods or overridden for one method.
+ *
+ * The delay callback owns the complete scheduling policy, so it can compose the
+ * helpers exported from `@repo/durability/utils` or use an application-specific
+ * strategy.
+ *
+ * @example
+ * ```ts
+ * import { exponential, jitter } from '@repo/durability/utils';
+ *
+ * const retries: DurabilityRetryOptions = {
+ *   maxAttempts: 5,
+ *   delay: (attempt) => jitter(exponential(attempt)),
+ * };
+ * ```
+ */
 export type DurabilityRetryOptions = {
+  /** Returns the delay in milliseconds after a failed attempt. */
   delay?: (attempt: number) => number;
-  jitter?: RetryJitter;
+  /** The total number of attempts, including the initial attempt. Defaults to 5. */
   maxAttempts?: number;
 };
 
 type HandlerMap = Record<string, (...args: never[]) => unknown>;
 
+/**
+ * Execution policy overrides for one durable operation method.
+ *
+ * @example
+ * ```ts
+ * const resizePolicy: DurabilityMethodOptions = {
+ *   attemptTimeoutMs: 60_000,
+ *   retries: { maxAttempts: 2 },
+ * };
+ * ```
+ */
 export type DurabilityMethodOptions = {
+  /** Maximum duration of one attempt in milliseconds. */
   attemptTimeoutMs?: number;
+  /** Retry policy overrides for this method. */
   retries?: DurabilityRetryOptions;
 };
 
+/**
+ * Configuration for a durability instance.
+ *
+ * Method-level values override global timeout and retry values without changing
+ * the policy for other handlers.
+ *
+ * @example
+ * ```ts
+ * const options: DurabilityOptions<typeof handlers> = {
+ *   alarmConcurrency: 5,
+ *   attemptTimeoutMs: 30_000,
+ *   retries: { maxAttempts: 5 },
+ *   methods: {
+ *     resizeImage: {
+ *       attemptTimeoutMs: 60_000,
+ *       retries: { maxAttempts: 2 },
+ *     },
+ *   },
+ * };
+ * ```
+ */
 export type DurabilityOptions<Handlers extends HandlerMap = HandlerMap> = {
+  /** Maximum immediate operations executed concurrently by an alarm. Defaults to 10. */
   alarmConcurrency?: number;
+  /** Time before a running alarm hands unfinished work to a new alarm. Defaults to 14 minutes. */
   alarmHandoffMs?: number;
+  /** Maximum duration of one handler attempt. Defaults to 5 minutes. */
   attemptTimeoutMs?: number;
-  backgroundConcurrency?: number;
+  /** Execution policy overrides keyed by handler name. */
   methods?: Partial<
     Record<Extract<keyof Handlers, string>, DurabilityMethodOptions>
   >;
+  /** Retry policy shared by handlers without a method-level override. */
   retries?: DurabilityRetryOptions;
-  retryDelay?: (attempt: number) => number;
 };
 
 type HandlerPayload<Handler> = Handler extends (
@@ -57,11 +140,12 @@ type CallRow = {
   next_attempt_at: number;
   last_error: string | null;
   last_error_name: string | null;
-  execution_mode: 'immediate' | 'background';
 };
 
 type DurableOperationInput<Handler> = {
+  /** Stable idempotency key used to deduplicate the operation. */
   id: string;
+  /** JSON-serializable input passed to the operation handler. */
   payload: HandlerPayload<Handler>;
 };
 
@@ -69,34 +153,84 @@ type HandlerResult<Handler> = Handler extends (...args: never[]) => infer Result
   ? Awaited<Result>
   : never;
 
+/**
+ * The persisted state and result of a durable operation.
+ *
+ * Operation methods only wait for durable registration, not handler completion.
+ * Call `getResult` later and narrow on `status` before reading a result or error.
+ *
+ * @example
+ * ```ts
+ * const state = await durability.resizeImage.getResult('resize:image-1');
+ *
+ * if (state.status === 'completed') {
+ *   console.log(state.result);
+ * } else if (state.status === 'failed') {
+ *   console.error(state.error.name, state.error.message);
+ * }
+ * ```
+ */
 export type DurableOperationResult<Result> =
-  | { status: 'not_found' }
   | {
+      /** No operation exists for the supplied idempotency key. */
+      status: 'not_found';
+    }
+  | {
+      /** The operation is waiting to run or retry. */
       status: 'pending';
+      /** The number of attempts already started. */
       attempt: number;
+      /** Unix timestamp in milliseconds when the next attempt becomes eligible. */
       nextAttemptAt: number;
+      /** The previous attempt's error message, or null before the first attempt. */
       lastError: string | null;
     }
   | {
+      /** The operation exhausted its attempts or failed with a non-retryable error. */
       status: 'failed';
+      /** The number of attempts that were started. */
       attempt: number;
+      /** The terminal error's serialized name and message. */
       error: { name: string; message: string };
     }
-  | { status: 'completed'; result: Result };
+  | {
+      /** The operation completed successfully. */
+      status: 'completed';
+      /** The handler's persisted return value. */
+      result: Result;
+    };
 
+/** Registers calls for one handler and reads their persisted results. */
 type DurableOperation<Handler> = ((
   input: DurableOperationInput<Handler>
 ) => Promise<void>) & {
+  /** Reads the persisted state for an idempotency key. */
   getResult: (
     idempotencyKey: string
   ) => Promise<DurableOperationResult<HandlerResult<Handler>>>;
 };
 
+/**
+ * Typed operation methods and alarm handler created from a handler map.
+ *
+ * Each handler key becomes a registration method. The Durable Object must also
+ * forward its alarm callback so pending retries survive object eviction.
+ *
+ * @example
+ * ```ts
+ * declare const durability: Durability<typeof handlers>;
+ *
+ * await durability.resizeImage({
+ *   id: 'resize:image-1',
+ *   payload: { imageId: 'image-1' },
+ * });
+ *
+ * const alarm = (info: AlarmInvocationInfo) => durability.alarm(info);
+ * ```
+ */
 export type Durability<Handlers extends HandlerMap> = {
+  /** Processes due operations. Forward the Durable Object's alarm handler here. */
   alarm: (alarmInfo?: AlarmInvocationInfo) => Promise<void>;
-  background: {
-    [Operation in keyof Handlers]: DurableOperation<Handlers[Operation]>;
-  };
 } & {
   [Operation in keyof Handlers]: DurableOperation<Handlers[Operation]>;
 };
@@ -107,6 +241,26 @@ const storedValueSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('value'), value: z.json() }),
   z.object({ kind: z.literal('undefined') }),
 ]);
+/**
+ * Ordered SQLite migrations for the tables owned by durability.
+ *
+ * Every SQLite-backed Durable Object instance has an independent database, so
+ * the durability schema must exist in each instance before calls can be stored.
+ * {@link createDurability} applies these migrations automatically on instance
+ * initialization. They are tracked in the namespaced `durability_migrations`
+ * table so they can coexist with application-owned migrations in the same
+ * database.
+ *
+ * The list is exported so migration names can be inspected before an explicit
+ * rollback with {@link migrateDurability}. Most consumers should not execute
+ * the SQL directly.
+ *
+ * @example
+ * ```ts
+ * const currentTarget = durabilityMigrations.at(-1)?.name ?? null;
+ * migrateDurability(this.ctx, currentTarget);
+ * ```
+ */
 export const durabilityMigrations = [
   {
     name: 'durability_0001_create_calls',
@@ -134,31 +288,45 @@ export const durabilityMigrations = [
     `,
     down: 'DROP INDEX IF EXISTS durability_calls_pending_idx;',
   },
-  {
-    name: 'durability_0003_execution_mode',
-    up: `
-      ALTER TABLE durability_calls
-      ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'immediate'
-      CHECK (execution_mode IN ('immediate', 'background'));
-    `,
-    down: 'ALTER TABLE durability_calls DROP COLUMN execution_mode;',
-  },
-  {
-    name: 'durability_0004_pending_mode_index',
-    up: `
-      CREATE INDEX IF NOT EXISTS durability_calls_pending_mode_idx
-      ON durability_calls (execution_mode, next_attempt_at)
-      WHERE status = 'pending';
-    `,
-    down: 'DROP INDEX IF EXISTS durability_calls_pending_mode_idx;',
-  },
 ] satisfies DurableMigrations;
 
+/**
+ * Migration names changed by a call to {@link migrateDurability}.
+ *
+ * @example
+ * ```ts
+ * const { applied, rolledBack } = migrateDurability(this.ctx);
+ * console.log({ applied, rolledBack });
+ * ```
+ */
 export type DurabilityMigrationResult = {
+  /** Migrations applied in ascending order. */
   applied: string[];
+  /** Migrations reverted in descending order. */
   rolledBack: string[];
 };
 
+/**
+ * Moves the durability schema in one Durable Object instance to a target.
+ *
+ * {@link createDurability} calls this with the latest target automatically. Call
+ * it directly only for explicit schema management, especially rollbacks. Passing
+ * `null` removes every durability table and permanently deletes stored calls.
+ *
+ * @example Apply all pending durability migrations.
+ * ```ts
+ * migrateDurability(this.ctx);
+ * ```
+ *
+ * @example Roll back to a specific version, then remove the schema entirely.
+ * ```ts
+ * migrateDurability(this.ctx, 'durability_0001_create_calls');
+ * migrateDurability(this.ctx, null);
+ * ```
+ *
+ * @param context Durable Object context containing SQLite-backed storage.
+ * @param target Migration name to migrate to, or null to roll back all migrations.
+ */
 export const migrateDurability = (
   context: Pick<DurableObjectState, 'storage'>,
   target: string | null = durabilityMigrations[durabilityMigrations.length - 1]
@@ -213,6 +381,19 @@ export const migrateDurability = (
   return { applied, rolledBack };
 };
 
+/**
+ * Marks a handler failure as terminal so it is persisted without another retry.
+ *
+ * Use this for permanent failures such as invalid input. Transient errors should
+ * be thrown normally so the configured retry policy can handle them.
+ *
+ * @example
+ * ```ts
+ * if (!recipient.isValid) {
+ *   throw new NonRetryableError('Recipient is invalid');
+ * }
+ * ```
+ */
 export class NonRetryableError extends Error {
   constructor(message: string) {
     super(message);
@@ -220,6 +401,24 @@ export class NonRetryableError extends Error {
   }
 }
 
+/**
+ * Error recorded when a handler attempt exceeds its configured timeout.
+ *
+ * Durability creates this error and aborts the attempt's signal; consumers do
+ * not need to throw it themselves. Timeout failures follow the normal retry
+ * policy and are exposed by `getResult` if they become terminal.
+ *
+ * @example
+ * ```ts
+ * const state = await durability.resizeImage.getResult('resize:image-1');
+ * if (
+ *   state.status === 'failed' &&
+ *   state.error.name === 'DurableAttemptTimeoutError'
+ * ) {
+ *   console.error('Resize timed out');
+ * }
+ * ```
+ */
 export class DurableAttemptTimeoutError extends Error {
   constructor(operation: string, timeoutMs: number) {
     super(`Durable operation "${operation}" timed out after ${timeoutMs}ms`);
@@ -227,6 +426,19 @@ export class DurableAttemptTimeoutError extends Error {
   }
 }
 
+/**
+ * Error thrown when an idempotency key is reused for another operation.
+ *
+ * A call ID permanently identifies its original operation so `getResult` cannot
+ * return a value with the wrong inferred type.
+ *
+ * @example
+ * ```ts
+ * await durability.resizeImage({ id: 'job:1', payload: resizeInput });
+ * await durability.sendEmail({ id: 'job:1', payload: emailInput });
+ * // Throws DuplicateDurableCallError because job:1 belongs to resizeImage.
+ * ```
+ */
 export class DuplicateDurableCallError extends Error {
   constructor(
     id: string,
@@ -240,30 +452,64 @@ export class DuplicateDurableCallError extends Error {
   }
 }
 
+/**
+ * Creates typed, alarm-backed durable methods from an operation handler map.
+ *
+ * Registered calls persist before execution and are deduplicated by their IDs.
+ * Generated methods resolve after registration; read handler results with each
+ * method's `getResult` function.
+ *
+ * The Durable Object class must use SQLite storage, and its `alarm` method must
+ * delegate to the returned alarm handler. External side effects should use the
+ * call ID as an idempotency key because a crash can occur after a side effect but
+ * before the completion record commits.
+ *
+ * @example
+ * ```ts
+ * class ImageJobs extends DurableObject<Env> {
+ *   private readonly durability = createDurability(this.ctx, {
+ *     resizeImage: async ({ id, payload, signal }) =>
+ *       this.env.IMAGES.resize(payload.imageId, {
+ *         idempotencyKey: id,
+ *         signal,
+ *       }),
+ *   });
+ *
+ *   resize(imageId: string) {
+ *     return this.durability.resizeImage({
+ *       id: `resize:${imageId}`,
+ *       payload: { imageId },
+ *     });
+ *   }
+ *
+ *   alarm(info: AlarmInvocationInfo) {
+ *     return this.durability.alarm(info);
+ *   }
+ * }
+ * ```
+ *
+ * @param context Durable Object context containing SQLite-backed storage.
+ * @param handlers Operation handlers keyed by their public method names.
+ * @param options Concurrency, timeout, and retry policy configuration.
+ */
 export const createDurability = <Handlers extends HandlerMap>(
   context: Pick<DurableObjectState, 'storage'>,
   handlers: Handlers,
   options: DurabilityOptions<Handlers> = {}
-) => {
+): Durability<Handlers> => {
   migrateDurability(context);
   const qb = new DOQB(context.storage.sql);
 
   const active = new Map<string, Promise<unknown>>();
   const alarmConcurrency = options.alarmConcurrency ?? 10;
   const alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
-  const backgroundConcurrency = options.backgroundConcurrency ?? 10;
   const defaultAttemptTimeoutMs = options.attemptTimeoutMs ?? 5 * 60_000;
   const defaultRetryDelay =
     options.retries?.delay ??
-    options.retryDelay ??
-    ((attempt: number) => Math.min(1_000 * 2 ** (attempt - 1), 300_000));
-  const defaultRetryJitter = options.retries?.jitter ?? 'equal';
+    ((attempt: number) => jitter(exponential(attempt)));
   const defaultMaxAttempts = options.retries?.maxAttempts ?? 5;
   if (!Number.isInteger(alarmConcurrency) || alarmConcurrency < 1) {
     throw new RangeError('alarmConcurrency must be a positive integer');
-  }
-  if (!Number.isInteger(backgroundConcurrency) || backgroundConcurrency < 1) {
-    throw new RangeError('backgroundConcurrency must be a positive integer');
   }
   if (
     !Number.isInteger(defaultAttemptTimeoutMs) ||
@@ -273,9 +519,6 @@ export const createDurability = <Handlers extends HandlerMap>(
   }
   if (!Number.isInteger(defaultMaxAttempts) || defaultMaxAttempts < 1) {
     throw new RangeError('retries.maxAttempts must be a positive integer');
-  }
-  if (!['none', 'equal', 'full'].includes(defaultRetryJitter)) {
-    throw new RangeError('retries.jitter must be none, equal, or full');
   }
 
   const methodOptions = (options.methods ?? {}) as Record<
@@ -301,14 +544,6 @@ export const createDurability = <Handlers extends HandlerMap>(
         `methods.${operation}.retries.maxAttempts must be a positive integer`
       );
     }
-    if (
-      method?.retries?.jitter !== undefined &&
-      !['none', 'equal', 'full'].includes(method.retries.jitter)
-    ) {
-      throw new RangeError(
-        `methods.${operation}.retries.jitter must be none, equal, or full`
-      );
-    }
   }
 
   const executionPolicy = (operation: string) => {
@@ -316,7 +551,6 @@ export const createDurability = <Handlers extends HandlerMap>(
     return {
       attemptTimeoutMs: method?.attemptTimeoutMs ?? defaultAttemptTimeoutMs,
       delay: method?.retries?.delay ?? defaultRetryDelay,
-      jitter: method?.retries?.jitter ?? defaultRetryJitter,
       maxAttempts: method?.retries?.maxAttempts ?? defaultMaxAttempts,
     };
   };
@@ -361,7 +595,6 @@ export const createDurability = <Handlers extends HandlerMap>(
 
   const getResult = (
     operation: string,
-    executionMode: CallRow['execution_mode'],
     idempotencyKey: string
   ): DurableOperationResult<unknown> => {
     const call = getCall(idempotencyKey);
@@ -369,11 +602,6 @@ export const createDurability = <Handlers extends HandlerMap>(
       return { status: 'not_found' };
     }
     assertOperation(idempotencyKey, call.operation, operation);
-    if (call.execution_mode !== executionMode) {
-      throw new Error(
-        `Durable call "${idempotencyKey}" belongs to ${call.execution_mode} execution, not ${executionMode}`
-      );
-    }
     if (call.status === 'pending') {
       return {
         status: 'pending',
@@ -400,42 +628,21 @@ export const createDurability = <Handlers extends HandlerMap>(
     return { status: 'completed', result: deserialize(call.result) };
   };
 
-  const listDueIds = (
-    executionMode: CallRow['execution_mode'],
-    now: number,
-    limit: number
-  ): string[] =>
+  const listDueIds = (now: number, limit: number): string[] =>
     (
       qb
         .fetchAll<Pick<CallRow, 'id'>>({
           tableName,
           fields: 'id',
           where: {
-            conditions:
-              "status = 'pending' AND execution_mode = ? AND next_attempt_at <= ?",
-            params: [executionMode, now],
+            conditions: "status = 'pending' AND next_attempt_at <= ?",
+            params: [now],
           },
           orderBy: 'next_attempt_at ASC',
           limit,
         })
         .execute().results ?? []
     ).map((call) => call.id);
-
-  const hasDue = (
-    executionMode: CallRow['execution_mode'],
-    now: number
-  ): boolean =>
-    qb
-      .fetchOne<Pick<CallRow, 'id'>>({
-        tableName,
-        fields: 'id',
-        where: {
-          conditions:
-            "status = 'pending' AND execution_mode = ? AND next_attempt_at <= ?",
-          params: [executionMode, now],
-        },
-      })
-      .execute().results !== undefined;
 
   const getNextPendingAt = (): number | undefined =>
     qb
@@ -594,13 +801,7 @@ export const createDurability = <Handlers extends HandlerMap>(
             `Retry delay for operation "${call.operation}" must be a non-negative finite number`
           );
         }
-        const jitteredDelay =
-          terminal || policy.jitter === 'none'
-            ? baseDelay
-            : policy.jitter === 'full'
-              ? Math.random() * baseDelay
-              : baseDelay / 2 + Math.random() * (baseDelay / 2);
-        const nextAttemptAt = Date.now() + Math.round(jitteredDelay);
+        const nextAttemptAt = Date.now() + Math.round(baseDelay);
         await context.storage.transaction(async (transaction) => {
           qb.update({
             tableName,
@@ -631,50 +832,14 @@ export const createDurability = <Handlers extends HandlerMap>(
     return execution;
   };
 
-  let backgroundBatch: Promise<void> | undefined;
-  const scheduleBackground = (): Promise<void> => {
-    if (backgroundBatch) {
-      return backgroundBatch;
-    }
-
-    backgroundBatch = new Promise<void>((resolve) => {
-      setTimeout(async () => {
-        const due = listDueIds('background', Date.now(), 100);
-
-        await runConcurrent(due, backgroundConcurrency, async (id) => {
-          try {
-            await execute(id);
-          } catch {
-            return;
-          }
-        });
-        await scheduleNextAlarm();
-        backgroundBatch = undefined;
-        resolve();
-
-        const moreDue = hasDue('background', Date.now());
-        if (moreDue) {
-          void scheduleBackground();
-        }
-      }, 0);
-    });
-    return backgroundBatch;
-  };
-
   const run = async (input: {
     id: string;
     operation: string;
     payload: unknown;
-    executionMode: CallRow['execution_mode'];
   }): Promise<void> => {
     const existing = getCall(input.id);
     if (existing) {
       assertOperation(input.id, existing.operation, input.operation);
-      if (existing.execution_mode !== input.executionMode) {
-        throw new Error(
-          `Durable call "${input.id}" belongs to ${existing.execution_mode} execution, not ${input.executionMode}`
-        );
-      }
       if (existing.status === 'completed' || existing.status === 'failed') {
         return;
       }
@@ -695,7 +860,6 @@ export const createDurability = <Handlers extends HandlerMap>(
             status: 'pending',
             attempt: 0,
             next_attempt_at: now,
-            execution_mode: input.executionMode,
           },
         }).execute();
         if ((await transaction.getAlarm()) === null) {
@@ -704,40 +868,31 @@ export const createDurability = <Handlers extends HandlerMap>(
       });
     }
 
-    const execution =
-      input.executionMode === 'background'
-        ? scheduleBackground()
-        : execute(input.id);
+    const execution = execute(input.id);
     void execution.then(() => scheduleNextAlarm()).catch(() => undefined);
   };
 
   const alarm = async (_alarmInfo?: AlarmInvocationInfo): Promise<void> => {
     const startedAt = Date.now();
-    const immediate = listDueIds('immediate', startedAt, 100);
-    const hasBackground = hasDue('background', startedAt);
-    if (immediate.length === 0 && !hasBackground) {
+    const due = listDueIds(startedAt, 100);
+    if (due.length === 0) {
       await scheduleNextAlarm();
       return;
     }
 
-    const executions: Promise<void>[] = [
-      runConcurrent(immediate, alarmConcurrency, async (id) => {
-        try {
-          await execute(id);
-        } catch {
-          return;
-        }
-      }),
-    ];
-    if (hasBackground) {
-      executions.push(scheduleBackground());
-    }
+    const execution = runConcurrent(due, alarmConcurrency, async (id) => {
+      try {
+        await execute(id);
+      } catch {
+        return;
+      }
+    });
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const handoff = Symbol('alarm handoff');
     const remaining = alarmHandoffMs - (Date.now() - startedAt);
     const result = await Promise.race([
-      Promise.allSettled(executions),
+      execution,
       new Promise<typeof handoff>((resolve) => {
         timeout = setTimeout(() => resolve(handoff), Math.max(remaining, 0));
       }),
@@ -753,25 +908,18 @@ export const createDurability = <Handlers extends HandlerMap>(
     await scheduleNextAlarm();
   };
 
-  const background: Record<string, unknown> = {};
-  const durability: Record<string, unknown> = { alarm, background };
+  const durability: Record<string, unknown> = { alarm };
   for (const operation of Object.keys(handlers) as (keyof Handlers &
     string)[]) {
-    if (operation === 'alarm' || operation === 'background') {
+    if (operation === 'alarm') {
       throw new Error(`"${operation}" is reserved by durability`);
     }
 
     const durableOperation = (input: { id: string; payload: unknown }) =>
-      run({ ...input, operation, executionMode: 'immediate' });
+      run({ ...input, operation });
     durableOperation.getResult = async (idempotencyKey: string) =>
-      getResult(operation, 'immediate', idempotencyKey);
+      getResult(operation, idempotencyKey);
     durability[operation] = durableOperation;
-
-    const backgroundOperation = (input: { id: string; payload: unknown }) =>
-      run({ ...input, operation, executionMode: 'background' });
-    backgroundOperation.getResult = async (idempotencyKey: string) =>
-      getResult(operation, 'background', idempotencyKey);
-    background[operation] = backgroundOperation;
   }
 
   return durability as Durability<Handlers>;

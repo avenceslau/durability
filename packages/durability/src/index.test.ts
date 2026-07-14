@@ -4,9 +4,10 @@ import {
   createDurability,
   DuplicateDurableCallError,
   migrateDurability,
-  NonRetryableError,
+  NonRetryableError as DurabilityNonRetryableError,
   type DurableCall,
 } from './index';
+import { exponential, jitter } from './utils';
 
 class NodeSqlStorage {
   private readonly database = new DatabaseSync(':memory:');
@@ -42,7 +43,6 @@ class FakeStorage {
   readonly sql = new NodeSqlStorage() as unknown as SqlStorage;
   alarmAt: number | null = null;
   alarmSetupBarrier?: Promise<void>;
-  setAlarmCalls = 0;
   private transactionTail = Promise.resolve();
 
   async getAlarm(): Promise<number | null> {
@@ -50,7 +50,6 @@ class FakeStorage {
   }
 
   async setAlarm(timestamp: number | Date): Promise<void> {
-    this.setAlarmCalls += 1;
     this.alarmAt = timestamp instanceof Date ? timestamp.getTime() : timestamp;
     await this.alarmSetupBarrier;
   }
@@ -91,18 +90,12 @@ describe('migrateDurability', () => {
       applied: [
         'durability_0001_create_calls',
         'durability_0002_pending_index',
-        'durability_0003_execution_mode',
-        'durability_0004_pending_mode_index',
       ],
       rolledBack: [],
     });
     expect(migrateDurability(context, 'durability_0001_create_calls')).toEqual({
       applied: [],
-      rolledBack: [
-        'durability_0004_pending_mode_index',
-        'durability_0003_execution_mode',
-        'durability_0002_pending_index',
-      ],
+      rolledBack: ['durability_0002_pending_index'],
     });
     expect(migrateDurability(context, null)).toEqual({
       applied: [],
@@ -112,8 +105,6 @@ describe('migrateDurability', () => {
       applied: [
         'durability_0001_create_calls',
         'durability_0002_pending_index',
-        'durability_0003_execution_mode',
-        'durability_0004_pending_mode_index',
       ],
       rolledBack: [],
     });
@@ -188,7 +179,7 @@ describe('createDurability', () => {
     const durability = createDurability(
       contextFor(storage),
       { deliver: handler },
-      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
+      { retries: { delay: () => 1_000 } }
     );
 
     const retryAt = Date.now() + 1_000;
@@ -228,7 +219,7 @@ describe('createDurability', () => {
           throw new Error('offline');
         },
       },
-      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
+      { retries: { delay: () => 1_000 } }
     );
 
     const retryAt = Date.now() + 1_000;
@@ -248,7 +239,7 @@ describe('createDurability', () => {
     const recovered = createDurability(
       contextFor(storage),
       { send: recoveredHandler },
-      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
+      { retries: { delay: () => 1_000 } }
     );
     vi.advanceTimersByTime(1_000);
 
@@ -263,79 +254,6 @@ describe('createDurability', () => {
         signal: expect.any(AbortSignal),
       })
     );
-  });
-
-  it('runs background batches inside one timer with bounded concurrency', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
-    const storage = new FakeStorage();
-    let active = 0;
-    let maxActive = 0;
-    const handler = vi.fn(async ({ id }: DurableCall<null>) => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      active -= 1;
-      return id;
-    });
-    const durability = createDurability(
-      contextFor(storage),
-      { work: handler },
-      { backgroundConcurrency: 2 }
-    );
-
-    await Promise.all(
-      Array.from({ length: 5 }, (_, index) =>
-        durability.background.work({ id: `background:${index}`, payload: null })
-      )
-    );
-
-    expect(handler).not.toHaveBeenCalled();
-    expect(storage.setAlarmCalls).toBe(1);
-    await vi.advanceTimersByTimeAsync(50);
-
-    expect(handler).toHaveBeenCalledTimes(5);
-    expect(maxActive).toBe(2);
-    await expect(
-      durability.background.work.getResult('background:4')
-    ).resolves.toEqual({ status: 'completed', result: 'background:4' });
-  });
-
-  it('runs at most 100 background calls in each timer callback', async () => {
-    const callbacks = new Map<number, () => Promise<void>>();
-    let nextTimer = 0;
-    vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback) => {
-      nextTimer += 1;
-      callbacks.set(nextTimer, callback as () => Promise<void>);
-      return nextTimer as unknown as ReturnType<typeof setTimeout>;
-    });
-    vi.spyOn(globalThis, 'clearTimeout').mockImplementation((timer) => {
-      callbacks.delete(timer as unknown as number);
-    });
-    const runNextTimer = async () => {
-      const next = callbacks.entries().next().value;
-      if (!next) {
-        return;
-      }
-      const [timer, callback] = next;
-      callbacks.delete(timer);
-      await callback();
-    };
-    const storage = new FakeStorage();
-    const handler = vi.fn(async ({ id }: DurableCall<null>) => id);
-    const durability = createDurability(contextFor(storage), { work: handler });
-
-    await Promise.all(
-      Array.from({ length: 101 }, (_, index) =>
-        durability.background.work({ id: `batch:${index}`, payload: null })
-      )
-    );
-    await runNextTimer();
-
-    expect(handler).toHaveBeenCalledTimes(100);
-    expect(callbacks.size).toBe(1);
-    await runNextTimer();
-    expect(handler).toHaveBeenCalledTimes(101);
   });
 
   it('bounds alarm batches and concurrency', async () => {
@@ -357,8 +275,8 @@ describe('createDurability', () => {
     for (let index = 0; index < 101; index += 1) {
       storage.sql.exec(
         `INSERT INTO durability_calls
-          (id, operation, payload, status, attempt, next_attempt_at, execution_mode)
-          VALUES (?, 'work', ?, 'pending', 0, 0, 'immediate')`,
+          (id, operation, payload, status, attempt, next_attempt_at)
+          VALUES (?, 'work', ?, 'pending', 0, 0)`,
         `alarm:${index}`,
         JSON.stringify({ kind: 'value', value: null })
       );
@@ -386,7 +304,7 @@ describe('createDurability', () => {
           throw new Error('retry from alarm');
         },
       },
-      { retryDelay: () => 1_000, retries: { jitter: 'none' } }
+      { retries: { delay: () => 1_000 } }
     );
 
     const retryAt = Date.now() + 1_000;
@@ -440,10 +358,14 @@ describe('createDurability', () => {
     expect(storage.alarmAt).toBeNull();
   });
 
-  it('applies default retry jitter and per-method attempt limits', async () => {
+  it('uses delay helpers and applies per-method attempt limits', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    expect(exponential(1)).toBe(1_000);
+    expect(exponential(10)).toBe(300_000);
+    expect(jitter(1_000)).toBe(750);
+
     const storage = new FakeStorage();
     const durability = createDurability(
       contextFor(storage),
@@ -456,7 +378,9 @@ describe('createDurability', () => {
         },
       },
       {
-        retryDelay: () => 1_000,
+        retries: {
+          delay: (attempt) => jitter(exponential(attempt)),
+        },
         methods: { terminal: { retries: { maxAttempts: 1 } } },
       }
     );
@@ -491,7 +415,7 @@ describe('createDurability', () => {
           await new Promise(() => undefined);
         },
         rejected: async (_call: DurableCall<null>) => {
-          throw new NonRetryableError('invalid recipient');
+          throw new DurabilityNonRetryableError('invalid recipient');
         },
         workflowRejected: async (_call: DurableCall<null>) => {
           throw new WorkflowNonRetryableError('invalid workflow input');

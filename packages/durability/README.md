@@ -53,30 +53,6 @@ migrateDurability(this.ctx, null); // roll back every durability migration
 
 Passing a migration name moves the schema to that exact version, applying or reverting migrations as needed. Payloads and results must be JSON-serializable.
 
-## Background batches and concurrency
-
-The same typed handlers can be queued for timer-based background execution:
-
-```ts
-const durability = createDurability(this.ctx, handlers, {
-  backgroundConcurrency: 20,
-  alarmConcurrency: 10,
-});
-
-await durability.background.resizeImage({
-  id: `resize:${imageId}`,
-  payload: { imageId },
-});
-```
-
-Each durability instance keeps at most one background timer active. A timer callback claims at most 100 due calls and runs them with `backgroundConcurrency`. Additional calls receive another timer callback. Each alarm invocation also claims at most 100 immediate calls and runs them with `alarmConcurrency`; background calls recovered by an alarm continue through the timer pool.
-
-Background results use the same operation-level API:
-
-```ts
-await durability.background.resizeImage.getResult(`resize:${imageId}`);
-```
-
 ## Reading results
 
 Results are read through the same typed operation using its idempotency key:
@@ -103,19 +79,24 @@ The completed result type is inferred from the operation handler. Looking up a k
 
 ## Retries, timeouts, and terminal failures
 
-Attempts use exponential backoff with equal jitter, stop after five attempts, and time out after five minutes by default. Defaults can be overridden globally and per operation:
+Attempts use exponential backoff with equal jitter, stop after five attempts, and time out after five minutes by default. The retry `delay` function fully controls scheduling and can be overridden globally or per operation. The package exports the default delay building blocks for custom policies:
 
 ```ts
+import { exponential, jitter } from '@repo/durability/utils';
+
 const durability = createDurability(this.ctx, handlers, {
   attemptTimeoutMs: 60_000,
   retries: {
     maxAttempts: 5,
-    jitter: 'equal',
+    delay: (attempt) => jitter(exponential(attempt)),
   },
   methods: {
     resizeImage: {
       attemptTimeoutMs: 10 * 60_000,
-      retries: { maxAttempts: 2, jitter: 'full' },
+      retries: {
+        maxAttempts: 2,
+        delay: (attempt) => exponential(attempt, 500, 30_000),
+      },
     },
   },
 });
