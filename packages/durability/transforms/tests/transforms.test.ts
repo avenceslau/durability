@@ -3,6 +3,8 @@ import type { Result as BetterResult } from 'better-result';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   CallerTimeoutError,
+  LargeObjectDecodeLimitError,
+  LargeObjectValidationError,
   abortAsSuccess,
   applyTransforms,
   betterResultCodec,
@@ -21,6 +23,10 @@ class ResultService {
 
   async plain() {
     return 'plain';
+  }
+
+  async domainStatus() {
+    return { status: 'ok' as const, detail: 'ordinary value' };
   }
 }
 
@@ -81,6 +87,26 @@ describe('built-in transforms', () => {
     expect(Result.isOk(result)).toBe(true);
     expect(Result.unwrap(result)).toBe(42);
     await expect(service.plain()).resolves.toBe('plain');
+    await expect(service.domainStatus()).resolves.toEqual({
+      status: 'ok',
+      detail: 'ordinary value',
+    });
+  });
+
+  it('decodes legacy Better Result payloads only when requested', async () => {
+    const service = createTransformStub({
+      read: async () => ({ status: 'ok' as const, value: 42 }),
+    });
+
+    await expect(service.with(betterResultCodec).read()).resolves.toEqual({
+      status: 'ok',
+      value: 42,
+    });
+    const legacy = await service
+      .with(betterResultCodec, { acceptLegacy: true })
+      .read();
+    expect(Result.isOk(legacy)).toBe(true);
+    expect(Result.unwrap(legacy)).toBe(42);
   });
 
   it('times out caller operations', async () => {
@@ -130,6 +156,71 @@ describe('built-in transforms', () => {
     await expect(service.value('x'.repeat(64))).resolves.toEqual({
       payload: 'x'.repeat(64),
     });
+    await expect(new Response(await service.stream()).text()).resolves.toBe(
+      'original stream'
+    );
+  });
+
+  it('bounds and validates streamed object decoding', async () => {
+    const service = createTransformStub(new LargeObjectService()).with(
+      largeObjectStream,
+      { maxDecodeBytes: 32 }
+    );
+    await expect(service.value('x'.repeat(64))).rejects.toBeInstanceOf(
+      LargeObjectDecodeLimitError
+    );
+
+    const validated = createTransformStub(new LargeObjectService()).with(
+      largeObjectStream,
+      {
+        maxDecodeBytes: 1_024,
+        schema: {
+          '~standard': {
+            version: 1,
+            vendor: 'test',
+            validate(value) {
+              return typeof value === 'object' && value !== null
+                ? { value }
+                : { issues: [{ message: 'Expected object' }] };
+            },
+          },
+        },
+      }
+    );
+    await expect(validated.value('x'.repeat(64))).resolves.toEqual({
+      payload: 'x'.repeat(64),
+    });
+
+    const rejected = createTransformStub(new LargeObjectService()).with(
+      largeObjectStream,
+      {
+        schema: {
+          '~standard': {
+            version: 1,
+            vendor: 'test',
+            validate: () => ({ issues: [{ message: 'Rejected' }] }),
+          },
+        },
+      }
+    );
+    await expect(rejected.value('x'.repeat(64))).rejects.toBeInstanceOf(
+      LargeObjectValidationError
+    );
+  });
+
+  it('preserves native streams at the minimum threshold', async () => {
+    class MinimumThresholdService extends LargeObjectService {}
+    applyTransforms(MinimumThresholdService, {
+      all: [
+        registerTransform(largeObjectStream, {
+          thresholdBytes: 1,
+        }),
+      ],
+    });
+
+    const service = createTransformStub(new MinimumThresholdService()).with(
+      largeObjectStream
+    );
     await expect(new Response(await service.stream()).text()).resolves.toBe(
       'original stream'
     );
@@ -194,11 +285,36 @@ describe('built-in transforms', () => {
     });
   });
 
+  it('uses jittered exponential delay by default', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const operation = vi
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(new Error('temporary'))
+        .mockResolvedValue('done');
+      const service = createTransformStub({ operation }).with(retry, {
+        retries: 1,
+      });
+
+      const result = service.operation();
+      await vi.advanceTimersByTimeAsync(49);
+      expect(operation).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toBe('done');
+      expect(operation).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves the final retry error', async () => {
     const failure = new Error('still unavailable');
     const operation = vi.fn<() => Promise<string>>().mockRejectedValue(failure);
     const service = createTransformStub({ operation }).with(retry, {
       retries: 1,
+      delay: () => 0,
     });
 
     await expect(service.operation()).rejects.toBe(failure);

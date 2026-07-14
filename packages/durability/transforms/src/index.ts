@@ -1,22 +1,69 @@
 import { RpcTarget } from 'cloudflare:workers';
-import { Result, ResultDeserializationError } from 'better-result';
+import type { StandardSchemaV1 } from '@standard-schema/spec';
+import { Err, Ok, Result, ResultDeserializationError } from 'better-result';
 import type { Result as BetterResult } from 'better-result';
 
 type AsyncMethod = (...args: never[]) => Promise<unknown>;
 
-type AsyncMethodKey<TTarget extends object> = {
-  [TKey in keyof TTarget]-?: TTarget[TKey] extends AsyncMethod ? TKey : never;
-}[keyof TTarget] &
-  string;
+type ReservedRpcMethod =
+  | 'alarm'
+  | 'connect'
+  | 'email'
+  | 'fetch'
+  | 'queue'
+  | 'scheduled'
+  | 'setContext'
+  | 'tail'
+  | 'tailStream'
+  | 'test'
+  | 'trace'
+  | 'webSocketClose'
+  | 'webSocketError'
+  | 'webSocketMessage';
+
+const platformPrototypeNames = new Set([
+  'DurableObject',
+  'Object',
+  'RpcTarget',
+  'WorkerEntrypoint',
+]);
+
+const reservedRpcMethods = new Set<string>([
+  'alarm',
+  'connect',
+  'email',
+  'fetch',
+  'queue',
+  'scheduled',
+  'setContext',
+  'tail',
+  'tailStream',
+  'test',
+  'trace',
+  'webSocketClose',
+  'webSocketError',
+  'webSocketMessage',
+]);
+
+type AsyncMethodKey<TTarget extends object> = Exclude<
+  {
+    [TKey in keyof TTarget]-?: TTarget[TKey] extends AsyncMethod ? TKey : never;
+  }[keyof TTarget] &
+    string,
+  ReservedRpcMethod
+>;
 
 /**
  * Metadata accumulated by caller transforms and optionally sent across RPC.
  *
  * Context is shallow-merged as each transform calls `next`. If the final context
  * is non-empty, the target must expose `setContext` and every value must be
- * supported by Cloudflare RPC serialization.
+ * supported by Cloudflare RPC serialization. Context is untrusted caller input;
+ * never use it directly as proof of identity, tenancy, roles, or authorization.
  */
 export type TransformContext = Record<string, unknown>;
+
+type EmptyTransformContext = Record<never, never>;
 
 /** Values a transform can add or replace before invoking the next transform. */
 export type TransformNextInput<TContext extends TransformContext> = {
@@ -140,13 +187,21 @@ type TransformContextOf<TTransform> = TTransform extends {
     ? TContext
     : never;
 
+type TransformContextInvoker = {
+  invoke(method: string, args: unknown[]): Promise<unknown>;
+};
+
 type RequireSetContext<TTarget, TTransform> =
   keyof TransformContextOf<TTransform> extends never
     ? unknown
     : TTarget extends {
-          setContext(context: TransformContextOf<TTransform>): unknown;
+          setContext(
+            context: TransformContextOf<TTransform>
+          ): infer ContextTarget;
         }
-      ? unknown
+      ? Awaited<ContextTarget> extends TransformContextInvoker
+        ? unknown
+        : { readonly setContextMustReturnTransformTarget: never }
       : { readonly setContextRequired: never };
 
 type TransformBuilder<
@@ -202,7 +257,7 @@ type TransformBuilder<
  */
 export function defineTransform<
   TTarget extends object,
-  TContext extends TransformContext = TransformContext,
+  TContext extends TransformContext = EmptyTransformContext,
 >(): TransformBuilder<TTarget, TContext> {
   return {
     caller(callerFactory) {
@@ -365,9 +420,17 @@ export function createTransformStub<TTarget extends object>(
             throw new TypeError('Transform does not define a caller');
           }
 
+          const configured = transform.callerFactory(options);
+          if (typeof configured !== 'function') {
+            throw new TypeError(
+              'Caller transform factory must return a function'
+            );
+          }
+
           return createTransformStub(target, [
             ...transforms,
-            transform.callerFactory(options) as ConfiguredCallerTransform,
+            (context) =>
+              Promise.resolve(Reflect.apply(configured, undefined, [context])),
           ]);
         };
       }
@@ -401,14 +464,28 @@ export function createTransformStub<TTarget extends object>(
               );
             }
 
-            const contextualTarget = (
-              stub as {
-                setContext(context: TransformContext): {
-                  invoke(method: string, args: unknown[]): Promise<unknown>;
-                };
-              }
-            ).setContext(context);
-            return contextualTarget.invoke(property, initialArgs);
+            const contextualTarget: unknown = Reflect.apply(setContext, stub, [
+              context,
+            ]);
+            if (
+              (typeof contextualTarget !== 'object' &&
+                typeof contextualTarget !== 'function') ||
+              contextualTarget === null
+            ) {
+              throw new TypeError(
+                'setContext must return a transform context target'
+              );
+            }
+            const invoke = Reflect.get(contextualTarget, 'invoke');
+            if (typeof invoke !== 'function') {
+              throw new TypeError(
+                'setContext must return a target with an invoke method'
+              );
+            }
+            return Reflect.apply(invoke, contextualTarget, [
+              property,
+              initialArgs,
+            ]);
           }
 
           return transform({
@@ -484,13 +561,28 @@ function dispatchWithContext(
   args: unknown[],
   context: TransformContext
 ): Promise<unknown> {
-  const state = installedTransforms.get(Object.getPrototypeOf(instance));
-  const original = state?.originals.get(method);
-  if (!state || !original) {
+  if (reservedRpcMethods.has(method)) {
+    throw new TypeError(`Cannot dispatch reserved method ${method}`);
+  }
+
+  const states: InstalledTransforms[] = [];
+  let currentPrototype: object | null = Object.getPrototypeOf(instance);
+  while (currentPrototype) {
+    const state = installedTransforms.get(currentPrototype);
+    if (state?.originals.has(method)) {
+      states.push(state);
+    }
+    currentPrototype = Object.getPrototypeOf(currentPrototype);
+  }
+
+  const original = states[0]?.originals.get(method);
+  if (!original) {
     throw new TypeError(`Unable to dispatch ${method}`);
   }
 
-  const transforms = [...state.all, ...(state.methods.get(method) ?? [])];
+  const transforms = [...states]
+    .reverse()
+    .flatMap((state) => [...state.all, ...(state.methods.get(method) ?? [])]);
   const run = (
     index: number,
     currentContext: TransformContext
@@ -500,19 +592,20 @@ function dispatchWithContext(
       return Promise.resolve(original.apply(instance, args));
     }
 
-    const target = instance as Record<string, unknown>;
     return transform({
       instance,
       method,
       args,
       context: currentContext,
-      env: target.env,
-      state: target.ctx,
+      env: Reflect.get(instance, 'env'),
+      state: Reflect.get(instance, 'ctx'),
       next: (input) =>
-        run(index + 1, {
-          ...currentContext,
-          ...input?.context,
-        }),
+        run(
+          index + 1,
+          input?.context
+            ? { ...currentContext, ...input.context }
+            : currentContext
+        ),
     });
   };
 
@@ -617,14 +710,6 @@ type ValidateMethodTransforms<
     : never;
 };
 
-type RuntimeCalleeRegistration = {
-  readonly type: 'registered-do-transform';
-  readonly transform: TransformIdentity & {
-    calleeFactory?: (options: unknown) => unknown;
-  };
-  readonly options: unknown;
-};
-
 /**
  * Installs callee transforms on a Durable Object or WorkerEntrypoint class.
  *
@@ -666,17 +751,54 @@ export function applyTransforms<
     };
     installedTransforms.set(prototype, installed);
 
-    for (const method of Object.getOwnPropertyNames(prototype)) {
-      if (method === 'constructor' || method === 'setContext') {
-        continue;
+    const methods = new Map<
+      string,
+      {
+        descriptor: PropertyDescriptor;
+        original: (...args: unknown[]) => unknown;
+      }
+    >();
+    let currentPrototype: object | null = prototype;
+    while (currentPrototype) {
+      const constructorValue = Reflect.get(currentPrototype, 'constructor');
+      const constructorName =
+        typeof constructorValue === 'function'
+          ? constructorValue.name
+          : undefined;
+      if (
+        currentPrototype !== prototype &&
+        constructorName !== undefined &&
+        platformPrototypeNames.has(constructorName)
+      ) {
+        break;
       }
 
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, method);
-      if (!descriptor || typeof descriptor.value !== 'function') {
-        continue;
-      }
+      const inheritedState = installedTransforms.get(currentPrototype);
+      for (const method of Object.getOwnPropertyNames(currentPrototype)) {
+        if (methods.has(method) || reservedRpcMethods.has(method)) {
+          continue;
+        }
 
-      installed.originals.set(method, descriptor.value);
+        const descriptor = Object.getOwnPropertyDescriptor(
+          currentPrototype,
+          method
+        );
+        const inheritedOriginal = inheritedState?.originals.get(method);
+        const candidate = inheritedOriginal ?? descriptor?.value;
+        if (
+          !descriptor ||
+          typeof candidate !== 'function' ||
+          (!inheritedOriginal && candidate.constructor.name !== 'AsyncFunction')
+        ) {
+          continue;
+        }
+        methods.set(method, { descriptor, original: candidate });
+      }
+      currentPrototype = Object.getPrototypeOf(currentPrototype);
+    }
+
+    for (const [method, { descriptor, original }] of methods) {
+      installed.originals.set(method, original);
       Object.defineProperty(prototype, method, {
         ...descriptor,
         value: function (this: object, ...args: unknown[]) {
@@ -686,18 +808,29 @@ export function applyTransforms<
     }
   }
 
-  const configure = ({ transform, options }: RuntimeCalleeRegistration) => {
-    if (!transform.calleeFactory) {
+  const configure = (registration: unknown): ConfiguredCalleeTransform => {
+    if (typeof registration !== 'object' || registration === null) {
+      throw new TypeError('Invalid transform registration');
+    }
+    const transform = Reflect.get(registration, 'transform');
+    if (typeof transform !== 'object' || transform === null) {
+      throw new TypeError('Invalid transform registration');
+    }
+    const calleeFactory = Reflect.get(transform, 'calleeFactory');
+    if (typeof calleeFactory !== 'function') {
       throw new TypeError('Transform does not define a callee');
     }
-    return transform.calleeFactory(options) as ConfiguredCalleeTransform;
+    const configured: unknown = Reflect.apply(calleeFactory, transform, [
+      Reflect.get(registration, 'options'),
+    ]);
+    if (typeof configured !== 'function') {
+      throw new TypeError('Callee transform factory must return a function');
+    }
+    return (context) =>
+      Promise.resolve(Reflect.apply(configured, undefined, [context]));
   };
 
-  installed.all.push(
-    ...(config.all ?? []).map((registration) =>
-      configure(registration as RuntimeCalleeRegistration)
-    )
-  );
+  installed.all.push(...(config.all ?? []).map(configure));
 
   for (const [method, registrations] of Object.entries(config.methods ?? {})) {
     if (!installed.originals.has(method)) {
@@ -706,24 +839,27 @@ export function applyTransforms<
       );
     }
     const methodTransforms = installed.methods.get(method) ?? [];
-    methodTransforms.push(
-      ...registrations.map((registration) =>
-        configure(registration as RuntimeCalleeRegistration)
-      )
-    );
+    methodTransforms.push(...registrations.map(configure));
     installed.methods.set(method, methodTransforms);
   }
 
   return targetClass;
 }
 
-type EmptyTransformContext = Record<never, never>;
+const betterResultEnvelopeKey = '__durability_transforms_better_result_v1';
+
+/** Caller compatibility options for {@link betterResultCodec}. */
+export type BetterResultCodecOptions = {
+  /** Decode unmarked responses emitted by version 0.1.0. Defaults to false. */
+  acceptLegacy?: boolean;
+};
 
 /**
  * Serializes Better Result values on the callee and rehydrates them on the caller.
  *
- * Register it on the target class and attach it to the caller stub. Values that
- * are not serialized Better Results pass through unchanged.
+ * New responses use a versioned envelope so ordinary domain objects with an
+ * `ok` or `error` status pass through unchanged. Set `acceptLegacy` only while
+ * callers still communicate with version 0.1.0 callees.
  *
  * @example
  * ```ts
@@ -736,31 +872,54 @@ type EmptyTransformContext = Record<never, never>;
  */
 export const betterResultCodec = Object.assign(
   defineTransform<object, EmptyTransformContext>()
-    .caller((_options: void) => async ({ next }) => {
-      const value = await next();
-      const result = Result.deserialize(value);
+    .caller(
+      (options: BetterResultCodecOptions | undefined) =>
+        async ({ next }) => {
+          const value = await next();
+          if (typeof value === 'object' && value !== null) {
+            const envelope = Reflect.get(value, betterResultEnvelopeKey);
+            if (typeof envelope === 'object' && envelope !== null) {
+              if (Reflect.get(envelope, 'version') !== 1) {
+                throw new TypeError(
+                  'Unsupported Better Result envelope version'
+                );
+              }
+              const result = Result.deserialize(
+                Reflect.get(envelope, 'result')
+              );
+              if (
+                Result.isError(result) &&
+                ResultDeserializationError.is(result.error)
+              ) {
+                throw new TypeError('Invalid Better Result envelope');
+              }
+              return result;
+            }
+          }
 
-      if (
-        Result.isError(result) &&
-        ResultDeserializationError.is(result.error)
-      ) {
-        return value;
-      }
-
-      return result;
-    })
+          if (options?.acceptLegacy === true) {
+            const legacy = Result.deserialize(value);
+            if (
+              !Result.isError(legacy) ||
+              !ResultDeserializationError.is(legacy.error)
+            ) {
+              return legacy;
+            }
+          }
+          return value;
+        }
+    )
     .callee((_options: void) => async ({ next }) => {
       const value = await next();
-      if (
-        typeof value !== 'object' ||
-        value === null ||
-        !('status' in value) ||
-        (value.status !== 'ok' && value.status !== 'error')
-      ) {
+      if (!(value instanceof Ok) && !(value instanceof Err)) {
         return value;
       }
 
-      return Result.serialize(value as BetterResult<unknown, unknown>);
+      const serialized = Result.serialize(value);
+      return {
+        ...serialized,
+        [betterResultEnvelopeKey]: { version: 1, result: serialized },
+      };
     }),
   { callerResult: 'better-result-codec' as const }
 );
@@ -875,11 +1034,35 @@ export const abortAsSuccess = Object.assign(
   { callerResult: 'abort-as-success' as const }
 );
 
-/** Configuration for {@link largeObjectStream}. */
+/** Callee configuration for {@link largeObjectStream}. */
 export type LargeObjectStreamOptions = {
   /** Encoded size that switches an object result to streaming. Defaults to 32 MiB. */
   thresholdBytes?: number;
 };
+
+/** Caller configuration for {@link largeObjectStream}. */
+export type LargeObjectStreamCallerOptions = {
+  /** Maximum encoded payload accepted by the caller. Defaults to 64 MiB. */
+  maxDecodeBytes?: number;
+  /** Optional runtime validator for the reconstructed JSON value. */
+  schema?: StandardSchemaV1<unknown, unknown>;
+};
+
+/** Error thrown when a streamed object exceeds the caller's decode limit. */
+export class LargeObjectDecodeLimitError extends Error {
+  constructor(readonly maxDecodeBytes: number) {
+    super(`Large object stream exceeded ${maxDecodeBytes} bytes`);
+    this.name = 'LargeObjectDecodeLimitError';
+  }
+}
+
+/** Error thrown when a streamed object fails runtime schema validation. */
+export class LargeObjectValidationError extends Error {
+  constructor(readonly issues: ReadonlyArray<StandardSchemaV1.Issue>) {
+    super('Large object stream failed schema validation');
+    this.name = 'LargeObjectValidationError';
+  }
+}
 
 const largeObjectStreamHeader = new TextEncoder().encode(
   'do-transforms-large-object-v1'
@@ -890,7 +1073,9 @@ const largeObjectStreamHeader = new TextEncoder().encode(
  *
  * Install the callee side with the desired threshold and attach the caller side
  * to the stub. Existing `ReadableStream` results pass through unchanged. Object
- * values use JSON serialization, so non-JSON values do not round-trip.
+ * values use JSON serialization, so non-JSON values do not round-trip. The
+ * transform bypasses RPC value-size limits but still buffers the complete JSON
+ * representation; use native streams for unbounded data.
  *
  * @example
  * ```ts
@@ -909,66 +1094,104 @@ export const largeObjectStream = defineTransform<
   object,
   EmptyTransformContext
 >()
-  .caller((_options: void) => async ({ next }) => {
-    const value = await next();
-    if (!(value instanceof ReadableStream)) {
-      return value;
-    }
-
-    const reader = value.getReader();
-    const first = await reader.read();
-    const isEncoded =
-      !first.done &&
-      first.value instanceof Uint8Array &&
-      first.value.byteLength >= largeObjectStreamHeader.byteLength &&
-      largeObjectStreamHeader.every(
-        (byte, index) => byte === first.value[index]
-      );
-
-    if (!isEncoded) {
-      let firstPending = true;
-      return new ReadableStream<unknown>({
-        async pull(controller) {
-          const chunk = firstPending ? first : await reader.read();
-          firstPending = false;
-          if (chunk.done) {
-            controller.close();
-          } else {
-            controller.enqueue(chunk.value);
-          }
-        },
-        cancel(reason) {
-          return reader.cancel(reason);
-        },
-      });
-    }
-
-    const decoder = new TextDecoder();
-    let json = decoder.decode(
-      (first.value as Uint8Array).subarray(largeObjectStreamHeader.byteLength),
-      { stream: true }
-    );
-    for (;;) {
-      // eslint-disable-next-line no-await-in-loop -- Stream chunks must be decoded in order.
-      const chunk = await reader.read();
-      if (chunk.done) {
-        json += decoder.decode();
-        break;
-      }
-      json += decoder.decode(chunk.value, { stream: true });
-    }
-
-    return JSON.parse(json) as unknown;
-  })
-  .callee((options: LargeObjectStreamOptions | undefined) => {
-    const thresholdBytes = options?.thresholdBytes ?? 32 * 1024 * 1024;
-    if (!Number.isInteger(thresholdBytes) || thresholdBytes <= 0) {
-      throw new RangeError('thresholdBytes must be a positive integer');
+  .caller((options: LargeObjectStreamCallerOptions | undefined) => {
+    const maxDecodeBytes = options?.maxDecodeBytes ?? 64 * 1024 * 1024;
+    if (!Number.isSafeInteger(maxDecodeBytes) || maxDecodeBytes <= 0) {
+      throw new RangeError('maxDecodeBytes must be a positive safe integer');
     }
 
     return async ({ next }) => {
       const value = await next();
-      if (typeof value !== 'object' || value === null) {
+      if (!(value instanceof ReadableStream)) {
+        return value;
+      }
+
+      const reader = value.getReader();
+      const first = await reader.read();
+      const isEncoded =
+        !first.done &&
+        first.value instanceof Uint8Array &&
+        first.value.byteLength >= largeObjectStreamHeader.byteLength &&
+        largeObjectStreamHeader.every(
+          (byte, index) => byte === first.value[index]
+        );
+
+      if (!isEncoded) {
+        let firstPending = true;
+        return new ReadableStream<unknown>({
+          async pull(controller) {
+            const chunk = firstPending ? first : await reader.read();
+            firstPending = false;
+            if (chunk.done) {
+              controller.close();
+            } else {
+              controller.enqueue(chunk.value);
+            }
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        });
+      }
+
+      const decoder = new TextDecoder('utf-8', { fatal: true });
+      const firstPayload = first.value.subarray(
+        largeObjectStreamHeader.byteLength
+      );
+      let decodedBytes = firstPayload.byteLength;
+      if (decodedBytes > maxDecodeBytes) {
+        const error = new LargeObjectDecodeLimitError(maxDecodeBytes);
+        void reader.cancel(error);
+        throw error;
+      }
+
+      try {
+        let json = decoder.decode(firstPayload, { stream: true });
+        for (;;) {
+          // eslint-disable-next-line no-await-in-loop -- Stream chunks must be decoded in order.
+          const chunk = await reader.read();
+          if (chunk.done) {
+            json += decoder.decode();
+            break;
+          }
+          if (!(chunk.value instanceof Uint8Array)) {
+            throw new TypeError('Large object stream chunks must be bytes');
+          }
+          decodedBytes += chunk.value.byteLength;
+          if (decodedBytes > maxDecodeBytes) {
+            throw new LargeObjectDecodeLimitError(maxDecodeBytes);
+          }
+          json += decoder.decode(chunk.value, { stream: true });
+        }
+
+        const parsed: unknown = JSON.parse(json);
+        if (!options?.schema) {
+          return parsed;
+        }
+        const result = await options.schema['~standard'].validate(parsed);
+        if (result.issues) {
+          throw new LargeObjectValidationError(result.issues);
+        }
+        return result.value;
+      } catch (error) {
+        void reader.cancel(error);
+        throw error;
+      }
+    };
+  })
+  .callee((options: LargeObjectStreamOptions | undefined) => {
+    const thresholdBytes = options?.thresholdBytes ?? 32 * 1024 * 1024;
+    if (!Number.isSafeInteger(thresholdBytes) || thresholdBytes <= 0) {
+      throw new RangeError('thresholdBytes must be a positive safe integer');
+    }
+
+    return async ({ next }) => {
+      const value = await next();
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        value instanceof ReadableStream
+      ) {
         return value;
       }
 
@@ -1051,12 +1274,12 @@ export const retry = defineTransform<object, EmptyTransformContext>().caller(
             throw error;
           }
 
-          const pendingDelay = delay?.({
-            error,
-            attempt: attempt + 1,
-          });
+          const retryAttempt = attempt + 1;
+          const pendingDelay = delay
+            ? delay({ error, attempt: retryAttempt })
+            : Math.random() * Math.min(100 * 2 ** (retryAttempt - 1), 30_000);
           // eslint-disable-next-line no-await-in-loop -- Retry delays may depend on the current failure.
-          const delayMs = (await pendingDelay) ?? 0;
+          const delayMs = await pendingDelay;
           if (!Number.isFinite(delayMs) || delayMs < 0) {
             throw new RangeError(
               'retry delay must be a non-negative finite number'

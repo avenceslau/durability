@@ -2,7 +2,13 @@
   "extends": "@repo/typescript-config/base.json",
   "include": ["src/**/*.ts"],
   "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
     "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
     "strict": true,
     "types": ["@cloudflare/workers-types", "node"]
   }

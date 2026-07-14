@@ -73,6 +73,8 @@ await stub.greet('Ada');
 
 `applyTransforms` mutates the class prototype and is cumulative. Call it once during module initialization, not per request or instance.
 
+Transform context is untrusted caller metadata. It is suitable for request IDs, tracing, and hints, but it must not be accepted as proof of identity, tenancy, roles, or authorization. Derive authorization from independently authenticated data on the callee.
+
 ## Built-in caller transforms
 
 ```ts
@@ -87,14 +89,14 @@ const value = await stub
   .read();
 ```
 
-A caller timeout stops waiting but does not cancel the remote operation. Each retry is a new RPC invocation, so retry only idempotent methods or pass an idempotency key.
+A caller timeout stops waiting but does not cancel the remote operation. Each retry is a new RPC invocation, so retry only idempotent methods or pass an idempotency key. When `delay` is omitted, retries use capped exponential backoff with full jitter.
 
 Other built-ins include:
 
 - `betterResultCodec` to serialize and rehydrate `better-result` values.
 - `errorBoundary` to convert caller-visible throws into Better Result errors.
 - `abortAsSuccess` to treat expected Durable Object resets as successful undefined results.
-- `largeObjectStream` to stream large JSON object results.
+- `largeObjectStream` to transfer large JSON object results. It enforces a caller decode limit and accepts an optional Standard Schema validator, but it still buffers the complete serialized representation; use native streams for unbounded data.
 
 ## Manual wrapping
 

@@ -1,7 +1,13 @@
 {
   "extends": "@repo/typescript-config/base.json",
   "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
     "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
     "types": [
       "@cloudflare/vitest-pool-workers/types",
       "@cloudflare/workers-types",
