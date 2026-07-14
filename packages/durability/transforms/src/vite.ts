@@ -39,6 +39,7 @@ type SyntaxNode = {
   shorthand?: unknown;
   source?: unknown;
   start?: number | null;
+  superClass?: unknown;
   value?: unknown;
   [key: string]: unknown;
 };
@@ -53,6 +54,7 @@ type Binding = {
 type Scope = {
   parent?: Scope;
   bindings: Map<string, Binding>;
+  trustedThisEnv?: boolean;
 };
 
 type NodeRelation = {
@@ -63,6 +65,11 @@ type NodeRelation = {
 const memberExpressionTypes = new Set([
   'MemberExpression',
   'OptionalMemberExpression',
+]);
+const platformEntrypointNames = new Set([
+  'DurableObject',
+  'RpcTarget',
+  'WorkerEntrypoint',
 ]);
 const functionTypes = new Set([
   'ArrowFunctionExpression',
@@ -241,7 +248,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         const localClass =
           binding.script_name === undefined &&
           /^[A-Z_$][\w$]*$/i.test(className)
-            ? `import('${modulePath}').${className}`
+            ? `import(${JSON.stringify(modulePath)}).${className}`
             : undefined;
         return {
           binding: /^[A-Z_$][\w$]*$/i.test(binding.name)
@@ -250,18 +257,24 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           localClass,
         };
       });
-      const serviceTypeEntries = serviceBindings.flatMap((binding) =>
-        binding.service === wrangler.name && binding.entrypoint
-          ? [
-              {
-                binding: /^[A-Z_$][\w$]*$/i.test(binding.binding)
-                  ? binding.binding
-                  : JSON.stringify(binding.binding),
-                entrypoint: binding.entrypoint,
-              },
-            ]
-          : []
-      );
+      const serviceTypeEntries = serviceBindings.flatMap((binding) => {
+        if (binding.service !== wrangler.name || !binding.entrypoint) {
+          return [];
+        }
+        if (!/^[A-Z_$][\w$]*$/i.test(binding.entrypoint)) {
+          throw new TypeError(
+            `Invalid service entrypoint ${JSON.stringify(binding.entrypoint)}`
+          );
+        }
+        return [
+          {
+            binding: /^[A-Z_$][\w$]*$/i.test(binding.binding)
+              ? binding.binding
+              : JSON.stringify(binding.binding),
+            entrypoint: binding.entrypoint,
+          },
+        ];
+      });
       const declarations = (indent: string) =>
         [
           ...durableObjectTypeEntries.map(({ binding, localClass }) =>
@@ -271,7 +284,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           ),
           ...serviceTypeEntries.map(
             ({ binding, entrypoint }) =>
-              `${indent}${binding}: TransformStub<\n${indent}  Service<typeof import('${modulePath}').${entrypoint}>\n${indent}>;`
+              `${indent}${binding}: TransformStub<\n${indent}  Service<typeof import(${JSON.stringify(modulePath)}).${entrypoint}>\n${indent}>;`
           ),
         ].join('\n');
       const durableObjectNamespaceType =
@@ -332,6 +345,38 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           return;
         }
 
+        if (
+          node.type === 'ClassDeclaration' ||
+          node.type === 'ClassExpression'
+        ) {
+          const className = identifierName(syntaxNode(node.id));
+          if (className) {
+            scope.bindings.set(className, {
+              kind: 'other',
+              wrapReferences: false,
+            });
+          }
+          const superName = identifierName(syntaxNode(node.superClass));
+          const classScope: Scope = {
+            parent: scope,
+            bindings: new Map(),
+            trustedThisEnv:
+              superName !== undefined && platformEntrypointNames.has(superName),
+          };
+          for (const [childKey, child] of Object.entries(node)) {
+            if (childKey !== 'type' && childKey !== 'id') {
+              if (Array.isArray(child)) {
+                for (const item of child) {
+                  index(item, classScope, node, childKey);
+                }
+              } else {
+                index(child, classScope, node, childKey);
+              }
+            }
+          }
+          return;
+        }
+
         if (functionTypes.has(node.type)) {
           if (node.type === 'FunctionDeclaration') {
             const name = identifierName(syntaxNode(node.id));
@@ -342,7 +387,11 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
               });
             }
           }
-          const functionScope: Scope = { parent: scope, bindings: new Map() };
+          const functionScope: Scope = {
+            parent: scope,
+            bindings: new Map(),
+            trustedThisEnv: scope.trustedThisEnv ?? false,
+          };
           if (node.type === 'FunctionExpression') {
             const name = identifierName(syntaxNode(node.id));
             if (name) {
@@ -353,13 +402,24 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             }
           }
           const params = Array.isArray(node.params) ? node.params : [];
-          for (const param of params) {
+          const handlerName =
+            node.type === 'FunctionDeclaration'
+              ? identifierName(syntaxNode(node.id))
+              : identifierName(syntaxNode(node.key));
+          const hasWorkerEnvParameter =
+            handlerName !== undefined &&
+            ['email', 'fetch', 'queue', 'scheduled', 'tail'].includes(
+              handlerName
+            );
+          for (const [parameterIndex, param] of params.entries()) {
             for (const identifier of bindingIdentifiers(param)) {
               const name = identifierName(identifier);
               if (name) {
                 functionScope.bindings.set(name, {
                   kind:
-                    syntaxNode(param)?.type === 'Identifier' && name === 'env'
+                    hasWorkerEnvParameter &&
+                    parameterIndex === 1 &&
+                    syntaxNode(param)?.type === 'Identifier'
                       ? 'env'
                       : 'other',
                   wrapReferences: false,
@@ -478,12 +538,25 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         if (!node) {
           return false;
         }
-        if (node.type === 'Identifier' && node.name === 'env') {
+        if (node.type === 'Identifier' && typeof node.name === 'string') {
           return (
-            resolveBinding(nodeScopes.get(node) ?? scope, 'env')?.kind === 'env'
+            resolveBinding(nodeScopes.get(node) ?? scope, node.name)?.kind ===
+            'env'
           );
         }
+        let trustsThisEnv = false;
+        for (
+          let current: Scope | undefined = scope;
+          current;
+          current = current.parent
+        ) {
+          if (current.trustedThisEnv === true) {
+            trustsThisEnv = true;
+            break;
+          }
+        }
         return (
+          trustsThisEnv &&
           memberExpressionTypes.has(node.type) &&
           propertyName(node) === 'env' &&
           unwrapExpression(node.object)?.type === 'ThisExpression'

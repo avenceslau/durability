@@ -185,7 +185,13 @@ const staticStringValue = (node: AstNode | undefined): string | undefined => {
   ) {
     return node.value;
   }
-  if (node.type === 'ParenthesizedExpression') {
+  if (
+    node.type === 'ParenthesizedExpression' ||
+    node.type === 'TSAsExpression' ||
+    node.type === 'TSNonNullExpression' ||
+    node.type === 'TSSatisfiesExpression' ||
+    node.type === 'TSTypeAssertion'
+  ) {
     return staticStringValue(node.expression);
   }
   if (node.type === 'BinaryExpression' && node.operator === '+') {

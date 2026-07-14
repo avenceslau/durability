@@ -5,6 +5,7 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   CallerTimeoutError,
   LargeObjectDecodeLimitError,
+  LargeObjectEncodeLimitError,
   LargeObjectValidationError,
   abortAsSuccess,
   applyTransforms,
@@ -107,13 +108,13 @@ describe('built-in transforms', () => {
       read: async () => ({ status: 'ok' as const, value: 42 }),
     });
 
-    await expect(
-      service.with(betterResultCodec, { acceptLegacy: false }).read()
-    ).resolves.toEqual({
+    await expect(service.with(betterResultCodec).read()).resolves.toEqual({
       status: 'ok',
       value: 42,
     });
-    const legacy = await service.with(betterResultCodec).read();
+    const legacy = await service
+      .with(betterResultCodec, { acceptLegacy: true })
+      .read();
     expect(Result.isOk(legacy)).toBe(true);
     expect(Result.unwrap(legacy)).toBe(42);
   });
@@ -215,6 +216,26 @@ describe('built-in transforms', () => {
     );
     await expect(rejected.value('x'.repeat(64))).rejects.toBeInstanceOf(
       LargeObjectValidationError
+    );
+  });
+
+  it('rejects objects above the callee encode limit', async () => {
+    class LimitedService extends LargeObjectService {}
+    applyTransforms(LimitedService, {
+      all: [
+        registerTransform(largeObjectStream, {
+          maxEncodeBytes: 40,
+          thresholdBytes: 32,
+        }),
+      ],
+    });
+
+    const service = createTransformStub(new LimitedService()).with(
+      largeObjectStream,
+      { schema: unknownSchema }
+    );
+    await expect(service.value('x'.repeat(64))).rejects.toBeInstanceOf(
+      LargeObjectEncodeLimitError
     );
   });
 

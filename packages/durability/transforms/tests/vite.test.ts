@@ -73,7 +73,7 @@ export default {
     env?.CONTEXT_DO?.get?.(env.dynamicName);
   }
 };
-class Entrypoint {
+class Entrypoint extends WorkerEntrypoint {
   run() {
     return this.env.CONTEXT_SERVICE.greet();
   }
@@ -160,6 +160,22 @@ export default {
     expect(result).toContain('unrelated.CONTEXT_SERVICE.greet()');
     expect(result).toContain('unrelated.CONTEXT_DO.get()');
     expect(result).toContain('env[request.binding].greet()');
+    expect(result?.match(/__doTransformsCreateStub\(/g)).toHaveLength(1);
+  });
+
+  it('tracks aliased test env imports and ignores unrelated env parameters', async () => {
+    const result = await transform(`
+import { env as testEnv } from 'cloudflare:test';
+testEnv.CONTEXT_SERVICE.greet();
+function helper(env) {
+  env.CONTEXT_SERVICE.greet();
+}
+`);
+
+    expect(result).toContain(
+      '__doTransformsCreateStub(testEnv.CONTEXT_SERVICE).greet()'
+    );
+    expect(result).toContain('env.CONTEXT_SERVICE.greet()');
     expect(result?.match(/__doTransformsCreateStub\(/g)).toHaveLength(1);
   });
 

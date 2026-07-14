@@ -93,7 +93,7 @@ A caller timeout stops waiting but does not cancel the remote operation. Each re
 
 Other built-ins include:
 
-- `betterResultCodec` to serialize and rehydrate `better-result` values in a versioned envelope. It accepts legacy 0.1.0 payloads by default; set `acceptLegacy: false` after all callees are upgraded to avoid ambiguous unmarked payloads.
+- `betterResultCodec` to serialize and rehydrate `better-result` values in a versioned envelope. Legacy 0.1.0 payloads are rejected by default because their shape is ambiguous; temporarily set `acceptLegacy: true` only while communicating with an older callee.
 - `errorBoundary` to convert caller-visible throws into Better Result errors.
 - `abortAsSuccess` to treat expected Durable Object resets as successful undefined results.
 - `largeObjectStream` to transfer large JSON object results. It requires a Standard Schema validator and enforces a caller decode limit, but it still buffers the complete serialized representation; use native streams for unbounded data.

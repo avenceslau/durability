@@ -137,6 +137,24 @@ function assertRegistrationTypes() {
     { requestId: 'request-1' }
   );
 
+  class AsyncContextTarget {
+    async setContext(context: ObservabilityContext) {
+      return createTransformContextTarget(this, context);
+    }
+
+    async greet() {
+      return 'hello';
+    }
+  }
+  const asyncContextStub = withTransforms({
+    get: () => new AsyncContextTarget(),
+  }).get();
+  asyncContextStub.with(
+    // @ts-expect-error native Promises do not support RPC promise pipelining
+    observability,
+    { requestId: 'request-1' }
+  );
+
   class LifecycleTarget {
     async alarm() {}
   }
@@ -257,6 +275,51 @@ describe('DO transforms', () => {
 
     await expect(new DerivedService().greet()).resolves.toBe('hello');
     expect(calls).toEqual(['base', 'derived']);
+  });
+
+  it('supports explicitly registered Promise-returning methods', async () => {
+    const calls: string[] = [];
+    class PromiseService {
+      greet(): Promise<string> {
+        return Promise.resolve('hello');
+      }
+    }
+    const tracking = defineTransform<PromiseService>().callee(
+      (_options: void) =>
+        async ({ next }) => {
+          calls.push('greet');
+          return next();
+        }
+    );
+    applyTransforms(PromiseService, {
+      methods: { greet: [registerTransform(tracking)] },
+    });
+
+    await expect(new PromiseService().greet()).resolves.toBe('hello');
+    expect(calls).toEqual(['greet']);
+  });
+
+  it('does not replace a derived synchronous override with its base method', async () => {
+    class BaseService {
+      async greet() {
+        return 'base';
+      }
+    }
+    class DerivedService extends BaseService {
+      override greet(): Promise<string> {
+        return Promise.resolve('derived');
+      }
+    }
+    const tracking = defineTransform<DerivedService>().callee(
+      (_options: void) =>
+        async ({ next }) =>
+          next()
+    );
+    applyTransforms(DerivedService, {
+      all: [registerTransform(tracking)],
+    });
+
+    await expect(new DerivedService().greet()).resolves.toBe('derived');
   });
 
   it('rejects malformed context targets', async () => {

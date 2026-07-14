@@ -163,6 +163,7 @@ describe('durability-migrations-only', () => {
     `'CREATE ' + ('TABLE ' + 'jobs (id TEXT PRIMARY KEY);');`,
     '`CREATE ${`TEMP`}\n\tTABLE jobs (id TEXT PRIMARY KEY);`;',
     '`create ${"TEMP" + "ORARY"} table jobs (id TEXT PRIMARY KEY);`;',
+    "('CREATE ' as const) + ('TABLE jobs (id TEXT PRIMARY KEY);' as const);",
   ])('reports the outermost static SQL expression once', (source) => {
     const result = lint(source, 'durability-migrations-only');
 

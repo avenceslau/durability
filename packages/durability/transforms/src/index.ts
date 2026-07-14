@@ -195,13 +195,13 @@ type RequireSetContext<TTarget, TTransform> =
   keyof TransformContextOf<TTransform> extends never
     ? unknown
     : TTarget extends {
-          setContext(
-            context: TransformContextOf<TTransform>
-          ): infer ContextTarget;
+          setContext(context: infer AcceptedContext): infer ContextTarget;
         }
-      ? Awaited<ContextTarget> extends TransformContextInvoker
-        ? unknown
-        : { readonly setContextMustReturnTransformTarget: never }
+      ? TransformContextOf<TTransform> extends AcceptedContext
+        ? ContextTarget extends TransformContextInvoker
+          ? unknown
+          : { readonly setContextMustReturnTransformTarget: never }
+        : { readonly setContextMustAcceptTransformContext: never }
       : { readonly setContextRequired: never };
 
 type TransformBuilder<
@@ -686,7 +686,7 @@ type ValidateRegisteredTransform<TTarget extends object, TRegistration> =
         ? TRegistration
         : [DOTransformContext<TTarget>] extends [never]
           ? never
-          : DOTransformContext<TTarget> extends TransformContextOf<TTransform>
+          : TransformContextOf<TTransform> extends DOTransformContext<TTarget>
             ? TRegistration
             : never
       : never
@@ -742,6 +742,7 @@ export function applyTransforms<
   }
 ): TClass {
   const prototype = targetClass.prototype;
+  const explicitMethods = new Set(Object.keys(config.methods ?? {}));
   let installed = installedTransforms.get(prototype);
 
   if (!installed) {
@@ -759,6 +760,7 @@ export function applyTransforms<
         original: (...args: unknown[]) => unknown;
       }
     >();
+    const seenMethods = new Set<string>();
     let currentPrototype: object | null = prototype;
     while (currentPrototype) {
       const constructorValue = Reflect.get(currentPrototype, 'constructor');
@@ -776,7 +778,11 @@ export function applyTransforms<
 
       const inheritedState = installedTransforms.get(currentPrototype);
       for (const method of Object.getOwnPropertyNames(currentPrototype)) {
-        if (methods.has(method) || reservedRpcMethods.has(method)) {
+        if (seenMethods.has(method)) {
+          continue;
+        }
+        seenMethods.add(method);
+        if (reservedRpcMethods.has(method)) {
           continue;
         }
 
@@ -789,7 +795,9 @@ export function applyTransforms<
         if (
           !descriptor ||
           typeof candidate !== 'function' ||
-          (!inheritedOriginal && candidate.constructor.name !== 'AsyncFunction')
+          (!explicitMethods.has(method) &&
+            !inheritedOriginal &&
+            candidate.constructor.name !== 'AsyncFunction')
         ) {
           continue;
         }
@@ -851,7 +859,7 @@ const betterResultEnvelopeKey = '__durability_transforms_better_result_v1';
 
 /** Caller compatibility options for {@link betterResultCodec}. */
 export type BetterResultCodecOptions = {
-  /** Decode unmarked responses emitted by version 0.1.0. Defaults to true. */
+  /** Decode unmarked responses emitted by version 0.1.0. Defaults to false. */
   acceptLegacy?: boolean;
 };
 
@@ -898,7 +906,7 @@ export const betterResultCodec = Object.assign(
             }
           }
 
-          if (options?.acceptLegacy !== false) {
+          if (options?.acceptLegacy === true) {
             const legacy = Result.deserialize(value);
             if (
               !Result.isError(legacy) ||
@@ -1037,17 +1045,27 @@ export const abortAsSuccess = Object.assign(
 
 /** Callee configuration for {@link largeObjectStream}. */
 export type LargeObjectStreamOptions = {
-  /** Encoded size that switches an object result to streaming. Defaults to 32 MiB. */
+  /** Maximum object size encoded by the callee. Defaults to 8 MiB. */
+  maxEncodeBytes?: number;
+  /** Encoded size that switches an object result to streaming. Defaults to 1 MiB. */
   thresholdBytes?: number;
 };
 
 /** Caller configuration for {@link largeObjectStream}. */
 export type LargeObjectStreamCallerOptions = {
-  /** Maximum encoded payload accepted by the caller. Defaults to 64 MiB. */
+  /** Maximum encoded payload accepted by the caller. Defaults to 8 MiB. */
   maxDecodeBytes?: number;
   /** Runtime validator for the reconstructed JSON value. */
   schema: StandardSchemaV1<unknown, unknown>;
 };
+
+/** Error thrown when an object exceeds the callee's encode limit. */
+export class LargeObjectEncodeLimitError extends Error {
+  constructor(readonly maxEncodeBytes: number) {
+    super(`Large object result exceeded ${maxEncodeBytes} bytes`);
+    this.name = 'LargeObjectEncodeLimitError';
+  }
+}
 
 /** Error thrown when a streamed object exceeds the caller's decode limit. */
 export class LargeObjectDecodeLimitError extends Error {
@@ -1098,7 +1116,7 @@ export const largeObjectStream = defineTransform<
   EmptyTransformContext
 >()
   .caller((options: LargeObjectStreamCallerOptions) => {
-    const maxDecodeBytes = options.maxDecodeBytes ?? 64 * 1024 * 1024;
+    const maxDecodeBytes = options.maxDecodeBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(maxDecodeBytes) || maxDecodeBytes <= 0) {
       throw new RangeError('maxDecodeBytes must be a positive safe integer');
     }
@@ -1172,7 +1190,7 @@ export const largeObjectStream = defineTransform<
         if (result.issues) {
           throw new LargeObjectValidationError(result.issues);
         }
-        return result.value;
+        return parsed;
       } catch (error) {
         void reader.cancel(error);
         throw error;
@@ -1180,9 +1198,16 @@ export const largeObjectStream = defineTransform<
     };
   })
   .callee((options: LargeObjectStreamOptions | undefined) => {
-    const thresholdBytes = options?.thresholdBytes ?? 32 * 1024 * 1024;
+    const maxEncodeBytes = options?.maxEncodeBytes ?? 8 * 1024 * 1024;
+    const thresholdBytes = options?.thresholdBytes ?? 1024 * 1024;
+    if (!Number.isSafeInteger(maxEncodeBytes) || maxEncodeBytes <= 0) {
+      throw new RangeError('maxEncodeBytes must be a positive safe integer');
+    }
     if (!Number.isSafeInteger(thresholdBytes) || thresholdBytes <= 0) {
       throw new RangeError('thresholdBytes must be a positive safe integer');
+    }
+    if (thresholdBytes > maxEncodeBytes) {
+      throw new RangeError('thresholdBytes cannot exceed maxEncodeBytes');
     }
 
     return async ({ next }) => {
@@ -1201,6 +1226,9 @@ export const largeObjectStream = defineTransform<
       }
 
       const bytes = new TextEncoder().encode(json);
+      if (bytes.byteLength > maxEncodeBytes) {
+        throw new LargeObjectEncodeLimitError(maxEncodeBytes);
+      }
       if (bytes.byteLength < thresholdBytes) {
         return value;
       }
