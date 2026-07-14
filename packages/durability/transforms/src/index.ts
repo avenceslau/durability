@@ -1045,8 +1045,8 @@ export type LargeObjectStreamOptions = {
 export type LargeObjectStreamCallerOptions = {
   /** Maximum encoded payload accepted by the caller. Defaults to 64 MiB. */
   maxDecodeBytes?: number;
-  /** Optional runtime validator for the reconstructed JSON value. */
-  schema?: StandardSchemaV1<unknown, unknown>;
+  /** Runtime validator for the reconstructed JSON value. */
+  schema: StandardSchemaV1<unknown, unknown>;
 };
 
 /** Error thrown when a streamed object exceeds the caller's decode limit. */
@@ -1088,15 +1088,17 @@ const largeObjectStreamHeader = new TextEncoder().encode(
  *   },
  * });
  *
- * const snapshot = await stub.with(largeObjectStream).snapshot();
+ * const snapshot = await stub.with(largeObjectStream, {
+ *   schema: snapshotSchema,
+ * }).snapshot();
  * ```
  */
 export const largeObjectStream = defineTransform<
   object,
   EmptyTransformContext
 >()
-  .caller((options: LargeObjectStreamCallerOptions | undefined) => {
-    const maxDecodeBytes = options?.maxDecodeBytes ?? 64 * 1024 * 1024;
+  .caller((options: LargeObjectStreamCallerOptions) => {
+    const maxDecodeBytes = options.maxDecodeBytes ?? 64 * 1024 * 1024;
     if (!Number.isSafeInteger(maxDecodeBytes) || maxDecodeBytes <= 0) {
       throw new RangeError('maxDecodeBytes must be a positive safe integer');
     }
@@ -1166,9 +1168,6 @@ export const largeObjectStream = defineTransform<
         }
 
         const parsed: unknown = JSON.parse(json);
-        if (!options?.schema) {
-          return parsed;
-        }
         const result = await options.schema['~standard'].validate(parsed);
         if (result.issues) {
           throw new LargeObjectValidationError(result.issues);

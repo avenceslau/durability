@@ -427,32 +427,34 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
               declarators.push({ node: declaration, scope });
             }
           }
+        } else if (node.type === 'ClassDeclaration') {
+          const className = identifierName(syntaxNode(node.id));
+          if (className) {
+            scope.bindings.set(className, {
+              kind: 'other',
+              wrapReferences: false,
+            });
+          }
         } else if (
-          node.type === 'ClassDeclaration' &&
-          identifierName(syntaxNode(node.id))
+          node.type === 'ImportDefaultSpecifier' ||
+          node.type === 'ImportNamespaceSpecifier' ||
+          node.type === 'ImportSpecifier'
         ) {
-          scope.bindings.set(identifierName(syntaxNode(node.id))!, {
-            kind: 'other',
-            wrapReferences: false,
-          });
-        } else if (
-          (node.type === 'ImportDefaultSpecifier' ||
-            node.type === 'ImportNamespaceSpecifier' ||
-            node.type === 'ImportSpecifier') &&
-          identifierName(syntaxNode(node.local))
-        ) {
-          const importSource = syntaxNode(parent?.source);
-          const importedName = identifierName(syntaxNode(node.imported));
-          scope.bindings.set(identifierName(syntaxNode(node.local))!, {
-            kind:
-              node.type === 'ImportSpecifier' &&
-              importedName === 'env' &&
-              importSource?.type === 'StringLiteral' &&
-              importSource.value === 'cloudflare:test'
-                ? 'env'
-                : 'other',
-            wrapReferences: false,
-          });
+          const localName = identifierName(syntaxNode(node.local));
+          if (localName) {
+            const importSource = syntaxNode(parent?.source);
+            const importedName = identifierName(syntaxNode(node.imported));
+            scope.bindings.set(localName, {
+              kind:
+                node.type === 'ImportSpecifier' &&
+                importedName === 'env' &&
+                importSource?.type === 'StringLiteral' &&
+                importSource.value === 'cloudflare:test'
+                  ? 'env'
+                  : 'other',
+              wrapReferences: false,
+            });
+          }
         }
 
         for (const [childKey, child] of Object.entries(node)) {

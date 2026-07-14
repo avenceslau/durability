@@ -1,3 +1,4 @@
+import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { Result } from 'better-result';
 import type { Result as BetterResult } from 'better-result';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
@@ -15,6 +16,14 @@ import {
   retry,
   timeout,
 } from '../src/index';
+
+const unknownSchema: StandardSchemaV1<unknown, unknown> = {
+  '~standard': {
+    version: 1,
+    vendor: 'test',
+    validate: (value: unknown) => ({ value }),
+  },
+};
 
 class ResultService {
   async success() {
@@ -144,7 +153,8 @@ describe('built-in transforms', () => {
 
   it('streams and reconstructs objects over the configured size', async () => {
     const service = createTransformStub(new LargeObjectService()).with(
-      largeObjectStream
+      largeObjectStream,
+      { schema: unknownSchema }
     );
 
     expectTypeOf(service.value).returns.toEqualTypeOf<
@@ -164,7 +174,7 @@ describe('built-in transforms', () => {
   it('bounds and validates streamed object decoding', async () => {
     const service = createTransformStub(new LargeObjectService()).with(
       largeObjectStream,
-      { maxDecodeBytes: 32 }
+      { maxDecodeBytes: 32, schema: unknownSchema }
     );
     await expect(service.value('x'.repeat(64))).rejects.toBeInstanceOf(
       LargeObjectDecodeLimitError
@@ -219,7 +229,8 @@ describe('built-in transforms', () => {
     });
 
     const service = createTransformStub(new MinimumThresholdService()).with(
-      largeObjectStream
+      largeObjectStream,
+      { schema: unknownSchema }
     );
     await expect(new Response(await service.stream()).text()).resolves.toBe(
       'original stream'

@@ -96,7 +96,7 @@ Other built-ins include:
 - `betterResultCodec` to serialize and rehydrate `better-result` values in a versioned envelope. It accepts legacy 0.1.0 payloads by default; set `acceptLegacy: false` after all callees are upgraded to avoid ambiguous unmarked payloads.
 - `errorBoundary` to convert caller-visible throws into Better Result errors.
 - `abortAsSuccess` to treat expected Durable Object resets as successful undefined results.
-- `largeObjectStream` to transfer large JSON object results. It enforces a caller decode limit and accepts an optional Standard Schema validator, but it still buffers the complete serialized representation; use native streams for unbounded data.
+- `largeObjectStream` to transfer large JSON object results. It requires a Standard Schema validator and enforces a caller decode limit, but it still buffers the complete serialized representation; use native streams for unbounded data.
 
 ## Manual wrapping
 

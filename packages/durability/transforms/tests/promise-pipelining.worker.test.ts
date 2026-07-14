@@ -36,7 +36,15 @@ describe('Durable Object context promise pipelining', () => {
   it('streams and reconstructs large objects over real RPC', async () => {
     const stub = env.CONTEXT_DO.get(
       env.CONTEXT_DO.idFromName('large-object')
-    ).with(largeObjectStream);
+    ).with(largeObjectStream, {
+      schema: {
+        '~standard': {
+          version: 1,
+          vendor: 'test',
+          validate: (value) => ({ value }),
+        },
+      },
+    });
 
     await expect(stub.largeObject(256)).resolves.toEqual({
       payload: 'x'.repeat(256),
