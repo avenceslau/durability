@@ -117,7 +117,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             `      ${binding}: TransformStub<\n        Service<typeof import('${modulePath}').${entrypoint}>\n      >;`
         )
         .join('\n');
-      const contents = `import type { TransformStub } from '@repo/do-transforms';\n\ndeclare global {\n  interface DurableObjectNamespace<\n    T extends Rpc.DurableObjectBranded | undefined = undefined,\n  > {\n    get(\n      id: DurableObjectId,\n      options?: DurableObjectNamespaceGetDurableObjectOptions\n    ): TransformStub<DurableObjectStub<T>>;\n    getByName(\n      name: string,\n      options?: DurableObjectNamespaceGetDurableObjectOptions\n    ): TransformStub<DurableObjectStub<T>>;\n  }\n\n  interface Env {\n${globalServiceDeclarations}\n  }\n\n  namespace Cloudflare {\n    interface Env {\n${cloudflareServiceDeclarations}\n    }\n  }\n}\n\nexport {};\n`;
+      const contents = `import type { TransformStub } from '@durability/transforms';\n\ndeclare global {\n  interface DurableObjectNamespace<\n    T extends Rpc.DurableObjectBranded | undefined = undefined,\n  > {\n    get(\n      id: DurableObjectId,\n      options?: DurableObjectNamespaceGetDurableObjectOptions\n    ): TransformStub<DurableObjectStub<T>>;\n    getByName(\n      name: string,\n      options?: DurableObjectNamespaceGetDurableObjectOptions\n    ): TransformStub<DurableObjectStub<T>>;\n  }\n\n  interface Env {\n${globalServiceDeclarations}\n  }\n\n  namespace Cloudflare {\n    interface Env {\n${cloudflareServiceDeclarations}\n    }\n  }\n}\n\nexport {};\n`;
 
       writeFileSync(typesPath, contents);
     },
@@ -204,7 +204,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       const importOffset = code.startsWith('#!') ? code.indexOf('\n') + 1 : 0;
       transformed.prependLeft(
         importOffset,
-        `import { createTransformStub as __doTransformsCreateStub } from '@repo/do-transforms';\n`
+        `import { createTransformStub as __doTransformsCreateStub } from '@durability/transforms';\n`
       );
 
       return {

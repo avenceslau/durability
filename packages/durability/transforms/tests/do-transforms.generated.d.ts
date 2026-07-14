@@ -1,4 +1,4 @@
-import type { TransformStub } from '@repo/do-transforms';
+import type { TransformStub } from '@durability/transforms';
 
 declare global {
   interface DurableObjectNamespace<

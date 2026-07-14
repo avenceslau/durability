@@ -4,7 +4,7 @@ import {
   createTransformContextTarget,
   defineTransform,
   registerTransform,
-} from '@repo/do-transforms';
+} from '@durability/transforms';
 import type { TestContext } from './test-worker';
 
 export class CrossWorkerContextService extends WorkerEntrypoint {

@@ -1,4 +1,4 @@
-import type { TransformStub } from '@repo/do-transforms';
+import type { TransformStub } from '@durability/transforms';
 import type { CrossWorkerContextService } from './cross-worker-service';
 import type { ContextDO, ContextService } from './test-worker';
 
