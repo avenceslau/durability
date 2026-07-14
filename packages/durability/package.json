@@ -1,6 +1,6 @@
 {
   "name": "durability",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Alarm-backed durable operations for Cloudflare Durable Objects",
   "type": "module",
   "license": "ISC",
@@ -14,7 +14,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "oxlint",
     "prepack": "pnpm build",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.workers.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
@@ -36,6 +36,7 @@
     }
   },
   "keywords": [
+    "alarms",
     "cloudflare",
     "durable-objects",
     "idempotency",
@@ -55,11 +56,13 @@
     }
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.17.0",
     "@cloudflare/workers-types": "^4.20260702.1",
     "@durability/storage": "workspace:*",
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^24.12.0",
     "typescript": "6.0.3",
+    "vite": "^8.0.0",
     "vitest": "^4.1.5"
   }
 }

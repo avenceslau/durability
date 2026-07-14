@@ -1,6 +1,6 @@
 {
   "extends": "@repo/typescript-config/base.json",
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.workers.config.ts"],
   "compilerOptions": {
     "exactOptionalPropertyTypes": true,
     "noEmit": true,
@@ -10,6 +10,10 @@
     "noPropertyAccessFromIndexSignature": true,
     "noUncheckedIndexedAccess": true,
     "strict": true,
-    "types": ["@cloudflare/workers-types", "node"]
+    "types": [
+      "@cloudflare/vitest-pool-workers/types",
+      "@cloudflare/workers-types",
+      "node"
+    ]
   }
 }

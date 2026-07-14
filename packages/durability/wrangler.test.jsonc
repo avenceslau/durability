@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "durability-alarm-test",
+  "main": "tests/named-alarm-worker.ts",
+  "compatibility_date": "2026-07-07",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ALARM_TEST",
+        "class_name": "NamedAlarmTestObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["NamedAlarmTestObject"]
+    }
+  ]
+}

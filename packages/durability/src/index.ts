@@ -70,6 +70,35 @@ export type DurabilityRetryOptions = {
 
 type HandlerMap = Record<string, (...args: never[]) => unknown>;
 
+/** Information passed to a named alarm handler for one execution attempt. */
+export type DurableAlarmInfo = {
+  /** Configured name of the logical alarm. */
+  name: string;
+  /** Timestamp originally passed to the named alarm method. */
+  scheduledTime: number;
+  /** One-based execution attempt for this scheduled occurrence. */
+  attempt: number;
+  /** Whether this scheduled occurrence has run before. */
+  isRetry: boolean;
+  /** Number of previous attempts for this scheduled occurrence. */
+  retryCount: number;
+  /** Stable key shared by every attempt of this scheduled occurrence. */
+  idempotencyKey: string;
+  /** Aborts when the attempt exceeds its configured timeout. */
+  signal: AbortSignal;
+  /** Invocation information for the shared physical Durable Object alarm. */
+  platform: AlarmInvocationInfo | undefined;
+};
+
+/** A handler for one named logical alarm. */
+export type DurableAlarmHandler = (
+  info: DurableAlarmInfo
+) => unknown | Promise<unknown>;
+
+const alarmHandlerSchema = z.custom<DurableAlarmHandler>(
+  (value) => typeof value === 'function'
+);
+
 /**
  * Execution policy overrides for one durable operation method.
  *
@@ -88,11 +117,25 @@ export type DurabilityMethodOptions = {
   retries?: DurabilityRetryOptions;
 };
 
+const durabilityMethodOptionsSchema = z.object({
+  attemptTimeoutMs: z.number().optional(),
+  retries: z
+    .object({
+      delay: z
+        .custom<NonNullable<DurabilityRetryOptions['delay']>>(
+          (value) => typeof value === 'function'
+        )
+        .optional(),
+      maxAttempts: z.number().optional(),
+    })
+    .optional(),
+});
+
 /**
  * Configuration for a durability instance.
  *
- * Method-level values override global timeout and retry values without changing
- * the policy for other handlers.
+ * Operation and named-alarm overrides replace global timeout and retry values
+ * without changing the policy for other handlers.
  *
  * @example
  * ```ts
@@ -109,7 +152,16 @@ export type DurabilityMethodOptions = {
  * };
  * ```
  */
-export type DurabilityOptions<Handlers extends HandlerMap = HandlerMap> = {
+export type DurabilityOptions<
+  Handlers extends HandlerMap = HandlerMap,
+  AlarmNames extends string = never,
+> = {
+  /** Named logical alarms sharing the Durable Object's physical alarm. */
+  alarms?: Record<AlarmNames, DurableAlarmHandler>;
+  /** Execution policy overrides keyed by named alarm. */
+  alarmMethods?: [AlarmNames] extends [never]
+    ? never
+    : Partial<Record<NoInfer<AlarmNames>, DurabilityMethodOptions>>;
   /** Maximum immediate operations executed concurrently by an alarm. Defaults to 10. */
   alarmConcurrency?: number;
   /** Time before a running alarm hands unfinished work to a new alarm. Defaults to 14 minutes. */
@@ -141,6 +193,20 @@ type CallRow = {
   last_error: string | null;
   last_error_name: string | null;
 };
+
+const alarmRowSchema = z.object({
+  name: z.string(),
+  generation_id: z.string(),
+  status: z.enum(['pending', 'failed']),
+  scheduled_at: z.number().int().nonnegative(),
+  next_attempt_at: z.number().int().nonnegative(),
+  attempt: z.number().int().nonnegative(),
+  last_error: z.string().nullable(),
+  last_error_name: z.string().nullable(),
+});
+const alarmAttemptSchema = alarmRowSchema.pick({ attempt: true });
+const alarmGenerationSchema = alarmRowSchema.pick({ generation_id: true });
+type AlarmRow = z.infer<typeof alarmRowSchema>;
 
 type DurableOperationInput<Handler> = {
   /** Stable idempotency key used to deduplicate the operation. */
@@ -228,14 +294,25 @@ type DurableOperation<Handler> = ((
  * const alarm = (info: AlarmInvocationInfo) => durability.alarm(info);
  * ```
  */
-export type Durability<Handlers extends HandlerMap> = {
-  /** Processes due operations. Forward the Durable Object's alarm handler here. */
-  alarm: (alarmInfo?: AlarmInvocationInfo) => Promise<void>;
+type DurableNamedAlarm = (scheduledTime: number) => Promise<void>;
+
+type DurabilityAlarm<AlarmNames extends string> = ((
+  alarmInfo?: AlarmInvocationInfo
+) => Promise<void>) &
+  Record<AlarmNames, DurableNamedAlarm>;
+
+export type Durability<
+  Handlers extends HandlerMap,
+  AlarmNames extends string = never,
+> = {
+  /** Processes due work and exposes methods for scheduling named alarms. */
+  alarm: DurabilityAlarm<AlarmNames>;
 } & {
   [Operation in keyof Handlers]: DurableOperation<Handlers[Operation]>;
 };
 
 const tableName = 'durability_calls';
+const alarmTableName = 'durability_alarms';
 const migrationTableName = 'durability_migrations';
 const storedValueSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('value'), value: z.json() }),
@@ -287,6 +364,27 @@ export const durabilityMigrations = [
       ON durability_calls (status, next_attempt_at);
     `,
     down: 'DROP INDEX IF EXISTS durability_calls_pending_idx;',
+  },
+  {
+    name: 'durability_0003_create_alarms',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_alarms (
+        name TEXT PRIMARY KEY,
+        generation_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'failed')),
+        scheduled_at INTEGER NOT NULL,
+        next_attempt_at INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        last_error_name TEXT
+      );
+      CREATE INDEX IF NOT EXISTS durability_alarms_pending_idx
+      ON durability_alarms (status, next_attempt_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_alarms_pending_idx;
+      DROP TABLE IF EXISTS durability_alarms;
+    `,
   },
 ] satisfies DurableMigrations;
 
@@ -426,6 +524,14 @@ export class DurableAttemptTimeoutError extends Error {
   }
 }
 
+/** Error recorded when a named alarm attempt exceeds its configured timeout. */
+export class DurableAlarmTimeoutError extends Error {
+  constructor(name: string, timeoutMs: number) {
+    super(`Durable alarm "${name}" timed out after ${timeoutMs}ms`);
+    this.name = 'DurableAlarmTimeoutError';
+  }
+}
+
 /**
  * Error thrown when an idempotency key is reused for another operation.
  *
@@ -490,17 +596,27 @@ export class DuplicateDurableCallError extends Error {
  *
  * @param context Durable Object context containing SQLite-backed storage.
  * @param handlers Operation handlers keyed by their public method names.
- * @param options Concurrency, timeout, and retry policy configuration.
+ * @param options Named alarms, concurrency, timeout, and retry policies.
  */
-export const createDurability = <Handlers extends HandlerMap>(
+export const createDurability = <
+  Handlers extends HandlerMap,
+  const AlarmNames extends string = never,
+>(
   context: Pick<DurableObjectState, 'storage'>,
   handlers: Handlers,
-  options: DurabilityOptions<Handlers> = {}
-): Durability<Handlers> => {
+  options: DurabilityOptions<Handlers, AlarmNames> = {}
+): Durability<Handlers, AlarmNames> => {
   migrateDurability(context);
   const qb = new DOQB(context.storage.sql);
 
   const active = new Map<string, Promise<unknown>>();
+  const activeAlarms = new Map<string, Promise<void>>();
+  const alarmHandlers = new Map(
+    Object.entries(options.alarms ?? {}).map(([name, handler]) => [
+      name,
+      alarmHandlerSchema.parse(handler),
+    ])
+  );
   const alarmConcurrency = options.alarmConcurrency ?? 10;
   const alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
   const defaultAttemptTimeoutMs = options.attemptTimeoutMs ?? 5 * 60_000;
@@ -546,8 +662,44 @@ export const createDurability = <Handlers extends HandlerMap>(
     }
   }
 
+  const alarmMethodOptions = new Map(
+    Object.entries(options.alarmMethods ?? {}).map(([name, method]) => [
+      name,
+      durabilityMethodOptionsSchema.parse(method),
+    ])
+  );
+  for (const [name, method] of alarmMethodOptions) {
+    if (
+      method?.attemptTimeoutMs !== undefined &&
+      (!Number.isInteger(method.attemptTimeoutMs) ||
+        method.attemptTimeoutMs < 1)
+    ) {
+      throw new RangeError(
+        `alarmMethods.${name}.attemptTimeoutMs must be a positive integer`
+      );
+    }
+    if (
+      method?.retries?.maxAttempts !== undefined &&
+      (!Number.isInteger(method.retries.maxAttempts) ||
+        method.retries.maxAttempts < 1)
+    ) {
+      throw new RangeError(
+        `alarmMethods.${name}.retries.maxAttempts must be a positive integer`
+      );
+    }
+  }
+
   const executionPolicy = (operation: string) => {
     const method = methodOptions[operation];
+    return {
+      attemptTimeoutMs: method?.attemptTimeoutMs ?? defaultAttemptTimeoutMs,
+      delay: method?.retries?.delay ?? defaultRetryDelay,
+      maxAttempts: method?.retries?.maxAttempts ?? defaultMaxAttempts,
+    };
+  };
+
+  const alarmExecutionPolicy = (name: string) => {
+    const method = alarmMethodOptions.get(name);
     return {
       attemptTimeoutMs: method?.attemptTimeoutMs ?? defaultAttemptTimeoutMs,
       delay: method?.retries?.delay ?? defaultRetryDelay,
@@ -654,6 +806,43 @@ export const createDurability = <Handlers extends HandlerMap>(
       })
       .execute().results?.next_attempt_at;
 
+  const listDueAlarms = (now: number, limit: number): AlarmRow[] =>
+    alarmRowSchema.array().parse(
+      qb
+        .fetchAll<AlarmRow>({
+          tableName: alarmTableName,
+          where: {
+            conditions: "status = 'pending' AND next_attempt_at <= ?",
+            params: [now],
+          },
+          orderBy: 'next_attempt_at ASC',
+          limit,
+        })
+        .execute().results ?? []
+    );
+
+  const getNextNamedAlarmAt = (): number | undefined =>
+    alarmRowSchema
+      .pick({ next_attempt_at: true })
+      .optional()
+      .parse(
+        qb
+          .fetchOne<Pick<AlarmRow, 'next_attempt_at'>>({
+            tableName: alarmTableName,
+            fields: 'next_attempt_at',
+            where: { conditions: "status = 'pending'" },
+            orderBy: 'next_attempt_at ASC',
+          })
+          .execute().results
+      )?.next_attempt_at;
+
+  const getNextAlarmAt = (): number | undefined => {
+    const candidates = [getNextPendingAt(), getNextNamedAlarmAt()].filter(
+      (value): value is number => value !== undefined
+    );
+    return candidates.length === 0 ? undefined : Math.min(...candidates);
+  };
+
   const runConcurrent = async <Item>(
     items: Item[],
     concurrency: number,
@@ -687,11 +876,29 @@ export const createDurability = <Handlers extends HandlerMap>(
     }
   };
 
-  const armIfMissing = async (timestamp: number) => {
-    const currentAlarm = await context.storage.getAlarm();
-    if (currentAlarm === null) {
-      await context.storage.setAlarm(timestamp);
+  const reconcileAlarm = async (transaction: DurableObjectTransaction) => {
+    const nextAlarmAt = getNextAlarmAt();
+    const currentAlarm = await transaction.getAlarm();
+    if (nextAlarmAt === undefined) {
+      if (currentAlarm !== null) {
+        await transaction.deleteAlarm();
+      }
+      return;
     }
+
+    const target = Math.max(nextAlarmAt, Date.now());
+    if (currentAlarm !== target) {
+      await transaction.setAlarm(target);
+    }
+  };
+
+  const armForHandoff = async (timestamp: number) => {
+    await context.storage.transaction(async (transaction) => {
+      const currentAlarm = await transaction.getAlarm();
+      if (currentAlarm === null || currentAlarm > timestamp) {
+        await transaction.setAlarm(timestamp);
+      }
+    });
   };
 
   let alarmRefresh: Promise<void> | undefined;
@@ -700,22 +907,178 @@ export const createDurability = <Handlers extends HandlerMap>(
       return alarmRefresh;
     }
 
-    alarmRefresh = context.storage
-      .transaction(async (transaction) => {
-        const nextAttemptAt = getNextPendingAt();
-        const currentAlarm = await transaction.getAlarm();
-        if (nextAttemptAt === undefined) {
-          if (currentAlarm !== null) {
-            await transaction.deleteAlarm();
-          }
-        } else if (currentAlarm === null) {
-          await transaction.setAlarm(nextAttemptAt);
-        }
-      })
-      .finally(() => {
-        alarmRefresh = undefined;
-      });
+    alarmRefresh = context.storage.transaction(reconcileAlarm).finally(() => {
+      alarmRefresh = undefined;
+    });
     return alarmRefresh;
+  };
+
+  const scheduleNamedAlarm = async (name: string, scheduledTime: number) => {
+    if (!Number.isInteger(scheduledTime) || scheduledTime < 0) {
+      throw new RangeError('scheduledTime must be a non-negative integer');
+    }
+
+    await context.storage.transaction(async (transaction) => {
+      context.storage.sql.exec(
+        `INSERT INTO durability_alarms
+          (name, generation_id, status, scheduled_at, next_attempt_at, attempt)
+          VALUES (?, ?, 'pending', ?, ?, 0)
+          ON CONFLICT(name) DO UPDATE SET
+            generation_id = excluded.generation_id,
+            status = 'pending',
+            scheduled_at = excluded.scheduled_at,
+            next_attempt_at = excluded.next_attempt_at,
+            attempt = 0,
+            last_error = NULL,
+            last_error_name = NULL`,
+        name,
+        crypto.randomUUID(),
+        scheduledTime,
+        scheduledTime
+      );
+      await reconcileAlarm(transaction);
+    });
+  };
+
+  const executeNamedAlarm = (
+    row: AlarmRow,
+    platform: AlarmInvocationInfo | undefined
+  ): Promise<void> => {
+    const running = activeAlarms.get(row.name);
+    if (running) {
+      return running;
+    }
+
+    let releaseActive: (() => void) | undefined;
+    const settled = new Promise<void>((resolve) => {
+      releaseActive = resolve;
+    });
+    let executionSettled = false;
+    let handlerStarted = false;
+    let handlerSettled = false;
+    const releaseIfSettled = () => {
+      if (executionSettled && (!handlerStarted || handlerSettled)) {
+        releaseActive?.();
+      }
+    };
+
+    const execution = (async () => {
+      const updated = alarmAttemptSchema.optional().parse(
+        context.storage.sql
+          .exec<Pick<AlarmRow, 'attempt'>>(
+            `UPDATE durability_alarms
+             SET attempt = attempt + 1
+             WHERE name = ? AND generation_id = ? AND status = 'pending'
+             RETURNING attempt`,
+            row.name,
+            row.generation_id
+          )
+          .toArray()[0]
+      );
+      if (!updated) {
+        return undefined;
+      }
+
+      const policy = alarmExecutionPolicy(row.name);
+      const controller = new AbortController();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const handler = alarmHandlers.get(row.name);
+        if (!handler) {
+          throw new NonRetryableError(
+            `No named alarm handler registered for "${row.name}"`
+          );
+        }
+
+        handlerStarted = true;
+        const handlerResult = Promise.resolve().then(() =>
+          handler({
+            name: row.name,
+            scheduledTime: row.scheduled_at,
+            attempt: updated.attempt,
+            isRetry: updated.attempt > 1,
+            retryCount: updated.attempt - 1,
+            idempotencyKey: `durability-alarm:v1:${row.generation_id}`,
+            signal: controller.signal,
+            platform,
+          })
+        );
+        void handlerResult
+          .finally(() => {
+            handlerSettled = true;
+            releaseIfSettled();
+          })
+          .catch(() => undefined);
+        const timeoutResult = new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            const error = new DurableAlarmTimeoutError(
+              row.name,
+              policy.attemptTimeoutMs
+            );
+            controller.abort(error);
+            reject(error);
+          }, policy.attemptTimeoutMs);
+        });
+
+        await Promise.race([handlerResult, timeoutResult]);
+        context.storage.sql.exec(
+          `DELETE FROM durability_alarms
+             WHERE name = ? AND generation_id = ?`,
+          row.name,
+          row.generation_id
+        );
+      } catch (error) {
+        const terminal =
+          isNonRetryable(error) || updated.attempt >= policy.maxAttempts;
+        const baseDelay = terminal ? 0 : policy.delay(updated.attempt);
+        if (!Number.isFinite(baseDelay) || baseDelay < 0) {
+          throw new RangeError(
+            `Retry delay for named alarm "${row.name}" must be a non-negative finite number`
+          );
+        }
+        const nextAttemptAt = Date.now() + Math.round(baseDelay);
+        await context.storage.transaction(async (transaction) => {
+          const current = alarmGenerationSchema.optional().parse(
+            context.storage.sql
+              .exec<Pick<AlarmRow, 'generation_id'>>(
+                `UPDATE durability_alarms
+                 SET status = ?,
+                     next_attempt_at = ?,
+                     last_error = ?,
+                     last_error_name = ?
+                 WHERE name = ? AND generation_id = ?
+                 RETURNING generation_id`,
+                terminal ? 'failed' : 'pending',
+                nextAttemptAt,
+                error instanceof Error ? error.message : String(error),
+                error instanceof Error ? error.name : 'Error',
+                row.name,
+                row.generation_id
+              )
+              .toArray()[0]
+          );
+          if (current) {
+            await reconcileAlarm(transaction);
+          }
+        });
+      } finally {
+        if (timeout !== undefined) {
+          clearTimeout(timeout);
+        }
+      }
+      return undefined;
+    })().finally(() => {
+      executionSettled = true;
+      releaseIfSettled();
+    });
+
+    activeAlarms.set(row.name, settled);
+    void settled.finally(() => {
+      if (activeAlarms.get(row.name) === settled) {
+        activeAlarms.delete(row.name);
+      }
+    });
+    return execution;
   };
 
   const execute = (id: string): Promise<unknown> => {
@@ -815,9 +1178,7 @@ export const createDurability = <Handlers extends HandlerMap>(
             },
             where: { conditions: 'id = ?', params: [id] },
           }).execute();
-          if (!terminal && (await transaction.getAlarm()) === null) {
-            await transaction.setAlarm(nextAttemptAt);
-          }
+          await reconcileAlarm(transaction);
         });
         throw error;
       } finally {
@@ -843,11 +1204,7 @@ export const createDurability = <Handlers extends HandlerMap>(
       if (existing.status === 'completed' || existing.status === 'failed') {
         return;
       }
-      await context.storage.transaction(async (transaction) => {
-        if ((await transaction.getAlarm()) === null) {
-          await transaction.setAlarm(existing.next_attempt_at);
-        }
-      });
+      await context.storage.transaction(reconcileAlarm);
     } else {
       const now = Date.now();
       await context.storage.transaction(async (transaction) => {
@@ -862,9 +1219,7 @@ export const createDurability = <Handlers extends HandlerMap>(
             next_attempt_at: now,
           },
         }).execute();
-        if ((await transaction.getAlarm()) === null) {
-          await transaction.setAlarm(now);
-        }
+        await reconcileAlarm(transaction);
       });
     }
 
@@ -872,41 +1227,82 @@ export const createDurability = <Handlers extends HandlerMap>(
     void execution.then(() => scheduleNextAlarm()).catch(() => undefined);
   };
 
-  const alarm = async (_alarmInfo?: AlarmInvocationInfo): Promise<void> => {
+  const alarm = async (alarmInfo?: AlarmInvocationInfo): Promise<void> => {
     const startedAt = Date.now();
     const due = listDueIds(startedAt, 100);
-    if (due.length === 0) {
+    const dueAlarms = listDueAlarms(startedAt, 100);
+    if (due.length === 0 && dueAlarms.length === 0) {
       await scheduleNextAlarm();
       return;
     }
 
-    const execution = runConcurrent(due, alarmConcurrency, async (id) => {
-      try {
-        await execute(id);
-      } catch {
-        return;
+    const operationExecution = runConcurrent(
+      due,
+      alarmConcurrency,
+      async (id) => {
+        try {
+          await execute(id);
+        } catch {
+          return;
+        }
       }
+    );
+    const namedAlarmFailures: unknown[] = [];
+    const namedAlarmExecution = runConcurrent(
+      dueAlarms,
+      alarmConcurrency,
+      async (row) => {
+        try {
+          await executeNamedAlarm(row, alarmInfo);
+        } catch (error) {
+          namedAlarmFailures.push(error);
+        }
+      }
+    ).then(() => {
+      if (namedAlarmFailures.length > 0) {
+        throw namedAlarmFailures[0];
+      }
+      return undefined;
     });
+    const execution = Promise.all([
+      operationExecution,
+      namedAlarmExecution,
+    ]).then(() => undefined);
+    void execution.catch(() => undefined);
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const handoff = Symbol('alarm handoff');
     const remaining = alarmHandoffMs - (Date.now() - startedAt);
-    const result = await Promise.race([
-      execution,
-      new Promise<typeof handoff>((resolve) => {
-        timeout = setTimeout(() => resolve(handoff), Math.max(remaining, 0));
-      }),
-    ]);
-
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
+    let result: void | typeof handoff;
+    try {
+      result = await Promise.race([
+        execution,
+        new Promise<typeof handoff>((resolve) => {
+          timeout = setTimeout(() => resolve(handoff), Math.max(remaining, 0));
+        }),
+      ]);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
     }
+
     if (result === handoff) {
-      await armIfMissing(Date.now());
+      await armForHandoff(Date.now());
       return;
     }
     await scheduleNextAlarm();
   };
+
+  for (const name of alarmHandlers.keys()) {
+    if (name in alarm) {
+      throw new Error(`"${name}" is reserved by durability alarms`);
+    }
+    Object.assign(alarm, {
+      [name]: (scheduledTime: number) =>
+        scheduleNamedAlarm(name, scheduledTime),
+    });
+  }
 
   const durability: Record<string, unknown> = { alarm };
   for (const operation of Object.keys(handlers) as (keyof Handlers &
@@ -922,5 +1318,32 @@ export const createDurability = <Handlers extends HandlerMap>(
     durability[operation] = durableOperation;
   }
 
-  return durability as Durability<Handlers>;
+  const isCompleteDurability = (
+    value: Record<string, unknown>
+  ): value is Record<string, unknown> & Durability<Handlers, AlarmNames> => {
+    const alarmValue = value['alarm'];
+    if (typeof alarmValue !== 'function') {
+      return false;
+    }
+    for (const name of alarmHandlers.keys()) {
+      if (typeof Reflect.get(alarmValue, name) !== 'function') {
+        return false;
+      }
+    }
+    for (const operation of Object.keys(handlers)) {
+      const method = value[operation];
+      if (
+        typeof method !== 'function' ||
+        typeof Reflect.get(method, 'getResult') !== 'function'
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  if (!isCompleteDurability(durability)) {
+    throw new Error('Durability methods were not initialized');
+  }
+  return durability;
 };
