@@ -2,7 +2,7 @@
 
 Alarm-backed, effectively-once operation execution for Cloudflare Durable Objects.
 
-The package registers each operation and the first alarm in one Durable Object storage transaction. It only creates an alarm when none exists. Generated operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. An alarm firing during execution attaches to the same in-memory promise. Failed calls are retried from later alarms, and a stable call ID deduplicates completed and concurrent calls. SQLite access and schema migrations are managed through `workers-qb`.
+The package registers operations and reconciles their earliest wake-up in one Durable Object storage transaction. Generated operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. An alarm firing during execution attaches to the same in-memory promise. Failed calls are retried from later alarms, and a stable call ID deduplicates completed and concurrent calls. SQLite access and schema migrations are managed through `workers-qb`.
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
@@ -30,6 +30,70 @@ export class ImageJobs extends DurableObject<Env> {
 }
 ```
 
+## Named alarms
+
+Named alarms share the Durable Object's physical alarm with durable operation retries. Configure handlers through `alarms`, then schedule them through the typed method on `durability.alarm`:
+
+```ts
+import ms from 'ms';
+import { createDurability } from 'durability';
+import { exponential, jitter } from 'durability/utils';
+
+class ImageJobs extends DurableObject<Env> {
+  private readonly durability = createDurability(
+    this.ctx,
+    {
+      resizeImage: async ({ payload }) =>
+        this.env.IMAGES.resize(payload.imageId),
+    },
+    {
+      alarms: {
+        cleanup: async ({
+          scheduledTime,
+          attempt,
+          idempotencyKey,
+          signal,
+          platform,
+        }) => {
+          await this.env.CLEANUP.fetch('https://cleanup.internal/run', {
+            method: 'POST',
+            headers: { 'Idempotency-Key': idempotencyKey },
+            signal,
+          });
+          console.log({ scheduledTime, attempt, platform });
+        },
+      },
+      alarmMethods: {
+        cleanup: {
+          attemptTimeoutMs: 60_000,
+          retries: {
+            maxAttempts: 5,
+            delay: (attempt) => jitter(exponential(attempt)),
+          },
+          retryTimeouts: true,
+        },
+      },
+    }
+  );
+
+  scheduleCleanup() {
+    return this.durability.alarm.cleanup(Date.now() + ms('5 seconds'));
+  }
+
+  alarm(alarmInfo?: AlarmInvocationInfo) {
+    return this.durability.alarm(alarmInfo);
+  }
+}
+```
+
+Scheduling the same name again replaces its pending occurrence. If that name is already running, the current handler continues and the replacement runs afterward. Different names may run concurrently, but one name never has more than one active handler in the same Durable Object instance.
+
+Each schedule receives a new internal occurrence ID. Its generated `idempotencyKey` remains stable across retries, while `attempt` starts at one and increments for every execution of that occurrence. A successful handler removes only the occurrence it executed, so it cannot delete a replacement scheduled while it was running.
+
+Named alarms inherit the global attempt timeout and retry policy. `alarmMethods` overrides them for one name. Failures use the same jittered exponential delay as operations by default; `NonRetryableError` and exhausted attempts make the occurrence terminal. A timeout aborts the handler's `signal` and is terminal by default because the external outcome may be unknown. Set `retryTimeouts: true` only when the handler's side effects use the generated idempotency key or reconcile their outcome before retrying. If a handler ignores the signal, the scheduler retains its per-name execution lock until the handler actually settles, preventing an overlapping retry.
+
+Named alarm handlers are still at-least-once across eviction or restart. Pass `idempotencyKey` to external systems that support deduplication.
+
 ## SQLite requirement
 
 The Durable Object class must use SQLite storage:
@@ -40,7 +104,7 @@ The Durable Object class must use SQLite storage:
 }
 ```
 
-`createDurability` migrates to the latest schema and stores calls in the `durability_calls` table. Each package migration has `up` and `down` SQL and is tracked in the namespaced `durability_migrations` table.
+`createDurability` migrates to the latest schema and stores operations in `durability_calls` and named schedules in `durability_alarms`. Each package migration has `up` and `down` SQL and is tracked in the namespaced `durability_migrations` table.
 
 Rollbacks are explicit because rolling back the initial migration deletes durable call records:
 
