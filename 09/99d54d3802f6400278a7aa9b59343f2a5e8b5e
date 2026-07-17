@@ -1,0 +1,31 @@
+.oxfmtrc.json
+  s_83f9b9c166dd5a::t_97f51d0952d95e 1-12
+.oxlintrc.json
+  s_83f9b9c166dd5a::t_c60e1d991b750c 1-29
+README.md
+  s_83f9b9c166dd5a::t_945ac0f509742e 1-46
+packages/durability/wrangler.test.jsonc
+  s_83f9b9c166dd5a::t_c6d8b2c062fba7 10-12,17-19
+packages/transforms/LICENSE
+  s_83f9b9c166dd5a::t_1aee63e4437e25 1-15
+packages/transforms/tests/do-transforms.generated.d.ts
+  s_83f9b9c166dd5a::t_998a7e9eb187ce 19,22,29,32
+pnpm-lock.yaml
+  s_83f9b9c166dd5a::t_772707ff1d2a85 1-3213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0999d54d3802f6400278a7aa9b59343f2a5e8b5e",
+  "prompts": {},
+  "sessions": {
+    "s_83f9b9c166dd5a": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019f70ef-4b77-7e98-af79-a3e646a4627b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
