@@ -7,14 +7,14 @@
     "bindings": [
       {
         "name": "ALARM_TEST",
-        "class_name": "NamedAlarmTestObject"
-      }
-    ]
+        "class_name": "NamedAlarmTestObject",
+      },
+    ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["NamedAlarmTestObject"]
-    }
-  ]
+      "new_sqlite_classes": ["NamedAlarmTestObject"],
+    },
+  ],
 }

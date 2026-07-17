@@ -1,7 +1,7 @@
 {
-  "name": "@durability/lint",
-  "version": "0.1.1",
-  "description": "Oxlint rules for Cloudflare Durable Object durability",
+  "name": "@durability/storage",
+  "version": "0.1.0",
+  "description": "Shared migration types for Cloudflare Durable Object storage",
   "type": "module",
   "license": "ISC",
   "sideEffects": false,
@@ -14,7 +14,6 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "oxlint",
     "prepack": "pnpm build",
-    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
@@ -23,6 +22,7 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/",
+    "provenance": true,
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
@@ -30,21 +30,24 @@
       }
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avenceslau/durability.git",
+    "directory": "packages/storage"
+  },
+  "homepage": "https://github.com/avenceslau/durability/tree/main/packages/storage#readme",
+  "bugs": {
+    "url": "https://github.com/avenceslau/durability/issues"
+  },
   "keywords": [
     "cloudflare",
     "durable-objects",
-    "lint",
-    "oxlint",
+    "migrations",
+    "sqlite",
     "workers"
   ],
-  "peerDependencies": {
-    "oxlint": "1.73.0"
-  },
   "devDependencies": {
-    "@repo/typescript-config": "workspace:*",
-    "@types/node": "^24.12.0",
-    "oxlint": "1.73.0",
-    "typescript": "6.0.3",
-    "vitest": "^4.1.5"
+    "@durability/typescript-config": "workspace:*",
+    "typescript": "6.0.3"
   }
 }

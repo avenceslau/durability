@@ -1,7 +1,7 @@
 {
-  "name": "durability",
-  "version": "2.0.0",
-  "description": "Alarm-backed durable operations for Cloudflare Durable Objects",
+  "name": "@durability/lint",
+  "version": "0.1.0",
+  "description": "Oxlint rules for Cloudflare Durable Object durability",
   "type": "module",
   "license": "ISC",
   "sideEffects": false,
@@ -14,12 +14,11 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "oxlint",
     "prepack": "pnpm build",
-    "test": "vitest run && vitest run --config vitest.workers.config.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./utils": "./src/utils.ts"
+    ".": "./src/index.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -29,50 +28,33 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
-      },
-      "./utils": {
-        "types": "./dist/utils.d.ts",
-        "import": "./dist/utils.js"
       }
     }
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/avenceslau/durability.git",
-    "directory": "packages/durability"
+    "directory": "packages/lint"
   },
-  "homepage": "https://github.com/avenceslau/durability#readme",
+  "homepage": "https://github.com/avenceslau/durability/tree/main/packages/lint#readme",
   "bugs": {
     "url": "https://github.com/avenceslau/durability/issues"
   },
   "keywords": [
-    "alarms",
     "cloudflare",
     "durable-objects",
-    "idempotency",
-    "retries",
+    "lint",
+    "oxlint",
     "workers"
   ],
-  "dependencies": {
-    "@durability/storage": "workspace:^",
-    "workers-qb": "1.11.2",
-    "zod": "^4.4.3"
-  },
   "peerDependencies": {
-    "@cloudflare/workers-types": "^4.20260702.1"
-  },
-  "peerDependenciesMeta": {
-    "@cloudflare/workers-types": {
-      "optional": true
-    }
+    "oxlint": "1.73.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.17.0",
-    "@cloudflare/workers-types": "^4.20260702.1",
     "@durability/typescript-config": "workspace:*",
     "@types/node": "^24.12.0",
+    "oxlint": "1.73.0",
     "typescript": "6.0.3",
-    "vite": "^8.0.0",
     "vitest": "^4.1.5"
   }
 }

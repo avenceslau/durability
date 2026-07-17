@@ -1,5 +1,6 @@
 {
-  "extends": "@repo/typescript-config/base.json",
+  "extends": "@durability/typescript-config/base.json",
+  "include": ["src/**/*.ts"],
   "compilerOptions": {
     "exactOptionalPropertyTypes": true,
     "noEmit": true,
@@ -8,12 +9,7 @@
     "noImplicitReturns": true,
     "noPropertyAccessFromIndexSignature": true,
     "noUncheckedIndexedAccess": true,
-    "types": [
-      "@cloudflare/vitest-pool-workers/types",
-      "@cloudflare/workers-types",
-      "vitest/globals"
-    ]
-  },
-  "include": ["src", "tests", "vite.config.ts"],
-  "exclude": ["node_modules", "dist"]
+    "strict": true,
+    "types": ["node", "vitest/globals"]
+  }
 }

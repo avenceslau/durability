@@ -1,6 +1,6 @@
 {
   "name": "@durability/transforms",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Typed caller and callee transforms for Cloudflare RPC",
   "type": "module",
   "license": "ISC",
@@ -24,6 +24,7 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/",
+    "provenance": true,
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
@@ -34,6 +35,15 @@
         "import": "./dist/vite.js"
       }
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avenceslau/durability.git",
+    "directory": "packages/transforms"
+  },
+  "homepage": "https://github.com/avenceslau/durability/tree/main/packages/transforms#readme",
+  "bugs": {
+    "url": "https://github.com/avenceslau/durability/issues"
   },
   "keywords": [
     "cloudflare",
@@ -68,7 +78,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.17.0",
     "@cloudflare/workers-types": "^4.20260702.1",
-    "@repo/typescript-config": "workspace:*",
+    "@durability/typescript-config": "workspace:*",
     "@types/node": "^24.12.0",
     "better-result": "^2.9.2",
     "typescript": "6.0.3",

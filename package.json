@@ -1,0 +1,31 @@
+{
+  "name": "durability-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Durable operation tooling for Cloudflare Workers",
+  "license": "ISC",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "build": "turbo run build",
+    "changeset": "changeset",
+    "check": "pnpm format:check && pnpm lint && pnpm build && pnpm typecheck && pnpm test && pnpm pack:check",
+    "format": "oxfmt --write \"**/*.{json,jsonc,md,ts}\"",
+    "format:check": "oxfmt --check \"**/*.{json,jsonc,md,ts}\"",
+    "lint": "turbo run lint",
+    "pack:check": "pnpm --filter durability --filter @durability/storage --filter @durability/transforms --filter @durability/lint exec publint",
+    "release": "pnpm build && changeset publish",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "version-packages": "changeset version && pnpm install --lockfile-only"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.1",
+    "oxfmt": "^0.32.0",
+    "oxlint": "1.73.0",
+    "publint": "^0.3.21",
+    "turbo": "^2.10.5"
+  }
+}

@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+
+autoInstallPeers: true
+linkWorkspacePackages: true
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - workerd
+strictPeerDependencies: false
