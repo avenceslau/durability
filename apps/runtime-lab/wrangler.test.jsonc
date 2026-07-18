@@ -1,0 +1,27 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "durability-runtime-lab-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LAB",
+        "class_name": "DurabilityLab",
+      },
+      {
+        "name": "EFFECTS",
+        "class_name": "EffectLedger",
+      },
+    ],
+  },
+  // The current Vitest pool bundles Wrangler 4.106, which predates
+  // declarative DO exports. This is equivalent to wrangler.jsonc's exports.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DurabilityLab", "EffectLedger"],
+    },
+  ],
+}

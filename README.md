@@ -31,6 +31,24 @@ pnpm --filter @durability/transforms test
 
 The Worker integration tests run locally through `@cloudflare/vitest-pool-workers`; they do not require Cloudflare credentials.
 
+## Runtime durability lab
+
+The interactive runtime lab drives the package through real SQLite-backed Durable Objects in local Workerd:
+
+```sh
+pnpm lab
+```
+
+Open `http://localhost:8787` and run individual failure scenarios or the entire matrix. The lab forces object resets, failures around external side-effect boundaries, timeouts, terminal errors, duplicate registration, named-alarm replacement, eviction recovery, and concurrent retry bursts. Each scenario compares the package's persisted state with a separate Durable Object that acts as the external side-effect ledger.
+
+Run the same scenarios headlessly:
+
+```sh
+pnpm lab:test
+```
+
+See [`apps/runtime-lab`](./apps/runtime-lab) for the failure model, expected invariants, and limitations.
+
 ## Releases
 
 Package versions and release notes are managed with [Changesets](https://github.com/changesets/changesets). Add a changeset to every pull request that changes a published package:

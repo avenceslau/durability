@@ -1,0 +1,40 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "durability-runtime-lab",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LAB",
+        "class_name": "DurabilityLab",
+      },
+      {
+        "name": "EFFECTS",
+        "class_name": "EffectLedger",
+      },
+    ],
+  },
+  "exports": {
+    "DurabilityLab": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "EffectLedger": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+    },
+  },
+}

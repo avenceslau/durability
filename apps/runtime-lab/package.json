@@ -1,0 +1,25 @@
+{
+  "name": "@durability/runtime-lab",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "dev": "wrangler dev --port 8787",
+    "lint": "oxlint src tests",
+    "test": "vitest run --reporter=dot --silent=passed-only",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "durability": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.17.0",
+    "@durability/typescript-config": "workspace:*",
+    "@types/node": "^24.12.0",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.5",
+    "wrangler": "4.107.0"
+  }
+}

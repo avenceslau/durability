@@ -14,6 +14,8 @@
     "check": "pnpm format:check && pnpm lint && pnpm build && pnpm typecheck && pnpm test && pnpm pack:check",
     "format": "oxfmt --write \"**/*.{json,jsonc,md,ts}\"",
     "format:check": "oxfmt --check \"**/*.{json,jsonc,md,ts}\"",
+    "lab": "pnpm --filter @durability/runtime-lab dev",
+    "lab:test": "pnpm --filter @durability/runtime-lab test",
     "lint": "turbo run lint",
     "pack:check": "pnpm --filter durability --filter @durability/storage --filter @durability/transforms --filter @durability/lint exec publint",
     "release": "pnpm build && changeset publish",
