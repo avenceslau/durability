@@ -29,6 +29,13 @@ export const migrations = [
 ] satisfies DurableMigrations;
 ```
 
-Each migration list should use its own namespaced migration-history table when it is applied. This prevents a library's migration state from colliding with application-owned migrations in the same Durable Object database.
+Each helper should choose and explicitly pass a package-specific migration-history table when applying a migration list. Do not share a generic `migrations` table or assume every helper uses `durability_migrations`:
 
-`@durability/lint` can enforce that static `CREATE TABLE` statements are declared inside a `DurableMigrations` list.
+```ts
+new DOQB(storage.sql).migrations({
+  migrations,
+  tableName: 'queue_schema_migrations',
+});
+```
+
+A package-specific name prevents helper migration state from colliding with application-owned migrations or another helper in the same Durable Object database. `@durability/lint` enforces the `DurableMigrations` declaration and a static migration-history identifier ending in `_migrations`; it cannot prove that the prefix is unique.

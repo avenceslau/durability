@@ -55,6 +55,7 @@
   ],
   "dependencies": {
     "@durability/storage": "workspace:^",
+    "@standard-schema/spec": "^1.1.0",
     "workers-qb": "1.11.2",
     "zod": "^4.4.3"
   },

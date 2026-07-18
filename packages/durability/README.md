@@ -1,21 +1,35 @@
 # Durability
 
-Alarm-backed, effectively-once operation execution for Cloudflare Durable Objects.
+A focused SQLite-backed operation queue for each Cloudflare Durable Object.
 
-The package registers operations and reconciles their earliest wake-up in one Durable Object storage transaction. Generated operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. An alarm firing during execution attaches to the same in-memory promise. Failed calls are retried from later alarms, and a stable call ID deduplicates completed and concurrent calls. SQLite access and schema migrations are managed through `workers-qb`.
+Each operation is persisted independently before eager execution. Generated operation methods resolve after registration commits; they do not wait for the handler result. Pending work and retries share the Durable Object's physical alarm with optional named alarms.
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
 import { createDurability, type DurableHandler } from 'durability';
+import { z } from 'zod';
 
 type ResizeInput = { imageId: string };
 
 export class ImageJobs extends DurableObject<Env> {
-  private readonly durability = createDurability(this.ctx, {
-    resizeImage: (async ({ id, payload }) => {
-      return this.env.IMAGES.resize(payload.imageId, { idempotencyKey: id });
-    }) satisfies DurableHandler<ResizeInput, string>,
-  });
+  private readonly durability = createDurability(
+    this.ctx,
+    {
+      resizeImage: (async ({ id, payload, signal }) =>
+        this.env.IMAGES.resize(payload.imageId, {
+          idempotencyKey: id,
+          signal,
+        })) satisfies DurableHandler<ResizeInput, string>,
+    },
+    {
+      methods: {
+        resizeImage: {
+          payloadSchema: z.object({ imageId: z.string() }),
+          resultSchema: z.string(),
+        },
+      },
+    }
+  );
 
   resize(imageId: string) {
     return this.durability.resizeImage({
@@ -24,77 +38,181 @@ export class ImageJobs extends DurableObject<Env> {
     });
   }
 
-  alarm(alarmInfo?: AlarmInvocationInfo) {
-    return this.durability.alarm(alarmInfo);
+  alarm(info?: AlarmInvocationInfo) {
+    return this.durability.alarm(info);
   }
 }
 ```
+
+This package is an operation queue, not an event log or workflow engine. It does not provide replay, event sourcing, orchestration, durable sleeps, or rollback and saga infrastructure.
+
+## Migrating to 3.x
+
+This release has intentional breaking API changes. Every configured operation now requires a `methods` entry with Standard Schema `payloadSchema` and `resultSchema` validators. The schemas are typed against the handler's payload and awaited result, and Zod schemas implement Standard Schema directly. Alarm-only instances can still omit `methods`.
+
+`DurableOperationResult` adds the `cancelled` member, persisted result metadata (`operationVersion` and `payloadVersion`) is required, and `purgeBefore` is now a reserved durability method name. Add concrete schemas for every handler, rename any operation called `purgeBefore`, and exhaustively handle `cancelled` results.
+
+## Delivery and concurrency
+
+Calls are delivered at least once across eviction and isolate failure. A crash can happen after an external side effect succeeds but before completion is persisted, so handlers should pass the stable call ID to external systems as an idempotency key.
+
+`alarmConcurrency` is one FIFO in-process limit shared by eager operations, alarm-driven operations, and named alarms. A timed-out attempt aborts its signal, but arbitrary code cannot be forcibly stopped. Its per-ID lock and shared concurrency permit remain occupied until the actual handler settles. This prevents an abort-ignoring handler from overlapping a retry in the same isolate while preserving at-least-once recovery after actual isolate death.
+
+Attempts are claimed with a persisted conditional increment. A pending row at `maxAttempts` becomes terminal without invoking attempt `maxAttempts + 1`.
+
+```ts
+const durability = createDurability(
+  this.ctx,
+  {
+    resizeImage: (async ({ payload }) =>
+      payload.imageId) satisfies DurableHandler<ResizeInput, string>,
+  },
+  {
+    alarmConcurrency: 5,
+    attemptTimeoutMs: 60_000,
+    retries: {
+      maxAttempts: 5,
+      delay: (attempt) => Math.min(1_000 * 2 ** (attempt - 1), 30_000),
+    },
+    methods: {
+      resizeImage: {
+        payloadSchema: z.object({ imageId: z.string() }),
+        resultSchema: z.string(),
+      },
+    },
+  }
+);
+```
+
+A retry delay callback must round to a non-negative safe integer, and adding it to the current timestamp must remain a safe integer. Invalid, overflowing, or throwing policies produce a terminal `DurableRetryPolicyError`.
+
+The default attempt timeout is five minutes for both operations and named alarms. Queue-level `attemptTimeoutMs` changes that default; `methods.<operation>.attemptTimeoutMs` and `alarmMethods.<name>.attemptTimeoutMs` override it for one operation or alarm. Timeouts are terminal by default because an external outcome may be unknown. Enable `retryTimeouts` only for idempotent or reconciled effects. Attempt timeouts cannot be disabled; configure a larger positive integer when an attempt legitimately needs more time.
+
+Payload schemas run before registration, and the validated or transformed value is what gets serialized and persisted. Recovered payloads are deserialized and validated again before handler invocation. Invalid registration rejects with `DurablePayloadValidationError` without persisting; invalid recovered data becomes terminal without invoking the handler.
+
+Result schemas run before serialization and persistence, then completed results are deserialized and validated again when `getResult` returns them. Invalid results produce terminal `DurableResultValidationError`. Standard Schema validators may be synchronous or asynchronous. Values that validate but are not JSON-serializable, including unsupported values, circular structures, and `BigInt`, produce a terminal `DurableResultSerializationError` without rerunning the handler. Throw `NonRetryableError` for other permanent failures.
+
+## Results and administration
+
+`getResult` returns `not_found`, `pending`, `completed`, `failed`, or `cancelled`. Every persisted state exposes its `operationVersion` and `payloadVersion`.
+
+```ts
+const state = await this.durability.resizeImage.getResult('resize:image-1');
+if (state.status === 'completed') {
+  console.log(state.result, state.operationVersion, state.payloadVersion);
+}
+```
+
+Operation methods expose administrative methods:
+
+```ts
+await this.durability.resizeImage.cancel(id);
+await this.durability.resizeImage.retry(id);
+await this.durability.resizeImage.delete(id);
+```
+
+- `cancel` changes pending work to `cancelled`, persists a `DurableCancellationError`, aborts a local signal when possible, and reconciles the physical alarm.
+- `retry` accepts only failed or cancelled work, resets attempts and errors, preserves the ID and payload, and schedules immediately. It returns `unchanged` while an older local handler is still unsettled.
+- `delete` physically removes the current generation and aborts local work best-effort.
+
+Named alarm scheduler functions expose the same methods without an ID argument:
+
+```ts
+await this.durability.alarm.cleanup.cancel();
+await this.durability.alarm.cleanup.retry();
+await this.durability.alarm.cleanup.delete();
+```
+
+Mutation results discriminate `not_found`, `unchanged`, `updated`, and `deleted`.
+
+`purgeBefore(timestamp)` destructively removes every operation and named-alarm record whose `created_at` is strictly less than the supplied non-negative safe-integer timestamp, regardless of status. This includes active, pending, and future-scheduled records; records created exactly at the cutoff are retained. Application and migration tables are never removed. The result contains operation, named-alarm, and total counts.
+
+Delete and purge allow ID reuse. They cannot undo side effects that a handler already performed, including effects from active work being purged. Generation predicates prevent a late settlement from changing or deleting a replacement record.
+
+## Version metadata
+
+Persisted operation and payload versions default to `"1"`. Method options declare the current versions and explicitly accepted older versions. The persisted versions are passed to `DurableCall`.
+
+```ts
+const durability = createDurability(this.ctx, handlers, {
+  methods: {
+    resizeImage: {
+      payloadSchema: z.object({ imageId: z.string() }),
+      resultSchema: z.string(),
+      operationVersion: '2',
+      payloadVersion: '3',
+      acceptedOperationVersions: ['1'],
+      acceptedPayloadVersions: ['1', '2'],
+    },
+  },
+});
+```
+
+Callers may set `operationVersion` and `payloadVersion` during registration; omitted values use the method's current versions. An incompatible pending record becomes terminal with `DurableVersionMismatchError` before handler invocation. Version strings must be non-empty and unique within each current-and-accepted list.
+
+Named alarms use `handlerVersion` and `acceptedHandlerVersions` in `alarmMethods`. `DurableAlarmInfo` receives the persisted handler version. This is metadata-driven compatibility checking: the package does not retain historical callbacks or replay handlers.
 
 ## Named alarms
 
-Named alarms share the Durable Object's physical alarm with durable operation retries. Configure handlers through `alarms`, then schedule them through the typed method on `durability.alarm`:
+Named alarms share the same queue alarm and concurrency limit. Scheduling the same name replaces its current persisted occurrence with a new generation. A running old generation may finish, but generation predicates prevent it from modifying the replacement.
 
 ```ts
-import ms from 'ms';
-import { createDurability } from 'durability';
-import { exponential, jitter } from 'durability/utils';
-
-class ImageJobs extends DurableObject<Env> {
-  private readonly durability = createDurability(
-    this.ctx,
-    {
-      resizeImage: async ({ payload }) =>
-        this.env.IMAGES.resize(payload.imageId),
-    },
-    {
-      alarms: {
-        cleanup: async ({
-          scheduledTime,
-          attempt,
-          idempotencyKey,
+const durability = createDurability(
+  this.ctx,
+  {},
+  {
+    alarms: {
+      cleanup: async ({ idempotencyKey, signal, handlerVersion }) => {
+        await this.env.CLEANUP.fetch('https://cleanup.internal/run', {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey },
           signal,
-          platform,
-        }) => {
-          await this.env.CLEANUP.fetch('https://cleanup.internal/run', {
-            method: 'POST',
-            headers: { 'Idempotency-Key': idempotencyKey },
-            signal,
-          });
-          console.log({ scheduledTime, attempt, platform });
-        },
+        });
+        console.log(handlerVersion);
       },
-      alarmMethods: {
-        cleanup: {
-          attemptTimeoutMs: 60_000,
-          retries: {
-            maxAttempts: 5,
-            delay: (attempt) => jitter(exponential(attempt)),
-          },
-          retryTimeouts: true,
-        },
+    },
+    alarmMethods: {
+      cleanup: {
+        handlerVersion: '2',
+        acceptedHandlerVersions: ['1'],
+        retryTimeouts: true,
+        retries: { maxAttempts: 3 },
       },
-    }
-  );
-
-  scheduleCleanup() {
-    return this.durability.alarm.cleanup(Date.now() + ms('5 seconds'));
+    },
   }
+);
 
-  alarm(alarmInfo?: AlarmInvocationInfo) {
-    return this.durability.alarm(alarmInfo);
-  }
-}
+await durability.alarm.cleanup(Date.now() + 5_000);
 ```
 
-Scheduling the same name again replaces its pending occurrence. If that name is already running, the current handler continues and the replacement runs afterward. Different names may run concurrently, but one name never has more than one active handler in the same Durable Object instance.
+A named-alarm timeout is terminal by default because its external outcome may be unknown. Enable `retryTimeouts` only for idempotent or reconciled effects. The generated idempotency key stays stable across retries of one generation.
 
-Each schedule receives a new internal occurrence ID. Its generated `idempotencyKey` remains stable across retries, while `attempt` starts at one and increments for every execution of that occurrence. A successful handler removes only the occurrence it executed, so it cannot delete a replacement scheduled while it was running.
+Alarm invocations hand unfinished batches to an immediate new alarm after `alarmHandoffMs` (14 minutes by default). In-memory locks prevent overlap while the isolate survives; persisted pending rows recover work after eviction.
 
-Named alarms inherit the global attempt timeout and retry policy. `alarmMethods` overrides them for one name. Failures use the same jittered exponential delay as operations by default; `NonRetryableError` and exhausted attempts make the occurrence terminal. A timeout aborts the handler's `signal` and is terminal by default because the external outcome may be unknown. Set `retryTimeouts: true` only when the handler's side effects use the generated idempotency key or reconcile their outcome before retrying. If a handler ignores the signal, the scheduler retains its per-name execution lock until the handler actually settles, preventing an overlapping retry.
+## Lifecycle metrics
 
-Named alarm handlers are still at-least-once across eviction or restart. Pass `idempotencyKey` to external systems that support deduplication.
+`onLifecycleEvent` receives compact events for registration or scheduling, attempt start, completed/retry-scheduled/failed settlement, non-attempt terminal version mismatch or attempt exhaustion, cancel, retry, delete, and purge. Events include entity identity, generation, timestamp, attempt and versions where relevant. Settlement events include duration and error or next-attempt metadata when relevant.
 
-## SQLite requirement
+```ts
+const durability = createDurability(this.ctx, handlers, {
+  methods: {
+    resizeImage: {
+      payloadSchema: z.object({ imageId: z.string() }),
+      resultSchema: z.string(),
+    },
+  },
+  onLifecycleEvent: (event) =>
+    this.env.METRICS.writeDataPoint({
+      indexes: [event.entityKind],
+      blobs: [event.type, 'id' in event ? event.id : 'durability'],
+      doubles: [event.timestamp],
+    }),
+});
+```
+
+Delivery is non-blocking and best-effort. When the supplied context exposes `waitUntil`, returned hook promises are attached to it; otherwise they are detached with a rejection sink. Hook failures emit one structured `durability.lifecycle_hook.failed` console event and never affect queue state or retry behavior. Unexpected detached eager, administrative retry, or alarm-handoff failures emit `durability.background_execution.failed`; background reporting also never changes queue state. Events may be duplicated or lost across crashes; use them as metrics signals, not as an audit log or durable lifecycle journal.
+
+## SQLite and migrations
 
 The Durable Object class must use SQLite storage:
 
@@ -104,109 +222,13 @@ The Durable Object class must use SQLite storage:
 }
 ```
 
-`createDurability` migrates to the latest schema and stores operations in `durability_calls` and named schedules in `durability_alarms`. Each package migration has `up` and `down` SQL and is tracked in the namespaced `durability_migrations` table.
-
-Rollbacks are explicit because rolling back the initial migration deletes durable call records:
+`createDurability` migrates `durability_calls` and `durability_alarms` automatically. Reversible package migrations are tracked in the explicitly named `durability_migrations` table. Legacy records upgraded to v4 receive the migration timestamp for `created_at`, conservatively retaining them from cutoffs that predate the migration.
 
 ```ts
 import { migrateDurability } from 'durability';
 
-migrateDurability(this.ctx, 'durability_0001_create_calls');
-migrateDurability(this.ctx, null); // roll back every durability migration
+migrateDurability(this.ctx, 'durability_0003_create_alarms');
+migrateDurability(this.ctx, null);
 ```
 
-Passing a migration name moves the schema to that exact version, applying or reverting migrations as needed. Payloads and results must be JSON-serializable.
-
-## Reading results
-
-Results are read through the same typed operation using its idempotency key:
-
-```ts
-const result = await this.durability.resizeImage.getResult(`resize:${imageId}`);
-
-switch (result.status) {
-  case 'not_found':
-    break;
-  case 'pending':
-    console.log(result.attempt, result.nextAttemptAt, result.lastError);
-    break;
-  case 'failed':
-    console.error(result.error.name, result.error.message);
-    break;
-  case 'completed':
-    console.log(result.result);
-    break;
-}
-```
-
-The completed result type is inferred from the operation handler. Looking up a key belonging to another operation throws `DuplicateDurableCallError` rather than returning a result with the wrong type.
-
-## Retries, timeouts, and terminal failures
-
-Attempts use exponential backoff with equal jitter, stop after five attempts, and time out after five minutes by default. The retry `delay` function fully controls scheduling and can be overridden globally or per operation. The package exports the default delay building blocks for custom policies:
-
-```ts
-import { exponential, jitter } from 'durability/utils';
-
-const durability = createDurability(this.ctx, handlers, {
-  attemptTimeoutMs: 60_000,
-  retries: {
-    maxAttempts: 5,
-    delay: (attempt) => jitter(exponential(attempt)),
-  },
-  methods: {
-    resizeImage: {
-      attemptTimeoutMs: 10 * 60_000,
-      retries: {
-        maxAttempts: 2,
-        delay: (attempt) => exponential(attempt, 500, 30_000),
-      },
-    },
-  },
-});
-```
-
-Each attempt receives its own `AbortSignal`:
-
-```ts
-const handlers = {
-  sendEmail: async ({ payload, signal }: DurableCall<EmailPayload>) =>
-    fetch(payload.url, { method: 'POST', signal }),
-};
-```
-
-A timed-out attempt aborts its signal and follows the normal retry policy. Abort-aware APIs stop promptly; arbitrary handler code cannot be forcibly terminated.
-
-Throw `NonRetryableError` to move a call directly to `failed` without another attempt:
-
-```ts
-import { NonRetryableError } from 'durability';
-
-throw new NonRetryableError('Recipient permanently rejected');
-```
-
-Errors created by `NonRetryableError` from `cloudflare:workflows` are also recognized.
-
-## Delivery semantics
-
-Calls are delivered at least once and deduplicated by ID after completion. Arbitrary external side effects cannot be made strictly exactly-once: a process can stop after the side effect succeeds but before its completion record commits. Pass the call ID to external services as an idempotency key to obtain effectively-once behavior.
-
-Completion records are retained indefinitely so IDs remain deduplicated. The helper owns the Durable Object's alarm; compose unrelated scheduled work through the same alarm handler instead of independently replacing its alarm.
-
-## Durable Object-to-Object coordination
-
-When an operation spans multiple Durable Objects, a durability-enabled coordinator can retry each step after a crash, while durability-enabled participants deduplicate those retries using stable operation IDs. This supports sagas and other two-phase coordination scenarios with eventual consistency; it does not create one atomic storage transaction across the objects.
-
-Intermediate states may be visible until every participant completes. Persist the coordination state, propagate stable IDs to every participant, and explicitly handle terminal failures or compensating operations when the operation can be aborted.
-
-## Long-running alarm calls
-
-Alarm invocations have a 15-minute wall-time limit. If a handler is still pending after 14 minutes, the helper retains its promise in memory, arms an immediate alarm, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again:
-
-```ts
-const durability = createDurability(this.ctx, handlers, {
-  alarmHandoffMs: 14 * 60_000,
-});
-```
-
-This handoff can keep a call running beyond one alarm invocation while the Durable Object remains in memory. It is intentionally backed by the persisted pending call: if Cloudflare evicts or restarts the object during a handoff, the next alarm reconstructs and executes the call again. External side effects still require the stable call ID as an idempotency key.
+Passing `null` removes every durability-owned queue table and the `durability_migrations` history table. It does not remove application tables. Normal targeted rollback retains migration history so later migrations remain consistent. A targeted down migration from v4 is schema-reversible but semantically lossy: `cancelled` records become `failed`, and operation versions, payload versions, operation generations, handler versions, and created timestamps are discarded.

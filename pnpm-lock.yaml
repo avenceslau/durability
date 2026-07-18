@@ -29,6 +29,9 @@ importers:
       '@durability/storage':
         specifier: workspace:^
         version: link:../storage
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
       workers-qb:
         specifier: 1.11.2
         version: 1.11.2

@@ -89,7 +89,7 @@ const value = await stub
   .read();
 ```
 
-A caller timeout stops waiting but does not cancel the remote operation. Each retry is a new RPC invocation, so retry only idempotent methods or pass an idempotency key. When `delay` is omitted, retries use capped exponential backoff with full jitter.
+Caller retries are memory-only and do not persist across caller eviction or restart. Each retry is a new RPC invocation, so retry only idempotent methods or pass an idempotency key. A caller timeout only stops the local wait: it does not persist, cancel the remote RPC, or stop remote side effects. When `delay` is omitted, retries use capped exponential backoff with full jitter.
 
 Other built-ins include:
 

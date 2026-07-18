@@ -78,21 +78,24 @@ describe('alarm-runner-only', () => {
 });
 
 describe('durability-migrations-only', () => {
-  it('accepts the durability migration table', () => {
-    const result = lint(
-      `
-        import { DOQB } from 'workers-qb';
-        const qb = new DOQB(storage.sql);
-        qb.migrations({
-          migrations,
-          tableName: 'durability_migrations',
-        });
-      `,
-      'durability-migrations-only'
-    );
+  it.each(['durability_migrations', 'queue_schema_migrations'])(
+    'accepts the namespaced migration table %s',
+    (tableName) => {
+      const result = lint(
+        `
+          import { DOQB } from 'workers-qb';
+          const qb = new DOQB(storage.sql);
+          qb.migrations({
+            migrations,
+            tableName: '${tableName}',
+          });
+        `,
+        'durability-migrations-only'
+      );
 
-    expect(result).toEqual({ status: 0, output: '' });
-  });
+      expect(result).toEqual({ status: 0, output: '' });
+    }
+  );
 
   it.each([
     `
@@ -244,7 +247,7 @@ describe('durability-migrations-only', () => {
 
     expect(result.status).toBe(1);
     expect(result.output).toContain(
-      'workers-qb migrations must use the durability_migrations table.'
+      'workers-qb migrations must use an explicit static table name ending in "_migrations".'
     );
   });
 

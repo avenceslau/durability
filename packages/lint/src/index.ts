@@ -244,7 +244,7 @@ const durabilityMigrationsRule = {
       tableCreation:
         'CREATE TABLE statements must be declared in DurableMigrations.',
       tableName:
-        'workers-qb migrations must use the durability_migrations table.',
+        'workers-qb migrations must use an explicit static table name ending in "_migrations".',
     },
   },
   create(context: RuleContext) {
@@ -533,9 +533,14 @@ const durabilityMigrationsRule = {
                     propertyName(property.key) === 'tableName'
                 )
               : undefined;
+          const migrationTable = tableName
+            ? staticStringValue(nodeValue(tableName.value))
+            : undefined;
           if (
-            !tableName ||
-            propertyName(nodeValue(tableName.value)) !== 'durability_migrations'
+            !migrationTable ||
+            !/^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*_migrations$/.test(
+              migrationTable
+            )
           ) {
             context.report({ node, messageId: 'tableName' });
           }

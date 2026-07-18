@@ -28,7 +28,7 @@ A class using `createDurability` must delegate its alarm method directly to the 
 
 ```ts
 class ImageJobs extends DurableObject<Env> {
-  private readonly durability = createDurability(this.ctx, handlers);
+  private readonly durability = createDurability(this.ctx, handlers, options);
 
   alarm(info?: AlarmInvocationInfo) {
     return this.durability.alarm(info);
@@ -60,13 +60,15 @@ this.ctx.storage.sql.exec('CREATE TABLE jobs (id TEXT PRIMARY KEY);');
 
 Static analysis covers string literals, template literals whose substitutions are themselves static strings, and nested `+` concatenations of those expressions. The outermost static expression is reported once. Expressions containing identifiers, calls, or other values that cannot be resolved without executing the program are ignored.
 
-The rule also requires `DOQB` migration builders imported from `workers-qb` to use the namespaced migration-history table:
+The rule also requires `DOQB` migration builders imported from `workers-qb` to declare a static identifier ending in `_migrations`. Static analysis cannot prove that the prefix is unique to a package, so use a package-specific name; it is not required to be `durability_migrations`:
 
 ```ts
 const builder = new DOQB(this.ctx.storage.sql).migrations({
   migrations,
-  tableName: 'durability_migrations',
+  tableName: 'queue_schema_migrations',
 });
 ```
+
+Omitting `tableName`, using a dynamic value, or using an identifier that does not end in `_migrations` is rejected.
 
 Imported `DOQB` aliases, direct construction, local builder variables, and public or private class fields used through `this` are recognized. Simple assignments are followed only when every write can be proven to originate from the imported constructor. Lexically shadowed and unrelated same-name values are ignored.
