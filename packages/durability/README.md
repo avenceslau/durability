@@ -1,8 +1,12 @@
 # Durability
 
-Alarm-backed, effectively-once operation execution for Cloudflare Durable Objects.
+A small, alarm-backed independent-operation queue for Cloudflare Durable Objects.
 
-The package registers operations and reconciles their earliest wake-up in one Durable Object storage transaction. Generated operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. An alarm firing during execution attaches to the same in-memory promise. Failed calls are retried from later alarms, and a stable call ID deduplicates completed and concurrent calls. SQLite access and schema migrations are managed through `workers-qb`.
+Durability is not an event-sourcing, replay-log, or workflow-orchestration engine. It registers independent operations and reconciles their earliest wake-up in one Durable Object storage transaction. Generated operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed calls are retried from later alarms, and a stable call ID deduplicates completed and concurrent calls. SQLite access and schema migrations are managed through `workers-qb`.
+
+## Migrating to v3
+
+Operation timeouts are now terminal by default. Set `retryTimeouts: true` on each affected method to preserve the previous timeout-retry behavior. `purgeBefore` is now reserved by the generated durability API, so rename any operation with that name before upgrading.
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
@@ -104,7 +108,7 @@ The Durable Object class must use SQLite storage:
 }
 ```
 
-`createDurability` migrates to the latest schema and stores operations in `durability_calls` and named schedules in `durability_alarms`. Each package migration has `up` and `down` SQL and is tracked in the namespaced `durability_migrations` table.
+`createDurability` migrates to the latest schema and stores operations in `durability_calls` and named schedules in `durability_alarms`. Each package migration has `up` and `down` SQL and is tracked in the namespaced `durability_migrations` table. The v4 migration adds generation and creation timestamps; existing records receive the migration time. Rolling back to `null` removes the durability tables and `durability_migrations`, without touching application tables.
 
 Rollbacks are explicit because rolling back the initial migration deletes durable call records:
 
@@ -175,7 +179,7 @@ const handlers = {
 };
 ```
 
-A timed-out attempt aborts its signal and follows the normal retry policy. Abort-aware APIs stop promptly; arbitrary handler code cannot be forcibly terminated.
+A timed-out operation aborts its signal and is terminal by default because its mutation outcome may be unknown. Set `retryTimeouts: true` for a method only when its handler is idempotent or reconciles the external outcome before retrying. Named alarms retain the same terminal-default opt-in behavior. If a handler ignores abort, its in-memory ID lock and shared concurrency permit remain held until the real handler settles, so a same-isolate retry cannot overlap it. Across eviction or restart, delivery remains at least once.
 
 Throw `NonRetryableError` to move a call directly to `failed` without another attempt:
 
@@ -187,17 +191,36 @@ throw new NonRetryableError('Recipient permanently rejected');
 
 Errors created by `NonRetryableError` from `cloudflare:workflows` are also recognized.
 
-## Delivery semantics
+## Delivery semantics and concurrency
 
-Calls are delivered at least once and deduplicated by ID after completion. Arbitrary external side effects cannot be made strictly exactly-once: a process can stop after the side effect succeeds but before its completion record commits. Pass the call ID to external services as an idempotency key to obtain effectively-once behavior.
+Calls are delivered at least once and deduplicated by ID after completion. Arbitrary external side effects cannot be made strictly exactly-once: a process can stop after the side effect succeeds but before its completion record commits. Handlers should be idempotent, and should pass the call ID to external services as an idempotency key when supported.
+
+`alarmConcurrency` defaults to 10 and is one FIFO concurrency limit shared by eager operation handlers, alarm-driven operation handlers, and named-alarm handlers. Newly registered operations start eagerly only when a permit is immediately available; otherwise their persisted row is left for the reconciled alarm without creating an in-memory waiter. A timed-out handler that has not settled continues to occupy its permit.
 
 Completion records are retained indefinitely so IDs remain deduplicated. The helper owns the Durable Object's alarm; compose unrelated scheduled work through the same alarm handler instead of independently replacing its alarm.
 
-## Durable Object-to-Object coordination
+## Destructive retention purge
 
-When an operation spans multiple Durable Objects, a durability-enabled coordinator can retry each step after a crash, while durability-enabled participants deduplicate those retries using stable operation IDs. This supports sagas and other two-phase coordination scenarios with eventual consistency; it does not create one atomic storage transaction across the objects.
+`purgeBefore(timestamp)` deletes every operation and named-alarm record whose creation time is strictly less than `timestamp`, regardless of status or scheduled time. Records created exactly at the cutoff are retained. The timestamp must be a non-negative safe integer.
 
-Intermediate states may be visible until every participant completes. Persist the coordination state, propagate stable IDs to every participant, and explicitly handle terminal failures or compensating operations when the operation can be aborted.
+```ts
+const removed = await this.durability.purgeBefore(retentionCutoff);
+console.log(removed.operations, removed.namedAlarms, removed.total);
+```
+
+The purge uses aggregate counts, deletes and reconciles the physical alarm in one storage transaction, and never touches application or migration tables. It best-effort aborts matching active handlers, but JavaScript cannot force an abort-ignoring handler to stop. Operation IDs can be reused immediately; a late old generation cannot overwrite the replacement record, but its already-started external side effects may still complete. A replacement named alarm remains serialized behind an abort-ignoring old handler with the same name until that handler settles or the isolate is evicted. Treat this API as intentionally destructive.
+
+## Lifecycle metrics hook
+
+`onLifecycleEvent` receives compact events for registration or scheduling, attempt start and settlement, pre-invocation attempt exhaustion, and purge aggregates. Events include timestamps, attempts, identities, and generation IDs needed to attribute metrics.
+
+```ts
+const durability = createDurability(this.ctx, handlers, {
+  onLifecycleEvent: (event) => recordDurabilityMetric(event),
+});
+```
+
+The hook is best-effort and non-blocking, is not a durable journal, and may duplicate or drop events across crashes. Hook failures are reported to `console.error` and never change queue state. Returned promises are attached to `waitUntil` when the context exposes it.
 
 ## Long-running alarm calls
 
