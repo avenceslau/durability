@@ -117,18 +117,18 @@ export type DurabilityMethodOptions = {
   retries?: DurabilityRetryOptions;
 };
 
+const retryOptionsSchema = z.object({
+  delay: z
+    .custom<NonNullable<DurabilityRetryOptions['delay']>>(
+      (value) => typeof value === 'function'
+    )
+    .optional(),
+  maxAttempts: z.number().optional(),
+});
+
 const durabilityMethodOptionsSchema = z.object({
   attemptTimeoutMs: z.number().optional(),
-  retries: z
-    .object({
-      delay: z
-        .custom<NonNullable<DurabilityRetryOptions['delay']>>(
-          (value) => typeof value === 'function'
-        )
-        .optional(),
-      maxAttempts: z.number().optional(),
-    })
-    .optional(),
+  retries: retryOptionsSchema.optional(),
 });
 
 /** Execution policy overrides for one named alarm. */
@@ -164,6 +164,83 @@ const durabilityAlarmMethodOptionsSchema = durabilityMethodOptionsSchema.extend(
  * };
  * ```
  */
+type SerializedError = { name: string; message: string };
+
+type OperationLifecycleEntity = {
+  entityKind: 'operation';
+  operation: string;
+  id: string;
+  generation: string;
+};
+
+type AlarmLifecycleEntity = {
+  entityKind: 'named_alarm';
+  alarm: string;
+  id: string;
+  generation: string;
+};
+
+type LifecycleEntity = OperationLifecycleEntity | AlarmLifecycleEntity;
+
+/** Best-effort metrics signal for queue lifecycle changes. */
+export type DurabilityLifecycleEvent =
+  | (OperationLifecycleEntity & {
+      type: 'registered';
+      timestamp: number;
+      attempt: 0;
+    })
+  | (AlarmLifecycleEntity & {
+      type: 'scheduled';
+      timestamp: number;
+      attempt: 0;
+      scheduledTime: number;
+    })
+  | (LifecycleEntity & {
+      type: 'attempt_started';
+      timestamp: number;
+      attempt: number;
+    })
+  | (LifecycleEntity & {
+      type: 'attempt_settled';
+      timestamp: number;
+      attempt: number;
+      durationMs: number;
+      outcome: 'completed';
+    })
+  | (LifecycleEntity & {
+      type: 'attempt_settled';
+      timestamp: number;
+      attempt: number;
+      durationMs: number;
+      outcome: 'retry_scheduled';
+      error: SerializedError;
+      nextAttemptAt: number;
+    })
+  | (LifecycleEntity & {
+      type: 'attempt_settled';
+      timestamp: number;
+      attempt: number;
+      durationMs: number;
+      outcome: 'failed';
+      error: SerializedError;
+    })
+  | (LifecycleEntity & {
+      type: 'terminal';
+      timestamp: number;
+      attempt: number;
+      reason: 'attempts_exhausted';
+      error: SerializedError;
+    })
+  | {
+      type: 'purged';
+      entityKind: 'durability';
+      timestamp: number;
+      before: number;
+      operations: number;
+      namedAlarms: number;
+      total: number;
+    };
+
 export type DurabilityOptions<
   Handlers extends HandlerMap = HandlerMap,
   AlarmNames extends string = never,
@@ -174,7 +251,7 @@ export type DurabilityOptions<
   alarmMethods?: [AlarmNames] extends [never]
     ? never
     : Partial<Record<NoInfer<AlarmNames>, DurabilityAlarmMethodOptions>>;
-  /** Maximum immediate operations executed concurrently by an alarm. Defaults to 10. */
+  /** Maximum handlers shared by eager operations and alarm work. Defaults to 10. */
   alarmConcurrency?: number;
   /** Time before a running alarm hands unfinished work to a new alarm. Defaults to 14 minutes. */
   alarmHandoffMs?: number;
@@ -186,6 +263,8 @@ export type DurabilityOptions<
   >;
   /** Retry policy shared by handlers without a method-level override. */
   retries?: DurabilityRetryOptions;
+  /** Receives best-effort, non-durable lifecycle metrics events. */
+  onLifecycleEvent?: (event: DurabilityLifecycleEvent) => void | Promise<void>;
 };
 
 type HandlerPayload<Handler> = Handler extends (
@@ -194,17 +273,24 @@ type HandlerPayload<Handler> = Handler extends (
   ? Payload
   : never;
 
-type CallRow = {
-  id: string;
-  operation: string;
-  payload: string;
-  status: 'pending' | 'completed' | 'failed';
-  result: string | null;
-  attempt: number;
-  next_attempt_at: number;
-  last_error: string | null;
-  last_error_name: string | null;
-};
+const callRowSchema = z.object({
+  id: z.string(),
+  operation: z.string(),
+  payload: z.string(),
+  status: z.enum(['pending', 'completed', 'failed']),
+  result: z.string().nullable(),
+  attempt: z.number().int().nonnegative(),
+  next_attempt_at: z.number().int().nonnegative(),
+  last_error: z.string().nullable(),
+  last_error_name: z.string().nullable(),
+  completed_at: z.number().int().nonnegative().nullable(),
+  created_at: z.number().int().nonnegative(),
+  generation_id: z.string(),
+});
+const callAttemptSchema = callRowSchema.pick({ attempt: true });
+const callIdSchema = callRowSchema.pick({ id: true });
+const callNextAttemptSchema = callRowSchema.pick({ next_attempt_at: true });
+type CallRow = z.infer<typeof callRowSchema>;
 
 const alarmRowSchema = z.object({
   name: z.string(),
@@ -215,9 +301,10 @@ const alarmRowSchema = z.object({
   attempt: z.number().int().nonnegative(),
   last_error: z.string().nullable(),
   last_error_name: z.string().nullable(),
+  created_at: z.number().int().nonnegative(),
 });
 const alarmAttemptSchema = alarmRowSchema.pick({ attempt: true });
-const alarmGenerationSchema = alarmRowSchema.pick({ generation_id: true });
+const countSchema = z.object({ count: z.number().int().nonnegative() });
 type AlarmRow = z.infer<typeof alarmRowSchema>;
 
 type DurableOperationInput<Handler> = {
@@ -313,12 +400,21 @@ type DurabilityAlarm<AlarmNames extends string> = ((
 ) => Promise<void>) &
   Record<AlarmNames, DurableNamedAlarm>;
 
+/** Aggregate counts returned by a destructive purge. */
+export type DurablePurgeResult = {
+  operations: number;
+  namedAlarms: number;
+  total: number;
+};
+
 export type Durability<
   Handlers extends HandlerMap,
   AlarmNames extends string = never,
 > = {
   /** Processes due work and exposes methods for scheduling named alarms. */
   alarm: DurabilityAlarm<AlarmNames>;
+  /** Destructively removes all queue records created before a timestamp. */
+  purgeBefore: (timestamp: number) => Promise<DurablePurgeResult>;
 } & {
   [Operation in keyof Handlers]: DurableOperation<Handlers[Operation]>;
 };
@@ -396,6 +492,106 @@ export const durabilityMigrations = [
     down: `
       DROP INDEX IF EXISTS durability_alarms_pending_idx;
       DROP TABLE IF EXISTS durability_alarms;
+    `,
+  },
+  {
+    name: 'durability_0004_generation_and_created_at',
+    up: `
+      DROP INDEX IF EXISTS durability_calls_pending_idx;
+      ALTER TABLE durability_calls RENAME TO durability_calls_v3;
+      CREATE TABLE durability_calls (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
+        result TEXT,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        completed_at INTEGER,
+        generation_id TEXT NOT NULL DEFAULT 'legacy',
+        created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER))
+      );
+      INSERT INTO durability_calls
+      SELECT id, operation, payload, status, result, attempt, next_attempt_at,
+        last_error, last_error_name, completed_at, 'legacy:' || id,
+        CAST(unixepoch('subsec') * 1000 AS INTEGER)
+      FROM durability_calls_v3;
+      DROP TABLE durability_calls_v3;
+      CREATE INDEX durability_calls_pending_idx
+      ON durability_calls (status, next_attempt_at);
+      CREATE INDEX durability_calls_created_idx
+      ON durability_calls (created_at);
+
+      DROP INDEX IF EXISTS durability_alarms_pending_idx;
+      ALTER TABLE durability_alarms RENAME TO durability_alarms_v3;
+      CREATE TABLE durability_alarms (
+        name TEXT PRIMARY KEY,
+        generation_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'failed')),
+        scheduled_at INTEGER NOT NULL,
+        next_attempt_at INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        last_error_name TEXT,
+        created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER))
+      );
+      INSERT INTO durability_alarms
+      SELECT name, generation_id, status, scheduled_at, next_attempt_at,
+        attempt, last_error, last_error_name,
+        CAST(unixepoch('subsec') * 1000 AS INTEGER)
+      FROM durability_alarms_v3;
+      DROP TABLE durability_alarms_v3;
+      CREATE INDEX durability_alarms_pending_idx
+      ON durability_alarms (status, next_attempt_at);
+      CREATE INDEX durability_alarms_created_idx
+      ON durability_alarms (created_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_calls_pending_idx;
+      DROP INDEX IF EXISTS durability_calls_created_idx;
+      ALTER TABLE durability_calls RENAME TO durability_calls_v4;
+      CREATE TABLE durability_calls (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
+        result TEXT,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        completed_at INTEGER
+      );
+      INSERT INTO durability_calls
+      SELECT id, operation, payload, status, result, attempt, next_attempt_at,
+        last_error, last_error_name, completed_at
+      FROM durability_calls_v4;
+      DROP TABLE durability_calls_v4;
+      CREATE INDEX durability_calls_pending_idx
+      ON durability_calls (status, next_attempt_at);
+
+      DROP INDEX IF EXISTS durability_alarms_pending_idx;
+      DROP INDEX IF EXISTS durability_alarms_created_idx;
+      ALTER TABLE durability_alarms RENAME TO durability_alarms_v4;
+      CREATE TABLE durability_alarms (
+        name TEXT PRIMARY KEY,
+        generation_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'failed')),
+        scheduled_at INTEGER NOT NULL,
+        next_attempt_at INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        last_error_name TEXT
+      );
+      INSERT INTO durability_alarms
+      SELECT name, generation_id, status, scheduled_at, next_attempt_at,
+        attempt, last_error, last_error_name
+      FROM durability_alarms_v4;
+      DROP TABLE durability_alarms_v4;
+      CREATE INDEX durability_alarms_pending_idx
+      ON durability_alarms (status, next_attempt_at);
     `,
   },
 ] satisfies DurableMigrations;
@@ -488,6 +684,10 @@ export const migrateDurability = (
     .apply()
     .map((migration) => migration.name);
 
+  if (target === null) {
+    context.storage.sql.exec(`DROP TABLE IF EXISTS ${migrationTableName}`);
+  }
+
   return { applied, rolledBack };
 };
 
@@ -541,6 +741,40 @@ export class DurableAlarmTimeoutError extends Error {
   constructor(name: string, timeoutMs: number) {
     super(`Durable alarm "${name}" timed out after ${timeoutMs}ms`);
     this.name = 'DurableAlarmTimeoutError';
+  }
+}
+
+/** Error persisted when retry-delay evaluation fails or is unsafe. */
+export class DurableRetryPolicyError extends Error {
+  constructor(entity: string, reason?: unknown) {
+    super(
+      `Retry policy for ${entity} must produce a non-negative safe-integer timestamp`
+    );
+    this.name = 'DurableRetryPolicyError';
+    if (reason !== undefined) {
+      Object.defineProperty(this, 'cause', { value: reason });
+    }
+  }
+}
+
+/** Error persisted when a successful result cannot be JSON-serialized. */
+export class DurableResultSerializationError extends Error {
+  constructor(operation: string, reason?: unknown) {
+    super(
+      `Result for durable operation "${operation}" is not JSON-serializable`
+    );
+    this.name = 'DurableResultSerializationError';
+    if (reason !== undefined) {
+      Object.defineProperty(this, 'cause', { value: reason });
+    }
+  }
+}
+
+/** Error persisted when pending work has already reached its attempt limit. */
+export class DurableAttemptsExhaustedError extends Error {
+  constructor(entity: 'operation' | 'named alarm', name: string, max: number) {
+    super(`Durable ${entity} "${name}" exhausted its ${max} attempts`);
+    this.name = 'DurableAttemptsExhaustedError';
   }
 }
 
@@ -610,19 +844,27 @@ export class DuplicateDurableCallError extends Error {
  * @param handlers Operation handlers keyed by their public method names.
  * @param options Named alarms, concurrency, timeout, and retry policies.
  */
+type ActiveExecution = {
+  generation: string;
+  createdAt: number;
+  settled: Promise<void>;
+  controller?: AbortController;
+};
+
 export const createDurability = <
   Handlers extends HandlerMap,
   const AlarmNames extends string = never,
 >(
-  context: Pick<DurableObjectState, 'storage'>,
+  context: Pick<DurableObjectState, 'storage'> &
+    Partial<Pick<DurableObjectState, 'waitUntil'>>,
   handlers: Handlers,
   options: DurabilityOptions<Handlers, AlarmNames> = {}
 ): Durability<Handlers, AlarmNames> => {
   migrateDurability(context);
   const qb = new DOQB(context.storage.sql);
 
-  const active = new Map<string, Promise<unknown>>();
-  const activeAlarms = new Map<string, Promise<void>>();
+  const active = new Map<string, ActiveExecution>();
+  const activeAlarms = new Map<string, ActiveExecution>();
   const alarmHandlers = new Map(
     Object.entries(options.alarms ?? {}).map(([name, handler]) => [
       name,
@@ -632,10 +874,10 @@ export const createDurability = <
   const alarmConcurrency = options.alarmConcurrency ?? 10;
   const alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
   const defaultAttemptTimeoutMs = options.attemptTimeoutMs ?? 5 * 60_000;
+  const retryOptions = retryOptionsSchema.parse(options.retries ?? {});
   const defaultRetryDelay =
-    options.retries?.delay ??
-    ((attempt: number) => jitter(exponential(attempt)));
-  const defaultMaxAttempts = options.retries?.maxAttempts ?? 5;
+    retryOptions.delay ?? ((attempt: number) => jitter(exponential(attempt)));
+  const defaultMaxAttempts = retryOptions.maxAttempts ?? 5;
   if (!Number.isInteger(alarmConcurrency) || alarmConcurrency < 1) {
     throw new RangeError('alarmConcurrency must be a positive integer');
   }
@@ -649,11 +891,13 @@ export const createDurability = <
     throw new RangeError('retries.maxAttempts must be a positive integer');
   }
 
-  const methodOptions = (options.methods ?? {}) as Record<
-    string,
-    DurabilityMethodOptions | undefined
-  >;
-  for (const [operation, method] of Object.entries(methodOptions)) {
+  const methodOptions = new Map(
+    Object.entries(options.methods ?? {}).map(([operation, method]) => [
+      operation,
+      durabilityMethodOptionsSchema.parse(method),
+    ])
+  );
+  for (const [operation, method] of methodOptions) {
     if (
       method?.attemptTimeoutMs !== undefined &&
       (!Number.isInteger(method.attemptTimeoutMs) ||
@@ -702,7 +946,7 @@ export const createDurability = <
   }
 
   const executionPolicy = (operation: string) => {
-    const method = methodOptions[operation];
+    const method = methodOptions.get(operation);
     return {
       attemptTimeoutMs: method?.attemptTimeoutMs ?? defaultAttemptTimeoutMs,
       delay: method?.retries?.delay ?? defaultRetryDelay,
@@ -720,21 +964,135 @@ export const createDurability = <
     };
   };
 
-  const isNonRetryable = (error: unknown): boolean => {
-    if (error instanceof NonRetryableError) {
-      return true;
+  const serializeError = (error: unknown): SerializedError => {
+    let name = 'Error';
+    let message = 'Unknown thrown value';
+    try {
+      if (error === null) {
+        return { name, message: 'null' };
+      }
+      if (typeof error !== 'object' && typeof error !== 'function') {
+        return { name, message: String(error) };
+      }
+      try {
+        const candidate = Reflect.get(error, 'name');
+        if (typeof candidate === 'string' && candidate.length > 0) {
+          name = candidate;
+        }
+      } catch {
+        name = 'Error';
+      }
+      try {
+        const candidate = Reflect.get(error, 'message');
+        if (typeof candidate === 'string' && candidate.length > 0) {
+          message = candidate;
+        }
+      } catch {
+        message = 'Unknown thrown value';
+      }
+      return { name, message };
+    } catch {
+      return { name: 'Error', message: 'Unknown thrown value' };
     }
-    if (typeof error !== 'object' || error === null) {
+  };
+
+  const isErrorInstance = (
+    error: unknown,
+    constructor: new (...args: never[]) => Error
+  ): boolean => {
+    try {
+      return error instanceof constructor;
+    } catch {
       return false;
     }
-    const value = error as {
-      constructor?: { name?: string };
-      name?: string;
-    };
-    return (
-      value.name === 'NonRetryableError' ||
-      value.constructor?.name === 'NonRetryableError'
-    );
+  };
+
+  const isNonRetryable = (error: unknown): boolean => {
+    if (isErrorInstance(error, NonRetryableError)) {
+      return true;
+    }
+    if (
+      (typeof error !== 'object' && typeof error !== 'function') ||
+      error === null
+    ) {
+      return false;
+    }
+    try {
+      if (Reflect.get(error, 'name') === 'NonRetryableError') {
+        return true;
+      }
+      const constructor = Reflect.get(error, 'constructor');
+      return (
+        constructor !== null &&
+        (typeof constructor === 'object' ||
+          typeof constructor === 'function') &&
+        Reflect.get(constructor, 'name') === 'NonRetryableError'
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const reportFailure = (
+    event: string,
+    details: Record<string, unknown>,
+    error: unknown
+  ): void => {
+    try {
+      const normalized = serializeError(error);
+      let stack: string | undefined;
+      try {
+        const candidate =
+          error !== null &&
+          (typeof error === 'object' || typeof error === 'function')
+            ? Reflect.get(error, 'stack')
+            : undefined;
+        stack = typeof candidate === 'string' ? candidate : undefined;
+      } catch {
+        stack = undefined;
+      }
+      console.error({
+        event,
+        ...details,
+        error: { ...normalized, ...(stack ? { stack } : {}) },
+      });
+    } catch {
+      return;
+    }
+  };
+
+  const emit = (event: DurabilityLifecycleEvent): void => {
+    if (!options.onLifecycleEvent) {
+      return;
+    }
+    const report = (error: unknown): void =>
+      reportFailure(
+        'durability.lifecycle_hook.failed',
+        {
+          entityKind: event.entityKind,
+          lifecycleType: event.type,
+          entityId: 'id' in event ? event.id : 'durability',
+        },
+        error
+      );
+    try {
+      const result = options.onLifecycleEvent(event);
+      if (result === undefined) {
+        return;
+      }
+      const caught = Promise.resolve(result).catch(report);
+      if (context.waitUntil) {
+        try {
+          context.waitUntil(caught);
+          return;
+        } catch (error) {
+          report(error);
+        }
+      }
+      void caught;
+    } catch (error) {
+      report(error);
+    }
   };
 
   const serialize = (value: unknown): string =>
@@ -751,12 +1109,14 @@ export const createDurability = <
   };
 
   const getCall = (id: string): CallRow | undefined =>
-    qb
-      .fetchOne<CallRow>({
-        tableName,
-        where: { conditions: 'id = ?', params: [id] },
-      })
-      .execute().results;
+    callRowSchema.optional().parse(
+      qb
+        .fetchOne<CallRow>({
+          tableName,
+          where: { conditions: 'id = ?', params: [id] },
+        })
+        .execute().results
+    );
 
   const getResult = (
     operation: string,
@@ -794,30 +1154,35 @@ export const createDurability = <
   };
 
   const listDueIds = (now: number, limit: number): string[] =>
-    (
-      qb
-        .fetchAll<Pick<CallRow, 'id'>>({
-          tableName,
-          fields: 'id',
-          where: {
-            conditions: "status = 'pending' AND next_attempt_at <= ?",
-            params: [now],
-          },
-          orderBy: 'next_attempt_at ASC',
-          limit,
-        })
-        .execute().results ?? []
-    ).map((call) => call.id);
+    callIdSchema
+      .array()
+      .parse(
+        qb
+          .fetchAll<Pick<CallRow, 'id'>>({
+            tableName,
+            fields: 'id',
+            where: {
+              conditions: "status = 'pending' AND next_attempt_at <= ?",
+              params: [now],
+            },
+            orderBy: 'next_attempt_at ASC',
+            limit,
+          })
+          .execute().results ?? []
+      )
+      .map((call) => call.id);
 
   const getNextPendingAt = (): number | undefined =>
-    qb
-      .fetchOne<Pick<CallRow, 'next_attempt_at'>>({
-        tableName,
-        fields: 'next_attempt_at',
-        where: { conditions: "status = 'pending'" },
-        orderBy: 'next_attempt_at ASC',
-      })
-      .execute().results?.next_attempt_at;
+    callNextAttemptSchema.optional().parse(
+      qb
+        .fetchOne<Pick<CallRow, 'next_attempt_at'>>({
+          tableName,
+          fields: 'next_attempt_at',
+          where: { conditions: "status = 'pending'" },
+          orderBy: 'next_attempt_at ASC',
+        })
+        .execute().results
+    )?.next_attempt_at;
 
   const listDueAlarms = (now: number, limit: number): AlarmRow[] =>
     alarmRowSchema.array().parse(
@@ -926,16 +1291,67 @@ export const createDurability = <
     return alarmRefresh;
   };
 
+  let availablePermits = alarmConcurrency;
+  const permitWaiters: Array<(release: () => void) => void> = [];
+  const createRelease = (): (() => void) => {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      const waiter = permitWaiters.shift();
+      if (waiter) {
+        waiter(createRelease());
+      } else {
+        availablePermits += 1;
+      }
+    };
+  };
+  const tryAcquirePermit = (): (() => void) | undefined => {
+    if (availablePermits === 0) {
+      return undefined;
+    }
+    availablePermits -= 1;
+    return createRelease();
+  };
+  const acquirePermit = (): Promise<() => void> => {
+    const release = tryAcquirePermit();
+    if (release) {
+      return Promise.resolve(release);
+    }
+    return new Promise((resolve) => {
+      permitWaiters.push(resolve);
+    });
+  };
+
+  const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
+    entityKind: 'operation',
+    operation: call.operation,
+    id: call.id,
+    generation: call.generation_id,
+  });
+
+  const alarmEntity = (row: AlarmRow): AlarmLifecycleEntity => ({
+    entityKind: 'named_alarm',
+    alarm: row.name,
+    id: row.name,
+    generation: row.generation_id,
+  });
+
   const scheduleNamedAlarm = async (name: string, scheduledTime: number) => {
-    if (!Number.isInteger(scheduledTime) || scheduledTime < 0) {
-      throw new RangeError('scheduledTime must be a non-negative integer');
+    if (!Number.isSafeInteger(scheduledTime) || scheduledTime < 0) {
+      throw new RangeError('scheduledTime must be a non-negative safe integer');
     }
 
+    const generation = crypto.randomUUID();
+    const createdAt = Date.now();
     await context.storage.transaction(async (transaction) => {
       context.storage.sql.exec(
         `INSERT INTO durability_alarms
-          (name, generation_id, status, scheduled_at, next_attempt_at, attempt)
-          VALUES (?, ?, 'pending', ?, ?, 0)
+          (name, generation_id, status, scheduled_at, next_attempt_at, attempt,
+           created_at)
+          VALUES (?, ?, 'pending', ?, ?, 0, ?)
           ON CONFLICT(name) DO UPDATE SET
             generation_id = excluded.generation_id,
             status = 'pending',
@@ -943,13 +1359,25 @@ export const createDurability = <
             next_attempt_at = excluded.next_attempt_at,
             attempt = 0,
             last_error = NULL,
-            last_error_name = NULL`,
+            last_error_name = NULL,
+            created_at = excluded.created_at`,
         name,
-        crypto.randomUUID(),
+        generation,
         scheduledTime,
-        scheduledTime
+        scheduledTime,
+        createdAt
       );
       await reconcileAlarm(transaction);
+    });
+    emit({
+      type: 'scheduled',
+      entityKind: 'named_alarm',
+      alarm: name,
+      id: name,
+      generation,
+      timestamp: createdAt,
+      attempt: 0,
+      scheduledTime,
     });
   };
 
@@ -959,41 +1387,111 @@ export const createDurability = <
   ): Promise<void> => {
     const running = activeAlarms.get(row.name);
     if (running) {
-      return running;
+      return running.settled;
     }
 
-    let releaseActive: (() => void) | undefined;
+    const policy = alarmExecutionPolicy(row.name);
+    let settleActive: (() => void) | undefined;
     const settled = new Promise<void>((resolve) => {
-      releaseActive = resolve;
+      settleActive = resolve;
     });
-    let executionSettled = false;
+    const activeExecution: ActiveExecution = {
+      generation: row.generation_id,
+      createdAt: row.created_at,
+      settled,
+    };
+    activeAlarms.set(row.name, activeExecution);
     let handlerStarted = false;
     let handlerSettled = false;
-    const releaseIfSettled = () => {
-      if (executionSettled && (!handlerStarted || handlerSettled)) {
-        releaseActive?.();
+    let policySettled = false;
+    let releasePermit: (() => void) | undefined;
+    const releaseIfSettled = (): void => {
+      if (policySettled && (!handlerStarted || handlerSettled)) {
+        releasePermit?.();
+        settleActive?.();
       }
     };
 
-    const execution = (async () => {
-      const updated = alarmAttemptSchema.optional().parse(
+    const execution = (async (): Promise<void> => {
+      releasePermit = await acquirePermit();
+      const claimed = alarmAttemptSchema.optional().parse(
         context.storage.sql
           .exec<Pick<AlarmRow, 'attempt'>>(
             `UPDATE durability_alarms
              SET attempt = attempt + 1
              WHERE name = ? AND generation_id = ? AND status = 'pending'
+               AND attempt < ?
              RETURNING attempt`,
             row.name,
-            row.generation_id
+            row.generation_id,
+            policy.maxAttempts
           )
           .toArray()[0]
       );
-      if (!updated) {
-        return undefined;
+      if (!claimed) {
+        const current = alarmRowSchema.optional().parse(
+          qb
+            .fetchOne<AlarmRow>({
+              tableName: alarmTableName,
+              where: { conditions: 'name = ?', params: [row.name] },
+            })
+            .execute().results
+        );
+        if (
+          current?.generation_id === row.generation_id &&
+          current.attempt >= policy.maxAttempts
+        ) {
+          const exhausted = serializeError(
+            new DurableAttemptsExhaustedError(
+              'named alarm',
+              row.name,
+              policy.maxAttempts
+            )
+          );
+          let updated = false;
+          await context.storage.transaction(async (transaction) => {
+            updated =
+              context.storage.sql
+                .exec(
+                  `UPDATE durability_alarms
+                   SET status = 'failed', last_error = ?, last_error_name = ?
+                   WHERE name = ? AND generation_id = ? AND status = 'pending'
+                     AND attempt >= ?
+                   RETURNING name`,
+                  exhausted.message,
+                  exhausted.name,
+                  row.name,
+                  row.generation_id,
+                  policy.maxAttempts
+                )
+                .toArray().length > 0;
+            await reconcileAlarm(transaction);
+          });
+          if (updated) {
+            emit({
+              ...alarmEntity(current),
+              type: 'terminal',
+              timestamp: Date.now(),
+              attempt: current.attempt,
+              reason: 'attempts_exhausted',
+              error: exhausted,
+            });
+          }
+        }
+        return;
       }
 
-      const policy = alarmExecutionPolicy(row.name);
+      const attempt = claimed.attempt;
+      const startedAt = Date.now();
+      const entity = alarmEntity(row);
+      emit({
+        ...entity,
+        type: 'attempt_started',
+        timestamp: startedAt,
+        attempt,
+      });
       const controller = new AbortController();
+      activeExecution.controller = controller;
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
         const handler = alarmHandlers.get(row.name);
@@ -1008,9 +1506,9 @@ export const createDurability = <
           handler({
             name: row.name,
             scheduledTime: row.scheduled_at,
-            attempt: updated.attempt,
-            isRetry: updated.attempt > 1,
-            retryCount: updated.attempt - 1,
+            attempt,
+            isRetry: attempt > 1,
+            retryCount: attempt - 1,
             idempotencyKey: `durability-alarm:v1:${row.generation_id}`,
             signal: controller.signal,
             platform,
@@ -1032,112 +1530,258 @@ export const createDurability = <
             reject(error);
           }, policy.attemptTimeoutMs);
         });
-
         await Promise.race([handlerResult, timeoutResult]);
-        context.storage.sql.exec(
-          `DELETE FROM durability_alarms
-             WHERE name = ? AND generation_id = ?`,
-          row.name,
-          row.generation_id
-        );
-      } catch (error) {
-        const terminal =
-          isNonRetryable(error) ||
-          updated.attempt >= policy.maxAttempts ||
-          (error instanceof DurableAlarmTimeoutError && !policy.retryTimeouts);
-        const baseDelay = terminal ? 0 : policy.delay(updated.attempt);
-        if (!Number.isFinite(baseDelay) || baseDelay < 0) {
-          throw new RangeError(
-            `Retry delay for named alarm "${row.name}" must be a non-negative finite number`
-          );
+        const timestamp = Date.now();
+        const deleted =
+          context.storage.sql
+            .exec(
+              `DELETE FROM durability_alarms
+               WHERE name = ? AND generation_id = ? AND status = 'pending'
+                 AND attempt = ?
+               RETURNING name`,
+              row.name,
+              row.generation_id,
+              attempt
+            )
+            .toArray().length > 0;
+        if (deleted) {
+          emit({
+            ...entity,
+            type: 'attempt_settled',
+            timestamp,
+            attempt,
+            durationMs: Math.max(0, timestamp - startedAt),
+            outcome: 'completed',
+          });
         }
-        const nextAttemptAt = Date.now() + Math.round(baseDelay);
+      } catch (caught) {
+        let error = caught;
+        let terminal =
+          isNonRetryable(error) ||
+          attempt >= policy.maxAttempts ||
+          (isErrorInstance(error, DurableAlarmTimeoutError) &&
+            !policy.retryTimeouts);
+        let timestamp = Date.now();
+        let delay = 0;
+        if (!terminal) {
+          try {
+            const rawDelay = policy.delay(attempt);
+            if (!Number.isFinite(rawDelay) || rawDelay < 0) {
+              throw new DurableRetryPolicyError(`named alarm "${row.name}"`);
+            }
+            delay = Math.round(rawDelay);
+            timestamp = Date.now();
+            if (
+              !Number.isSafeInteger(delay) ||
+              !Number.isSafeInteger(timestamp + delay)
+            ) {
+              throw new DurableRetryPolicyError(`named alarm "${row.name}"`);
+            }
+          } catch (policyError) {
+            error = isErrorInstance(policyError, DurableRetryPolicyError)
+              ? policyError
+              : new DurableRetryPolicyError(
+                  `named alarm "${row.name}"`,
+                  policyError
+                );
+            delay = 0;
+            terminal = true;
+          }
+        }
+        const nextAttemptAt = timestamp + delay;
+        const serializedError = serializeError(error);
+        let updated = false;
         await context.storage.transaction(async (transaction) => {
-          const current = alarmGenerationSchema.optional().parse(
+          updated =
             context.storage.sql
-              .exec<Pick<AlarmRow, 'generation_id'>>(
+              .exec(
                 `UPDATE durability_alarms
-                 SET status = ?,
-                     next_attempt_at = ?,
-                     last_error = ?,
+                 SET status = ?, next_attempt_at = ?, last_error = ?,
                      last_error_name = ?
-                 WHERE name = ? AND generation_id = ?
-                 RETURNING generation_id`,
+                 WHERE name = ? AND generation_id = ? AND status = 'pending'
+                   AND attempt = ?
+                 RETURNING name`,
                 terminal ? 'failed' : 'pending',
                 nextAttemptAt,
-                error instanceof Error ? error.message : String(error),
-                error instanceof Error ? error.name : 'Error',
+                serializedError.message,
+                serializedError.name,
                 row.name,
-                row.generation_id
+                row.generation_id,
+                attempt
               )
-              .toArray()[0]
-          );
-          if (current) {
-            await reconcileAlarm(transaction);
-          }
+              .toArray().length > 0;
+          await reconcileAlarm(transaction);
         });
+        if (updated) {
+          emit(
+            terminal
+              ? {
+                  ...entity,
+                  type: 'attempt_settled',
+                  timestamp,
+                  attempt,
+                  durationMs: Math.max(0, timestamp - startedAt),
+                  outcome: 'failed',
+                  error: serializedError,
+                }
+              : {
+                  ...entity,
+                  type: 'attempt_settled',
+                  timestamp,
+                  attempt,
+                  durationMs: Math.max(0, timestamp - startedAt),
+                  outcome: 'retry_scheduled',
+                  error: serializedError,
+                  nextAttemptAt,
+                }
+          );
+        }
       } finally {
         if (timeout !== undefined) {
           clearTimeout(timeout);
         }
       }
-      return undefined;
     })().finally(() => {
-      executionSettled = true;
+      policySettled = true;
       releaseIfSettled();
     });
 
-    activeAlarms.set(row.name, settled);
     void settled.finally(() => {
-      if (activeAlarms.get(row.name) === settled) {
+      if (activeAlarms.get(row.name) === activeExecution) {
         activeAlarms.delete(row.name);
       }
     });
     return execution;
   };
 
-  const execute = (id: string): Promise<unknown> => {
+  const execute = (
+    id: string,
+    permitMode: 'wait' | 'immediate' = 'wait'
+  ): Promise<void> | undefined => {
+    const call = getCall(id);
+    if (!call || call.status !== 'pending') {
+      return permitMode === 'wait' ? Promise.resolve() : undefined;
+    }
     const running = active.get(id);
-    if (running) {
-      return running;
+    if (running?.generation === call.generation_id) {
+      return permitMode === 'wait' ? running.settled : undefined;
     }
 
-    const execution = (async () => {
-      const call = getCall(id);
-      if (!call) {
+    let releasePermit: (() => void) | undefined;
+    if (permitMode === 'immediate') {
+      releasePermit = tryAcquirePermit();
+      if (!releasePermit) {
         return undefined;
       }
-      if (call.status === 'completed') {
-        if (call.result === null) {
-          throw new Error(`Completed durable call "${id}" has no result`);
+    }
+
+    const policy = executionPolicy(call.operation);
+    let settleActive: (() => void) | undefined;
+    const settled = new Promise<void>((resolve) => {
+      settleActive = resolve;
+    });
+    const activeExecution: ActiveExecution = {
+      generation: call.generation_id,
+      createdAt: call.created_at,
+      settled,
+    };
+    active.set(id, activeExecution);
+    let handlerStarted = false;
+    let handlerSettled = false;
+    let policySettled = false;
+    const releaseIfSettled = (): void => {
+      if (policySettled && (!handlerStarted || handlerSettled)) {
+        releasePermit?.();
+        settleActive?.();
+      }
+    };
+
+    const execution = (async (): Promise<void> => {
+      releasePermit ??= await acquirePermit();
+      const claimed = callAttemptSchema.optional().parse(
+        context.storage.sql
+          .exec<Pick<CallRow, 'attempt'>>(
+            `UPDATE durability_calls
+             SET attempt = attempt + 1
+             WHERE id = ? AND generation_id = ? AND status = 'pending'
+               AND attempt < ?
+             RETURNING attempt`,
+            id,
+            call.generation_id,
+            policy.maxAttempts
+          )
+          .toArray()[0]
+      );
+      if (!claimed) {
+        const current = getCall(id);
+        if (
+          current?.generation_id === call.generation_id &&
+          current.status === 'pending' &&
+          current.attempt >= policy.maxAttempts
+        ) {
+          const exhausted = serializeError(
+            new DurableAttemptsExhaustedError(
+              'operation',
+              call.operation,
+              policy.maxAttempts
+            )
+          );
+          let updated = false;
+          await context.storage.transaction(async (transaction) => {
+            updated =
+              context.storage.sql
+                .exec(
+                  `UPDATE durability_calls
+                   SET status = 'failed', last_error = ?, last_error_name = ?
+                   WHERE id = ? AND generation_id = ? AND status = 'pending'
+                     AND attempt >= ?
+                   RETURNING id`,
+                  exhausted.message,
+                  exhausted.name,
+                  id,
+                  call.generation_id,
+                  policy.maxAttempts
+                )
+                .toArray().length > 0;
+            await reconcileAlarm(transaction);
+          });
+          if (updated) {
+            emit({
+              ...operationEntity(current),
+              type: 'terminal',
+              timestamp: Date.now(),
+              attempt: current.attempt,
+              reason: 'attempts_exhausted',
+              error: exhausted,
+            });
+          }
         }
-        return deserialize(call.result);
-      }
-      if (call.status === 'failed') {
-        return undefined;
+        return;
       }
 
-      const handler = handlers[call.operation] as
-        | ((durableCall: DurableCall<unknown>) => unknown)
-        | undefined;
-      const attempt = call.attempt + 1;
-      const policy = executionPolicy(call.operation);
-
-      qb.update({
-        tableName,
-        data: { attempt },
-        where: { conditions: 'id = ?', params: [id] },
-      }).execute();
-
+      const attempt = claimed.attempt;
+      const startedAt = Date.now();
+      const entity = operationEntity(call);
+      emit({
+        ...entity,
+        type: 'attempt_started',
+        timestamp: startedAt,
+        attempt,
+      });
+      const controller = new AbortController();
+      activeExecution.controller = controller;
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
+        const handler = handlers[call.operation] as
+          | ((durableCall: DurableCall<unknown>) => unknown)
+          | undefined;
         if (!handler) {
           throw new NonRetryableError(
             `No handler registered for operation "${call.operation}"`
           );
         }
 
-        const controller = new AbortController();
+        handlerStarted = true;
         const handlerResult = Promise.resolve().then(() =>
           handler({
             id,
@@ -1147,6 +1791,12 @@ export const createDurability = <
             signal: controller.signal,
           })
         );
+        void handlerResult
+          .finally(() => {
+            handlerSettled = true;
+            releaseIfSettled();
+          })
+          .catch(() => undefined);
         const timeoutResult = new Promise<never>((_resolve, reject) => {
           timeout = setTimeout(() => {
             const error = new DurableAttemptTimeoutError(
@@ -1158,53 +1808,139 @@ export const createDurability = <
           }, policy.attemptTimeoutMs);
         });
         const result = await Promise.race([handlerResult, timeoutResult]);
-
-        qb.update({
-          tableName,
-          data: {
-            status: 'completed',
-            result: serialize(result),
-            last_error: null,
-            last_error_name: null,
-            completed_at: Date.now(),
-          },
-          where: { conditions: 'id = ?', params: [id] },
-        }).execute();
-        return result;
-      } catch (error) {
-        const terminal = isNonRetryable(error) || attempt >= policy.maxAttempts;
-        const baseDelay = terminal ? 0 : policy.delay(attempt);
-        if (!Number.isFinite(baseDelay) || baseDelay < 0) {
-          throw new RangeError(
-            `Retry delay for operation "${call.operation}" must be a non-negative finite number`
-          );
+        let serialized: string;
+        try {
+          serialized = serialize(result);
+        } catch (error) {
+          throw new DurableResultSerializationError(call.operation, error);
         }
-        const nextAttemptAt = Date.now() + Math.round(baseDelay);
+        const timestamp = Date.now();
+        const updated =
+          context.storage.sql
+            .exec(
+              `UPDATE durability_calls
+               SET status = 'completed', result = ?, last_error = NULL,
+                   last_error_name = NULL, completed_at = ?
+               WHERE id = ? AND generation_id = ? AND status = 'pending'
+                 AND attempt = ?
+               RETURNING id`,
+              serialized,
+              timestamp,
+              id,
+              call.generation_id,
+              attempt
+            )
+            .toArray().length > 0;
+        if (updated) {
+          emit({
+            ...entity,
+            type: 'attempt_settled',
+            timestamp,
+            attempt,
+            durationMs: Math.max(0, timestamp - startedAt),
+            outcome: 'completed',
+          });
+        }
+      } catch (caught) {
+        let error = caught;
+        let terminal =
+          isNonRetryable(error) ||
+          isErrorInstance(error, DurableResultSerializationError) ||
+          attempt >= policy.maxAttempts;
+        let timestamp = Date.now();
+        let delay = 0;
+        if (!terminal) {
+          try {
+            const rawDelay = policy.delay(attempt);
+            if (!Number.isFinite(rawDelay) || rawDelay < 0) {
+              throw new DurableRetryPolicyError(
+                `operation "${call.operation}"`
+              );
+            }
+            delay = Math.round(rawDelay);
+            timestamp = Date.now();
+            if (
+              !Number.isSafeInteger(delay) ||
+              !Number.isSafeInteger(timestamp + delay)
+            ) {
+              throw new DurableRetryPolicyError(
+                `operation "${call.operation}"`
+              );
+            }
+          } catch (policyError) {
+            error = isErrorInstance(policyError, DurableRetryPolicyError)
+              ? policyError
+              : new DurableRetryPolicyError(
+                  `operation "${call.operation}"`,
+                  policyError
+                );
+            delay = 0;
+            terminal = true;
+          }
+        }
+        const nextAttemptAt = timestamp + delay;
+        const serializedError = serializeError(error);
+        let updated = false;
         await context.storage.transaction(async (transaction) => {
-          qb.update({
-            tableName,
-            data: {
-              status: terminal ? 'failed' : 'pending',
-              attempt,
-              next_attempt_at: nextAttemptAt,
-              last_error:
-                error instanceof Error ? error.message : String(error),
-              last_error_name: error instanceof Error ? error.name : 'Error',
-            },
-            where: { conditions: 'id = ?', params: [id] },
-          }).execute();
+          updated =
+            context.storage.sql
+              .exec(
+                `UPDATE durability_calls
+                 SET status = ?, next_attempt_at = ?, last_error = ?,
+                     last_error_name = ?
+                 WHERE id = ? AND generation_id = ? AND status = 'pending'
+                   AND attempt = ?
+                 RETURNING id`,
+                terminal ? 'failed' : 'pending',
+                nextAttemptAt,
+                serializedError.message,
+                serializedError.name,
+                id,
+                call.generation_id,
+                attempt
+              )
+              .toArray().length > 0;
           await reconcileAlarm(transaction);
         });
-        throw error;
+        if (updated) {
+          emit(
+            terminal
+              ? {
+                  ...entity,
+                  type: 'attempt_settled',
+                  timestamp,
+                  attempt,
+                  durationMs: Math.max(0, timestamp - startedAt),
+                  outcome: 'failed',
+                  error: serializedError,
+                }
+              : {
+                  ...entity,
+                  type: 'attempt_settled',
+                  timestamp,
+                  attempt,
+                  durationMs: Math.max(0, timestamp - startedAt),
+                  outcome: 'retry_scheduled',
+                  error: serializedError,
+                  nextAttemptAt,
+                }
+          );
+        }
       } finally {
         if (timeout !== undefined) {
           clearTimeout(timeout);
         }
       }
-    })();
+    })().finally(() => {
+      policySettled = true;
+      releaseIfSettled();
+    });
 
-    active.set(id, execution);
-    void execution.finally(() => active.delete(id)).catch(() => undefined);
+    void settled.finally(() => {
+      if (active.get(id) === activeExecution) {
+        active.delete(id);
+      }
+    });
     return execution;
   };
 
@@ -1213,33 +1949,131 @@ export const createDurability = <
     operation: string;
     payload: unknown;
   }): Promise<void> => {
-    const existing = getCall(input.id);
-    if (existing) {
-      assertOperation(input.id, existing.operation, input.operation);
-      if (existing.status === 'completed' || existing.status === 'failed') {
-        return;
+    const payload = serialize(input.payload);
+    const now = Date.now();
+    const generation = crypto.randomUUID();
+    let inserted = false;
+    let winner: CallRow | undefined;
+    await context.storage.transaction(async (transaction) => {
+      inserted =
+        context.storage.sql
+          .exec(
+            `INSERT INTO durability_calls
+              (id, operation, payload, status, attempt, next_attempt_at,
+               generation_id, created_at)
+             VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+             ON CONFLICT(id) DO NOTHING
+             RETURNING id`,
+            input.id,
+            input.operation,
+            payload,
+            now,
+            generation,
+            now
+          )
+          .toArray().length > 0;
+      winner = getCall(input.id);
+      if (!winner) {
+        throw new Error(`Durable call "${input.id}" was not persisted`);
       }
-      await context.storage.transaction(reconcileAlarm);
-    } else {
-      const now = Date.now();
-      await context.storage.transaction(async (transaction) => {
-        qb.insert({
-          tableName,
-          data: {
-            id: input.id,
-            operation: input.operation,
-            payload: serialize(input.payload),
-            status: 'pending',
-            attempt: 0,
-            next_attempt_at: now,
-          },
-        }).execute();
-        await reconcileAlarm(transaction);
+      assertOperation(input.id, winner.operation, input.operation);
+      await reconcileAlarm(transaction);
+    });
+
+    if (inserted && winner) {
+      emit({
+        ...operationEntity(winner),
+        type: 'registered',
+        timestamp: now,
+        attempt: 0,
       });
     }
+    if (inserted && winner?.status === 'pending') {
+      const eagerExecution = execute(input.id, 'immediate');
+      if (!eagerExecution) {
+        return;
+      }
+      const background = eagerExecution
+        .then(scheduleNextAlarm)
+        .catch((error: unknown) => {
+          reportFailure(
+            'durability.background_execution.failed',
+            { operation: input.operation, id: input.id },
+            error
+          );
+        });
+      if (context.waitUntil) {
+        try {
+          context.waitUntil(background);
+        } catch (error) {
+          reportFailure(
+            'durability.background_execution.failed',
+            { operation: input.operation, id: input.id },
+            error
+          );
+        }
+      }
+      void background;
+    }
+  };
 
-    const execution = execute(input.id);
-    void execution.then(() => scheduleNextAlarm()).catch(() => undefined);
+  const purgeBefore = async (before: number): Promise<DurablePurgeResult> => {
+    if (!Number.isSafeInteger(before) || before < 0) {
+      throw new RangeError('timestamp must be a non-negative safe integer');
+    }
+
+    let operations = 0;
+    let namedAlarms = 0;
+    await context.storage.transaction(async (transaction) => {
+      operations = countSchema.parse(
+        context.storage.sql
+          .exec<{ count: number }>(
+            'SELECT COUNT(*) AS count FROM durability_calls WHERE created_at < ?',
+            before
+          )
+          .toArray()[0]
+      ).count;
+      namedAlarms = countSchema.parse(
+        context.storage.sql
+          .exec<{ count: number }>(
+            'SELECT COUNT(*) AS count FROM durability_alarms WHERE created_at < ?',
+            before
+          )
+          .toArray()[0]
+      ).count;
+      for (const running of active.values()) {
+        if (running.createdAt < before) {
+          running.controller?.abort(new Error('Durable operation was purged'));
+        }
+      }
+      for (const running of activeAlarms.values()) {
+        if (running.createdAt < before) {
+          running.controller?.abort(new Error('Durable alarm was purged'));
+        }
+      }
+      context.storage.sql.exec(
+        'DELETE FROM durability_calls WHERE created_at < ?',
+        before
+      );
+      context.storage.sql.exec(
+        'DELETE FROM durability_alarms WHERE created_at < ?',
+        before
+      );
+      await reconcileAlarm(transaction);
+    });
+    const result = {
+      operations,
+      namedAlarms,
+      total: operations + namedAlarms,
+    };
+    emit({
+      type: 'purged',
+      entityKind: 'durability',
+      timestamp: Date.now(),
+      before,
+      ...result,
+    });
+    return result;
   };
 
   const alarm = async (alarmInfo?: AlarmInvocationInfo): Promise<void> => {
@@ -1319,10 +2153,10 @@ export const createDurability = <
     });
   }
 
-  const durability: Record<string, unknown> = { alarm };
+  const durability: Record<string, unknown> = { alarm, purgeBefore };
   for (const operation of Object.keys(handlers) as (keyof Handlers &
     string)[]) {
-    if (operation === 'alarm') {
+    if (operation === 'alarm' || operation === 'purgeBefore') {
       throw new Error(`"${operation}" is reserved by durability`);
     }
 
@@ -1337,7 +2171,10 @@ export const createDurability = <
     value: Record<string, unknown>
   ): value is Record<string, unknown> & Durability<Handlers, AlarmNames> => {
     const alarmValue = value['alarm'];
-    if (typeof alarmValue !== 'function') {
+    if (
+      typeof alarmValue !== 'function' ||
+      typeof value['purgeBefore'] !== 'function'
+    ) {
       return false;
     }
     for (const name of alarmHandlers.keys()) {

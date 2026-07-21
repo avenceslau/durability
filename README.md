@@ -39,7 +39,16 @@ Package versions and release notes are managed with [Changesets](https://github.
 pnpm changeset
 ```
 
-Merging the generated release pull request publishes the changed packages through GitHub Actions. Each npm package must configure trusted publishing for `avenceslau/durability` and `.github/workflows/release.yml` before its first release from this repository.
+GitHub Actions creates and updates a version pull request, but it never publishes packages. After merging that pull request, publish manually from an up-to-date `main` checkout:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm check
+pnpm release
+git push --follow-tags
+```
+
+Manual publishing requires npm authentication with access to each package.
 
 ## License
 
