@@ -1,6 +1,6 @@
 {
   "name": "@durability/lint",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Oxlint rules for Cloudflare Durable Object durability",
   "type": "module",
   "license": "ISC",
