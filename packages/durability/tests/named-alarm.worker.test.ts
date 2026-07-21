@@ -114,25 +114,19 @@ describe('durability in workerd', () => {
     });
   });
 
-  it('makes operation timeouts terminal by default in workerd', async () => {
+  it('retries operation timeouts by default in workerd', async () => {
     const stub = env.ALARM_TEST.get(env.ALARM_TEST.newUniqueId());
     await stub.startTerminalTimeout();
     await waitFor(async () => {
-      expect(await stub.getTerminalTimeoutAttempts()).toEqual([1]);
+      expect(await stub.getTerminalTimeoutAttempts()).toEqual([1, 2, 3]);
     });
-    await scheduler.wait(60);
     await waitFor(async () => {
       expect(await stub.getTerminalTimeoutResult()).toMatchObject({
         status: 'failed',
-        attempt: 1,
+        attempt: 3,
         error: { name: 'DurableAttemptTimeoutError' },
       });
     });
-
-    await stub.armNow();
-    await scheduler.wait(10);
-    await runDurableObjectAlarm(stub);
-    expect(await stub.getTerminalTimeoutAttempts()).toEqual([1]);
   });
 
   it('bounds eager and alarm-driven handlers with shared concurrency', async () => {

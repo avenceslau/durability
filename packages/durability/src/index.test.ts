@@ -1037,7 +1037,6 @@ describe('createDurability', () => {
           work: {
             attemptTimeoutMs: 100,
             retries: { delay: () => 0, maxAttempts: 2 },
-            retryTimeouts: true,
           },
         },
       }

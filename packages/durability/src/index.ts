@@ -115,8 +115,6 @@ export type DurabilityMethodOptions = {
   attemptTimeoutMs?: number;
   /** Retry policy overrides for this method. */
   retries?: DurabilityRetryOptions;
-  /** Retry timeouts only when side effects are idempotent or reconciled. */
-  retryTimeouts?: boolean;
 };
 
 const retryOptionsSchema = z.object({
@@ -131,20 +129,19 @@ const retryOptionsSchema = z.object({
 const durabilityMethodOptionsSchema = z.object({
   attemptTimeoutMs: z.number().optional(),
   retries: retryOptionsSchema.optional(),
-  retryTimeouts: z.boolean().optional(),
 });
 
 /** Execution policy overrides for one named alarm. */
-export type DurabilityAlarmMethodOptions = {
-  /** Maximum duration of one attempt in milliseconds. */
-  attemptTimeoutMs?: number;
-  /** Retry policy overrides for this alarm. */
-  retries?: DurabilityRetryOptions;
+export type DurabilityAlarmMethodOptions = DurabilityMethodOptions & {
   /** Retry timed-out attempts only when their side effects are idempotent or reconciled. */
   retryTimeouts?: boolean;
 };
 
-const durabilityAlarmMethodOptionsSchema = durabilityMethodOptionsSchema;
+const durabilityAlarmMethodOptionsSchema = durabilityMethodOptionsSchema.extend(
+  {
+    retryTimeouts: z.boolean().optional(),
+  }
+);
 
 /**
  * Configuration for a durability instance.
@@ -718,8 +715,8 @@ export class NonRetryableError extends Error {
  * Error recorded when a handler attempt exceeds its configured timeout.
  *
  * Durability creates this error and aborts the attempt's signal; consumers do
- * not need to throw it themselves. Operation timeouts are terminal by default.
- * Set the method's `retryTimeouts` option to `true` to retry them.
+ * not need to throw it themselves. Timeout failures follow the normal retry
+ * policy and are exposed by `getResult` if they become terminal.
  *
  * @example
  * ```ts
@@ -954,7 +951,6 @@ export const createDurability = <
       attemptTimeoutMs: method?.attemptTimeoutMs ?? defaultAttemptTimeoutMs,
       delay: method?.retries?.delay ?? defaultRetryDelay,
       maxAttempts: method?.retries?.maxAttempts ?? defaultMaxAttempts,
-      retryTimeouts: method?.retryTimeouts ?? false,
     };
   };
 
@@ -1850,9 +1846,7 @@ export const createDurability = <
         let terminal =
           isNonRetryable(error) ||
           isErrorInstance(error, DurableResultSerializationError) ||
-          attempt >= policy.maxAttempts ||
-          (isErrorInstance(error, DurableAttemptTimeoutError) &&
-            !policy.retryTimeouts);
+          attempt >= policy.maxAttempts;
         let timestamp = Date.now();
         let delay = 0;
         if (!terminal) {

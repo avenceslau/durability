@@ -77,12 +77,10 @@ export class NamedAlarmTestObject extends DurableObject {
         crash: {
           attemptTimeoutMs: 50,
           retries: { delay: () => 0, maxAttempts: 2 },
-          retryTimeouts: true,
         },
         timeout: {
           attemptTimeoutMs: 50,
           retries: { delay: () => 0, maxAttempts: 2 },
-          retryTimeouts: true,
         },
         terminalTimeout: {
           attemptTimeoutMs: 50,

@@ -6,7 +6,7 @@ Durability is not an event-sourcing, replay-log, or workflow-orchestration engin
 
 ## Migrating to v3
 
-Operation timeouts are now terminal by default. Set `retryTimeouts: true` on each affected method to preserve the previous timeout-retry behavior. `purgeBefore` is now reserved by the generated durability API, so rename any operation with that name before upgrading.
+`purgeBefore` is now reserved by the generated durability API, so rename any operation with that name before upgrading.
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
@@ -179,7 +179,7 @@ const handlers = {
 };
 ```
 
-A timed-out operation aborts its signal and is terminal by default because its mutation outcome may be unknown. Set `retryTimeouts: true` for a method only when its handler is idempotent or reconciles the external outcome before retrying. Named alarms retain the same terminal-default opt-in behavior. If a handler ignores abort, its in-memory ID lock and shared concurrency permit remain held until the real handler settles, so a same-isolate retry cannot overlap it. Across eviction or restart, delivery remains at least once.
+A timed-out operation aborts its signal and follows the normal retry policy. Named alarm timeouts remain terminal by default unless `retryTimeouts` is enabled. If a handler ignores abort, its in-memory ID lock and shared concurrency permit remain held until the real handler settles, so a same-isolate retry cannot overlap it. Across eviction or restart, delivery remains at least once.
 
 Throw `NonRetryableError` to move a call directly to `failed` without another attempt:
 
