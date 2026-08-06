@@ -123,6 +123,104 @@ describe('alarm-runner-only', () => {
 
     expect(result.status).toBe(1);
   });
+  it('rejects a durability class without an alarm runner', () => {
+    const result = lint(
+      `
+        class Example {
+          durability = createDurability();
+        }
+      `,
+      'alarm-runner-only'
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'A class using createDurability must delegate alarm() directly to durability.alarm(alarmInfo).'
+    );
+  });
+
+  it.each(['setAlarm', 'deleteAlarm'])(
+    'rejects direct %s calls in a durability class',
+    (method) => {
+      const result = lint(
+        `
+          class Example {
+            durability = createDurability();
+            alarm(alarmInfo?: AlarmInvocationInfo) {
+              return this.durability.alarm(alarmInfo);
+            }
+            schedule() {
+              return this.ctx.storage.${method}(1000);
+            }
+          }
+        `,
+        'alarm-runner-only'
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.output).toContain(
+        'A class using createDurability must schedule logical alarms through durability named alarms instead of calling setAlarm() or deleteAlarm().'
+      );
+    }
+  );
+
+  it('rejects transaction alarm writes in a durability class', () => {
+    const result = lint(
+      `
+        class Example {
+          durability = createDurability();
+          alarm(alarmInfo?: AlarmInvocationInfo) {
+            return this.durability.alarm(alarmInfo);
+          }
+          schedule() {
+            return this.ctx.storage.transaction((transaction) => {
+              transaction.setAlarm(1000);
+            });
+          }
+        }
+      `,
+      'alarm-runner-only'
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'A class using createDurability must schedule logical alarms through durability named alarms instead of calling setAlarm() or deleteAlarm().'
+    );
+  });
+
+  it('accepts named logical alarms in a durability class', () => {
+    const result = lint(
+      `
+        class Example {
+          durability = createDurability();
+          alarm(alarmInfo?: AlarmInvocationInfo) {
+            return this.durability.alarm(alarmInfo);
+          }
+          schedule() {
+            return this.durability.alarm.cleanup(1000);
+          }
+        }
+      `,
+      'alarm-runner-only'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it('ignores physical alarm calls in classes without durability', () => {
+    const result = lint(
+      `
+        class Example {
+          alarm() {
+            return this.ctx.storage.setAlarm(1000);
+          }
+        }
+      `,
+      'alarm-runner-only'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
 });
 
 describe('durability-migrations-only', () => {
