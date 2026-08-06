@@ -1,0 +1,21 @@
+packages/durability/src/index.test.ts
+  s_3dd55446e12b67::t_3765df201f8a8a 11,525-526,529,546-661
+packages/durability/tests/named-alarm.worker.test.ts
+  s_3dd55446e12b67::t_b87065aaf70683 30-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "36c8368cfbe3f45125f00942a6d0129c6d839c31",
+  "prompts": {},
+  "sessions": {
+    "s_3dd55446e12b67": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019fd465-4a26-7bb5-b932-be3be7f36572",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
