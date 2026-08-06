@@ -39,7 +39,7 @@ describe('KV-backed durability in workerd', () => {
     });
 
     await evictDurableObject(stub);
-    await scheduler.wait(10);
+    await scheduler.wait(1_010);
     const recovered = env.KV_ALARM_TEST.get(stub.id);
     await runDurableObjectAlarm(recovered);
 
@@ -52,13 +52,12 @@ describe('KV-backed durability in workerd', () => {
     expect(await recovered.getWorkAttempts()).toEqual([1, 2]);
   });
 
-  it('runs named alarms from KV-backed storage', async () => {
+  it('runs a nearby named alarm from the KV-backed timer', async () => {
     const stub = env.KV_ALARM_TEST.get(env.KV_ALARM_TEST.newUniqueId());
     const scheduledTime = Date.now() + 50;
 
     await stub.scheduleCleanup(scheduledTime);
     await scheduler.wait(60);
-    await runDurableObjectAlarm(stub);
     await waitFor(async () => {
       expect(await stub.getRecorded()).toEqual([
         {
@@ -72,13 +71,61 @@ describe('KV-backed durability in workerd', () => {
 });
 
 describe('durability in workerd', () => {
-  it('retries a named alarm with the same idempotency key after eviction', async () => {
+  it('starts a nearby named alarm at its scheduled time', async () => {
+    const stub = env.ALARM_TEST.get(env.ALARM_TEST.newUniqueId());
+    const scheduledTime = Date.now() + 50;
+
+    await stub.scheduleNearby(scheduledTime);
+
+    await waitFor(async () => {
+      expect(await stub.getNearbyRecorded()).toEqual({
+        attempt: 1,
+        idempotencyKey: expect.stringMatching(/^durability-alarm:v1:/),
+        scheduledTime,
+      });
+    });
+  });
+
+  it('recovers a timer-driven named alarm after eviction', async () => {
     const id = env.ALARM_TEST.newUniqueId();
     const stub = env.ALARM_TEST.get(id);
     const scheduledTime = Date.now() + 50;
 
+    await stub.scheduleNearbyCrash(scheduledTime);
+    await waitFor(async () => {
+      expect(await stub.getNearbyCrashRecorded()).toEqual([
+        {
+          attempt: 1,
+          idempotencyKey: expect.stringMatching(/^durability-alarm:v1:/),
+          scheduledTime,
+        },
+      ]);
+    });
+
+    await evictDurableObject(stub);
+    const recovered = env.ALARM_TEST.get(id);
+    await scheduler.wait(550);
+    await runDurableObjectAlarm(recovered);
+
+    await waitFor(async () => {
+      expect(
+        (await recovered.getNearbyCrashRecorded())?.map(
+          ({ attempt }) => attempt
+        )
+      ).toEqual([1, 2]);
+    });
+    const attempts = await recovered.getNearbyCrashRecorded();
+    expect(attempts?.[1]?.idempotencyKey).toBe(attempts?.[0]?.idempotencyKey);
+    expect(await runDurableObjectAlarm(recovered)).toBe(false);
+  });
+
+  it('retries a named alarm with the same idempotency key after eviction', async () => {
+    const id = env.ALARM_TEST.newUniqueId();
+    const stub = env.ALARM_TEST.get(id);
+    const scheduledTime = Date.now() + 100;
+
     await stub.scheduleCleanup(scheduledTime);
-    await scheduler.wait(60);
+    await scheduler.wait(110);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await stub.getRecorded()).toEqual([
       {

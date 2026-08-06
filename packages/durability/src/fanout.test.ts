@@ -297,7 +297,7 @@ for (const backend of ['sqlite', 'kv'] as const) {
 
     it('supports retry(10), throws on duplicate settlement, and invalidates late capabilities', async () => {
       const captured: DurabilityFanoutMessage<string>[] = [];
-      const { fanout } = fixture({
+      const { fanout, storage } = fixture({
         one: {
           deliver: async (messages) => {
             captured.push(...messages);
@@ -310,12 +310,11 @@ for (const backend of ['sqlite', 'kv'] as const) {
       await expect(captured[0]!.ack()).rejects.toBeInstanceOf(
         FanoutSettlementError
       );
-      vi.advanceTimersByTime(9);
-      await fanout.alarm();
+      expect(storage.alarmAt).toBe(Date.now() + 15_000);
+      await vi.advanceTimersByTimeAsync(9);
       expect(captured).toHaveLength(1);
-      vi.advanceTimersByTime(1);
-      await fanout.alarm();
-      expect(captured).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(captured).toHaveLength(2));
     });
 
     it('prioritizes unseen messages over immediately due retries', async () => {

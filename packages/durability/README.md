@@ -119,6 +119,8 @@ export class Subscription extends DurableObject<Env> {
 
 Scheduling a name again replaces its pending occurrence. If that name is already running, the current handler continues and the replacement runs afterward. Different names may run concurrently, but one name never has more than one active handler in the same instance.
 
+Named alarms inside the scheduler's `alarmMinDelayMs` window start from an in-memory timer at their requested time. The option accepts 1 to 15 seconds and defaults to 15 seconds; the scheduler never sets the physical alarm sooner than that delay; the physical alarm remains as a durable fallback for restarts. If concurrency capacity is full when the timer fires, execution waits in the shared FIFO queue. The scheduling method resolves after persistence and never waits for the handler to finish.
+
 Each occurrence receives a new internal generation. Its `idempotencyKey` stays stable across retries while `attempt` increments. A successful handler removes only the occurrence it executed, so it cannot delete a replacement scheduled while it was running.
 
 A timeout aborts the handler's `signal` and is terminal by default because the external outcome is unknown. Set `retryTimeouts: true` only when the handler's side effects use the idempotency key or reconcile their outcome before retrying. Named alarms remain at-least-once across eviction or restart.
@@ -134,6 +136,7 @@ export class ImageJobs extends DurableObject<Env> {
   private readonly scheduler = new DurabilityScheduler({
     context: this.ctx,
     alarmConcurrency: 10,
+    alarmMinDelayMs: 15_000,
   });
 
   private readonly durability = new Durability({
@@ -155,7 +158,7 @@ export class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`storageBackend`, `alarmConcurrency`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
+A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`storageBackend`, `alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
 
 ## Storage backends
 
@@ -238,7 +241,7 @@ Throw `NonRetryableError` to move work directly to `failed` without another atte
 
 Work is delivered at least once. A process can stop after a side effect succeeds but before its completion record commits, so handlers should be idempotent and pass the call ID or alarm `idempotencyKey` to external services.
 
-`alarmConcurrency` defaults to 10 and is one FIFO limit shared by eager operation handlers, alarm-driven operation handlers, and named alarm handlers attached to the same scheduler. Newly registered operations start eagerly only when a permit is immediately available; otherwise the reconciled alarm picks them up.
+`alarmConcurrency` defaults to 10 and is one FIFO limit shared by eager operation handlers, timer-driven work, and physical-alarm work attached to the same scheduler. Newly registered operations start eagerly only when a permit is immediately available. Work due before the physical-alarm minimum enters the same queue when its in-memory timer fires.
 
 Completion records are retained indefinitely so IDs remain deduplicated. The scheduler owns the Durable Object's alarm; compose unrelated scheduled work as named alarms instead of replacing the physical alarm.
 
@@ -416,4 +419,4 @@ Loopback namespaces need the application DO declared in Wrangler migrations (or 
 
 ## Long-running alarm calls
 
-Alarm invocations have a 15-minute wall-time limit. If work is still pending after `alarmHandoffMs` (default 14 minutes), the scheduler retains its promise in memory, arms an immediate alarm, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again. If the object is evicted during a handoff, the next alarm reconstructs and executes the persisted pending work.
+Alarm invocations have a 15-minute wall-time limit. If work is still pending after `alarmHandoffMs` (default 14 minutes), the scheduler retains its promise in memory, arms a fallback after `alarmMinDelayMs`, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again. If the object is evicted during a handoff, the next alarm reconstructs and executes the persisted pending work.
