@@ -1,0 +1,19 @@
+packages/durability/src/index.test.ts
+  s_3dd55446e12b67::t_3d6f5e88e6ee21 14,217-326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5c14f96dd59ef3d3053fb1a6462f7a9cbce7d605",
+  "prompts": {},
+  "sessions": {
+    "s_3dd55446e12b67": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019fd465-4a26-7bb5-b932-be3be7f36572",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
