@@ -5,6 +5,8 @@ export {
   type DurabilityOptions,
   type DurableCall,
   type DurableHandler,
+  type DurableJobHandle,
+  type DurableJobWaitOptions,
   type DurableOperation,
   type DurableOperationResult,
   type HandlerMap,

@@ -20,6 +20,10 @@ export class NamedAlarmTestObject extends DurableObject {
     this.releaseBoundedHandlers = resolve;
   });
   private releaseOldReuse: (() => void) | undefined;
+  private releaseWaitableHandler: (() => void) | undefined;
+  private readonly waitableGate = new Promise<void>((resolve) => {
+    this.releaseWaitableHandler = resolve;
+  });
   private boundedActive = 0;
   private boundedMax = 0;
   private boundedCompleted = 0;
@@ -81,6 +85,10 @@ export class NamedAlarmTestObject extends DurableObject {
           return 'old';
         }
         return 'new';
+      },
+      waitable: async ({ payload }: DurableCall<string>) => {
+        await this.waitableGate;
+        return payload;
       },
     },
     methods: {
@@ -232,6 +240,15 @@ export class NamedAlarmTestObject extends DurableObject {
 
   startReuse() {
     return this.durability.reuse({ id: 'reuse', payload: null });
+  }
+
+  async startWaitable(id: string, result: string) {
+    await this.durability.waitable({ id, payload: result });
+    return this.durability.waitable.job(id);
+  }
+
+  releaseWaitable() {
+    this.releaseWaitableHandler?.();
   }
 
   purgeAll() {

@@ -119,6 +119,23 @@ describe('durability in workerd', () => {
     expect(await runDurableObjectAlarm(recovered)).toBe(false);
   });
 
+  it('pipelines waiting through an RPC job handle', async () => {
+    const stub = env.ALARM_TEST.get(env.ALARM_TEST.newUniqueId());
+    const job = stub.startWaitable('rpc-job', 'rpc-result');
+    const result = job.wait({ timeoutMs: 1_000 });
+
+    await stub.releaseWaitable();
+
+    await expect(result).resolves.toEqual({
+      status: 'completed',
+      result: 'rpc-result',
+    });
+    await expect(job.getResult()).resolves.toEqual({
+      status: 'completed',
+      result: 'rpc-result',
+    });
+  });
+
   it('retries a named alarm with the same idempotency key after eviction', async () => {
     const id = env.ALARM_TEST.newUniqueId();
     const stub = env.ALARM_TEST.get(id);

@@ -120,7 +120,23 @@ export type DurableOperationResult<Result> =
       result: Result;
     };
 
-/** Registers calls for one handler and reads their persisted results. */
+/** Options for waiting on a durable operation through a live RPC session. */
+export type DurableJobWaitOptions = {
+  /** Maximum time to wait before returning the latest persisted state. */
+  timeoutMs: number;
+};
+
+/** An RPC-capable handle for reading or waiting on one durable operation. */
+export type DurableJobHandle<Result> = {
+  /** Reads the latest persisted state. */
+  getResult: () => Promise<DurableOperationResult<Result>>;
+  /** Waits for terminal state or returns the latest state after the timeout. */
+  wait: (
+    options: DurableJobWaitOptions
+  ) => Promise<DurableOperationResult<Result>>;
+};
+
+/** Registers calls, reads their state, and creates RPC-capable job handles. */
 export type DurableOperation<Handler> = ((
   input: DurableOperationInput<Handler>
 ) => Promise<void>) & {
@@ -128,6 +144,8 @@ export type DurableOperation<Handler> = ((
   getResult: (
     idempotencyKey: string
   ) => Promise<DurableOperationResult<HandlerResult<Handler>>>;
+  /** Creates a handle that can be returned over Workers RPC. */
+  job: (idempotencyKey: string) => DurableJobHandle<HandlerResult<Handler>>;
 };
 
 /**
@@ -187,12 +205,21 @@ const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
   generation: call.generation_id,
 });
 
+type OperationWaitSignal = {
+  generation: string;
+  createdAt: number;
+  promise: Promise<void>;
+  resolve: () => void;
+  waiters: number;
+};
+
 class DurabilityCore<Handlers extends HandlerMap> {
   readonly #engine: Engine;
   readonly #handlers: Handlers;
   readonly #policy: PolicyResolver<MethodPolicy>;
   readonly #emit: Emit;
   readonly #active = new Map<string, ActiveExecution>();
+  readonly #operationWaitSignals = new Map<string, OperationWaitSignal>();
   readonly #executionStarts = new Map<string, Promise<void>>();
 
   constructor(config: DurabilityConfig<Handlers>) {
@@ -217,6 +244,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
         this.#run({ ...input, operation });
       method.getResult = (idempotencyKey: string) =>
         this.#getResult(operation, idempotencyKey);
+      method.job = (idempotencyKey: string) => ({
+        getResult: () => this.#getResult(operation, idempotencyKey),
+        wait: (options: DurableJobWaitOptions) =>
+          this.#waitForResult(operation, idempotencyKey, options),
+      });
       Object.defineProperty(this, operation, {
         value: method,
         enumerable: true,
@@ -253,12 +285,18 @@ class DurabilityCore<Handlers extends HandlerMap> {
    * timestamp, regardless of status, and returns how many were removed.
    */
   async purgeBefore(before: number): Promise<number> {
+    const purgedSignals = [...this.#operationWaitSignals].filter(
+      ([, signal]) => signal.createdAt < before
+    );
     const count = await this.#engine.purge(
       'calls',
       before,
       this.#active,
       'Durable operation was purged'
     );
+    for (const [id, signal] of purgedSignals) {
+      this.#settleOperationWait(id, signal.generation);
+    }
     this.#emit({
       type: 'purged',
       entityKind: 'operation',
@@ -313,6 +351,85 @@ class DurabilityCore<Handlers extends HandlerMap> {
       );
     }
     return { status: 'completed', result: deserialize(call.result) };
+  }
+
+  #settleOperationWait(id: string, generation: string): void {
+    const signal = this.#operationWaitSignals.get(id);
+    if (!signal || signal.generation !== generation) {
+      return;
+    }
+
+    this.#operationWaitSignals.delete(id);
+    signal.resolve();
+  }
+
+  async #waitForResult(
+    operation: string,
+    idempotencyKey: string,
+    waitOptions: DurableJobWaitOptions
+  ): Promise<DurableOperationResult<unknown>> {
+    const timeoutMs = waitOptions?.timeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) {
+      throw new RangeError('timeoutMs must be a non-negative safe integer');
+    }
+
+    const call = await this.#engine.storage.calls.get(idempotencyKey);
+    if (!call) {
+      return { status: 'not_found' };
+    }
+    assertOperation(idempotencyKey, call.operation, operation);
+    if (call.status !== 'pending' || timeoutMs === 0) {
+      return this.#getResult(operation, idempotencyKey);
+    }
+
+    let signal = this.#operationWaitSignals.get(idempotencyKey);
+    if (!signal || signal.generation !== call.generation_id) {
+      let resolve: () => void = () => undefined;
+      const promise = new Promise<void>((settled) => {
+        resolve = settled;
+      });
+      signal = {
+        generation: call.generation_id,
+        createdAt: call.created_at,
+        promise,
+        resolve,
+        waiters: 0,
+      };
+      this.#operationWaitSignals.get(idempotencyKey)?.resolve();
+      this.#operationWaitSignals.set(idempotencyKey, signal);
+    }
+
+    signal.waiters += 1;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Register before re-reading: asynchronous storage may settle or purge
+      // the operation between the first read and installing the signal.
+      const current = await this.#engine.storage.calls.get(idempotencyKey);
+      if (
+        current?.generation_id !== call.generation_id ||
+        current.status !== 'pending'
+      ) {
+        this.#settleOperationWait(idempotencyKey, call.generation_id);
+      }
+      await Promise.race([
+        signal.promise,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+      return this.#getResult(operation, idempotencyKey);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      signal.waiters -= 1;
+      if (
+        signal.waiters === 0 &&
+        this.#operationWaitSignals.get(idempotencyKey) === signal
+      ) {
+        this.#operationWaitSignals.delete(idempotencyKey);
+      }
+    }
   }
 
   async #run(input: {
@@ -430,7 +547,16 @@ class DurabilityCore<Handlers extends HandlerMap> {
         entity: operationEntity(call),
         active: this.#active,
         policy,
-        emit: this.#emit,
+        emit: (event) => {
+          this.#emit(event);
+          if (
+            event.type === 'terminal' ||
+            (event.type === 'attempt_settled' &&
+              (event.outcome === 'completed' || event.outcome === 'failed'))
+          ) {
+            this.#settleOperationWait(call.id, call.generation_id);
+          }
+        },
         exhaustedError: () =>
           new DurableAttemptsExhaustedError(
             'operation',

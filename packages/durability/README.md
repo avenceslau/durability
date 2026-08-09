@@ -206,6 +206,36 @@ Passing a name moves that capability's schema to exactly that version. Each batc
 
 Every history row stores its migration's `down` script. If a Durable Object later runs an older `durability` version, that version reverts the migrations it does not recognize using the stored scripts, so downgrades are safe without code changes. To guard against deploying a very old version by mistake, at most two unknown migrations are reverted; beyond that, construction throws. The `durability_migrations` table is dropped once no durability history remains.
 
+## Waiting through Workers RPC
+
+Create a job handle when a Worker needs to wait for an operation without polling storage. Return the handle from a public Durable Object method:
+
+```ts
+async startResize(imageId: string) {
+  const id = `resize:${imageId}`;
+  await this.durability.resizeImage({
+    id,
+    payload: { imageId },
+  });
+  return this.durability.resizeImage.job(id);
+}
+
+getResizeJob(id: string) {
+  return this.durability.resizeImage.job(id);
+}
+```
+
+A calling Worker can pipeline `wait()` onto the RPC result without waiting an extra round trip for the handle:
+
+```ts
+const job = env.IMAGE_JOBS.getByName('jobs').startResize(imageId);
+const result = await job.wait({ timeoutMs: 30_000 });
+```
+
+The handle's function properties become Workers RPC capabilities. `wait()` shares one in-memory completion signal per operation and returns as soon as the persisted state becomes `completed` or `failed`. If the timeout expires first, it returns the latest state, usually `pending`. `getResult()` reads the latest state immediately.
+
+Job handles are scoped to the live RPC execution context and cannot be persisted. If a deployment, eviction, or caller disconnect interrupts the RPC, create another handle from the stable operation ID and wait again. The operation result remains authoritative in the configured storage backend.
+
 ## Retries, timeouts, and terminal failures
 
 Attempts use exponential backoff with equal jitter, stop after five attempts, and time out after five minutes by default. The retry `delay` function fully controls scheduling and can be overridden globally or per method on either helper:
