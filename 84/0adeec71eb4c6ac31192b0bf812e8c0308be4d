@@ -1,0 +1,23 @@
+examples/workflow/src/index.ts
+  s_17d4bfadf24ce1::t_2a840a7d35fdb2 1-82
+examples/workflow/worker-configuration.d.ts
+  s_17d4bfadf24ce1::t_9e52e253701484 1-13
+pnpm-lock.yaml
+  s_17d4bfadf24ce1::t_74562674302b33 27-51,1314-1316,2753-2754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "840adeec71eb4c6ac31192b0bf812e8c0308be4d",
+  "prompts": {},
+  "sessions": {
+    "s_17d4bfadf24ce1": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a010c6-2f27-78b5-8782-b0a44a7cb3d4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
