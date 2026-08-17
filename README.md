@@ -4,14 +4,14 @@ Durable operation tooling for Cloudflare Workers and SQLite-backed Durable Objec
 
 ## Packages
 
-| Package                                           | Description                                                                                                    |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| [`durability`](./packages/durability)             | Alarm-backed, effectively-once operation execution with retries, idempotency, result lookup, and named alarms. |
-| [`@durability/storage`](./packages/storage)       | Shared migration types for Durable Object storage.                                                             |
-| [`@durability/transforms`](./packages/transforms) | Typed caller and callee transforms for Cloudflare RPC, including a Vite plugin.                                |
-| [`@durability/lint`](./packages/lint)             | Oxlint rules for durability migrations and alarm delegation.                                                   |
+| Package                                           | Description                                                                                                |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| [`durability`](./packages/durability)             | Alarm-backed operations, named alarms, and Durable Object-local workflows with `step.do` and `step.sleep`. |
+| [`@durability/storage`](./packages/storage)       | Shared migration types for Durable Object storage.                                                         |
+| [`@durability/transforms`](./packages/transforms) | Typed caller and callee transforms for Cloudflare RPC, including a Vite plugin.                            |
+| [`@durability/lint`](./packages/lint)             | Oxlint rules for durability migrations and alarm delegation.                                               |
 
-Each package has its own API documentation and examples.
+Each package has its own API documentation. Runnable projects live in [`examples`](./examples), including the [Durable Object workflow](./examples/workflow).
 
 ## Development
 

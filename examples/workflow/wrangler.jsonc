@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "durability-workflow-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REPORT_WORKFLOW",
+        "class_name": "ReportWorkflow",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ReportWorkflow"],
+    },
+  ],
+  "observability": {
+    "enabled": true,
+  },
+}

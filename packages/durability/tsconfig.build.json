@@ -9,6 +9,6 @@
     "sourceMap": false,
     "types": ["@cloudflare/workers-types", "node"]
   },
-  "include": ["src/index.ts", "src/utils.ts"],
+  "include": ["src/index.ts", "src/utils.ts", "src/workflow.ts"],
   "exclude": ["dist", "node_modules", "src/**/*.test.ts"]
 }

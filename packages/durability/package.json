@@ -19,7 +19,8 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./utils": "./src/utils.ts"
+    "./utils": "./src/utils.ts",
+    "./workflow": "./src/workflow.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -32,6 +33,10 @@
       "./utils": {
         "types": "./dist/utils.d.ts",
         "import": "./dist/utils.js"
+      },
+      "./workflow": {
+        "types": "./dist/workflow.d.ts",
+        "import": "./dist/workflow.js"
       }
     }
   },

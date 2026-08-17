@@ -2,7 +2,38 @@
 
 A small, alarm-backed independent-operation queue for Cloudflare Durable Objects.
 
-Durability is not an event-sourcing, replay-log, or workflow-orchestration engine. It registers independent operations and reconciles their earliest wake-up in one Durable Object storage transaction. Generated operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed calls are retried from later alarms, and a stable call ID deduplicates completed and concurrent calls. SQLite access and schema migrations are managed through `workers-qb`.
+The core `createDurability` API is not an event-sourcing or replay engine. It registers independent operations and reconciles their earliest wake-up in one Durable Object storage transaction. Generated operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed calls are retried from later alarms, and a stable call ID deduplicates completed and concurrent calls. SQLite access and schema migrations are managed through `workers-qb`.
+
+## Durable Object workflows
+
+The `durability/workflow` entry point adds a minimal Workflows-like replay loop on top of durability. Workflow code executes directly in the Durable Object: `step.do` persists a JSON-serializable result, and `step.sleep` uses the Durable Object alarm without keeping the object active or invoking a separate Worker.
+
+See the runnable [`examples/workflow`](../../examples/workflow) project. It uses `itty-time` to pass readable durations to the millisecond-based sleep API:
+
+```ts
+import { ms } from 'itty-time';
+
+await step.do(
+  'record start',
+  {
+    retries: {
+      limit: 3,
+      delay: ms('1 second'),
+      backoff: 'exponential',
+    },
+    timeout: ms('30 seconds'),
+  },
+  async ({ attempt }) => ({ attempt, startedAt: Date.now() })
+);
+
+await step.sleep('wait before finishing', ms('2 seconds'));
+```
+
+Independent `step.do` calls can run concurrently with `Promise.all`; their sequence is assigned in call order and each result/retry remains durable.
+
+One Durable Object represents one workflow instance. Call `start` through its RPC stub and poll `status`; repeated `start` calls are deduplicated. `step.do` accepts the same core `retries` (`limit`, `delay`, and `backoff`) and `timeout` shape as Cloudflare Workflows, using millisecond durations. Its callback receives the resolved config, one-based attempt, step name/count, and an `AbortSignal` for timeouts.
+
+The handler is replayed from the beginning after a sleep or retry, so branching between steps must be deterministic. A completed `step.do` callback is not rerun, but its external side effect is still at-least-once if the object stops after the side effect and before its result commits. Use a stable idempotency key for external writes.
 
 ## Migrating to v3
 

@@ -1,0 +1,22 @@
+{
+  "name": "@durability/example-workflow",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cf-typegen": "wrangler types --include-runtime=false && oxfmt --write worker-configuration.d.ts",
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "durability": "workspace:*",
+    "itty-time": "^2.0.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@durability/typescript-config": "workspace:*",
+    "oxfmt": "^0.32.0",
+    "typescript": "6.0.3",
+    "wrangler": "^4.106.0"
+  }
+}

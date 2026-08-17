@@ -1,0 +1,11 @@
+{
+  "extends": "@durability/typescript-config/base.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noEmit": true,
+    "noImplicitOverride": true,
+    "strict": true,
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/**/*.ts", "worker-configuration.d.ts"]
+}
