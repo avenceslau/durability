@@ -9,12 +9,20 @@
         "name": "ALARM_TEST",
         "class_name": "NamedAlarmTestObject",
       },
+      {
+        "name": "KV_ALARM_TEST",
+        "class_name": "KvAlarmTestObject",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["NamedAlarmTestObject"],
+    },
+    {
+      "tag": "v2",
+      "new_classes": ["KvAlarmTestObject"],
     },
   ],
 }

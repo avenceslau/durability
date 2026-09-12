@@ -95,7 +95,42 @@ const propertyName = (node: AstNode | undefined) => {
   return undefined;
 };
 
-const isDurabilityAlarmCall = (node: AstNode | undefined) => {
+const durabilityConstructors = new Set([
+  'Durability',
+  'DurabilityAlarms',
+  'DurabilityScheduler',
+]);
+
+/** Class fields holding a durability helper, by declared name. */
+const durabilityFields = (members: AstNode[]): Set<string> => {
+  const fields = new Set<string>();
+  for (const member of members) {
+    if (member.type !== 'PropertyDefinition') {
+      continue;
+    }
+    const name = propertyName(member.key);
+    const value = nodeValue(member.value);
+    const constructed =
+      value?.type === 'NewExpression' &&
+      value.callee?.type === 'Identifier' &&
+      durabilityConstructors.has(value.callee.name ?? '');
+    const created =
+      value?.type === 'CallExpression' &&
+      propertyName(value.callee) === 'createDurability';
+    if (
+      name !== undefined &&
+      (name === 'durability' || constructed || created)
+    ) {
+      fields.add(name);
+    }
+  }
+  return fields;
+};
+
+const isDurabilityAlarmCall = (
+  node: AstNode | undefined,
+  fields: Set<string>
+) => {
   const value = node?.type === 'AwaitExpression' ? node.argument : node;
   if (value?.type !== 'CallExpression') {
     return false;
@@ -114,7 +149,7 @@ const isDurabilityAlarmCall = (node: AstNode | undefined) => {
   return (
     receiver?.type === 'MemberExpression' &&
     receiver.object?.type === 'ThisExpression' &&
-    propertyName(receiver.property) === 'durability'
+    fields.has(propertyName(receiver.property) ?? '')
   );
 };
 
@@ -124,7 +159,7 @@ const alarmRunnerRule = {
     schema: [],
     messages: {
       delegateOnly:
-        'A durability alarm runner must only return durability.alarm(alarmInfo).',
+        'A durability alarm runner must only return the durability alarm handler, such as this.durability.alarm(alarmInfo).',
     },
   },
   create(context: RuleContext) {
@@ -139,20 +174,14 @@ const alarmRunnerRule = {
         return;
       }
 
+      const fields = durabilityFields(members);
       const statements = bodyMembers(nodeValue(alarm.value));
       const usesDurability =
-        members.some(
-          (member) =>
-            member.type === 'PropertyDefinition' &&
-            (propertyName(member.key) === 'durability' ||
-              (nodeValue(member.value)?.type === 'CallExpression' &&
-                propertyName(nodeValue(member.value)?.callee) ===
-                  'createDurability'))
-        ) ||
+        fields.size > 0 ||
         statements.some(
           (statement) =>
             statement.type === 'ReturnStatement' &&
-            isDurabilityAlarmCall(statement.argument)
+            isDurabilityAlarmCall(statement.argument, fields)
         );
       if (!usesDurability) {
         return;
@@ -162,7 +191,7 @@ const alarmRunnerRule = {
       const valid =
         statements.length === 1 &&
         statement?.type === 'ReturnStatement' &&
-        isDurabilityAlarmCall(statement.argument);
+        isDurabilityAlarmCall(statement.argument, fields);
       if (!valid) {
         context.report({ node: alarm, messageId: 'delegateOnly' });
       }

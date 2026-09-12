@@ -1,15 +1,15 @@
 # Durability
 
-Durable operation tooling for Cloudflare Workers and SQLite-backed Durable Objects.
+Durable operation tooling for Cloudflare Workers and SQLite- or KV-backed Durable Objects.
 
 ## Packages
 
-| Package                                           | Description                                                                                                    |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| [`durability`](./packages/durability)             | Alarm-backed, effectively-once operation execution with retries, idempotency, result lookup, and named alarms. |
-| [`@durability/storage`](./packages/storage)       | Shared migration types for Durable Object storage.                                                             |
-| [`@durability/transforms`](./packages/transforms) | Typed caller and callee transforms for Cloudflare RPC, including a Vite plugin.                                |
-| [`@durability/lint`](./packages/lint)             | Oxlint rules for durability migrations and alarm delegation.                                                   |
+| Package                                           | Description                                                                                                                                                  |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`durability`](./packages/durability)             | `Durability` operations and `DurabilityAlarms` named alarms: alarm-backed, effectively-once execution with retries and idempotency, on SQLite or KV storage. |
+| [`@durability/storage`](./packages/storage)       | Shared migration types for Durable Object storage.                                                                                                           |
+| [`@durability/transforms`](./packages/transforms) | Typed caller and callee transforms for Cloudflare RPC, including a Vite plugin.                                                                              |
+| [`@durability/lint`](./packages/lint)             | Oxlint rules for durability migrations and alarm delegation.                                                                                                 |
 
 Each package has its own API documentation and examples.
 

@@ -54,7 +54,6 @@
   ],
   "dependencies": {
     "@durability/storage": "workspace:^",
-    "workers-qb": "1.11.2",
     "zod": "^4.4.3"
   },
   "peerDependencies": {

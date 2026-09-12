@@ -29,9 +29,6 @@ importers:
       '@durability/storage':
         specifier: workspace:^
         version: link:../storage
-      workers-qb:
-        specifier: 1.11.2
-        version: 1.11.2
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1759,9 +1756,6 @@ packages:
     engines: {node: '>=16'}
     hasBin: true
 
-  workers-qb@1.11.2:
-    resolution: {integrity: sha512-PnTiqfcMKqbpLjstyptqDDQURgOFXJ4Wqjjq/DNulA+4QemT0L99Gd9FcCvRvcNNbL6RKDoxY3iFlnUGerabPw==}
-
   wrangler@4.106.0:
     resolution: {integrity: sha512-b6EVbsvbmAUY4bUQXT3+f8oFP8x+J5rEa5z3Akeh+6vyKiN4x8+PyZ53DPpnqdxhIihhq/a00Yq5chGJ19QXBQ==}
     engines: {node: '>=22.0.0'}
@@ -3156,8 +3150,6 @@ snapshots:
       '@cloudflare/workerd-linux-64': 1.20260701.1
       '@cloudflare/workerd-linux-arm64': 1.20260701.1
       '@cloudflare/workerd-windows-64': 1.20260701.1
-
-  workers-qb@1.11.2: {}
 
   wrangler@4.106.0(@cloudflare/workers-types@4.20260702.1):
     dependencies:

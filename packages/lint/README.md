@@ -24,17 +24,19 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
 
 ## `alarm-runner-only`
 
-A class using `createDurability` must delegate its alarm method directly to the generated alarm handler. Additional alarm work can replace or delay the single Durable Object alarm that durability owns.
+A class holding a `Durability`, `DurabilityAlarms`, or `DurabilityScheduler` instance must delegate its alarm method directly to that instance's alarm handler. Additional alarm work can replace or delay the single Durable Object alarm that durability owns.
 
 ```ts
 class ImageJobs extends DurableObject<Env> {
-  private readonly durability = createDurability(this.ctx, handlers);
+  private readonly durability = new Durability({ context: this.ctx, handlers });
 
   alarm(info?: AlarmInvocationInfo) {
     return this.durability.alarm(info);
   }
 }
 ```
+
+When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead.
 
 ## `durability-migrations-only`
 
