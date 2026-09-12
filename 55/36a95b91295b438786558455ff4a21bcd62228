@@ -1,0 +1,53 @@
+.changeset/brave-owls-split.md
+  s_edc72d8b0ec969::t_228d0a5c4b63aa 1-6
+README.md
+  s_edc72d8b0ec969::t_1ffbaaba59d700 3,7-12
+packages/durability/README.md
+  s_edc72d8b0ec969::t_3502332b454404 3,5-10,14-27,31,36-43,53-58,63,65,68,70-100,102,104-106,108-109,112-113,118-120,122,124,126,128-129,131-160,168,170,172-176,178-183,186,188,190,193,195-197,200-202,206,211-213,231,233,237,239,241,245,248-249,252,256,259-261,270
+packages/durability/src/durability-alarms.ts
+  s_edc72d8b0ec969::t_d580b44bd68e8f 1-327
+packages/durability/src/durability.ts
+  s_edc72d8b0ec969::t_74c40b46efd945 1-551
+packages/durability/src/errors.ts
+  s_edc72d8b0ec969::t_8e94f850ae5a86 1-179
+packages/durability/src/index.test.ts
+  s_edc72d8b0ec969::t_69c4e4e5de780d 4-8,17,23-34,63-64,66-70,101-206,211-214,220-231,235,239,243-249,251,253,255-264,268-276,280-306,312,319,329,338,340-372,375-377,379-381,384-419,422,424-431,433-435,438-461,463-473,475-487,490-507,509,511-513,515-520,522-537,539-543,545-549,551-820,843-847,874-876,881-882,897-901,944-946,954-956,980-982,994-997,1018,1033-1040,1042,1044-1046,1049-1070,1072-1082,1084-1095,1097-1103,1105-1107,1109,1111-1428,1447-1453,1457-1458,1463,1475-1486,1489,1491,1496,1512-1516,1518-1519,1521,1523,1533-1536,1538,1540,1549,1558-1562,1564,1566,1568,1588-1594,1596-1597,1599,1601,1615,1640-1648,1650-1651,1653,1655,1661,1670,1683-1686,1688,1690,1692,1714-1725,1727,1729-1730,1733,1740,1766-1769,1771,1773,1776-1777,1779,1786,1790-1800,1802-1807,1810,1813-1818,1824,1840-1844,1846-1850,1852,1854,1866,1868-1874,1876-1901,1904,1906-1909,1926-1935,1939,1948,1958-1960,1962-1964,1968-1973
+packages/durability/src/index.ts
+  s_edc72d8b0ec969::t_da1c4427c9726a 1-49
+packages/durability/src/kv-storage.ts
+  s_edc72d8b0ec969::t_e5b354020a2a61 1-299
+packages/durability/src/migrations.ts
+  s_edc72d8b0ec969::t_b3286104b07890 1-407
+packages/durability/src/policy.ts
+  s_edc72d8b0ec969::t_a970884a666848 1-135
+packages/durability/src/scheduler.ts
+  s_edc72d8b0ec969::t_1b9fce1ee4ac8a 1-611
+packages/durability/src/sqlite-storage.ts
+  s_edc72d8b0ec969::t_c23031f7c9949d 1-248
+packages/durability/tests/named-alarm-worker.ts
+  s_edc72d8b0ec969::t_8003e0c42dc51e 2-7,27-35,84-87,89-91,93-95,97-116,119,211-272
+packages/durability/tests/named-alarm.worker.test.ts
+  s_edc72d8b0ec969::t_9d3c5c8cdff886 4-7,13,33-73,200
+packages/lint/README.md
+  s_edc72d8b0ec969::t_6879dfca4731e8 27,31,39-40
+packages/lint/src/index.test.ts
+  s_edc72d8b0ec969::t_bf2d1ee27e8393 75,78-111
+packages/lint/src/index.ts
+  s_edc72d8b0ec969::t_5bf76e870f771b 98-133,152,162,177,180,184,194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5536a95b91295b438786558455ff4a21bcd62228",
+  "prompts": {},
+  "sessions": {
+    "s_edc72d8b0ec969": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0963d-e34c-7ee9-af9b-1abea2216c85",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
