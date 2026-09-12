@@ -23,6 +23,7 @@ type AstNode = {
   local?: AstNode;
   object?: AstNode;
   operator?: string;
+  params?: AstNode[];
   parent?: AstNode;
   properties?: AstNode[];
   property?: AstNode;
@@ -37,6 +38,7 @@ type AstNode = {
 };
 
 type ScopeVariable = {
+  name?: string;
   defs: { node: AstNode; type: string }[];
   references: {
     init?: boolean;
@@ -58,6 +60,7 @@ type RuleContext = {
       | 'delegateOnly'
       | 'missingAlarm'
       | 'physicalAlarm'
+      | 'nextOnce'
       | 'tableCreation'
       | 'tableName';
   }) => void;
@@ -297,6 +300,161 @@ const staticStringValue = (node: AstNode | undefined): string | undefined => {
     }
   }
   return value;
+};
+
+const transformNextOnceRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      nextOnce: 'A transform must not call next() more than once.',
+    },
+  },
+  create(context: RuleContext) {
+    const nextBindingRoots = new Map<ScopeVariable, ScopeVariable>();
+    const contextBindingRoots = new Map<ScopeVariable, ScopeVariable>();
+    const calledBindings = new Set<ScopeVariable>();
+
+    const resolveVariable = (node: AstNode | undefined) => {
+      if (node?.type !== 'Identifier' || !node.name) {
+        return undefined;
+      }
+
+      let scope: Scope | null = context.sourceCode.getScope(node);
+      while (scope) {
+        const variable = scope.set.get(node.name);
+        if (variable) {
+          return variable;
+        }
+        scope = scope.upper;
+      }
+      return undefined;
+    };
+
+    const declaredVariable = (node: AstNode, name: string | undefined) =>
+      context.sourceCode
+        .getDeclaredVariables(node)
+        .find(
+          (candidate) =>
+            candidate.name === name &&
+            candidate.defs.some((definition) => definition.type === 'Parameter')
+        );
+
+    const isInlineTransformHandler = (node: AstNode) => {
+      const parent = node.parent;
+      let factory: AstNode | undefined;
+      if (
+        parent?.type === 'ArrowFunctionExpression' ||
+        parent?.type === 'FunctionExpression'
+      ) {
+        factory = parent;
+      } else {
+        const candidate = parent?.parent?.parent;
+        if (
+          parent?.type === 'ReturnStatement' &&
+          parent.parent?.type === 'BlockStatement' &&
+          (candidate?.type === 'ArrowFunctionExpression' ||
+            candidate?.type === 'FunctionExpression')
+        ) {
+          factory = candidate;
+        }
+      }
+
+      if (!factory) {
+        return false;
+      }
+
+      const call = factory.parent;
+      return (
+        call?.type === 'CallExpression' &&
+        call.arguments?.includes(factory) === true &&
+        call.callee?.type === 'MemberExpression' &&
+        (propertyName(call.callee.property) === 'caller' ||
+          propertyName(call.callee.property) === 'callee')
+      );
+    };
+
+    const registerNextBinding = (node: AstNode) => {
+      const parameter = node.params?.[0];
+      const pattern =
+        parameter?.type === 'AssignmentPattern' ? parameter.left : parameter;
+      if (pattern?.type === 'Identifier') {
+        const variable = isInlineTransformHandler(node)
+          ? declaredVariable(node, pattern.name)
+          : undefined;
+        if (variable) {
+          contextBindingRoots.set(variable, variable);
+        }
+        return;
+      }
+      if (pattern?.type !== 'ObjectPattern') {
+        return;
+      }
+
+      const nextProperty = pattern.properties?.find(
+        (property) =>
+          property.type === 'Property' && propertyName(property.key) === 'next'
+      );
+      const value = nodeValue(nextProperty?.value);
+      const binding = value?.type === 'AssignmentPattern' ? value.left : value;
+      if (binding?.type !== 'Identifier') {
+        return;
+      }
+
+      const variable = declaredVariable(node, binding.name);
+      if (variable) {
+        nextBindingRoots.set(variable, variable);
+      }
+    };
+
+    const nextBindingRoot = (node: AstNode | undefined) => {
+      const directBinding = resolveVariable(node);
+      if (directBinding) {
+        return nextBindingRoots.get(directBinding);
+      }
+      if (
+        node?.type !== 'MemberExpression' ||
+        propertyName(node.property) !== 'next'
+      ) {
+        return undefined;
+      }
+
+      const contextBinding = resolveVariable(node.object);
+      return contextBinding
+        ? contextBindingRoots.get(contextBinding)
+        : undefined;
+    };
+
+    return {
+      ArrowFunctionExpression: registerNextBinding,
+      FunctionDeclaration: registerNextBinding,
+      FunctionExpression: registerNextBinding,
+      VariableDeclarator(node: AstNode) {
+        if (node.id?.type !== 'Identifier') {
+          return;
+        }
+
+        const root = nextBindingRoot(node.init);
+        const alias = context.sourceCode
+          .getDeclaredVariables(node)
+          .find((variable) => variable.name === node.id?.name);
+        if (root && alias) {
+          nextBindingRoots.set(alias, root);
+        }
+      },
+      CallExpression(node: AstNode) {
+        const root = nextBindingRoot(node.callee);
+        if (!root) {
+          return;
+        }
+        if (calledBindings.has(root)) {
+          context.report({ node, messageId: 'nextOnce' });
+          return;
+        }
+        calledBindings.add(root);
+      },
+    };
+  },
 };
 
 const durabilityMigrationsRule = {
@@ -613,5 +771,6 @@ export default {
   rules: {
     'alarm-runner-only': alarmRunnerRule,
     'durability-migrations-only': durabilityMigrationsRule,
+    'transform-next-once': transformNextOnceRule,
   },
 };

@@ -223,6 +223,100 @@ describe('alarm-runner-only', () => {
   });
 });
 
+describe('transform-next-once', () => {
+  it.each([
+    `
+      defineTransform().caller((_options) => async ({ next }) => next());
+    `,
+    `
+      defineTransform()
+        .caller((_options) => async ({ next: proceed }) => proceed())
+        .callee((_options) => async ({ next }) => next());
+    `,
+    `
+      async function handler({ next } = createContext()) {
+        function invoke(next: () => Promise<unknown>) {
+          return Promise.all([next(), next()]);
+        }
+        invoke(createCallback());
+        return next();
+      }
+    `,
+    `
+      defineTransform().caller((_options) => async (transformContext) =>
+        transformContext.next()
+      );
+    `,
+  ])('accepts transforms that call next once', (source) => {
+    const result = lint(source, 'transform-next-once');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it('ignores context-style access outside an inline transform', () => {
+    const result = lint(
+      `
+        async function unrelated(iterator: { next: () => Promise<unknown> }) {
+          await iterator.next();
+          return iterator.next();
+        }
+      `,
+      'transform-next-once'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      defineTransform().caller((_options) => async ({ next }) => {
+        await next();
+        return next();
+      });
+    `,
+    `
+      defineTransform().callee((_options) => async ({ next: proceed }) =>
+        Promise.all([proceed(), proceed()])
+      );
+    `,
+    `
+      defineTransform().caller((_options) => async ({ next }) => {
+        const pending = Promise.resolve().then(() => next());
+        await next();
+        return pending;
+      });
+    `,
+    `
+      defineTransform().caller((_options) => async (transformContext) => {
+        await transformContext.next();
+        return transformContext.next();
+      });
+    `,
+    `
+      defineTransform().caller((_options) => async ({ next }) => {
+        const proceed = next;
+        await proceed();
+        return proceed();
+      });
+    `,
+    `
+      defineTransform().caller((_options) => async ({ next }) => {
+        if (condition) {
+          return next();
+        }
+        return next();
+      });
+    `,
+  ])('rejects transforms that call next more than once', (source) => {
+    const result = lint(source, 'transform-next-once');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'A transform must not call next() more than once.'
+    );
+  });
+});
+
 describe('durability-migrations-only', () => {
   it('accepts the durability migration table', () => {
     const result = lint(

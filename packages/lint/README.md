@@ -17,7 +17,8 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
   "jsPlugins": [{ "name": "durability", "specifier": "@durability/lint" }],
   "rules": {
     "durability/alarm-runner-only": "error",
-    "durability/durability-migrations-only": "error"
+    "durability/durability-migrations-only": "error",
+    "durability/transform-next-once": "error"
   }
 }
 ```
@@ -37,6 +38,19 @@ class ImageJobs extends DurableObject<Env> {
 ```
 
 When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead.
+
+## `transform-next-once`
+
+Each transform handler may contain one call site for its `next` function. Multiple call sites are rejected conservatively, even when they appear in mutually exclusive branches, because later edits can make both paths execute. A single call site may still execute repeatedly when placed in a loop or repeatedly invoked callback, so intentional retry transforms remain the author's responsibility.
+
+```ts
+const invalid = defineTransform().caller((_options) => async ({ next }) => {
+  await next();
+  return next();
+});
+```
+
+Caller and callee handlers are checked separately. The rule supports inline context-style access such as `transformContext.next()`, renamed destructured bindings such as `{ next: proceed }`, simple aliases, and calls from nested closures. Unrelated bindings that shadow the transform's `next` function are ignored. Because Oxlint plugins do not receive TypeScript type information, separately declared handlers are recognized by a destructured `next` property in their first parameter.
 
 ## `durability-migrations-only`
 
