@@ -1,0 +1,29 @@
+packages/durability/src/sqlite-storage.ts
+  s_4b72101621f039::t_e052f050ec38e5 5,12-13,24-25,42-50,65-66,80,237-253,257,265,276
+packages/durability/src/migrations.ts
+  s_4b72101621f039::t_9067d2ba80192a 173-205,214-217
+packages/durability/src/queues.test.ts
+  s_4b72101621f039::t_12a5e81b602594 1-734
+packages/durability/src/kv-storage.ts
+  s_4b72101621f039::t_c7642b465cc22f 5,11-12,26-27,42-49,79,81,267,270,275-290,294,306-310,333
+packages/durability/src/queue-shard.ts
+  s_4b72101621f039::t_6e15f31dfebeb3 1-661
+README.md
+  s_4b72101621f039::t_7f64460a3ca6f3 7-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c973806988906fd432e814d77e6f16ab78cca310",
+  "prompts": {},
+  "sessions": {
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
