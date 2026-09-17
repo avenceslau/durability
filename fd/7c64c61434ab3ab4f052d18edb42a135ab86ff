@@ -1,0 +1,52 @@
+README.md
+  s_4b72101621f039::t_7f64460a3ca6f3 7-12
+packages/durability/src/sqlite-storage.ts
+  s_4b72101621f039::t_e052f050ec38e5 5,12-13,24-25,42-50,65-66,80,237-266,270,278,289
+packages/durability/src/migrations.ts
+  s_4b72101621f039::t_9067d2ba80192a 173-205,214-217
+packages/durability/src/kv-storage.ts
+  s_4b72101621f039::t_c7642b465cc22f 5,11-12,26-27,42-49,79,81,267,270,275-295,299,311-315,338
+  s_edc72d8b0ec969::t_e5b354020a2a61 75
+packages/durability/src/queue-shard.ts
+  s_4b72101621f039::t_6e15f31dfebeb3 1-666
+packages/durability/src/queues.test.ts
+  s_4b72101621f039::t_12a5e81b602594 1-750
+.changeset/warm-geese-queue.md
+  s_4b72101621f039::t_b5ce4ace82578a 1-5
+packages/durability/package.json
+  s_4b72101621f039::t_d3c5d89b063327 22,33-36
+packages/durability/src/index.ts
+  s_4b72101621f039::t_34cf77071ff405 21-27,44-47,53
+packages/durability/src/queue.ts
+  s_4b72101621f039::t_12a4f43c748f9c 1-234
+packages/durability/tests/named-alarm-worker.ts
+  s_4b72101621f039::t_b5bc7dabb511ea 1,3,9-13,282-340
+packages/durability/tests/queue.worker.test.ts
+  s_4b72101621f039::t_264d7d1350e948 1-134
+packages/durability/tsconfig.build.json
+  s_4b72101621f039::t_d54c6aa212f929 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fd7c64c61434ab3ab4f052d18edb42a135ab86ff",
+  "prompts": {},
+  "sessions": {
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_edc72d8b0ec969": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0963d-e34c-7ee9-af9b-1abea2216c85",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
