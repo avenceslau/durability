@@ -1,0 +1,83 @@
+.changeset/warm-geese-queue.md
+  s_2210f037b0059f::t_92d103dbb377fb 4,7-9
+README.md
+  s_4b72101621f039::t_1ff6eecac620ac 7-12
+examples/README.md
+  s_4b72101621f039::t_9e84b940e469aa 3,5-10,12,14-16
+examples/email-queue/vite.config.ts
+  s_2210f037b0059f::t_c5eedbf4bf81bc 4-5
+examples/email-queue/worker.ts
+  s_4b72101621f039::t_e17636ae44f102 1,5-12,17,20,27-28,30-31,33-34,53,58-95,97-99,101,106-107,114-129,131-138,140-143,145-148,150-156
+examples/email-queue/wrangler.jsonc
+  s_4b72101621f039::t_ac3c3fdac9b508 5,9-16
+packages/durability/README.md
+  s_4b72101621f039::t_05033b27c5b4e6 3,7-8,10,270,272,275,277-278,280-303,307-313,316-318,321,323,325,328-334,337,339,341,343,345-346,348,350,352,354,356,358,360-363,365,367,369,371,373,375-385,387,389,391,393,395
+packages/durability/package.json
+  s_4b72101621f039::t_4a0e89bf120d8e 22,33-35
+packages/durability/src/dead-letter.test.ts
+  s_4b72101621f039::t_7d3af04a76156d 1-125
+packages/durability/src/fanout.test.ts
+  s_4b72101621f039::t_0cb2f002e73485 1,3-8,10-20,23,25-26,28,33-40,42-66,68-102,105-124,127-144,147-162,165-172,174-186,189-203,206-232,235-291,294-314,317-337,340-363,366-401,404-435,438-451,454-465,468-482,484-505,507
+packages/durability/src/fanout.ts
+  s_4b72101621f039::t_db7f4b47059fe2 1,4-6,11-14,16-18,32,34-42,44-45,54-63,65-67,70-76,79-86,89,91-95,98-100,102-104,106,108-111,114,116,119-141,143-144,150,153-154,163-166,170-173,176-216,219-272,274-278,280-288,290,292,294,298-305,307,310-326,329-333,337-347,350-397,401-403,405-407,409-411,414-416,418-422,424-430,432,434,437,440-442,444-493,495-496,498-531,536-537,539-543,545-548,550-560,563-568,571-579,581,588-591,595-599,605,609-621,624-627,630-651,653,656,663-664,666-676,681,683-735,737,740,742-745,747,749-751,756-758,760,762-774
+packages/durability/src/index.ts
+  s_4b72101621f039::t_975a6c2baa62bf 21-39,42,64-67,73
+packages/durability/src/load.test.ts
+  s_4b72101621f039::t_49108e68672eac 1-64
+packages/durability/src/load.ts
+  s_4b72101621f039::t_dc456185630676 1-94
+packages/durability/src/message-storage.ts
+  s_2210f037b0059f::t_7ab6dd4a29d2e4 1-30
+packages/durability/src/migrations.ts
+  s_4b72101621f039::t_e45e0806d79a01 174-175,177,179,181-191,193-194,197,203-216,218,221-226,239
+packages/durability/src/routing-client.ts
+  s_4b72101621f039::t_22a2a87cdc5832 1-2,4,8,10,13-23,27-29,31-44,46-50,52-55,58-59,61-74,76-80,82-87,89-92,95-101,103-114,116-138
+packages/durability/src/routing.test.ts
+  s_4b72101621f039::t_a96d91782a5a10 1-108
+packages/durability/src/routing.ts
+  s_4b72101621f039::t_97e49259276f3e 1,7-9,11,13-16,18-19,25-43,47-49,51-84,89-90,92-96,98-118,120-125
+packages/durability/src/sqlite-storage.ts
+  s_4b72101621f039::t_000860f9dfad89 5-6,10-11,15,30-33,48-49,51-53,60-65,77-78,188-199,202,232,237,243,248-250,252-255,257-300,303-335,339-340,345-450,456,460-461,463-465,472-485,489-490
+packages/durability/tests/fanout-worker.ts
+  s_4b72101621f039::t_b82d27589c175b 1-103
+packages/durability/tsconfig.build.json
+  s_4b72101621f039::t_40a3412524728e 12
+packages/durability/vitest.config.ts
+  s_4b72101621f039::t_6ce4299fbcce68 5
+packages/durability/wrangler.test.jsonc
+  s_4b72101621f039::t_4aa2c9735d41a9 18-24,42
+packages/lint/README.md
+  s_2210f037b0059f::t_0a73491248bbc3 27
+packages/lint/src/index.test.ts
+  s_4b72101621f039::t_52c71e38402316 97-110
+packages/lint/src/index.ts
+  s_4b72101621f039::t_bc2e81bf0daa48 101
+packages/transforms/src/vite.ts
+  s_4b72101621f039::t_2ad01a98a73c5d 27,31,53,181,187-190,200,202,204,206-216,220-233,235-236,245-251,256-260,262-266,268-277,279-280,282-293,297-298,300-382,387-394,396-398,539,543,750-757,759-764,788-798,1063,1068
+packages/transforms/tests/vite.test.ts
+  s_4b72101621f039::t_7c016fe9e5e911 23,26-28,30,32-33,36-46,69-79,251-252,254-260,263,266,268-271,274-276,279,281-285,291,294-295,297,300,303-306,308-316,319-335,338-342,344-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b41080e1825c3d98c2335781d2fef2982dda12cd",
+  "prompts": {},
+  "sessions": {
+    "s_2210f037b0059f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a096ac-8e9f-701c-9f10-7051f12e222d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
