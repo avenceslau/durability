@@ -8,6 +8,7 @@ import {
 export { DeliveryObject, FanoutConsumer } from './fanout-worker';
 import socketWorker, { SocketTestObject } from './socket-worker';
 export { SocketTestObject };
+export { LogTestObject } from './log-worker';
 
 export type RecordedAlarm = {
   attempt: number;

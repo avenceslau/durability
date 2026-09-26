@@ -247,6 +247,42 @@ export const durabilitySocketMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Ordered SQLite migrations for the retained log and its consumer cursors.
+ * Applied automatically on construction.
+ */
+export const durabilityLogMigrations = [
+  {
+    name: 'durability_0007_create_log',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_log_records (
+        "offset" INTEGER PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        payload TEXT NOT NULL,
+        appended_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_log_records_appended_idx
+      ON durability_log_records (appended_at, "offset");
+      CREATE TABLE IF NOT EXISTS durability_log_cursors (
+        consumer TEXT PRIMARY KEY,
+        "offset" INTEGER NOT NULL,
+        committed_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS durability_log_seq (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_offset INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO durability_log_seq (id, next_offset) VALUES (1, 0);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_log_records_appended_idx;
+      DROP TABLE IF EXISTS durability_log_records;
+      DROP TABLE IF EXISTS durability_log_cursors;
+      DROP TABLE IF EXISTS durability_log_seq;
+    `,
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -259,7 +295,8 @@ export type MigrationCapability =
   | 'operations'
   | 'namedAlarms'
   | 'fanout'
-  | 'socket';
+  | 'socket'
+  | 'log';
 
 /**
  * Newer library versions may leave migrations this one does not know about.

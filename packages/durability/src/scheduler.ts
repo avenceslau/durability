@@ -223,6 +223,11 @@ export class Engine {
     migrate(this.context.storage, capability, migrations, undefined);
   }
 
+  /** Runs synchronous writes atomically without touching the physical alarm. */
+  transactionSync<T>(write: (sql: SqlStorage) => T): T {
+    return this.context.storage.transactionSync(() => write(this.sql));
+  }
+
   /**
    * Runs the writes and reconciles the physical alarm in one storage
    * transaction, then publishes the in-memory timer only after commit.
