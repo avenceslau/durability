@@ -275,6 +275,43 @@ export const durabilityLogMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Leases let several workers consume one log in parallel without handing the
+ * same offsets to two of them. Applied automatically when leases are enabled.
+ */
+export const durabilityLogLeaseMigrations = [
+  {
+    name: 'durability_0007_create_log_leases',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_log_leases (
+        batch_id TEXT PRIMARY KEY,
+        consumer TEXT NOT NULL,
+        first_offset INTEGER NOT NULL,
+        last_offset INTEGER NOT NULL,
+        state TEXT NOT NULL
+          CHECK (state IN ('active', 'pending', 'acked', 'skipped')),
+        attempt INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_log_leases_claim_idx
+      ON durability_log_leases (consumer, state, expires_at, first_offset);
+      CREATE INDEX IF NOT EXISTS durability_log_leases_order_idx
+      ON durability_log_leases (consumer, first_offset);
+      CREATE TABLE IF NOT EXISTS durability_log_allocations (
+        consumer TEXT PRIMARY KEY,
+        allocated_offset INTEGER NOT NULL
+      );
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_log_leases_claim_idx;
+      DROP INDEX IF EXISTS durability_log_leases_order_idx;
+      DROP TABLE IF EXISTS durability_log_leases;
+      DROP TABLE IF EXISTS durability_log_allocations;
+    `,
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -287,7 +324,8 @@ export type MigrationCapability =
   | 'operations'
   | 'namedAlarms'
   | 'fanout'
-  | 'log';
+  | 'log'
+  | 'logLeases';
 
 /**
  * Newer library versions may leave migrations this one does not know about.
