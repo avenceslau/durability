@@ -21,6 +21,7 @@ export class LogTestObject extends DurableObject<Env> {
     this.log = new DurabilityLog<LogEvent>({
       scheduler: new DurabilityScheduler({ context: this.ctx }),
       retention: { maxRecords: 3 },
+      leases: { maxParallelism: 2, leaseMs: 1_000 },
       // Real cold storage: one immutable object per flushed segment.
       cold: {
         write: async ({ records, firstOffset }) => {
@@ -62,6 +63,22 @@ export class LogTestObject extends DurableObject<Env> {
 
   trim() {
     return this.log.trim();
+  }
+
+  lease(consumer: string, limit?: number) {
+    return this.log.lease(consumer, limit);
+  }
+
+  ackLease(consumer: string, batchId: string) {
+    return this.log.ack(consumer, batchId);
+  }
+
+  nackLease(consumer: string, batchId: string) {
+    return this.log.nack(consumer, batchId);
+  }
+
+  cursor(consumer: string) {
+    return this.log.cursor(consumer);
   }
 
   forgetColdBefore(offset: number) {

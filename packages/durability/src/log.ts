@@ -1,7 +1,17 @@
 import { z } from 'zod';
-import { LogAppendError, LogTruncatedError, serializeError } from './errors.js';
+import {
+  LogAppendError,
+  LogLeaseError,
+  LogTruncatedError,
+  reportFailure,
+  serializeError,
+} from './errors.js';
 import { RoutingLoad, type EnqueueResult, type LoadSnapshot } from './load.js';
-import { durabilityLogMigrations, migrate } from './migrations.js';
+import {
+  durabilityLogLeaseMigrations,
+  durabilityLogMigrations,
+  migrate,
+} from './migrations.js';
 import { assertPositiveInteger } from './policy.js';
 import {
   engineFor,
@@ -36,6 +46,30 @@ const logSegmentRowSchema = z.object({
 });
 
 type LogSegmentRow = z.infer<typeof logSegmentRowSchema>;
+
+/**
+ * One in-flight or settled range of offsets held by a consumer. A range is
+ * redelivered under a fresh `batch_id`, so an ack from a previous holder is
+ * rejected rather than advancing a range someone else now owns.
+ */
+const logLeaseRowSchema = z.object({
+  batch_id: z.string(),
+  consumer: z.string(),
+  first_offset: z.number().int().nonnegative(),
+  last_offset: z.number().int().nonnegative(),
+  state: z.enum(['active', 'pending', 'acked', 'skipped']),
+  attempt: z.number().int().positive(),
+  expires_at: z.number().int().nonnegative(),
+  created_at: z.number().int().nonnegative(),
+});
+
+export type LogLeaseRow = z.infer<typeof logLeaseRowSchema>;
+
+type LogLeaseState = LogLeaseRow['state'];
+
+const allocationRowSchema = z.object({
+  allocated_offset: z.number().int().nonnegative(),
+});
 
 const offsetRowSchema = z.object({ offset: z.number().int().nonnegative() });
 const seqRowSchema = z.object({ seq: z.number().int().nonnegative() });
@@ -279,6 +313,184 @@ const readCursors = (sql: SqlStorage) =>
         .toArray()
     );
 
+const readCursor = (sql: SqlStorage, consumer: string): number | undefined =>
+  offsetRowSchema.optional().parse(
+    sql
+      .exec(
+        `SELECT "offset" FROM durability_log_cursors
+           WHERE consumer = ? LIMIT 1`,
+        consumer
+      )
+      .toArray()[0]
+  )?.offset;
+
+/** Advances a cursor, ignoring regressions so a late commit cannot rewind it. */
+const commitCursor = (
+  sql: SqlStorage,
+  consumer: string,
+  offset: number,
+  committedAt: number
+): void => {
+  sql.exec(
+    `INSERT INTO durability_log_cursors (consumer, "offset", committed_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(consumer) DO UPDATE
+       SET "offset" = excluded."offset", committed_at = excluded.committed_at
+       WHERE excluded."offset" > durability_log_cursors."offset"`,
+    consumer,
+    offset,
+    committedAt
+  );
+};
+
+/** Highest offset handed to a lease, which runs ahead of the commit. */
+const readAllocation = (
+  sql: SqlStorage,
+  consumer: string
+): number | undefined =>
+  allocationRowSchema.optional().parse(
+    sql
+      .exec(
+        `SELECT allocated_offset FROM durability_log_allocations
+           WHERE consumer = ? LIMIT 1`,
+        consumer
+      )
+      .toArray()[0]
+  )?.allocated_offset;
+
+const setAllocation = (
+  sql: SqlStorage,
+  consumer: string,
+  offset: number
+): void => {
+  sql.exec(
+    `INSERT INTO durability_log_allocations (consumer, allocated_offset)
+     VALUES (?, ?)
+     ON CONFLICT(consumer) DO UPDATE SET allocated_offset = excluded.allocated_offset`,
+    consumer,
+    offset
+  );
+};
+
+const insertLease = (sql: SqlStorage, row: LogLeaseRow): void => {
+  sql.exec(
+    `INSERT INTO durability_log_leases
+       (batch_id, consumer, first_offset, last_offset, state, attempt,
+        expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    row.batch_id,
+    row.consumer,
+    row.first_offset,
+    row.last_offset,
+    row.state,
+    row.attempt,
+    row.expires_at,
+    row.created_at
+  );
+};
+
+/**
+ * Oldest range owed redelivery: explicitly nacked, or held past its expiry.
+ * Claiming rewrites its `batch_id`, fencing the previous holder.
+ */
+const claimExpired = (
+  sql: SqlStorage,
+  consumer: string,
+  now: number,
+  batchId: string,
+  expiresAt: number
+): LogLeaseRow | undefined =>
+  logLeaseRowSchema.optional().parse(
+    sql
+      .exec(
+        `UPDATE durability_log_leases
+         SET batch_id = ?, state = 'active', attempt = attempt + 1,
+             expires_at = ?
+         WHERE batch_id = (
+           SELECT batch_id FROM durability_log_leases
+           WHERE consumer = ?
+             AND (state = 'pending'
+                  OR (state = 'active' AND expires_at <= ?))
+           ORDER BY first_offset ASC
+           LIMIT 1
+         )
+         RETURNING *`,
+        batchId,
+        expiresAt,
+        consumer,
+        now
+      )
+      .toArray()[0]
+  );
+
+/** Ranges still held, so parallelism can be bounded per consumer. */
+const countHeld = (sql: SqlStorage, consumer: string, now: number): number =>
+  countRowSchema.parse(
+    sql
+      .exec(
+        `SELECT COUNT(*) AS count FROM durability_log_leases
+         WHERE consumer = ?
+           AND (state = 'pending' OR (state = 'active' AND expires_at > ?))`,
+        consumer,
+        now
+      )
+      .toArray()[0]
+  ).count;
+
+/** Settles one range, failing when the batch was fenced or already settled. */
+const settleLease = (
+  sql: SqlStorage,
+  batchId: string,
+  state: LogLeaseState,
+  expiresAt: number
+): boolean =>
+  sql
+    .exec(
+      `UPDATE durability_log_leases
+       SET state = ?, expires_at = ?
+       WHERE batch_id = ? AND state = 'active'
+       RETURNING batch_id`,
+      state,
+      expiresAt,
+      batchId
+    )
+    .toArray().length > 0;
+
+/**
+ * Ranges from `from` in offset order, so a commit can advance over the
+ * unbroken run of settled ones and no further.
+ */
+const leasesFrom = (
+  sql: SqlStorage,
+  consumer: string,
+  from: number,
+  limit: number
+): LogLeaseRow[] =>
+  logLeaseRowSchema.array().parse(
+    sql
+      .exec(
+        `SELECT * FROM durability_log_leases
+         WHERE consumer = ? AND first_offset >= ?
+         ORDER BY first_offset ASC
+         LIMIT ?`,
+        consumer,
+        from,
+        limit
+      )
+      .toArray()
+  );
+
+const deleteLeases = (sql: SqlStorage, batchIds: readonly string[]): void => {
+  if (batchIds.length === 0) {
+    return;
+  }
+  sql.exec(
+    `DELETE FROM durability_log_leases
+     WHERE batch_id IN (${batchIds.map(() => '?').join(', ')})`,
+    ...batchIds
+  );
+};
+
 export type LogAppendInput<Body = unknown> = {
   body: Body;
   /**
@@ -326,6 +538,33 @@ export type LogColdStorage<Body = unknown> = {
   read(locator: string): Promise<LogRecord<Body>[] | undefined>;
 };
 
+/** A claimed range of offsets, held until acked, nacked, or expired. */
+export type LogLease<Body = unknown> = {
+  /** Identifies this delivery. A redelivery of the same range gets a new one. */
+  batchId: string;
+  consumer: string;
+  records: LogRecord<Body>[];
+  firstOffset: number;
+  lastOffset: number;
+  /** One-based delivery attempt for this range. */
+  attempt: number;
+  expiresAt: number;
+};
+
+export type LogLeaseOptions = {
+  /** Ranges one consumer may hold at once. Defaults to 1. */
+  maxParallelism?: number;
+  /** How long a claim is held before another worker may take it. */
+  leaseMs?: number;
+  /**
+   * Attempts before a range is skipped instead of redelivered forever. Only
+   * honoured together with `onPoison`: without somewhere to send the records,
+   * blocking the consumer beats silently dropping them.
+   */
+  maxAttempts?: number;
+  onPoison?: (lease: LogLease) => Promise<void>;
+};
+
 export type LogRetention = {
   maxAgeMs?: number;
   maxRecords?: number;
@@ -340,6 +579,8 @@ export type DurabilityLogConfig<Body = unknown> = SchedulerAttachment & {
   /** Without retention the log grows until the object's storage limit. */
   retention?: LogRetention;
   cold?: LogColdStorage<Body>;
+  /** Enables `lease`/`ack`/`nack`; plain `read`/`commit` needs no leases. */
+  leases?: LogLeaseOptions;
   routing?: RoutingLoad;
   maxBatchSize?: number;
 };
@@ -365,6 +606,9 @@ export class DurabilityLog<Body = unknown> {
   readonly #routing: RoutingLoad;
   readonly #retention: LogRetention | undefined;
   readonly #cold: LogColdStorage<Body> | undefined;
+  readonly #leases: LogLeaseOptions | undefined;
+  #maxParallelism = 1;
+  #leaseMs = 30_000;
   readonly #maxBatchSize: number;
   readonly #encoder = new TextEncoder();
 
@@ -392,6 +636,17 @@ export class DurabilityLog<Body = unknown> {
     this.#routing = config.routing ?? new RoutingLoad();
     this.#retention = config.retention;
     this.#cold = config.cold;
+    this.#leases = config.leases;
+    if (this.#leases) {
+      this.#maxParallelism = this.#leases.maxParallelism ?? 1;
+      assertPositiveInteger('leases.maxParallelism', this.#maxParallelism);
+      this.#leaseMs = this.#leases.leaseMs ?? 30_000;
+      assertPositiveInteger('leases.leaseMs', this.#leaseMs);
+      if (this.#leases.maxAttempts !== undefined) {
+        assertPositiveInteger('leases.maxAttempts', this.#leases.maxAttempts);
+      }
+      this.#engine.migrateSchema('logLeases', durabilityLogLeaseMigrations);
+    }
     this.#engine.migrateSchema('log', durabilityLogMigrations);
   }
 
@@ -529,15 +784,7 @@ export class DurabilityLog<Body = unknown> {
 
   /** Undefined until the consumer commits, so callers choose their own start. */
   async cursor(consumer: string): Promise<number | undefined> {
-    return offsetRowSchema.optional().parse(
-      this.#engine.sql
-        .exec(
-          `SELECT "offset" FROM durability_log_cursors
-             WHERE consumer = ? LIMIT 1`,
-          consumer
-        )
-        .toArray()[0]
-    )?.offset;
+    return readCursor(this.#engine.sql, consumer);
   }
 
   /** Records progress. Regressions are ignored, so a late commit cannot rewind. */
@@ -545,16 +792,7 @@ export class DurabilityLog<Body = unknown> {
     if (!Number.isInteger(offset) || offset < 0) {
       throw new LogAppendError('Commit offset must be a non-negative integer');
     }
-    this.#engine.sql.exec(
-      `INSERT INTO durability_log_cursors (consumer, "offset", committed_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(consumer) DO UPDATE
-         SET "offset" = excluded."offset", committed_at = excluded.committed_at
-         WHERE excluded."offset" > durability_log_cursors."offset"`,
-      consumer,
-      offset,
-      Date.now()
-    );
+    commitCursor(this.#engine.sql, consumer, offset, Date.now());
   }
 
   async cursors(): Promise<Record<string, number>> {
@@ -657,6 +895,210 @@ export class DurabilityLog<Body = unknown> {
   }
 
   /**
+   * Claims the next unleased range for a consumer, or redelivers one whose
+   * holder nacked or let its lease expire. Returns undefined when nothing is
+   * available, either because the consumer is at `maxParallelism` or because
+   * the log has no unleased records.
+   *
+   * Two workers sharing a consumer name never receive the same offsets: the
+   * range is recorded durably before the records are returned, and a
+   * redelivery rewrites the batch id so the previous holder can no longer
+   * settle it.
+   */
+  async lease(
+    consumer: string,
+    limit?: number
+  ): Promise<LogLease<Body> | undefined> {
+    const leases = this.#requireLeases();
+    const size = Math.min(limit ?? this.#maxBatchSize, this.#maxBatchSize);
+    assertPositiveInteger('limit', size);
+    assertConsumer(consumer);
+    const now = Date.now();
+    const sql = this.#engine.sql;
+
+    const reclaimed = claimExpired(
+      sql,
+      consumer,
+      now,
+      crypto.randomUUID(),
+      now + this.#leaseMs
+    );
+    if (reclaimed) {
+      const poisoned =
+        leases.maxAttempts !== undefined &&
+        leases.onPoison !== undefined &&
+        reclaimed.attempt > leases.maxAttempts;
+      const lease = {
+        batchId: reclaimed.batch_id,
+        consumer,
+        records: await this.#between(
+          reclaimed.first_offset,
+          reclaimed.last_offset
+        ),
+        firstOffset: reclaimed.first_offset,
+        lastOffset: reclaimed.last_offset,
+        attempt: reclaimed.attempt,
+        expiresAt: reclaimed.expires_at,
+      };
+      if (!poisoned) {
+        return lease;
+      }
+      // Terminal intent is durable before the callback runs, so a failing
+      // handler cannot resurrect a range that already exhausted its attempts.
+      this.#settle(reclaimed.batch_id, 'skipped');
+      try {
+        await leases.onPoison!(lease as LogLease);
+      } catch (error) {
+        reportFailure(
+          'durability.log.poison_handler.failed',
+          { consumer },
+          error
+        );
+      }
+      return undefined;
+    }
+
+    if (countHeld(sql, consumer, now) >= this.#maxParallelism) {
+      return undefined;
+    }
+
+    const bounds = readBounds(sql);
+    const committed = readCursor(sql, consumer);
+    const allocated = readAllocation(sql, consumer);
+    const from = Math.max(bounds.oldestOffset, committed ?? 0, allocated ?? 0);
+    const records = await this.#readFrom(from, size, bounds);
+    if (records.length === 0) {
+      return undefined;
+    }
+
+    const first = records[0]!.offset;
+    const last = records[records.length - 1]!.offset;
+    const batchId = crypto.randomUUID();
+    this.#engine.transactionSync((transaction) => {
+      insertLease(transaction, {
+        batch_id: batchId,
+        consumer,
+        first_offset: first,
+        last_offset: last,
+        state: 'active',
+        attempt: 1,
+        expires_at: now + this.#leaseMs,
+        created_at: now,
+      });
+      setAllocation(transaction, consumer, last + 1);
+    });
+    return {
+      batchId,
+      consumer,
+      records,
+      firstOffset: first,
+      lastOffset: last,
+      attempt: 1,
+      expiresAt: now + this.#leaseMs,
+    };
+  }
+
+  /**
+   * Accepts a leased range and advances the cursor over every settled range
+   * that forms an unbroken run from it, so parallel consumers commit without
+   * skipping offsets another worker is still holding.
+   */
+  async ack(consumer: string, batchId: string): Promise<void> {
+    this.#requireLeases();
+    this.#engine.transactionSync(() => {
+      this.#settle(batchId, 'acked');
+      this.#advance(consumer);
+    });
+  }
+
+  /** Returns a leased range for redelivery under a fresh batch id. */
+  async nack(consumer: string, batchId: string): Promise<void> {
+    this.#requireLeases();
+    this.#settle(batchId, 'pending');
+  }
+
+  /** In-flight and settled-but-uncommitted ranges, for operators and tests. */
+  async leases(consumer: string): Promise<LogLeaseRow[]> {
+    this.#requireLeases();
+    return logLeaseRowSchema.array().parse(
+      this.#engine.sql
+        .exec(
+          `SELECT * FROM durability_log_leases
+           WHERE consumer = ?
+           ORDER BY first_offset ASC`,
+          consumer
+        )
+        .toArray()
+    );
+  }
+
+  #settle(batchId: string, state: 'acked' | 'pending' | 'skipped'): void {
+    // Pending ranges are immediately claimable, so their expiry is in the past.
+    const settled = settleLease(
+      this.#engine.sql,
+      batchId,
+      state,
+      state === 'pending' ? 0 : Date.now()
+    );
+    if (settled) {
+      return;
+    }
+    // Either the batch never existed, was fenced by a redelivery, or was
+    // already settled; all three are the caller holding a stale handle.
+    throw new LogLeaseError(batchId);
+  }
+
+  /** Commits the unbroken run of settled ranges starting at the cursor. */
+  #advance(consumer: string): void {
+    const sql = this.#engine.sql;
+    const from = readCursor(sql, consumer) ?? 0;
+    const candidates = leasesFrom(sql, consumer, from, this.#maxBatchSize);
+    let cursor = from;
+    const settled: string[] = [];
+    for (const row of candidates) {
+      const contiguous = row.first_offset <= cursor;
+      const done = row.state === 'acked' || row.state === 'skipped';
+      if (!contiguous || !done) {
+        break;
+      }
+      cursor = Math.max(cursor, row.last_offset + 1);
+      settled.push(row.batch_id);
+    }
+    if (settled.length === 0) {
+      return;
+    }
+    commitCursor(sql, consumer, cursor, Date.now());
+    deleteLeases(sql, settled);
+  }
+
+  /** Reads a stored range, rehydrating it when retention already flushed it. */
+  async #between(first: number, last: number): Promise<LogRecord<Body>[]> {
+    const bounds = readBounds(this.#engine.sql);
+    const records = await this.#readFrom(first, last - first + 1, bounds);
+    return records.filter((record) => record.offset <= last);
+  }
+
+  async #readFrom(
+    from: number,
+    limit: number,
+    bounds: LogBounds
+  ): Promise<LogRecord<Body>[]> {
+    if (from < bounds.hotOffset && from < bounds.nextOffset) {
+      return this.#rehydrate(from, limit, bounds);
+    }
+    return readRecords(this.#engine.sql, from, limit).map((row) =>
+      this.#record(row)
+    );
+  }
+
+  #requireLeases(): LogLeaseOptions {
+    if (!this.#leases) {
+      throw new TypeError('Leases require the leases option');
+    }
+    return this.#leases;
+  }
+
+  /**
    * Backlog is the furthest-behind committed cursor, so routing can weigh
    * partitions by consumer lag. Without cursors there is no backlog to report.
    */
@@ -672,6 +1114,12 @@ export class DurabilityLog<Body = unknown> {
     );
   }
 }
+
+const assertConsumer = (consumer: string): void => {
+  if (typeof consumer !== 'string' || consumer.length === 0) {
+    throw new LogAppendError('Consumer must be a non-empty string');
+  }
+};
 
 const takeWhile = <T>(
   items: readonly T[],
