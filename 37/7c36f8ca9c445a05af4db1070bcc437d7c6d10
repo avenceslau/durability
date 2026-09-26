@@ -1,0 +1,41 @@
+.changeset/retained-durable-log.md
+  s_4b72101621f039::t_6026e179a0efb9 17-29
+examples/event-topics/worker.ts
+  s_4b72101621f039::t_247557589c1d90 9,34-36,58-77,85,89,93-94,103-106,141-150,183,193-195,221-222,224-233
+packages/durability/README.md
+  s_4b72101621f039::t_be97c298b0f2e7 422,428-446,484,486-503,507-509
+packages/durability/src/index.ts
+  s_4b72101621f039::t_e66170604905a2 31,34,39
+packages/durability/src/kv-storage.ts
+  s_4b72101621f039::t_9fd7c3d02fe2ca 9,21,74-75,77-88,588,596-598,619-624,628,633,636-638,646,665,669-683,685-689,711-714,741,747-750,755-820,876-881
+packages/durability/src/log.test.ts
+  s_4b72101621f039::t_dc8ec4138b5693 2-3,21,59-63,106-107,110-111,117,127-128,132-136,148-152,162-166,194,198-203,214,217-221,226-230,237-242,254-259,269-380,403-407
+packages/durability/src/log.ts
+  s_4b72101621f039::t_d27310347251b3 15-19,24,42-58,63-67,73,78-83,98,100,114-121,125,147,158-161,163,165-167,188-192,203-209,221-257,282-288,294,311-316,318-324,329-332,334-351,355,359-360,367-377
+packages/durability/src/migrations.ts
+  s_4b72101621f039::t_883375a7198aac 241,243,253-259,262-263,265-266,272
+packages/durability/src/sqlite-storage.ts
+  s_4b72101621f039::t_a54abdb39f3230 18,22,76-77,80-82,477,485-486,489-491,494-496,499-539,563-564,570,572-573,586-593,608-669,672-675,681-689
+packages/durability/src/storage.ts
+  s_4b72101621f039::t_bed80de2d7c26f 68,70,84-94,96-99,101-102,110-111,116-118,121,127-129,136-141
+packages/durability/src/test-fakes.ts
+  s_4b72101621f039::t_2ff630e3af9c16 117-119
+packages/durability/tests/log.worker.test.ts
+  s_4b72101621f039::t_5db7d30321c166 50,53-54,58-62,65,70,72-76,78-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "377c36f8ca9c445a05af4db1070bcc437d7c6d10",
+  "prompts": {},
+  "sessions": {
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
