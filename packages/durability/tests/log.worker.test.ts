@@ -47,27 +47,43 @@ for (const [label, className] of [
     it('keeps offsets monotonic and deduplicates a repeated append', async () => {
       const stub = objectFor(crypto.randomUUID());
       const first = await stub.append([
-        { key: 'k1', body: { topic: 'a', value: 1 } },
+        { deduplicationKey: 'k1', body: { topic: 'a', value: 1 } },
       ]);
       const repeat = await stub.append([
-        { key: 'k1', body: { topic: 'a', value: 1 } },
-        { key: 'k2', body: { topic: 'b', value: 2 } },
+        { deduplicationKey: 'k1', body: { topic: 'a', value: 1 } },
+        { deduplicationKey: 'k2', body: { topic: 'b', value: 2 } },
       ]);
       expect(first).toMatchObject({ success: true, value: [0] });
       expect(repeat).toMatchObject({ success: true, value: [0, 1] });
-      expect(await stub.bounds()).toEqual({ oldestOffset: 0, nextOffset: 2 });
+      expect(await stub.bounds()).toEqual({
+        oldestOffset: 0,
+        hotOffset: 0,
+        nextOffset: 2,
+      });
     });
 
-    it('archives then trims beyond retention and truncates late readers', async () => {
+    it('flushes to R2 beyond retention and rehydrates a late reader', async () => {
       const stub = objectFor(crypto.randomUUID());
       await stub.append(
         [1, 2, 3, 4, 5].map((value) => ({ body: { topic: 'a', value } }))
       );
-      // The object retains three records.
+      // The object retains three records; the rest move to R2.
       expect(await stub.trim()).toBe(2);
-      expect(await stub.archivedOffsets()).toEqual([0, 1]);
-      expect(await stub.bounds()).toEqual({ oldestOffset: 2, nextOffset: 5 });
+      expect(await stub.bounds()).toEqual({
+        oldestOffset: 0,
+        hotOffset: 2,
+        nextOffset: 5,
+      });
 
+      // Offset 0 now lives only in R2, and reading it fetches it back.
+      const rehydrated = await stub.read(0, 2);
+      expect(rehydrated.records.map((record) => record.body.value)).toEqual([
+        1, 2,
+      ]);
+      expect((await stub.read(rehydrated.nextOffset)).records).toHaveLength(3);
+
+      // Forgetting the segment is how an R2 lifecycle rule is mirrored.
+      expect(await stub.forgetColdBefore(2)).toBe(1);
       // Wrapped so the RPC rejection is consumed inside the assertion.
       await expect(async () => {
         await stub.read(0);

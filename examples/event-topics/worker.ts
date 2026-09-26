@@ -6,6 +6,7 @@ import {
   DurabilityScheduler,
   type LogAppendInput,
   type LogPage,
+  type LogRecord,
 } from 'durability';
 import { DurabilityRouting } from 'durability/routing';
 
@@ -30,7 +31,9 @@ type Append = {
 /** Partitions per topic. Adding one is a routing decision, not a deploy. */
 const partitionCount = 8;
 const coldPrefix = 'segments/';
-const compactEvery = 60_000;
+// Retention deletes by age and count. It is not Kafka-style key compaction,
+// which keeps the latest record per key and is not implemented here.
+const retentionSweepMs = 60_000;
 
 const partitionFor = (key: string): number => {
   let hash = 2_166_136_261;
@@ -52,15 +55,26 @@ export class Partition extends DurableObject<Env> {
   private readonly log = new DurabilityLog<Event>({
     scheduler: this.scheduler,
     routing: this.routing,
-    retention: { maxAgeMs: 7 * 24 * 60 * 60 * 1_000, maxRecords: 50_000 },
-    // Cold storage is a callback: one immutable object per trimmed segment.
-    archive: async (records) => {
-      const first = records[0]!;
-      await this.env.COLD.put(
-        `${coldPrefix}${this.ctx.id.toString()}/${first.offset}`,
-        JSON.stringify(records),
-        { onlyIf: { etagDoesNotMatch: '*' } }
-      );
+    retention: {
+      maxAgeMs: 7 * 24 * 60 * 60 * 1_000,
+      maxRecords: 50_000,
+      // The object keeps a hot window; everything older lives in R2.
+      maxBytes: 256 * 1024 * 1024,
+    },
+    // Flushed segments stay readable, so a consumer that falls behind the hot
+    // window is served from R2 instead of losing records.
+    cold: {
+      write: async ({ records, firstOffset }) => {
+        const locator = `${coldPrefix}${this.ctx.id.toString()}/${firstOffset}`;
+        await this.env.COLD.put(locator, JSON.stringify(records), {
+          onlyIf: { etagDoesNotMatch: '*' },
+        });
+        return locator;
+      },
+      read: async (locator) => {
+        const stored = await this.env.COLD.get(locator);
+        return stored ? await stored.json<LogRecord<Event>[]>() : undefined;
+      },
     },
   });
 
@@ -68,16 +82,16 @@ export class Partition extends DurableObject<Env> {
   private readonly alarms = new DurabilityAlarms({
     scheduler: this.scheduler,
     handlers: {
-      compact: async () => {
+      enforceRetention: async () => {
         await this.log.trim();
         const { oldestOffset, nextOffset } = await this.log.bounds();
         if (oldestOffset < nextOffset) {
-          await this.alarms.compact(Date.now() + compactEvery);
+          await this.alarms.enforceRetention(Date.now() + retentionSweepMs);
           return;
         }
         // Nothing left to expire, so stop re-arming and let the partition
-        // hibernate until the next append schedules compaction again.
-        await this.ctx.storage.delete('compacting');
+        // hibernate until the next append schedules another sweep.
+        await this.ctx.storage.delete('sweeping');
       },
     },
   });
@@ -86,13 +100,10 @@ export class Partition extends DurableObject<Env> {
   async append(batch: Append) {
     const result = await this.log.append(batch.events);
     // Scheduling a named alarm replaces its pending time, so re-arming on
-    // every append would postpone compaction for as long as traffic continues.
-    if (
-      result.success &&
-      !(await this.ctx.storage.get<boolean>('compacting'))
-    ) {
-      await this.ctx.storage.put('compacting', true);
-      await this.alarms.compact(Date.now() + compactEvery);
+    // every append would postpone retention for as long as traffic continues.
+    if (result.success && !(await this.ctx.storage.get<boolean>('sweeping'))) {
+      await this.ctx.storage.put('sweeping', true);
+      await this.alarms.enforceRetention(Date.now() + retentionSweepMs);
     }
     return result;
   }
@@ -128,6 +139,16 @@ export class Partition extends DurableObject<Env> {
 }
 
 /**
+ * Stands in for the consumer's real work. Records arrive in offset order
+ * within a partition, and may be redelivered after a failure.
+ */
+const handle = async (records: LogRecord<Event>[]): Promise<void> => {
+  for (const record of records) {
+    console.log(`handled ${record.offset} of ${record.body.topic}`);
+  }
+};
+
+/**
  * Producer side. The shard key is `topic:partition`, so topics are created by
  * writing to them: no partition table, no rebalance, and idle partitions
  * hibernate. `invoke` picks the application method, so routing works with the
@@ -159,10 +180,7 @@ export default {
         Array<{ partitionKey: string; payload: string; key?: string }>
       >();
       // A batch must share a partition, so group by key before pushing.
-      const byPartition = new Map<
-        string,
-        Array<{ key?: string; body: Event }>
-      >();
+      const byPartition = new Map<string, LogAppendInput<Event>[]>();
       for (const event of events) {
         const shard = `${topic}:${partitionFor(event.partitionKey)}`;
         const body: Event = {
@@ -172,7 +190,9 @@ export default {
         };
         byPartition.set(shard, [
           ...(byPartition.get(shard) ?? []),
-          event.key === undefined ? { body } : { key: event.key, body },
+          event.key === undefined
+            ? { body }
+            : { deduplicationKey: event.key, body },
         ]);
       }
       const accepted = await Promise.all(
@@ -198,11 +218,19 @@ export default {
     const pages = await Promise.all(
       partitions.map(async (stub) => {
         const page = await stub.consume(group, 100);
-        if (page.records.length > 0) {
-          // An application would process the page before committing.
-          await stub.commit(group, page.nextOffset);
+        if (page.records.length === 0) {
+          return { nextOffset: page.nextOffset, lag: page.lag, handled: 0 };
         }
-        return { nextOffset: page.nextOffset, lag: page.lag };
+        // Commit only once the work succeeded. Committing first would make
+        // this at-most-once, silently skipping a page on a crash. Throwing
+        // instead re-reads it, so processing must tolerate duplicates.
+        await handle(page.records);
+        await stub.commit(group, page.nextOffset);
+        return {
+          nextOffset: page.nextOffset,
+          lag: page.lag,
+          handled: page.records.length,
+        };
       })
     );
     return Response.json(pages);

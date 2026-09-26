@@ -6,6 +6,7 @@ import {
   fanoutMessageRowSchema,
   logCursorRowSchema,
   logRecordRowSchema,
+  logSegmentRowSchema,
   type AlarmRow,
   type CallRow,
   type DeliveryRow,
@@ -17,6 +18,7 @@ import {
   type LogBounds,
   type LogCursorRow,
   type LogRecordRow,
+  type LogSegmentRow,
   type LogStore,
   type RecordPatch,
   type RecordStore,
@@ -69,7 +71,21 @@ const purgeBatchSize = 20;
 const logRecordPrefix = `${keyPrefix}log-record:`;
 const logKeyIndexPrefix = `${keyPrefix}log-key:`;
 const logCursorPrefix = `${keyPrefix}log-cursor:`;
+const logSegmentPrefix = `${keyPrefix}log-segment:`;
+const logSegmentIndexKey = `${keyPrefix}log-segment-index`;
 const logNextOffsetKey = `${keyPrefix}log-next-offset`;
+const logTotalBytesKey = `${keyPrefix}log-total-bytes`;
+
+/**
+ * Segment bounds live in one index value so a lookup or expiry scan never
+ * batch-reads segment rows, which would exceed the KV multi-get limit.
+ */
+const logSegmentIndexSchema = z
+  .object({
+    first: z.number().int().nonnegative(),
+    last: z.number().int().nonnegative(),
+  })
+  .array();
 
 const encodeIndexPart = (value: string): string => encodeURIComponent(value);
 
@@ -569,7 +585,7 @@ class KvLogTable implements LogStore {
   ) {}
 
   async append(
-    records: readonly Pick<LogRecordRow, 'key' | 'payload'>[],
+    records: readonly Pick<LogRecordRow, 'dedup_key' | 'payload' | 'bytes'>[],
     appendedAt: number
   ): Promise<number[]> {
     if (records.length === 0) {
@@ -577,13 +593,9 @@ class KvLogTable implements LogStore {
     }
 
     return this.atomically(async (table) => {
-      const payloads = new Map<string, string>();
-      for (const record of records) {
-        if (!payloads.has(record.key)) {
-          payloads.set(record.key, record.payload);
-        }
-      }
-
+      const payloads = new Map(
+        records.map((record) => [record.dedup_key, record])
+      );
       const keys = [...payloads.keys()];
       const indexes = await table.kv.get<unknown>(
         keys.map((key) => table.keyIndex(key))
@@ -604,17 +616,26 @@ class KvLogTable implements LogStore {
         if (!Number.isSafeInteger(next)) {
           throw new RangeError('Log offset exhausted');
         }
+        const added = fresh.reduce(
+          (total, key) => total + payloads.get(key)!.bytes,
+          0
+        );
+        const total =
+          counterSchema.parse(await table.kv.get(logTotalBytesKey)) ?? 0;
 
         const entries: Record<string, unknown> = {
           [logNextOffsetKey]: next,
+          [logTotalBytesKey]: total + added,
         };
         fresh.forEach((key, index) => {
           const offset = first + index;
           assigned.set(key, offset);
+          const record = payloads.get(key)!;
           entries[table.recordKey(offset)] = {
             offset,
-            key,
-            payload: payloads.get(key),
+            dedup_key: key,
+            payload: record.payload,
+            bytes: record.bytes,
             appended_at: appendedAt,
           };
           entries[table.keyIndex(key)] = offset;
@@ -622,7 +643,7 @@ class KvLogTable implements LogStore {
         await table.kv.put(entries);
       }
 
-      return records.map(({ key }) => assigned.get(key)!);
+      return records.map(({ dedup_key }) => assigned.get(dedup_key)!);
     });
   }
 
@@ -641,22 +662,31 @@ class KvLogTable implements LogStore {
   async bounds(): Promise<LogBounds> {
     const nextOffset =
       counterSchema.parse(await this.kv.get(logNextOffsetKey)) ?? 0;
-    const index = await this.kv.list({
+    const hotIndex = await this.kv.list({
       prefix: logRecordPrefix,
       limit: 1,
     });
-    const first = index.keys().next().value;
-    if (typeof first !== 'string') {
-      return { oldestOffset: nextOffset, nextOffset };
-    }
+    const first = hotIndex.keys().next().value;
+    const hotOffset =
+      typeof first === 'string'
+        ? indexTimestampSchema.parse(
+            first.slice(
+              logRecordPrefix.length,
+              logRecordPrefix.length + timestampWidth
+            )
+          )
+        : nextOffset;
+    const segmentIndex =
+      logSegmentIndexSchema
+        .optional()
+        .parse(await this.kv.get(logSegmentIndexKey)) ?? [];
+    const coldOffset = segmentIndex[0]?.first;
 
-    const oldestOffset = indexTimestampSchema.parse(
-      first.slice(
-        logRecordPrefix.length,
-        logRecordPrefix.length + timestampWidth
-      )
-    );
-    return { oldestOffset, nextOffset };
+    return {
+      oldestOffset: Math.min(coldOffset ?? hotOffset, hotOffset),
+      hotOffset,
+      nextOffset,
+    };
   }
 
   async count(): Promise<number> {
@@ -676,6 +706,10 @@ class KvLogTable implements LogStore {
       }
       startAfter = [...page.keys()][page.size - 1];
     }
+  }
+
+  async totalBytes(): Promise<number> {
+    return counterSchema.parse(await this.kv.get(logTotalBytesKey)) ?? 0;
   }
 
   async listOldest(limit: number): Promise<LogRecordRow[]> {
@@ -704,15 +738,83 @@ class KvLogTable implements LogStore {
       const primaryKeys = [...index.keys()];
       const doomed = rows.flatMap((row, position) => [
         primaryKeys[position]!,
-        table.keyIndex(row.key),
+        table.keyIndex(row.dedup_key),
       ]);
-      // One list may cover more keys than a single delete call accepts, but the
-      // caller's limit is still honoured so an archive is never repeated.
       for (let start = 0; start < doomed.length; start += purgeBatchSize) {
         // eslint-disable-next-line no-await-in-loop
         await table.kv.delete(doomed.slice(start, start + purgeBatchSize));
       }
+      const total =
+        counterSchema.parse(await table.kv.get(logTotalBytesKey)) ?? 0;
+      const removedBytes = rows.reduce((sum, row) => sum + row.bytes, 0);
+      await table.kv.put(logTotalBytesKey, Math.max(0, total - removedBytes));
       return rows.length;
+    });
+  }
+
+  async insertSegment(row: LogSegmentRow): Promise<void> {
+    await this.atomically(async (table) => {
+      const current =
+        logSegmentIndexSchema
+          .optional()
+          .parse(await table.kv.get(logSegmentIndexKey)) ?? [];
+      const entry = { first: row.first_offset, last: row.last_offset };
+      const next = [
+        ...current.filter(({ first }) => first !== row.first_offset),
+        entry,
+      ].sort((left, right) => left.first - right.first);
+      await table.kv.put({
+        [table.segmentKey(row.first_offset)]: row,
+        [logSegmentIndexKey]: next,
+      });
+    });
+  }
+
+  async findSegment(offset: number): Promise<LogSegmentRow | undefined> {
+    const segments =
+      logSegmentIndexSchema
+        .optional()
+        .parse(await this.kv.get(logSegmentIndexKey)) ?? [];
+    let low = 0;
+    let high = segments.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (segments[middle]!.first <= offset) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    const candidate = segments[low - 1];
+    if (candidate === undefined || candidate.last < offset) {
+      return undefined;
+    }
+    return logSegmentRowSchema
+      .optional()
+      .parse(await this.kv.get(this.segmentKey(candidate.first)));
+  }
+
+  async deleteSegmentsBefore(offset: number): Promise<number> {
+    return this.atomically(async (table) => {
+      const segments =
+        logSegmentIndexSchema
+          .optional()
+          .parse(await table.kv.get(logSegmentIndexKey)) ?? [];
+      const doomed = segments.filter(({ last }) => last < offset);
+      if (doomed.length === 0) {
+        return 0;
+      }
+
+      const doomedKeys = doomed.map(({ first }) => table.segmentKey(first));
+      for (let start = 0; start < doomedKeys.length; start += purgeBatchSize) {
+        // eslint-disable-next-line no-await-in-loop
+        await table.kv.delete(doomedKeys.slice(start, start + purgeBatchSize));
+      }
+      await table.kv.put(
+        logSegmentIndexKey,
+        segments.filter(({ last }) => last >= offset)
+      );
+      return doomed.length;
     });
   }
 
@@ -771,8 +873,12 @@ class KvLogTable implements LogStore {
     return `${logRecordPrefix}${timestampKey(offset)}`;
   }
 
-  private keyIndex(key: string): string {
-    return `${logKeyIndexPrefix}${encodeIndexPart(key)}`;
+  private segmentKey(firstOffset: number): string {
+    return `${logSegmentPrefix}${timestampKey(firstOffset)}`;
+  }
+
+  private keyIndex(dedupKey: string): string {
+    return `${logKeyIndexPrefix}${encodeIndexPart(dedupKey)}`;
   }
 
   private cursorKey(consumer: string): string {

@@ -65,8 +65,9 @@ export type DeliveryRow = z.infer<typeof deliveryRowSchema>;
 
 export const logRecordRowSchema = z.object({
   offset: z.number().int().nonnegative(),
-  key: z.string(),
+  dedup_key: z.string(),
   payload: z.string(),
+  bytes: z.number().int().nonnegative(),
   appended_at: z.number().int().nonnegative(),
 });
 
@@ -80,9 +81,25 @@ export const logCursorRowSchema = z.object({
 
 export type LogCursorRow = z.infer<typeof logCursorRowSchema>;
 
+/** One contiguous run of records moved out of the object into cold storage. */
+export const logSegmentRowSchema = z.object({
+  first_offset: z.number().int().nonnegative(),
+  last_offset: z.number().int().nonnegative(),
+  locator: z.string(),
+  bytes: z.number().int().nonnegative(),
+  flushed_at: z.number().int().nonnegative(),
+});
+
+export type LogSegmentRow = z.infer<typeof logSegmentRowSchema>;
+
 export type LogBounds = {
-  /** Lowest readable offset; equals `nextOffset` once every record is trimmed. */
+  /**
+   * Lowest readable offset, counting flushed segments that can be rehydrated.
+   * Equals `nextOffset` once nothing is readable.
+   */
   oldestOffset: number;
+  /** Lowest offset still held in the object rather than cold storage. */
+  hotOffset: number;
   /** Offset the next appended record receives. */
   nextOffset: number;
 };
@@ -90,28 +107,38 @@ export type LogBounds = {
 /**
  * A retained, offset-addressed record sequence. Unlike a `RecordStore` its
  * records carry no attempt state: consumers track progress with cursors and
- * records leave only through retention.
+ * records leave the object only through retention, either deleted or flushed
+ * to cold storage.
  */
 export interface LogStore {
   /**
    * Appends the batch atomically and returns each record's offset in input
-   * order. A record whose key is already present keeps its original offset and
-   * consumes no new one, making a repeated append idempotent.
+   * order. A record whose deduplication key is already present keeps its
+   * original offset and consumes no new one, so a repeated append is
+   * idempotent while that record is still held in the object.
    */
   append(
-    records: readonly Pick<LogRecordRow, 'key' | 'payload'>[],
+    records: readonly Pick<LogRecordRow, 'dedup_key' | 'payload' | 'bytes'>[],
     appendedAt: number
   ): Promise<number[]>;
   read(from: number, limit: number): Promise<LogRecordRow[]>;
   bounds(): Promise<LogBounds>;
   count(): Promise<number>;
-  /** Oldest retained records in offset order, for archive-before-delete. */
+  /** Bytes of record payloads held in the object, excluding flushed segments. */
+  totalBytes(): Promise<number>;
+  /** Oldest retained records in offset order, for flush-or-delete decisions. */
   listOldest(limit: number): Promise<LogRecordRow[]>;
   /**
    * Deletes at most `limit` records below `through`, oldest first, and returns
    * how many were removed. Callers loop until zero.
    */
   trimThrough(through: number, limit: number): Promise<number>;
+  /** Records where a flushed run now lives, so a read can rehydrate it. */
+  insertSegment(row: LogSegmentRow): Promise<void>;
+  /** The segment holding an offset, if that offset was flushed. */
+  findSegment(offset: number): Promise<LogSegmentRow | undefined>;
+  /** Forgets segments ending below an offset, matching external expiry. */
+  deleteSegmentsBefore(offset: number): Promise<number>;
   cursor(consumer: string): Promise<number | undefined>;
   /** Advances a cursor, ignoring regressions so a late commit cannot rewind it. */
   commit(consumer: string, offset: number, committedAt: number): Promise<void>;

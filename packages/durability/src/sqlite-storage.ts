@@ -15,9 +15,11 @@ import {
   type DurabilityStorageTransaction,
   type DurableRecord,
   type FanoutMessageRow,
+  logSegmentRowSchema,
   type LogBounds,
   type LogCursorRow,
   type LogRecordRow,
+  type LogSegmentRow,
   type LogStore,
   type PhysicalAlarm,
   type RecordPatch,
@@ -71,8 +73,12 @@ const messageCountRowSchema = z.object({
 const seqRowSchema = z.object({ seq: z.number().int().nonnegative() });
 const offsetRowSchema = z.object({ offset: z.number().int().nonnegative() });
 const boundsRowSchema = z.object({
-  oldest: z.number().int().nonnegative().nullable(),
+  hot: z.number().int().nonnegative().nullable(),
+  cold: z.number().int().nonnegative().nullable(),
   next_offset: z.number().int().nonnegative(),
+});
+const totalBytesRowSchema = z.object({
+  total_bytes: z.number().int().nonnegative(),
 });
 
 const definedEntries = (
@@ -468,7 +474,7 @@ class SqliteLogTable implements LogStore {
   ) {}
 
   async append(
-    records: readonly Pick<LogRecordRow, 'key' | 'payload'>[],
+    records: readonly Pick<LogRecordRow, 'dedup_key' | 'payload' | 'bytes'>[],
     appendedAt: number
   ): Promise<number[]> {
     if (records.length === 0) {
@@ -476,50 +482,61 @@ class SqliteLogTable implements LogStore {
     }
     return this.atomically((sql) => {
       const assigned = new Map<string, number>();
-      for (const { key } of records) {
-        const existing = offsetRowSchema
-          .optional()
-          .parse(
-            sql
-              .exec(
-                'SELECT "offset" FROM durability_log_records WHERE key = ? LIMIT 1',
-                key
-              )
-              .toArray()[0]
-          );
-        if (existing !== undefined) {
-          assigned.set(key, existing.offset);
-        }
-      }
-      const fresh = records.filter(({ key }) => !assigned.has(key));
-      const distinct = [...new Set(fresh.map(({ key }) => key))];
-      if (distinct.length > 0) {
-        const first = seqRowSchema.parse(
+      for (const record of records) {
+        const existing = offsetRowSchema.optional().parse(
           sql
             .exec(
-              `UPDATE durability_log_seq
-               SET next_offset = next_offset + ?
-               WHERE id = 1
-               RETURNING next_offset - ? AS seq`,
-              distinct.length,
-              distinct.length
+              `SELECT "offset" FROM durability_log_records
+               WHERE dedup_key = ? LIMIT 1`,
+              record.dedup_key
             )
             .toArray()[0]
-        ).seq;
-        distinct.forEach((key, index) => assigned.set(key, first + index));
-        for (const { key, payload } of fresh) {
-          sql.exec(
-            `INSERT INTO durability_log_records ("offset", key, payload, appended_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(key) DO NOTHING`,
-            assigned.get(key)!,
-            key,
-            payload,
-            appendedAt
-          );
+        );
+        if (existing !== undefined) {
+          assigned.set(record.dedup_key, existing.offset);
         }
       }
-      return records.map(({ key }) => assigned.get(key)!);
+      const fresh = records.filter((record) => !assigned.has(record.dedup_key));
+      const distinct = [...new Map(fresh.map((row) => [row.dedup_key, row]))];
+      if (distinct.length === 0) {
+        return records.map((record) => assigned.get(record.dedup_key)!);
+      }
+
+      const first = seqRowSchema.parse(
+        sql
+          .exec(
+            `UPDATE durability_log_seq
+             SET next_offset = next_offset + ?
+             WHERE id = 1
+             RETURNING next_offset - ? AS seq`,
+            distinct.length,
+            distinct.length
+          )
+          .toArray()[0]
+      ).seq;
+      let added = 0;
+      distinct.forEach(([dedupKey, row], index) => {
+        const offset = first + index;
+        assigned.set(dedupKey, offset);
+        added += row.bytes;
+        sql.exec(
+          `INSERT INTO durability_log_records
+             ("offset", dedup_key, payload, bytes, appended_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(dedup_key) DO NOTHING`,
+          offset,
+          dedupKey,
+          row.payload,
+          row.bytes,
+          appendedAt
+        );
+      });
+      sql.exec(
+        `UPDATE durability_log_seq SET total_bytes = total_bytes + ?
+         WHERE id = 1`,
+        added
+      );
+      return records.map((record) => assigned.get(record.dedup_key)!);
     });
   }
 
@@ -543,14 +560,17 @@ class SqliteLogTable implements LogStore {
       this.sql
         .exec(
           `SELECT
-             (SELECT MIN("offset") FROM durability_log_records) AS oldest,
+             (SELECT MIN("offset") FROM durability_log_records) AS hot,
+             (SELECT MIN(first_offset) FROM durability_log_segments) AS cold,
              next_offset
            FROM durability_log_seq WHERE id = 1`
         )
         .toArray()[0]
     );
+    const hotOffset = row.hot ?? row.next_offset;
     return {
-      oldestOffset: row.oldest ?? row.next_offset,
+      oldestOffset: Math.min(row.cold ?? hotOffset, hotOffset),
+      hotOffset,
       nextOffset: row.next_offset,
     };
   }
@@ -561,6 +581,14 @@ class SqliteLogTable implements LogStore {
         .exec('SELECT COUNT(*) AS count FROM durability_log_records')
         .toArray()[0]
     ).count;
+  }
+
+  async totalBytes(): Promise<number> {
+    return totalBytesRowSchema.parse(
+      this.sql
+        .exec('SELECT total_bytes FROM durability_log_seq WHERE id = 1')
+        .toArray()[0]
+    ).total_bytes;
   }
 
   async listOldest(limit: number): Promise<LogRecordRow[]> {
@@ -577,33 +605,88 @@ class SqliteLogTable implements LogStore {
   }
 
   async trimThrough(through: number, limit: number): Promise<number> {
+    return this.atomically((sql) => {
+      const removed = logRecordRowSchema.array().parse(
+        sql
+          .exec(
+            `DELETE FROM durability_log_records
+             WHERE "offset" IN (
+               SELECT "offset" FROM durability_log_records
+               WHERE "offset" < ?
+               ORDER BY "offset" ASC
+               LIMIT ?
+             )
+             RETURNING *`,
+            through,
+            limit
+          )
+          .toArray()
+      );
+      if (removed.length === 0) {
+        return 0;
+      }
+      sql.exec(
+        `UPDATE durability_log_seq SET total_bytes = MAX(0, total_bytes - ?)
+         WHERE id = 1`,
+        removed.reduce((total, row) => total + row.bytes, 0)
+      );
+      return removed.length;
+    });
+  }
+
+  async insertSegment(row: LogSegmentRow): Promise<void> {
+    this.sql.exec(
+      `INSERT INTO durability_log_segments
+         (first_offset, last_offset, locator, bytes, flushed_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(first_offset) DO UPDATE SET
+         last_offset = excluded.last_offset,
+         locator = excluded.locator,
+         bytes = excluded.bytes,
+         flushed_at = excluded.flushed_at`,
+      row.first_offset,
+      row.last_offset,
+      row.locator,
+      row.bytes,
+      row.flushed_at
+    );
+  }
+
+  async findSegment(offset: number): Promise<LogSegmentRow | undefined> {
+    return logSegmentRowSchema.optional().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_log_segments
+           WHERE first_offset <= ? AND last_offset >= ?
+           LIMIT 1`,
+          offset,
+          offset
+        )
+        .toArray()[0]
+    );
+  }
+
+  async deleteSegmentsBefore(offset: number): Promise<number> {
     return this.sql
       .exec(
-        `DELETE FROM durability_log_records
-       WHERE "offset" IN (
-         SELECT "offset" FROM durability_log_records
-         WHERE "offset" < ?
-         ORDER BY "offset" ASC
-         LIMIT ?
-       )
-       RETURNING "offset"`,
-        through,
-        limit
+        `DELETE FROM durability_log_segments
+       WHERE last_offset < ?
+       RETURNING first_offset`,
+        offset
       )
       .toArray().length;
   }
 
   async cursor(consumer: string): Promise<number | undefined> {
-    return offsetRowSchema
-      .optional()
-      .parse(
-        this.sql
-          .exec(
-            'SELECT "offset" FROM durability_log_cursors WHERE consumer = ? LIMIT 1',
-            consumer
-          )
-          .toArray()[0]
-      )?.offset;
+    return offsetRowSchema.optional().parse(
+      this.sql
+        .exec(
+          `SELECT "offset" FROM durability_log_cursors
+             WHERE consumer = ? LIMIT 1`,
+          consumer
+        )
+        .toArray()[0]
+    )?.offset;
   }
 
   async commit(

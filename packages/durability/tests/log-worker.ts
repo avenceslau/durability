@@ -7,22 +7,38 @@ import {
   type LogRecord,
 } from '../src';
 
+type Env = { DEAD_LETTERS: R2Bucket };
+
+const segmentPrefix = 'log-segments/';
+
 export type LogEvent = { topic: string; value: number };
 
-class LogTestObjectBase extends DurableObject {
-  protected readonly archived: LogRecord<LogEvent>[] = [];
+class LogTestObjectBase extends DurableObject<Env> {
   protected readonly log: DurabilityLog<LogEvent>;
 
-  constructor(ctx: DurableObjectState, env: unknown, backend: 'sqlite' | 'kv') {
-    super(ctx, env as never);
+  constructor(ctx: DurableObjectState, env: Env, backend: 'sqlite' | 'kv') {
+    super(ctx, env);
     this.log = new DurabilityLog<LogEvent>({
       scheduler: new DurabilityScheduler({
         context: this.ctx,
         storageBackend: backend,
       }),
       retention: { maxRecords: 3 },
-      archive: async (records) => {
-        this.archived.push(...records);
+      // Real cold storage: one immutable object per flushed segment.
+      cold: {
+        write: async ({ records, firstOffset }) => {
+          const locator = `${segmentPrefix}${this.ctx.id.toString()}/${firstOffset}`;
+          await this.env.DEAD_LETTERS.put(locator, JSON.stringify(records), {
+            onlyIf: { etagDoesNotMatch: '*' },
+          });
+          return locator;
+        },
+        read: async (locator) => {
+          const stored = await this.env.DEAD_LETTERS.get(locator);
+          return stored
+            ? await stored.json<LogRecord<LogEvent>[]>()
+            : undefined;
+        },
       },
     });
   }
@@ -51,8 +67,8 @@ class LogTestObjectBase extends DurableObject {
     return this.log.trim();
   }
 
-  archivedOffsets(): number[] {
-    return this.archived.map((record) => record.offset);
+  forgetColdBefore(offset: number) {
+    return this.log.forgetColdBefore(offset);
   }
 
   load() {
@@ -61,13 +77,13 @@ class LogTestObjectBase extends DurableObject {
 }
 
 export class LogTestObject extends LogTestObjectBase {
-  constructor(ctx: DurableObjectState, env: unknown) {
+  constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env, 'sqlite');
   }
 }
 
 export class KvLogTestObject extends LogTestObjectBase {
-  constructor(ctx: DurableObjectState, env: unknown) {
+  constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env, 'kv');
   }
 }

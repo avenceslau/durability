@@ -238,8 +238,9 @@ export const durabilityLogMigrations = [
     up: `
       CREATE TABLE IF NOT EXISTS durability_log_records (
         "offset" INTEGER PRIMARY KEY,
-        key TEXT NOT NULL UNIQUE,
+        dedup_key TEXT NOT NULL UNIQUE,
         payload TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
         appended_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS durability_log_records_appended_idx
@@ -249,16 +250,26 @@ export const durabilityLogMigrations = [
         "offset" INTEGER NOT NULL,
         committed_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS durability_log_segments (
+        first_offset INTEGER PRIMARY KEY,
+        last_offset INTEGER NOT NULL,
+        locator TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        flushed_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS durability_log_seq (
         id INTEGER PRIMARY KEY CHECK (id = 1),
-        next_offset INTEGER NOT NULL
+        next_offset INTEGER NOT NULL,
+        total_bytes INTEGER NOT NULL
       );
-      INSERT OR IGNORE INTO durability_log_seq (id, next_offset) VALUES (1, 0);
+      INSERT OR IGNORE INTO durability_log_seq (id, next_offset, total_bytes)
+      VALUES (1, 0, 0);
     `,
     down: `
       DROP INDEX IF EXISTS durability_log_records_appended_idx;
       DROP TABLE IF EXISTS durability_log_records;
       DROP TABLE IF EXISTS durability_log_cursors;
+      DROP TABLE IF EXISTS durability_log_segments;
       DROP TABLE IF EXISTS durability_log_seq;
     `,
   },
