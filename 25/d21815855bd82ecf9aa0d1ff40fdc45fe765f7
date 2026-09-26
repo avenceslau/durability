@@ -1,0 +1,19 @@
+examples/README.md
+  s_4b72101621f039::t_0ac150d48f3bff 17-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "25d21815855bd82ecf9aa0d1ff40fdc45fe765f7",
+  "prompts": {},
+  "sessions": {
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
