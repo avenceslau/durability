@@ -4,6 +4,8 @@ import {
   callRowSchema,
   deliveryRowSchema,
   fanoutMessageRowSchema,
+  logCursorRowSchema,
+  logRecordRowSchema,
   type AlarmRow,
   type CallRow,
   type DeliveryRow,
@@ -12,6 +14,10 @@ import {
   type DurabilityStorageTransaction,
   type DurableRecord,
   type FanoutMessageRow,
+  type LogBounds,
+  type LogCursorRow,
+  type LogRecordRow,
+  type LogStore,
   type RecordPatch,
   type RecordStore,
 } from './storage.js';
@@ -60,6 +66,11 @@ const counterSchema = z.number().int().nonnegative().optional();
 /** Deleting more keys than this in one KV call exceeds the Durable Object limit. */
 const purgeBatchSize = 20;
 
+const logRecordPrefix = `${keyPrefix}log-record:`;
+const logKeyIndexPrefix = `${keyPrefix}log-key:`;
+const logCursorPrefix = `${keyPrefix}log-cursor:`;
+const logNextOffsetKey = `${keyPrefix}log-next-offset`;
+
 const encodeIndexPart = (value: string): string => encodeURIComponent(value);
 
 const deliveryAttemptClass = (row: DeliveryRow): number =>
@@ -67,6 +78,10 @@ const deliveryAttemptClass = (row: DeliveryRow): number =>
 
 type Atomically<Row extends DurableRecord> = <T>(
   callback: (table: KvTable<Row>) => Promise<T>
+) => Promise<T>;
+
+type LogAtomically = <T>(
+  callback: (table: KvLogTable) => Promise<T>
 ) => Promise<T>;
 
 /**
@@ -547,10 +562,229 @@ class KvDeliveryTable extends KvTable<DeliveryRow> implements DeliveryStore {
   }
 }
 
+class KvLogTable implements LogStore {
+  constructor(
+    private readonly kv: KvStorage,
+    private readonly atomically: LogAtomically
+  ) {}
+
+  async append(
+    records: readonly Pick<LogRecordRow, 'key' | 'payload'>[],
+    appendedAt: number
+  ): Promise<number[]> {
+    if (records.length === 0) {
+      return [];
+    }
+
+    return this.atomically(async (table) => {
+      const payloads = new Map<string, string>();
+      for (const record of records) {
+        if (!payloads.has(record.key)) {
+          payloads.set(record.key, record.payload);
+        }
+      }
+
+      const keys = [...payloads.keys()];
+      const indexes = await table.kv.get<unknown>(
+        keys.map((key) => table.keyIndex(key))
+      );
+      const assigned = new Map<string, number>();
+      for (const key of keys) {
+        const offset = counterSchema.parse(indexes.get(table.keyIndex(key)));
+        if (offset !== undefined) {
+          assigned.set(key, offset);
+        }
+      }
+
+      const fresh = keys.filter((key) => !assigned.has(key));
+      if (fresh.length > 0) {
+        const first =
+          counterSchema.parse(await table.kv.get(logNextOffsetKey)) ?? 0;
+        const next = first + fresh.length;
+        if (!Number.isSafeInteger(next)) {
+          throw new RangeError('Log offset exhausted');
+        }
+
+        const entries: Record<string, unknown> = {
+          [logNextOffsetKey]: next,
+        };
+        fresh.forEach((key, index) => {
+          const offset = first + index;
+          assigned.set(key, offset);
+          entries[table.recordKey(offset)] = {
+            offset,
+            key,
+            payload: payloads.get(key),
+            appended_at: appendedAt,
+          };
+          entries[table.keyIndex(key)] = offset;
+        });
+        await table.kv.put(entries);
+      }
+
+      return records.map(({ key }) => assigned.get(key)!);
+    });
+  }
+
+  async read(from: number, limit: number): Promise<LogRecordRow[]> {
+    if (limit <= 0) {
+      return [];
+    }
+    const index = await this.kv.list({
+      prefix: logRecordPrefix,
+      start: this.recordKey(from),
+      limit,
+    });
+    return logRecordRowSchema.array().parse([...index.values()]);
+  }
+
+  async bounds(): Promise<LogBounds> {
+    const nextOffset =
+      counterSchema.parse(await this.kv.get(logNextOffsetKey)) ?? 0;
+    const index = await this.kv.list({
+      prefix: logRecordPrefix,
+      limit: 1,
+    });
+    const first = index.keys().next().value;
+    if (typeof first !== 'string') {
+      return { oldestOffset: nextOffset, nextOffset };
+    }
+
+    const oldestOffset = indexTimestampSchema.parse(
+      first.slice(
+        logRecordPrefix.length,
+        logRecordPrefix.length + timestampWidth
+      )
+    );
+    return { oldestOffset, nextOffset };
+  }
+
+  async count(): Promise<number> {
+    let count = 0;
+    let startAfter: string | undefined;
+    for (;;) {
+      // Each page starts after the previous one, so it cannot be parallel.
+      // eslint-disable-next-line no-await-in-loop
+      const page = await this.kv.list({
+        prefix: logRecordPrefix,
+        limit: 128,
+        ...(startAfter === undefined ? {} : { startAfter }),
+      });
+      count += page.size;
+      if (page.size < 128) {
+        return count;
+      }
+      startAfter = [...page.keys()][page.size - 1];
+    }
+  }
+
+  async listOldest(limit: number): Promise<LogRecordRow[]> {
+    if (limit <= 0) {
+      return [];
+    }
+    const index = await this.kv.list({ prefix: logRecordPrefix, limit });
+    return logRecordRowSchema.array().parse([...index.values()]);
+  }
+
+  async trimThrough(through: number, limit: number): Promise<number> {
+    if (limit <= 0) {
+      return 0;
+    }
+    return this.atomically(async (table) => {
+      const index = await table.kv.list({
+        prefix: logRecordPrefix,
+        end: table.recordKey(through),
+        limit,
+      });
+      const rows = logRecordRowSchema.array().parse([...index.values()]);
+      if (rows.length === 0) {
+        return 0;
+      }
+
+      const primaryKeys = [...index.keys()];
+      const doomed = rows.flatMap((row, position) => [
+        primaryKeys[position]!,
+        table.keyIndex(row.key),
+      ]);
+      // One list may cover more keys than a single delete call accepts, but the
+      // caller's limit is still honoured so an archive is never repeated.
+      for (let start = 0; start < doomed.length; start += purgeBatchSize) {
+        // eslint-disable-next-line no-await-in-loop
+        await table.kv.delete(doomed.slice(start, start + purgeBatchSize));
+      }
+      return rows.length;
+    });
+  }
+
+  async cursor(consumer: string): Promise<number | undefined> {
+    return logCursorRowSchema
+      .optional()
+      .parse(await this.kv.get(this.cursorKey(consumer)))?.offset;
+  }
+
+  async commit(
+    consumer: string,
+    offset: number,
+    committedAt: number
+  ): Promise<void> {
+    await this.atomically(async (table) => {
+      const key = table.cursorKey(consumer);
+      const current = logCursorRowSchema
+        .optional()
+        .parse(await table.kv.get(key));
+      if (current !== undefined && offset <= current.offset) {
+        return;
+      }
+      await table.kv.put(key, {
+        consumer,
+        offset,
+        committed_at: committedAt,
+      });
+    });
+  }
+
+  async cursors(): Promise<LogCursorRow[]> {
+    const rows: LogCursorRow[] = [];
+    let startAfter: string | undefined;
+    for (;;) {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await this.kv.list({
+        prefix: logCursorPrefix,
+        limit: 128,
+        ...(startAfter === undefined ? {} : { startAfter }),
+      });
+      rows.push(...logCursorRowSchema.array().parse([...page.values()]));
+      if (page.size < 128) {
+        return rows.sort((left, right) =>
+          left.consumer < right.consumer
+            ? -1
+            : left.consumer > right.consumer
+              ? 1
+              : 0
+        );
+      }
+      startAfter = [...page.keys()][page.size - 1];
+    }
+  }
+
+  private recordKey(offset: number): string {
+    return `${logRecordPrefix}${timestampKey(offset)}`;
+  }
+
+  private keyIndex(key: string): string {
+    return `${logKeyIndexPrefix}${encodeIndexPart(key)}`;
+  }
+
+  private cursorKey(consumer: string): string {
+    return `${logCursorPrefix}${encodeIndexPart(consumer)}`;
+  }
+}
+
 class KvSession implements DurabilityStorageTransaction {
   readonly calls: KvTable<CallRow>;
   readonly alarms: KvTable<AlarmRow>;
   readonly deliveries: KvDeliveryTable;
+  readonly log: KvLogTable;
 
   constructor(
     readonly physicalAlarm: KvStorage,
@@ -564,6 +798,9 @@ class KvSession implements DurabilityStorageTransaction {
     );
     this.deliveries = new KvDeliveryTable(physicalAlarm, (callback) =>
       atomically((session) => callback(session.deliveries))
+    );
+    this.log = new KvLogTable(physicalAlarm, (callback) =>
+      atomically((session) => callback(session.log))
     );
   }
 }
@@ -588,6 +825,7 @@ export const createKvDurabilityStorage = (
     calls: session.calls,
     alarms: session.alarms,
     deliveries: session.deliveries,
+    log: session.log,
     transaction,
   };
 };

@@ -4,6 +4,8 @@ import {
   callRowSchema,
   deliveryRowSchema,
   fanoutMessageRowSchema,
+  logCursorRowSchema,
+  logRecordRowSchema,
   type AlarmRow,
   type CallRow,
   type ColumnValue,
@@ -13,6 +15,10 @@ import {
   type DurabilityStorageTransaction,
   type DurableRecord,
   type FanoutMessageRow,
+  type LogBounds,
+  type LogCursorRow,
+  type LogRecordRow,
+  type LogStore,
   type PhysicalAlarm,
   type RecordPatch,
   type RecordStore,
@@ -63,6 +69,11 @@ const messageCountRowSchema = z.object({
   count: z.number().int().positive(),
 });
 const seqRowSchema = z.object({ seq: z.number().int().nonnegative() });
+const offsetRowSchema = z.object({ offset: z.number().int().nonnegative() });
+const boundsRowSchema = z.object({
+  oldest: z.number().int().nonnegative().nullable(),
+  next_offset: z.number().int().nonnegative(),
+});
 
 const definedEntries = (
   patch: Record<string, ColumnValue | undefined>
@@ -450,10 +461,184 @@ class SqliteDeliveryTable
   }
 }
 
+class SqliteLogTable implements LogStore {
+  constructor(
+    private readonly sql: SqlStorage,
+    private readonly atomically: SqliteAtomically
+  ) {}
+
+  async append(
+    records: readonly Pick<LogRecordRow, 'key' | 'payload'>[],
+    appendedAt: number
+  ): Promise<number[]> {
+    if (records.length === 0) {
+      return [];
+    }
+    return this.atomically((sql) => {
+      const assigned = new Map<string, number>();
+      for (const { key } of records) {
+        const existing = offsetRowSchema
+          .optional()
+          .parse(
+            sql
+              .exec(
+                'SELECT "offset" FROM durability_log_records WHERE key = ? LIMIT 1',
+                key
+              )
+              .toArray()[0]
+          );
+        if (existing !== undefined) {
+          assigned.set(key, existing.offset);
+        }
+      }
+      const fresh = records.filter(({ key }) => !assigned.has(key));
+      const distinct = [...new Set(fresh.map(({ key }) => key))];
+      if (distinct.length > 0) {
+        const first = seqRowSchema.parse(
+          sql
+            .exec(
+              `UPDATE durability_log_seq
+               SET next_offset = next_offset + ?
+               WHERE id = 1
+               RETURNING next_offset - ? AS seq`,
+              distinct.length,
+              distinct.length
+            )
+            .toArray()[0]
+        ).seq;
+        distinct.forEach((key, index) => assigned.set(key, first + index));
+        for (const { key, payload } of fresh) {
+          sql.exec(
+            `INSERT INTO durability_log_records ("offset", key, payload, appended_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(key) DO NOTHING`,
+            assigned.get(key)!,
+            key,
+            payload,
+            appendedAt
+          );
+        }
+      }
+      return records.map(({ key }) => assigned.get(key)!);
+    });
+  }
+
+  async read(from: number, limit: number): Promise<LogRecordRow[]> {
+    return logRecordRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_log_records
+           WHERE "offset" >= ?
+           ORDER BY "offset" ASC
+           LIMIT ?`,
+          from,
+          limit
+        )
+        .toArray()
+    );
+  }
+
+  async bounds(): Promise<LogBounds> {
+    const row = boundsRowSchema.parse(
+      this.sql
+        .exec(
+          `SELECT
+             (SELECT MIN("offset") FROM durability_log_records) AS oldest,
+             next_offset
+           FROM durability_log_seq WHERE id = 1`
+        )
+        .toArray()[0]
+    );
+    return {
+      oldestOffset: row.oldest ?? row.next_offset,
+      nextOffset: row.next_offset,
+    };
+  }
+
+  async count(): Promise<number> {
+    return countRowSchema.parse(
+      this.sql
+        .exec('SELECT COUNT(*) AS count FROM durability_log_records')
+        .toArray()[0]
+    ).count;
+  }
+
+  async listOldest(limit: number): Promise<LogRecordRow[]> {
+    return logRecordRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_log_records
+           ORDER BY "offset" ASC
+           LIMIT ?`,
+          limit
+        )
+        .toArray()
+    );
+  }
+
+  async trimThrough(through: number, limit: number): Promise<number> {
+    return this.sql
+      .exec(
+        `DELETE FROM durability_log_records
+       WHERE "offset" IN (
+         SELECT "offset" FROM durability_log_records
+         WHERE "offset" < ?
+         ORDER BY "offset" ASC
+         LIMIT ?
+       )
+       RETURNING "offset"`,
+        through,
+        limit
+      )
+      .toArray().length;
+  }
+
+  async cursor(consumer: string): Promise<number | undefined> {
+    return offsetRowSchema
+      .optional()
+      .parse(
+        this.sql
+          .exec(
+            'SELECT "offset" FROM durability_log_cursors WHERE consumer = ? LIMIT 1',
+            consumer
+          )
+          .toArray()[0]
+      )?.offset;
+  }
+
+  async commit(
+    consumer: string,
+    offset: number,
+    committedAt: number
+  ): Promise<void> {
+    this.sql.exec(
+      `INSERT INTO durability_log_cursors (consumer, "offset", committed_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(consumer) DO UPDATE
+         SET "offset" = excluded."offset", committed_at = excluded.committed_at
+         WHERE excluded."offset" > durability_log_cursors."offset"`,
+      consumer,
+      offset,
+      committedAt
+    );
+  }
+
+  async cursors(): Promise<LogCursorRow[]> {
+    return logCursorRowSchema
+      .array()
+      .parse(
+        this.sql
+          .exec('SELECT * FROM durability_log_cursors ORDER BY consumer')
+          .toArray()
+      );
+  }
+}
+
 class SqliteSession implements DurabilityStorageTransaction {
   readonly calls: SqliteTable<CallRow>;
   readonly alarms: SqliteTable<AlarmRow>;
   readonly deliveries: SqliteDeliveryTable;
+  readonly log: SqliteLogTable;
 
   constructor(
     sql: SqlStorage,
@@ -463,6 +648,7 @@ class SqliteSession implements DurabilityStorageTransaction {
     this.calls = new SqliteTable(sql, callTable, atomically);
     this.alarms = new SqliteTable(sql, alarmTable, atomically);
     this.deliveries = new SqliteDeliveryTable(sql, atomically);
+    this.log = new SqliteLogTable(sql, atomically);
   }
 }
 
@@ -487,6 +673,7 @@ export const createSqliteDurabilityStorage = (
     calls: session.calls,
     alarms: session.alarms,
     deliveries: session.deliveries,
+    log: session.log,
     transaction,
   };
 };

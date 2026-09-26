@@ -41,5 +41,13 @@
       "tag": "v3",
       "new_sqlite_classes": ["DeliveryObject"],
     },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["LogTestObject"],
+    },
+    {
+      "tag": "v5",
+      "new_classes": ["KvLogTestObject"],
+    },
   ],
 }

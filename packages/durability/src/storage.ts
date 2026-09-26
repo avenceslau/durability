@@ -63,6 +63,61 @@ export const deliveryRowSchema = z.object({
 
 export type DeliveryRow = z.infer<typeof deliveryRowSchema>;
 
+export const logRecordRowSchema = z.object({
+  offset: z.number().int().nonnegative(),
+  key: z.string(),
+  payload: z.string(),
+  appended_at: z.number().int().nonnegative(),
+});
+
+export type LogRecordRow = z.infer<typeof logRecordRowSchema>;
+
+export const logCursorRowSchema = z.object({
+  consumer: z.string(),
+  offset: z.number().int().nonnegative(),
+  committed_at: z.number().int().nonnegative(),
+});
+
+export type LogCursorRow = z.infer<typeof logCursorRowSchema>;
+
+export type LogBounds = {
+  /** Lowest readable offset; equals `nextOffset` once every record is trimmed. */
+  oldestOffset: number;
+  /** Offset the next appended record receives. */
+  nextOffset: number;
+};
+
+/**
+ * A retained, offset-addressed record sequence. Unlike a `RecordStore` its
+ * records carry no attempt state: consumers track progress with cursors and
+ * records leave only through retention.
+ */
+export interface LogStore {
+  /**
+   * Appends the batch atomically and returns each record's offset in input
+   * order. A record whose key is already present keeps its original offset and
+   * consumes no new one, making a repeated append idempotent.
+   */
+  append(
+    records: readonly Pick<LogRecordRow, 'key' | 'payload'>[],
+    appendedAt: number
+  ): Promise<number[]>;
+  read(from: number, limit: number): Promise<LogRecordRow[]>;
+  bounds(): Promise<LogBounds>;
+  count(): Promise<number>;
+  /** Oldest retained records in offset order, for archive-before-delete. */
+  listOldest(limit: number): Promise<LogRecordRow[]>;
+  /**
+   * Deletes at most `limit` records below `through`, oldest first, and returns
+   * how many were removed. Callers loop until zero.
+   */
+  trimThrough(through: number, limit: number): Promise<number>;
+  cursor(consumer: string): Promise<number | undefined>;
+  /** Advances a cursor, ignoring regressions so a late commit cannot rewind it. */
+  commit(consumer: string, offset: number, committedAt: number): Promise<void>;
+  cursors(): Promise<LogCursorRow[]>;
+}
+
 export type ColumnValue = string | number | null;
 
 export type DurableRecord = Record<string, ColumnValue> & {
@@ -152,17 +207,23 @@ export type RecordStores = {
   deliveries: DeliveryStore;
 };
 
+/** Kinds the shared physical alarm can be reconciled against. */
 export type RecordKind = keyof RecordStores;
 
-export type DurabilityStorageTransaction = RecordStores & {
-  physicalAlarm: PhysicalAlarm;
-};
+/** Kept out of `RecordStores` because log records schedule no attempts. */
+export type LogStores = { log: LogStore };
 
-export type DurabilityStorage = RecordStores & {
-  transaction<T>(
-    callback: (transaction: DurabilityStorageTransaction) => Promise<T>
-  ): Promise<T>;
-};
+export type DurabilityStorageTransaction = RecordStores &
+  LogStores & {
+    physicalAlarm: PhysicalAlarm;
+  };
+
+export type DurabilityStorage = RecordStores &
+  LogStores & {
+    transaction<T>(
+      callback: (transaction: DurabilityStorageTransaction) => Promise<T>
+    ): Promise<T>;
+  };
 
 /** Returns the earliest pending time and maintains its bounded physical fallback. */
 export const reconcilePhysicalAlarm = async (
