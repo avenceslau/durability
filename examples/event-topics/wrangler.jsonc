@@ -1,0 +1,17 @@
+{
+  "name": "event-topics-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-07",
+  // The consumer path reads partitions by name, so this binding is explicit.
+  // Producer routing resolves the same class through the Worker export.
+  "durable_objects": {
+    "bindings": [{ "name": "PARTITIONS", "class_name": "Partition" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Partition"] }],
+  "r2_buckets": [
+    {
+      "binding": "COLD",
+      "bucket_name": "event-topics-cold",
+    },
+  ],
+}
