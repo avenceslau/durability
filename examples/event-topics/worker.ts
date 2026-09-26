@@ -84,8 +84,10 @@ export class Partition extends DurableObject<Env> {
     handlers: {
       enforceRetention: async () => {
         await this.log.trim();
-        const { oldestOffset, nextOffset } = await this.log.bounds();
-        if (oldestOffset < nextOffset) {
+        // Compare the hot window, not the oldest readable offset: flushed
+        // segments keep that one low forever, which would sweep forever.
+        const { hotOffset, nextOffset } = await this.log.bounds();
+        if (hotOffset < nextOffset) {
           await this.alarms.enforceRetention(Date.now() + retentionSweepMs);
           return;
         }
@@ -108,12 +110,24 @@ export class Partition extends DurableObject<Env> {
     return result;
   }
 
-  /** Consumers pull. A group's cursor is the only thing that advances. */
+  /**
+   * Consumers pull. A group's cursor is the only thing that advances, and a
+   * cursor below the hot window is served from R2 rather than failing.
+   */
   async consume(group: string, limit: number): Promise<LogPage<Event>> {
-    // A new group starts at the oldest retained record rather than failing.
+    // A new group starts at the oldest readable record, flushed or not.
     const from =
       (await this.log.cursor(group)) ?? (await this.log.bounds()).oldestOffset;
     return this.log.read({ from, limit });
+  }
+
+  /**
+   * Mirrors the bucket's lifecycle rule. R2 expires the objects on its own
+   * schedule, so the index must forget the same segments or a read would
+   * chase a locator whose object is gone.
+   */
+  expireCold(before: number) {
+    return this.log.forgetColdBefore(before);
   }
 
   /** Acknowledging is separate from reading, so a crash re-reads the page. */
