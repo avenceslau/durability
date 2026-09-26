@@ -31,13 +31,15 @@ export {
 } from './fanout.js';
 export {
   DurabilityLog,
+  maxLogBytes,
   type DurabilityLogConfig,
   type LogAppendInput,
-  type LogArchive,
+  type LogColdStorage,
   type LogPage,
   type LogReadOptions,
   type LogRecord,
   type LogRetention,
+  type LogSegment,
   type LogBounds,
 } from './log.js';
 export {
