@@ -5,6 +5,7 @@ import {
   DurabilityScheduler,
   type DurableCall,
 } from '../src';
+export { DeliveryObject, FanoutConsumer } from './fanout-worker';
 
 export type RecordedAlarm = {
   attempt: number;

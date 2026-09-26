@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import {
   DuplicateDurableCallError,
   DurableAttemptsExhaustedError,
@@ -32,6 +31,7 @@ import {
   type Engine,
   type SchedulerAttachment,
 } from './scheduler.js';
+import { deserialize, serialize } from './serialization.js';
 import type { CallRow } from './storage.js';
 
 /**
@@ -165,24 +165,6 @@ export type DurabilityConfig<Handlers extends HandlerMap = HandlerMap> =
       /** Operation handlers keyed by the method names they become. */
       handlers: Handlers;
     };
-
-const storedValueSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('value'), value: z.json() }),
-  z.object({ kind: z.literal('undefined') }),
-]);
-
-// Wrapping preserves a successful `undefined` result, which bare JSON cannot represent.
-const serialize = (value: unknown): string =>
-  JSON.stringify(
-    value === undefined
-      ? { kind: 'undefined' }
-      : { kind: 'value', value: z.json().parse(value) }
-  );
-
-const deserialize = (value: string): unknown => {
-  const stored = storedValueSchema.parse(JSON.parse(value));
-  return stored.kind === 'undefined' ? undefined : stored.value;
-};
 
 const assertOperation = (
   id: string,

@@ -170,6 +170,64 @@ export const durabilityNamedAlarmMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Ordered SQLite migrations for fanout manifests and deliveries. Applied
+ * automatically on construction.
+ */
+export const durabilityFanoutMigrations = [
+  {
+    name: 'durability_0005_create_fanout',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_fanout_messages (
+        key TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        targets TEXT NOT NULL,
+        remaining INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        generation_id TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS durability_fanout_deliveries (
+        id TEXT PRIMARY KEY,
+        message_key TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending')),
+        phase TEXT NOT NULL CHECK (phase IN ('delivery', 'dead_letter')),
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        created_at INTEGER NOT NULL,
+        generation_id TEXT NOT NULL,
+        dead_lettered_at INTEGER,
+        dead_letter_reason TEXT CHECK (dead_letter_reason IN ('explicit', 'exhausted'))
+      );
+      CREATE INDEX IF NOT EXISTS durability_fanout_deliveries_due_idx
+      ON durability_fanout_deliveries
+        (target_id, phase, status, attempt, seq, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS durability_fanout_deliveries_pending_idx
+      ON durability_fanout_deliveries (phase, status, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS durability_fanout_deliveries_created_idx
+      ON durability_fanout_deliveries (created_at);
+      CREATE TABLE IF NOT EXISTS durability_fanout_seq (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_seq INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO durability_fanout_seq (id, next_seq) VALUES (1, 0);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_fanout_deliveries_due_idx;
+      DROP INDEX IF EXISTS durability_fanout_deliveries_pending_idx;
+      DROP INDEX IF EXISTS durability_fanout_deliveries_created_idx;
+      DROP TABLE IF EXISTS durability_fanout_deliveries;
+      DROP TABLE IF EXISTS durability_fanout_messages;
+      DROP TABLE IF EXISTS durability_fanout_seq;
+    `,
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -178,7 +236,7 @@ export type DurabilityMigrationResult = {
   rolledBack: string[];
 };
 
-export type MigrationCapability = 'operations' | 'namedAlarms';
+export type MigrationCapability = 'operations' | 'namedAlarms' | 'fanout';
 
 /**
  * Newer library versions may leave migrations this one does not know about.

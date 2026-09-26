@@ -1,0 +1,9 @@
+{
+  "name": "rpc-transforms-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-07",
+  "durable_objects": {
+    "bindings": [{ "name": "COUNTERS", "class_name": "Counter" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Counter"] }],
+}

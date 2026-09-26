@@ -12,6 +12,26 @@ npm install @durability/transforms
 
 The Vite plugin requires Wrangler, reads its validated binding configuration, wraps matching RPC stubs, and generates declarations that add `.with(...)` to their types.
 
+For `DurabilityRouting.client({...})`, the plugin injects `exportName` from the targeted Durable Object's same-module export. The target must be a local class exported by that module and declared as a local Durable Object class in Wrangler (including migration classes). Export aliases are supported:
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityRouting as Routing } from 'durability/routing';
+
+class InternalMailbox extends DurableObject {
+  enqueue(input: string) {}
+}
+export { InternalMailbox as Mailbox };
+
+const router = Routing.client({
+  target: InternalMailbox,
+  invoke: (stub, input) => stub.enqueue(input),
+  ...defaults,
+});
+```
+
+The resulting `exportName` is appended after the other properties, so a spread cannot override it. Lookup is intentionally limited to class declarations and exports visible in the same Worker module; imported classes, re-exports, dynamic targets, and non-inline configs are left alone or rejected when the target is visible. Set `exportName` explicitly as the escape hatch for those cases. Explicit `exportName` values are never changed.
+
 ```ts
 import { defineConfig } from 'vite';
 import { doTransforms } from '@durability/transforms/vite';

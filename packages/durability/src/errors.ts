@@ -93,6 +93,48 @@ export class DuplicateDurableCallError extends Error {
   }
 }
 
+/**
+ * Error thrown when a fanout delivery is settled twice.
+ *
+ * The first `ack`, `retry`, or `deadLetter` call is binding. A second call on
+ * the same delivery, or a call from a stale stub kept across deliveries, is a
+ * consumer bug and fails loudly instead of being silently ignored.
+ */
+export class FanoutSettlementError extends Error {
+  constructor(id: string, outcome?: string) {
+    super(
+      outcome === undefined
+        ? `Fanout delivery "${id}" is stale`
+        : `Fanout delivery "${id}" was already settled as "${outcome}"`
+    );
+    this.name = 'FanoutSettlementError';
+  }
+}
+
+/** Error recorded when a target delivery exceeds its configured timeout. */
+export class FanoutTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Fanout delivery timed out after ${timeoutMs}ms`);
+    this.name = 'FanoutTimeoutError';
+  }
+}
+
+/** A definite rejection before the batch was durably accepted. */
+export class FanoutEnqueueError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FanoutEnqueueError';
+  }
+}
+
+/** Error thrown when a sharding function returns an invalid shard key. */
+export class RoutingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoutingError';
+  }
+}
+
 export type SerializedError = { name: string; message: string };
 
 const readString = (value: object, property: string): string | undefined => {

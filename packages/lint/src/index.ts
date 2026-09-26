@@ -98,6 +98,7 @@ const propertyName = (node: AstNode | undefined) => {
 const durabilityConstructors = new Set([
   'Durability',
   'DurabilityAlarms',
+  'DurabilityFanout',
   'DurabilityScheduler',
 ]);
 

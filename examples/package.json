@@ -1,0 +1,21 @@
+{
+  "name": "durability-examples",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Example Workers for the durability primitives",
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@durability/transforms": "workspace:^",
+    "durability": "workspace:^"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@durability/typescript-config": "workspace:*",
+    "typescript": "6.0.3",
+    "vite": "^8.0.0"
+  }
+}

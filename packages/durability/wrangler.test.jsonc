@@ -15,6 +15,19 @@
       },
     ],
   },
+  "services": [
+    {
+      "binding": "CONSUMER",
+      "service": "durability-alarm-test",
+      "entrypoint": "FanoutConsumer",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DEAD_LETTERS",
+      "bucket_name": "queue-test-dead-letters",
+    },
+  ],
   "migrations": [
     {
       "tag": "v1",
@@ -23,6 +36,10 @@
     {
       "tag": "v2",
       "new_classes": ["KvAlarmTestObject"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["DeliveryObject"],
     },
   ],
 }

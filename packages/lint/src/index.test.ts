@@ -94,6 +94,20 @@ describe('alarm-runner-only', () => {
     expect(result).toEqual({ status: 0, output: '' });
   });
 
+  it('requires delegation for a fanout capability', () => {
+    const source = `class App {
+      fanout = new DurabilityFanout({ context: this.ctx, targets: {} });
+      alarm(info) { return this.fanout.alarm(info); }
+    }`;
+    expect(lint(source, 'alarm-runner-only').status).toBe(0);
+    expect(
+      lint(
+        source.replace('this.fanout.alarm(info)', 'this.other.alarm(info)'),
+        'alarm-runner-only'
+      ).status
+    ).toBe(1);
+  });
+
   it('rejects alarm runners that bypass the attached helper', () => {
     const result = lint(
       `

@@ -14,7 +14,17 @@ export type AlarmLifecycleEntity = {
   generation: string;
 };
 
-export type LifecycleEntity = OperationLifecycleEntity | AlarmLifecycleEntity;
+export type FanoutLifecycleEntity = {
+  entityKind: 'fanout_delivery';
+  id: string;
+  target: string;
+  generation: string;
+};
+
+export type LifecycleEntity =
+  | OperationLifecycleEntity
+  | AlarmLifecycleEntity
+  | FanoutLifecycleEntity;
 
 type AttemptSettled = {
   type: 'attempt_settled';
@@ -25,7 +35,7 @@ type AttemptSettled = {
 
 /** Best-effort metrics signal for queue lifecycle changes. */
 export type DurabilityLifecycleEvent =
-  | (OperationLifecycleEntity & {
+  | ((OperationLifecycleEntity | FanoutLifecycleEntity) & {
       type: 'registered';
       timestamp: number;
       attempt: 0;
@@ -54,7 +64,7 @@ export type DurabilityLifecycleEvent =
       type: 'terminal';
       timestamp: number;
       attempt: number;
-      reason: 'attempts_exhausted';
+      reason: 'attempts_exhausted' | 'dead_lettered';
       error: SerializedError;
     })
   | {

@@ -31,6 +31,38 @@ export const alarmRowSchema = z.object({
 
 export type AlarmRow = z.infer<typeof alarmRowSchema>;
 
+export const fanoutMessageRowSchema = z.object({
+  key: z.string(),
+  id: z.string(),
+  payload: z.string(),
+  targets: z.string(),
+  remaining: z.number().int().nonnegative(),
+  seq: z.number().int().nonnegative(),
+  created_at: z.number().int().nonnegative(),
+  generation_id: z.string(),
+});
+
+export type FanoutMessageRow = z.infer<typeof fanoutMessageRowSchema>;
+
+export const deliveryRowSchema = z.object({
+  id: z.string(),
+  message_key: z.string(),
+  target_id: z.string(),
+  seq: z.number().int().nonnegative(),
+  status: z.literal('pending'),
+  phase: z.enum(['delivery', 'dead_letter']),
+  attempt: z.number().int().nonnegative(),
+  next_attempt_at: z.number().int().nonnegative(),
+  last_error: z.string().nullable(),
+  last_error_name: z.string().nullable(),
+  created_at: z.number().int().nonnegative(),
+  generation_id: z.string(),
+  dead_lettered_at: z.number().int().nonnegative().nullable(),
+  dead_letter_reason: z.enum(['explicit', 'exhausted']).nullable(),
+});
+
+export type DeliveryRow = z.infer<typeof deliveryRowSchema>;
+
 export type ColumnValue = string | number | null;
 
 export type DurableRecord = Record<string, ColumnValue> & {
@@ -98,9 +130,26 @@ export type PhysicalAlarm = Pick<
   'getAlarm' | 'setAlarm' | 'deleteAlarm'
 >;
 
+export interface DeliveryStore extends RecordStore<DeliveryRow> {
+  /** Allocates a sequence number from a durable counter, including an empty queue. */
+  nextSeq(): Promise<number>;
+  getMessage(key: string): Promise<FanoutMessageRow | undefined>;
+  insertMessage(row: FanoutMessageRow): Promise<boolean>;
+  /** Returns targets represented by persisted delivery rows. */
+  listTargets(): Promise<string[]>;
+  listDueForTarget(
+    target: string,
+    now: number,
+    limit: number
+  ): Promise<DeliveryRow[]>;
+  /** Returns the exact number of active delivery children. */
+  pendingCount(): Promise<number>;
+}
+
 export type RecordStores = {
   calls: RecordStore<CallRow>;
   alarms: RecordStore<AlarmRow>;
+  deliveries: DeliveryStore;
 };
 
 export type RecordKind = keyof RecordStores;
