@@ -1,0 +1,19 @@
+.changeset/eager-named-alarm-now.md
+  s_571b4df12fc0e5::t_94bd8389d7bd99 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "03215356fa444d33dc52eb92817ac3cfe0e3272b",
+  "prompts": {},
+  "sessions": {
+    "s_571b4df12fc0e5": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10c80-512a-7163-809e-b10fdd0df9e0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
