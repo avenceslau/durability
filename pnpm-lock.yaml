@@ -17,6 +17,9 @@ importers:
       oxlint:
         specifier: 1.73.0
         version: 1.73.0
+      pkg-pr-new:
+        specifier: 0.0.88
+        version: 0.0.88
       publint:
         specifier: ^0.3.21
         version: 0.3.21
@@ -1461,6 +1464,10 @@ packages:
     resolution: {integrity: sha512-uB80kBFb/tfd68bVleG9T5GGsGPjJrLAUpR5PZIrhBnIaRTQRjqdJSsIKkOP6OAIFbj7GOrcudc5pNjZ+geV2g==}
     engines: {node: '>=6'}
 
+  pkg-pr-new@0.0.88:
+    resolution: {integrity: sha512-Xc6PMJ2gher0WZP+rtjefFk26hIb7V1PTLL30bmy1Z2vsRmSvqiss7Ag1XUdyplTGYzIlFNJp4L3vMNmK44N6g==}
+    hasBin: true
+
   postcss@8.5.19:
     resolution: {integrity: sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==}
     engines: {node: ^10 || ^12 || >=14}
@@ -2851,6 +2858,8 @@ snapshots:
   picomatch@4.0.5: {}
 
   pify@4.0.1: {}
+
+  pkg-pr-new@0.0.88: {}
 
   postcss@8.5.19:
     dependencies:
