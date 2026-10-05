@@ -1,6 +1,6 @@
 {
   "name": "durability-examples",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "description": "Example Workers for the durability primitives",
   "type": "module",

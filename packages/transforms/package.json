@@ -1,6 +1,6 @@
 {
   "name": "@durability/transforms",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Typed caller and callee transforms for Cloudflare RPC",
   "type": "module",
   "license": "ISC",
