@@ -41,7 +41,7 @@ pnpm changeset
 
 GitHub Actions creates and updates a version pull request. After that pull request is merged, the release workflow publishes the new package versions from `main` through npm trusted publishing and records provenance for each release.
 
-Publishing requires a trusted publisher for each npm package that is restricted to the `release.yml` workflow and the `npm` GitHub environment.
+Publishing requires a trusted publisher for each npm package that is restricted to the `release.yaml` workflow and the `npm` GitHub environment.
 
 ## License
 
