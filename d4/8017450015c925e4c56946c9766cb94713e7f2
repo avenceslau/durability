@@ -1,0 +1,19 @@
+.github/workflows/finalize-release.yaml
+  s_7f3365fdbd5f4c::t_725468d3c79e0d 1-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d48017450015c925e4c56946c9766cb94713e7f2",
+  "prompts": {},
+  "sessions": {
+    "s_7f3365fdbd5f4c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10c9d-44ef-723e-9d7b-fe46d8845082",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
