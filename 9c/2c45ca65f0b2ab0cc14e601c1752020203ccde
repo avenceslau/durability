@@ -1,0 +1,101 @@
+packages/durability/src/index.test.ts
+  s_edc72d8b0ec969::t_1552905f326d88 1265-1267
+  s_edc72d8b0ec969::t_61278bbd5c5ffe 1371-1373
+  s_edc72d8b0ec969::t_d1b11ca28f0a77 1404-1406
+  s_edc72d8b0ec969::t_deb75c39115e02 1269-1270
+  s_edc72d8b0ec969::t_d306fddf4be85e 1272-1277,1322,1929
+  s_edc72d8b0ec969::t_9e340c6394863a 616,635,1309,1346,1422-1437,1918,1938
+  s_edc72d8b0ec969::t_6f4db88beb02cd 1408-1411
+  s_edc72d8b0ec969::t_fee136827c8d49 1379
+  s_edc72d8b0ec969::t_b12eca3fd0dfac 1261
+  s_edc72d8b0ec969::t_0c92816e4b98f4 624,1284-1301,1937
+  s_edc72d8b0ec969::t_4fe8c23f1f6b74 1377
+  s_edc72d8b0ec969::t_1d5c7b33e5a897 1416
+  s_edc72d8b0ec969::t_08a045b139a477 1452
+  s_edc72d8b0ec969::t_69c4e4e5de780d 601-603,609,612,633,1262-1264,1268,1271,1278-1279,1283,1302,1312,1360-1364,1368-1370,1374,1376,1378,1380-1381,1384,1401-1403,1407,1412,1415,1417-1418,1421,1438-1448,1921-1925,1930
+  s_edc72d8b0ec969::t_95639d4937015d 614,1385-1400,1931
+  s_edc72d8b0ec969::t_17ee75c482dd4b 1419-1420
+  s_edc72d8b0ec969::t_bb69f6725c77df 1365-1367
+  s_edc72d8b0ec969::t_5cec580db0f24a 1382-1383
+  s_edc72d8b0ec969::t_24fc86a22ba9a3 1303-1305
+  s_edc72d8b0ec969::t_14dc49a8becd25 1375
+  s_edc72d8b0ec969::t_49de8a87f1a3b7 1413-1414
+  s_edc72d8b0ec969::t_f2f3aff3f3f988 1280-1282
+  s_edc72d8b0ec969::t_07eee6d70843da 600
+  s_edc72d8b0ec969::t_0005e7faada881 604-608
+  s_edc72d8b0ec969::t_ebd2cbda04a254 610-611
+  s_edc72d8b0ec969::t_426d51827069b0 613
+  s_edc72d8b0ec969::t_598e94a7c86380 615
+  s_edc72d8b0ec969::t_46011f8e55388a 617-619,621-623
+  s_edc72d8b0ec969::t_69159a7d45118b 625-627,630-632
+  s_edc72d8b0ec969::t_3d65f2697f921c 634
+  s_edc72d8b0ec969::t_f1afa048dda387 636
+  s_edc72d8b0ec969::t_a9bae84312efbb 1306-1308
+  s_edc72d8b0ec969::t_43859acd7f7045 1310-1311
+  s_edc72d8b0ec969::t_f1caa24c10bc17 1313-1315,1319-1321
+  s_edc72d8b0ec969::t_7a87bfcb7d07d9 1323-1325,1343-1345
+  s_edc72d8b0ec969::t_28aa1a7f151ce2 1347-1348
+  s_edc72d8b0ec969::t_6b43cd67fc9512 1915-1917
+  s_edc72d8b0ec969::t_0febf4793c283c 1919-1920
+  s_edc72d8b0ec969::t_330eb0c0c4174f 1926-1928
+  s_edc72d8b0ec969::t_85d4c3902d57cf 1932-1936
+  s_edc72d8b0ec969::t_d0d6da13a14c29 1939
+packages/durability/README.md
+  s_edc72d8b0ec969::t_3502332b454404 161,244,422
+packages/durability/src/fanout.ts
+  s_4b72101621f039::t_db7f4b47059fe2 223,370-377,380-383,385,387-388,402,612,654,696
+packages/durability/src/scheduler.ts
+  s_571b4df12fc0e5::t_4b184b3aaa541c 6,40-41,60,160,166-172,184,187
+  s_edc72d8b0ec969::t_1b9fce1ee4ac8a 192,249,252-263,265-301,303,311-315,342,447-449,569,604
+  s_edc72d8b0ec969::t_27eb61220d8714 246-248
+  s_edc72d8b0ec969::t_b00b88fd1972fd 250-251
+packages/durability/src/durability.ts
+  s_edc72d8b0ec969::t_74c40b46efd945 328
+.changeset/eager-named-alarm-now.md
+  s_571b4df12fc0e5::t_94bd8389d7bd99 1-5
+packages/durability/tests/named-alarm-worker.ts
+  s_edc72d8b0ec969::t_83e70862d78077 112-121
+  s_edc72d8b0ec969::t_455cb38ad463c0 108-110
+  s_edc72d8b0ec969::t_8003e0c42dc51e 111,122,140-142
+  s_edc72d8b0ec969::t_bab83e24dbf8b0 135-136
+  s_edc72d8b0ec969::t_633ee86bd57320 137-139
+  s_edc72d8b0ec969::t_13305c93085ffd 105-107
+packages/durability/tests/named-alarm.worker.test.ts
+  s_edc72d8b0ec969::t_9d3c5c8cdff886 55
+packages/durability/src/durability-alarms.ts
+  s_edc72d8b0ec969::t_d580b44bd68e8f 199
+packages/durability/src/fanout.test.ts
+  s_4b72101621f039::t_0cb2f002e73485 300,313-314,316-317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9c2c45ca65f0b2ab0cc14e601c1752020203ccde",
+  "prompts": {},
+  "sessions": {
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_571b4df12fc0e5": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10c80-512a-7163-809e-b10fdd0df9e0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_edc72d8b0ec969": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0963d-e34c-7ee9-af9b-1abea2216c85",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
