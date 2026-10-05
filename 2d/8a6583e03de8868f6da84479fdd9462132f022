@@ -1,0 +1,49 @@
+.changeset/durability-tracker.md
+  s_d0958d7ba8080f::t_d65f367021a1b9 1-5
+packages/durability/README.md
+  s_d0958d7ba8080f::t_03d2af9b44c1c7 9,164-251
+packages/durability/package.json
+  s_d0958d7ba8080f::t_a17a1a2e21cb72 78
+packages/durability/src/durability-alarms.ts
+  s_d0958d7ba8080f::t_7d73e5ea9edc50 32-38,93-115,182-216,277-278
+packages/durability/src/durability.ts
+  s_d0958d7ba8080f::t_de25848743611c 36-41,86-92,196-230,299-321,363
+packages/durability/src/index.ts
+  s_d0958d7ba8080f::t_24e39705834b9a 11,37-58
+packages/durability/src/kv-storage.ts
+  s_d0958d7ba8080f::t_0f29a91f8df270 9-10,109-130
+packages/durability/src/sqlite-storage.ts
+  s_d0958d7ba8080f::t_ca92966530c2f3 9-10,12-13,103-133
+packages/durability/src/storage.ts
+  s_d0958d7ba8080f::t_c8d79f51d6be49 91-119,129-133
+packages/durability/src/tracker.test.ts
+  s_d0958d7ba8080f::t_219f63cb5d45ac 1-416
+packages/durability/src/tracker.ts
+  s_d0958d7ba8080f::t_1bc905b1dfc85e 1-374
+packages/durability/tests/named-alarm-worker.ts
+  s_d0958d7ba8080f::t_afcb425e6bd56d 9
+packages/durability/tests/tracker-worker.ts
+  s_d0958d7ba8080f::t_820fd71b2a25a4 1-64
+packages/durability/tests/tracker.worker.test.ts
+  s_d0958d7ba8080f::t_53d401fce8be88 1-91
+packages/durability/wrangler.test.jsonc
+  s_d0958d7ba8080f::t_119f2400fa7845 16-19,48-51
+pnpm-lock.yaml
+  s_d0958d7ba8080f::t_27f7e601d82a17 76-78,1111-1113,2516-2517
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2d8a6583e03de8868f6da84479fdd9462132f022",
+  "prompts": {},
+  "sessions": {
+    "s_d0958d7ba8080f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10cc1-7da8-77bd-9b46-3fec47f7f09d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
