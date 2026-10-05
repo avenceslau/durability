@@ -4,18 +4,34 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      stage_unpublished:
+        description: Stage unpublished package versions
+        default: false
+        required: true
+        type: boolean
+      release_sha:
+        description: Commit containing the package versions to stage
+        required: false
+        type: string
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
-  contents: write
-  id-token: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  release:
-    environment: npm
+  version:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      has_packages: ${{ steps.packages.outputs.has_packages || 'false' }}
+      packages: ${{ steps.packages.outputs.packages || '[]' }}
+      release_sha: ${{ steps.detect.outputs.release_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -30,7 +46,6 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -38,16 +53,110 @@ jobs:
       - name: Validate
         run: pnpm check
 
-      - name: Install npm with trusted publishing support
-        run: npm install --global npm@11.18.0
+      - name: Detect versions to stage
+        id: detect
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          FORCE_STAGE: ${{ inputs.stage_unpublished || false }}
+          INPUT_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          candidate_sha="$GITHUB_SHA"
+          should_stage=false
 
-      - name: Create version pull request or publish
+          if [[ "$FORCE_STAGE" == "true" ]]; then
+            candidate_sha="${INPUT_RELEASE_SHA:-$GITHUB_SHA}"
+            should_stage=true
+          elif find .changeset -maxdepth 1 -type f -name '*.md' ! -name 'README.md' -print -quit | grep -q .; then
+            should_stage=false
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]] &&
+            [[ ! "$BEFORE_SHA" =~ ^0+$ ]] &&
+            ! git diff --quiet "$BEFORE_SHA" "$GITHUB_SHA" -- 'examples/package.json' 'packages/*/package.json'; then
+            should_stage=true
+          fi
+
+          release_sha="$(git rev-parse --verify "${candidate_sha}^{commit}")"
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$release_sha" "$GITHUB_SHA"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "should_stage=$should_stage" >> "$GITHUB_OUTPUT"
+
+      - name: Create version pull request
+        if: github.event_name == 'push'
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
           version: pnpm version-packages
-          publish: pnpm release
           title: Version packages
           commit: Version packages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find unpublished packages
+        if: steps.detect.outputs.should_stage == 'true'
+        id: packages
+        env:
+          RELEASE_SHA: ${{ steps.detect.outputs.release_sha }}
+        run: |
+          release_root="$RUNNER_TEMP/release-source"
+          git worktree add --detach "$release_root" "$RELEASE_SHA"
+          packages="$(RELEASE_ROOT="$release_root" node scripts/stage-packages.mjs --list)"
+          git worktree remove --force "$release_root"
+
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          if [[ "$packages" == "[]" ]]; then
+            echo "has_packages=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_packages=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  stage:
+    if: needs.version.outputs.has_packages == 'true'
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.version.outputs.packages) }}
+    environment: npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          path: tooling
+
+      - name: Checkout release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          path: release
+          ref: ${{ needs.version.outputs.release_sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: release/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: release/pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        working-directory: release
+        run: pnpm install --frozen-lockfile
+
+      - name: Install npm with staged publishing support
+        run: npm install --global npm@11.18.0
+
+      - name: Stage package
+        env:
           NPM_CONFIG_PROVENANCE: true
+          PACKAGE_NAME: ${{ matrix.package.name }}
+          RELEASE_ROOT: ${{ github.workspace }}/release
+          RELEASE_SHA: ${{ needs.version.outputs.release_sha }}
+        run: node tooling/scripts/stage-packages.mjs --package "$PACKAGE_NAME"

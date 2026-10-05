@@ -1,0 +1,79 @@
+name: Finalize Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Commit containing the approved package versions
+        required: true
+        type: string
+
+concurrency:
+  group: finalize-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.ref == 'refs/heads/main'
+    environment: npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          path: tooling
+
+      - name: Resolve release commit
+        id: release
+        working-directory: tooling
+        env:
+          INPUT_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          git fetch origin main
+          release_sha="$(git rev-parse --verify "${INPUT_RELEASE_SHA}^{commit}")"
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$release_sha" origin/main
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          path: release
+          ref: ${{ steps.release.outputs.sha }}
+
+      - name: Verify release checkout
+        working-directory: release
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: release/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: release/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: release
+        run: pnpm install --frozen-lockfile
+
+      - name: Create tags and GitHub releases
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          cwd: release
+          publish: node ../tooling/scripts/finalize-release.mjs
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ROOT: ${{ github.workspace }}/release

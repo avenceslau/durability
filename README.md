@@ -39,9 +39,20 @@ Package versions and release notes are managed with [Changesets](https://github.
 pnpm changeset
 ```
 
-GitHub Actions creates and updates a version pull request. After that pull request is merged, the release workflow publishes the new package versions from `main` through npm trusted publishing and records provenance for each release.
+GitHub Actions creates and updates a version pull request. After that pull request is merged, the release workflow uploads the new package versions to npm as private staged packages with provenance. Each package's trusted publisher must allow staged publishing from the `release.yaml` workflow and the `npm` GitHub environment. Do not grant direct `npm publish` permission.
 
-Publishing requires a trusted publisher for each npm package that is restricted to the `release.yaml` workflow and the `npm` GitHub environment.
+The workflow summary records each stage ID and the release commit. Use npm 11.18 or newer to inspect and approve the packages with npm 2FA:
+
+```sh
+npm stage list --json
+npm stage view <stage-id> --json
+npm stage download <stage-id>
+npm stage approve <stage-id>
+```
+
+Approve workspace dependencies before their dependents. If a staging job fails, inspect `npm stage list` before retrying only the failed job; staged versions cannot be staged again. After every package in the release is public, run the **Finalize Release** workflow from `main` with the recorded release commit to create the package tags and GitHub releases.
+
+To recover versions that were bumped before staged publishing was enabled, manually run the **Release** workflow with **Stage unpublished package versions** selected and provide the commit that introduced those versions.
 
 ## License
 

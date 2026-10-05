@@ -16,7 +16,6 @@
     "format:check": "oxfmt --check \"**/*.{json,jsonc,md,ts}\"",
     "lint": "turbo run lint",
     "pack:check": "pnpm --filter durability --filter @durability/storage --filter @durability/transforms --filter @durability/lint exec publint",
-    "release": "pnpm build && changeset publish",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "version-packages": "changeset version && pnpm install --lockfile-only"
