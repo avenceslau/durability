@@ -1,0 +1,108 @@
+packages/durability/src/durability.ts
+  s_edc72d8b0ec969::t_74c40b46efd945 328
+packages/durability/src/fanout.test.ts
+  s_4b72101621f039::t_0cb2f002e73485 300,313-314,316-317
+packages/durability/src/index.test.ts
+  s_edc72d8b0ec969::t_49de8a87f1a3b7 1412-1413
+  s_edc72d8b0ec969::t_b12eca3fd0dfac 1260
+  s_edc72d8b0ec969::t_1552905f326d88 1264-1266
+  s_edc72d8b0ec969::t_95639d4937015d 613,1384-1399,1932
+  s_edc72d8b0ec969::t_0c92816e4b98f4 623,1283-1300,1938
+  s_edc72d8b0ec969::t_5cec580db0f24a 1381-1382
+  s_edc72d8b0ec969::t_3d65f2697f921c 633
+  s_edc72d8b0ec969::t_07eee6d70843da 599
+  s_edc72d8b0ec969::t_9e340c6394863a 615,634,1308,1345,1421-1436,1919,1939
+  s_edc72d8b0ec969::t_f2f3aff3f3f988 1279-1281
+  s_edc72d8b0ec969::t_d0d6da13a14c29 1940
+  s_edc72d8b0ec969::t_61278bbd5c5ffe 1370-1372
+  s_edc72d8b0ec969::t_0febf4793c283c 1920-1921
+  s_edc72d8b0ec969::t_426d51827069b0 612
+  s_edc72d8b0ec969::t_0005e7faada881 603-607
+  s_edc72d8b0ec969::t_46011f8e55388a 616-622,1918
+  s_edc72d8b0ec969::t_bb69f6725c77df 1364-1366
+  s_edc72d8b0ec969::t_28aa1a7f151ce2 1346-1347
+  s_edc72d8b0ec969::t_43859acd7f7045 1309-1310
+  s_edc72d8b0ec969::t_ebd2cbda04a254 609-610
+  s_edc72d8b0ec969::t_1d5c7b33e5a897 1415
+  s_edc72d8b0ec969::t_deb75c39115e02 1268-1269
+  s_edc72d8b0ec969::t_6f4db88beb02cd 1407-1410
+  s_edc72d8b0ec969::t_0a5622c1796d12 1912-1914
+  s_edc72d8b0ec969::t_d306fddf4be85e 1271-1276,1321,1930
+  s_edc72d8b0ec969::t_598e94a7c86380 614
+  s_edc72d8b0ec969::t_7a87bfcb7d07d9 1322-1344
+  s_edc72d8b0ec969::t_17ee75c482dd4b 1418-1419
+  s_edc72d8b0ec969::t_59ffe46d2c61ea 1909-1911
+  s_edc72d8b0ec969::t_69159a7d45118b 624-631
+  s_edc72d8b0ec969::t_f1caa24c10bc17 1312-1320
+  s_edc72d8b0ec969::t_69c4e4e5de780d 416,418-420,422,600-602,608,611,632,1261-1263,1267,1270,1277-1278,1282,1301,1311,1359-1363,1367-1369,1373,1375,1377,1379-1380,1383,1400-1402,1406,1411,1414,1416-1417,1420,1437-1447,1922-1926,1931
+  s_edc72d8b0ec969::t_4fe8c23f1f6b74 1376
+  s_edc72d8b0ec969::t_d1b11ca28f0a77 1403-1405
+  s_edc72d8b0ec969::t_85d4c3902d57cf 1933-1937
+  s_edc72d8b0ec969::t_14dc49a8becd25 1374
+  s_edc72d8b0ec969::t_24fc86a22ba9a3 1302-1304
+  s_edc72d8b0ec969::t_330eb0c0c4174f 1927-1929
+  s_edc72d8b0ec969::t_08a045b139a477 1451
+  s_edc72d8b0ec969::t_a9bae84312efbb 1305-1307
+  s_edc72d8b0ec969::t_fee136827c8d49 1378
+  s_edc72d8b0ec969::t_6b43cd67fc9512 1915-1917
+  s_edc72d8b0ec969::t_f1afa048dda387 635
+packages/durability/src/scheduler.ts
+  s_571b4df12fc0e5::t_4b184b3aaa541c 6,40-41,60-61,161,167-173,185,188
+  s_edc72d8b0ec969::t_bbae396f80fba1 193-194
+  s_edc72d8b0ec969::t_d3dfe731c7f745 247-249
+  s_edc72d8b0ec969::t_1b9fce1ee4ac8a 189,192,195-196,253,256-267,269-270,272-307,315-319,346,451-453,573,608
+  s_edc72d8b0ec969::t_b00b88fd1972fd 254-255
+  s_edc72d8b0ec969::t_27eb61220d8714 250-252
+  s_edc72d8b0ec969::t_cf8621f43fcf94 190-191
+  s_edc72d8b0ec969::t_0297e8b9c631ec 244-246
+  s_edc72d8b0ec969::t_ef2ddc739c179a 241-243
+packages/durability/src/fanout.ts
+  s_4b72101621f039::t_db7f4b47059fe2 223,370-377,380-383,385,387-388,402,612,654,696
+packages/durability/src/durability-alarms.ts
+  s_edc72d8b0ec969::t_d580b44bd68e8f 199
+packages/durability/README.md
+  s_edc72d8b0ec969::t_3502332b454404 161,244,422
+packages/durability/tests/named-alarm.worker.test.ts
+  s_edc72d8b0ec969::t_9d3c5c8cdff886 42,55
+packages/durability/tests/named-alarm-worker.ts
+  s_edc72d8b0ec969::t_83e70862d78077 112-121
+  s_edc72d8b0ec969::t_455cb38ad463c0 108-110
+  s_edc72d8b0ec969::t_bab83e24dbf8b0 135-136
+  s_edc72d8b0ec969::t_633ee86bd57320 137-139
+  s_edc72d8b0ec969::t_8003e0c42dc51e 111,122,140-142,145-160,262,278
+  s_edc72d8b0ec969::t_13305c93085ffd 105-107
+.changeset/eager-named-alarm-now.md
+  s_571b4df12fc0e5::t_94bd8389d7bd99 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2439c38a2482298b3051f45033d1eba7001d40d0",
+  "prompts": {},
+  "sessions": {
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_571b4df12fc0e5": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10c80-512a-7163-809e-b10fdd0df9e0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_edc72d8b0ec969": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0963d-e34c-7ee9-af9b-1abea2216c85",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
