@@ -1,0 +1,25 @@
+.github/CODEOWNERS
+  s_df2faa0a05da0e::t_517f6e564e5195 1
+.github/workflows/package-previews.yaml
+  s_df2faa0a05da0e::t_a4583800daf5ac 1-46
+package.json
+  s_df2faa0a05da0e::t_8e4ae310d9ff08 28
+pnpm-lock.yaml
+  s_df2faa0a05da0e::t_12117290d1f504 20-22,1467-1470,2862-2863
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c78d522f3b4749c0cd3a0523c96eeef4babcf6bc",
+  "prompts": {},
+  "sessions": {
+    "s_df2faa0a05da0e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10c47-9cb7-762c-8c6f-0c87fcf7f2e9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
