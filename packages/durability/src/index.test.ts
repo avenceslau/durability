@@ -383,6 +383,7 @@ describe('KV storage', () => {
     const scheduler = new DurabilityScheduler({
       context: contextForKv(storage),
       storageBackend: 'kv',
+      alarmMinDelayMs: 1_000,
     });
     const operation = vi
       .fn<() => Promise<string>>()
@@ -407,19 +408,18 @@ describe('KV storage', () => {
       methods: { cleanup: { retries: { delay: () => 500 } } },
     });
 
+    const fallbackAt = Date.now() + 1_000;
     await durability.work({ id: 'work', payload: null });
     await alarms.cleanup(Date.now());
     storage.alarmAt = null;
     await scheduler.alarm();
-    expect(storage.alarmAt).toBe(Date.now() + 500);
+    expect(storage.alarmAt).toBe(fallbackAt);
 
-    vi.advanceTimersByTime(500);
-    storage.alarmAt = null;
-    await scheduler.alarm();
-    expect(alarmAttempts).toEqual([1, 2]);
-    expect(storage.alarmAt).toBe(Date.now() + 500);
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.waitFor(() => expect(alarmAttempts).toEqual([1, 2]));
+    expect(storage.alarmAt).toBe(fallbackAt);
 
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(fallbackAt - Date.now());
     storage.alarmAt = null;
     await scheduler.alarm();
     await expect(durability.work.getResult('work')).resolves.toEqual({
@@ -573,6 +573,7 @@ describe('Durability', () => {
       context: contextFor(storage),
       handlers: { deliver: handler },
       retries: { delay: () => 1_000 },
+      alarmMinDelayMs: 1_000,
     });
 
     const retryAt = Date.now() + 1_000;
@@ -595,6 +596,43 @@ describe('Durability', () => {
     expect(handler).toHaveBeenCalledTimes(2);
   });
 
+  it('runs a near-term operation retry from the in-memory timer', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const handler = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('retry'))
+      .mockResolvedValue('done');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+      retries: { delay: () => 5_000 },
+    });
+
+    const fallbackAt = Date.now() + 15_000;
+    await durability.work({ id: 'timer-retry', payload: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(handler).toHaveBeenCalledTimes(1);
+    const pending = await durability.work.getResult('timer-retry');
+    expect(pending.status).toBe('pending');
+    if (pending.status !== 'pending') {
+      throw new Error('Expected a pending retry');
+    }
+
+    expect(storage.alarmAt).toBe(fallbackAt);
+    await vi.advanceTimersByTimeAsync(pending.nextAttemptAt - Date.now() - 1);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    await expect(durability.work.getResult('timer-retry')).resolves.toEqual({
+      status: 'completed',
+      result: 'done',
+    });
+    expect(storage.alarmAt).toBeNull();
+  });
+
   it('recovers pending calls after the helper is recreated', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
@@ -607,6 +645,7 @@ describe('Durability', () => {
         },
       },
       retries: { delay: () => 1_000 },
+      alarmMinDelayMs: 1_000,
     });
 
     const retryAt = Date.now() + 1_000;
@@ -624,6 +663,7 @@ describe('Durability', () => {
       context: contextFor(storage),
       handlers: { send: recoveredHandler },
       retries: { delay: () => 1_000 },
+      alarmMinDelayMs: 1_000,
     });
     vi.advanceTimersByTime(1_000);
 
@@ -689,6 +729,7 @@ describe('Durability', () => {
         },
       },
       retries: { delay: () => 1_000 },
+      alarmMinDelayMs: 1_000,
     });
 
     const retryAt = Date.now() + 1_000;
@@ -707,6 +748,7 @@ describe('Durability', () => {
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { wait: handler },
+      alarmMinDelayMs: 1_000,
       alarmHandoffMs: 10_000,
     });
     vi.advanceTimersByTime(1_000);
@@ -724,7 +766,7 @@ describe('Durability', () => {
       status: 'pending',
       attempt: 2,
     });
-    expect(storage.alarmAt).toBe(Date.now());
+    expect(storage.alarmAt).toBe(Date.now() + 1_000);
     storage.alarmAt = null;
     const secondAlarm = durability.alarm({
       isRetry: false,
@@ -763,12 +805,13 @@ describe('Durability', () => {
       },
       retries: { delay: (attempt) => jitter(exponential(attempt)) },
       methods: { terminal: { retries: { maxAttempts: 1 } } },
+      alarmMinDelayMs: 1_000,
     });
 
     await durability.retryable({ id: 'retryable:1', payload: null });
     storage.alarmAt = null;
     await durability.alarm();
-    expect(storage.alarmAt).toBe(Date.now() + 750);
+    expect(storage.alarmAt).toBe(Date.now() + 1_000);
 
     await durability.terminal({ id: 'terminal:1', payload: null });
     await vi.waitFor(async () => {
@@ -1206,10 +1249,189 @@ describe('DurabilityAlarms', () => {
         // @ts-expect-error alarm policies require a matching alarm handler
         methods: { missing: { retries: { maxAttempts: 2 } } },
       });
+      // @ts-expect-error near-term scheduling is automatic, not a separate method
+      void alarms.cleanup.now();
       // @ts-expect-error unconfigured alarm names are not schedulable
       void alarms.missing(Date.now());
     };
     expectTypeOf(assertInvalidTypes).toBeFunction();
+  });
+
+  it('starts a nearby named alarm at its scheduled time', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    let finish: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const cleanup = vi.fn(async () => pending);
+    const background: Promise<unknown>[] = [];
+    const alarms = new DurabilityAlarms({
+      context: {
+        ...contextFor(storage),
+        waitUntil(promise: Promise<unknown>) {
+          background.push(promise);
+        },
+      },
+      handlers: { cleanup },
+    });
+    const scheduledTime = Date.now() + 5_000;
+    const fallbackAt = Date.now() + 15_000;
+
+    await alarms.cleanup(scheduledTime);
+
+    expect(storage.alarmAt).toBe(fallbackAt);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(cleanup).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    expect(cleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduledTime, platform: undefined })
+    );
+    expect(background).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    storage.alarmAt = null;
+    const fallback = alarms.alarm({
+      isRetry: false,
+      retryCount: 0,
+      scheduledTime: fallbackAt,
+    });
+    await Promise.resolve();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+
+    finish?.();
+    await Promise.all([...background, fallback]);
+    expect(storage.alarmAt).toBeNull();
+  });
+
+  it('publishes timer changes only after the storage transaction commits', async () => {
+    vi.useFakeTimers();
+    const assertRollback = async (
+      storage: FakeStorage | FakeKvStorage,
+      storageBackend?: 'kv'
+    ): Promise<void> => {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const cleanup = vi.fn(async () => undefined);
+      const alarms = new DurabilityAlarms({
+        context: {
+          storage: storage as unknown as DurableObjectStorage,
+        },
+        handlers: { cleanup },
+        ...(storageBackend ? { storageBackend } : {}),
+      });
+      const scheduledTime = Date.now() + 5_000;
+
+      await alarms.cleanup(scheduledTime);
+      storage.transactionCommitBarrier = Promise.reject(
+        new Error('commit failed')
+      );
+      await expect(alarms.purgeBefore(Number.MAX_SAFE_INTEGER)).rejects.toThrow(
+        'commit failed'
+      );
+      delete storage.transactionCommitBarrier;
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+      expect(cleanup).toHaveBeenCalledWith(
+        expect.objectContaining({ scheduledTime })
+      );
+    };
+
+    await assertRollback(new FakeStorage());
+    await assertRollback(new FakeKvStorage(), 'kv');
+  });
+
+  it('uses the configured physical-alarm minimum as the timer boundary', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const cleanup = vi.fn(async () => undefined);
+    const alarms = new DurabilityAlarms({
+      context: contextFor(storage),
+      handlers: { cleanup },
+      alarmMinDelayMs: 5_000,
+    });
+    const scheduledTime = Date.now() + 5_000;
+
+    await alarms.cleanup(scheduledTime);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(storage.alarmAt).toBe(scheduledTime);
+  });
+
+  it('queues a nearby named alarm when concurrency is full', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    let finishBusy: (() => void) | undefined;
+    const busyPending = new Promise<void>((resolve) => {
+      finishBusy = resolve;
+    });
+    const busy = vi.fn(async () => busyPending);
+    const cleanup = vi.fn(async () => undefined);
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+      alarmConcurrency: 1,
+    });
+    const alarms = new DurabilityAlarms({
+      scheduler,
+      handlers: { busy, cleanup },
+    });
+    const fallbackAt = Date.now() + 15_000;
+
+    await alarms.busy(Date.now());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(busy).toHaveBeenCalledTimes(1));
+    await alarms.cleanup(Date.now());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(storage.alarmAt).toBe(fallbackAt);
+
+    finishBusy?.();
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+  });
+
+  it('queues a nearby replacement behind the running occurrence', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    let finishFirst: (() => void) | undefined;
+    const firstPending = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const cleanup = vi.fn(async () => {
+      if (cleanup.mock.calls.length === 1) {
+        await firstPending;
+      }
+    });
+    const refresh = vi.fn(async () => undefined);
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+      alarmConcurrency: 2,
+    });
+    const alarms = new DurabilityAlarms({
+      scheduler,
+      handlers: { cleanup, refresh },
+    });
+
+    await alarms.cleanup(Date.now());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    await alarms.cleanup(Date.now());
+    await alarms.refresh(Date.now());
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(cleanup).toHaveBeenCalledTimes(1);
+
+    finishFirst?.();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(2));
   });
 
   it('schedules and executes a typed named alarm', async () => {
@@ -1221,12 +1443,12 @@ describe('DurabilityAlarms', () => {
       context: contextFor(storage),
       handlers: { cleanup },
     });
-    const scheduledTime = Date.now() + 5_000;
+    const scheduledTime = Date.now() + 15_000;
 
     await alarms.cleanup(scheduledTime);
 
     expect(storage.alarmAt).toBe(scheduledTime);
-    vi.advanceTimersByTime(5_000);
+    vi.advanceTimersByTime(15_000);
     storage.alarmAt = null;
     const platform = {
       isRetry: false,
@@ -1260,6 +1482,7 @@ describe('DurabilityAlarms', () => {
         cleanup,
         refresh,
       },
+      alarmMinDelayMs: 1_000,
     });
     const refreshAt = Date.now() + 1_000;
     const cleanupAt = Date.now() + 60_000;
@@ -1293,6 +1516,7 @@ describe('DurabilityAlarms', () => {
         },
       },
       methods: { cleanup: { retries: { delay: () => 1_000 } } },
+      alarmMinDelayMs: 1_000,
     });
 
     const retryAt = Date.now() + 1_000;
@@ -1326,13 +1550,14 @@ describe('DurabilityAlarms', () => {
           throw new Error('retry cleanup');
         },
       },
+      alarmMinDelayMs: 1_000,
     });
 
     await alarms.cleanup(Date.now());
     storage.alarmAt = null;
     await alarms.alarm();
 
-    expect(storage.alarmAt).toBe(Date.now() + 750);
+    expect(storage.alarmAt).toBe(Date.now() + 1_000);
   });
 
   it('makes non-retryable named alarm failures terminal', async () => {
@@ -1406,7 +1631,8 @@ describe('DurabilityAlarms', () => {
       },
     });
 
-    await alarms.cleanup(Date.now());
+    await alarms.cleanup(Date.now() + 15_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     storage.alarmAt = null;
     const invocation = alarms.alarm();
     await vi.advanceTimersByTimeAsync(100);
@@ -1460,7 +1686,8 @@ describe('DurabilityAlarms', () => {
       },
     });
 
-    await alarms.cleanup(Date.now());
+    await alarms.cleanup(Date.now() + 15_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     storage.alarmAt = null;
     const firstAlarm = alarms.alarm();
     await vi.advanceTimersByTimeAsync(100);
@@ -1608,6 +1835,7 @@ describe('DurabilityAlarms', () => {
       handlers: {
         cleanup: async () => undefined,
       },
+      alarmMinDelayMs: 1_000,
     });
 
     await alarms.cleanup(Date.now() + 60_000);
@@ -1625,9 +1853,11 @@ describe('DurabilityAlarms', () => {
       handlers: { cleanup },
       methods: { cleanup: { retries: { maxAttempts: 2 } } },
     });
-    await alarms.cleanup(0);
+    await alarms.cleanup(Date.now() + 15_000);
     storage.sql.exec(
-      "UPDATE durability_alarms SET attempt = 2 WHERE name = 'cleanup'"
+      `UPDATE durability_alarms
+       SET attempt = 2, next_attempt_at = 0
+       WHERE name = 'cleanup'`
     );
 
     storage.alarmAt = null;
@@ -1676,6 +1906,38 @@ describe('DurabilityAlarms', () => {
 });
 
 describe('DurabilityScheduler', () => {
+  it('bounds the configurable physical-alarm delay', () => {
+    for (const alarmMinDelayMs of [999, 15_001]) {
+      expect(
+        () =>
+          new DurabilityScheduler({
+            context: contextFor(new FakeStorage()),
+            alarmMinDelayMs,
+          })
+      ).toThrow('alarmMinDelayMs must be between 1000 and 15000');
+    }
+  });
+
+  it('does not push the physical fallback later during reconciliation', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const alarms = new DurabilityAlarms({
+      context: contextFor(storage),
+      handlers: {
+        cleanup: async () => undefined,
+        refresh: async () => undefined,
+      },
+    });
+    const fallbackAt = Date.now() + 15_000;
+
+    await alarms.cleanup(Date.now() + 5_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await alarms.refresh(Date.now() + 5_000);
+
+    expect(storage.alarmAt).toBe(fallbackAt);
+  });
+
   it('reconciles the earliest operation retry and named alarm', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));

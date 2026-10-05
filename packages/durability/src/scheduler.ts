@@ -3,6 +3,7 @@ import {
   DurableRetryPolicyError,
   isErrorInstance,
   isNonRetryable,
+  reportFailure,
   serializeError,
 } from './errors.js';
 import { createKvDurabilityStorage } from './kv-storage.js';
@@ -36,6 +37,8 @@ export type DurabilitySchedulerOptions = {
   storageBackend?: DurabilityStorageBackend;
   /** Maximum handlers running at once across eager operations and alarm work. Defaults to 10. */
   alarmConcurrency?: number;
+  /** Physical-alarm delay from 1 to 15 seconds. Defaults to 15 seconds. */
+  alarmMinDelayMs?: number;
   /** Time before a running alarm hands unfinished work to a new alarm. Defaults to 14 minutes. */
   alarmHandoffMs?: number;
 };
@@ -54,6 +57,8 @@ export type SchedulerAttachment =
   | (DurabilitySchedulerConfig & { scheduler?: never });
 
 const storageBackendSchema = z.enum(['sqlite', 'kv']);
+const minAlarmDelayMs = 1_000;
+const maxAlarmDelayMs = 15_000;
 
 /** One record kind attached to the scheduler: how to find and run its due work. */
 export type Participant = {
@@ -153,11 +158,19 @@ export class Engine {
   private readonly backend: DurabilityStorageBackend;
   private readonly context: DurabilityContext;
   private readonly alarmConcurrency: number;
+  private readonly alarmMinDelayMs: number;
   private readonly alarmHandoffMs: number;
   private readonly participants: Participant[] = [];
   private availablePermits: number;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
+  private earlyAlarm:
+    | { timestamp: number; timer: ReturnType<typeof setTimeout> }
+    | undefined;
+  private readonly transactionReconciliations = new WeakMap<
+    DurabilityStorageTransaction,
+    { nextPendingAt: number | undefined; reconciled: boolean }
+  >();
 
   constructor(context: DurabilityContext, options: DurabilitySchedulerOptions) {
     this.context = context;
@@ -169,8 +182,18 @@ export class Engine {
         ? createKvDurabilityStorage(context.storage)
         : createSqliteDurabilityStorage(context.storage);
     this.alarmConcurrency = options.alarmConcurrency ?? 10;
+    this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
     this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
     assertPositiveInteger('alarmConcurrency', this.alarmConcurrency);
+    assertPositiveInteger('alarmMinDelayMs', this.alarmMinDelayMs);
+    if (
+      this.alarmMinDelayMs < minAlarmDelayMs ||
+      this.alarmMinDelayMs > maxAlarmDelayMs
+    ) {
+      throw new RangeError(
+        `alarmMinDelayMs must be between ${minAlarmDelayMs} and ${maxAlarmDelayMs}`
+      );
+    }
     assertPositiveInteger('alarmHandoffMs', this.alarmHandoffMs);
     this.availablePermits = this.alarmConcurrency;
   }
@@ -212,11 +235,76 @@ export class Engine {
     }
   }
 
-  reconcile(transaction: DurabilityStorageTransaction): Promise<void> {
-    return reconcilePhysicalAlarm(
+  /** Runs a storage transaction and publishes its timer state only after commit. */
+  async transaction<T>(
+    callback: (transaction: DurabilityStorageTransaction) => Promise<T>
+  ): Promise<T> {
+    let reconciliation:
+      | { nextPendingAt: number | undefined; reconciled: boolean }
+      | undefined;
+    const result = await this.storage.transaction(async (transaction) => {
+      reconciliation = { nextPendingAt: undefined, reconciled: false };
+      this.transactionReconciliations.set(transaction, reconciliation);
+      try {
+        return await callback(transaction);
+      } finally {
+        this.transactionReconciliations.delete(transaction);
+      }
+    });
+    if (reconciliation?.reconciled) {
+      this.scheduleEarlyAlarm(reconciliation.nextPendingAt);
+    }
+    return result;
+  }
+
+  async reconcile(transaction: DurabilityStorageTransaction): Promise<void> {
+    const reconciliation = this.transactionReconciliations.get(transaction);
+    if (!reconciliation) {
+      throw new Error(
+        'Scheduler reconciliation requires an Engine transaction'
+      );
+    }
+    reconciliation.nextPendingAt = await reconcilePhysicalAlarm(
       transaction,
-      this.participants.map(({ kind }) => kind)
+      this.participants.map(({ kind }) => kind),
+      this.alarmMinDelayMs
     );
+    reconciliation.reconciled = true;
+  }
+
+  private scheduleEarlyAlarm(timestamp: number | undefined): void {
+    if (this.earlyAlarm?.timestamp === timestamp) {
+      return;
+    }
+    if (this.earlyAlarm) {
+      clearTimeout(this.earlyAlarm.timer);
+      this.earlyAlarm = undefined;
+    }
+    if (
+      timestamp === undefined ||
+      timestamp >= Date.now() + this.alarmMinDelayMs
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(
+      () => {
+        if (this.earlyAlarm?.timer !== timer) {
+          return;
+        }
+        this.earlyAlarm = undefined;
+        const onError = (error: unknown) =>
+          reportFailure(
+            'durability.background_execution.failed',
+            { scheduledTime: timestamp },
+            error
+          );
+        const execution = this.alarm().catch(onError);
+        this.waitUntil(execution, onError);
+      },
+      Math.max(timestamp - Date.now(), 0)
+    );
+    this.earlyAlarm = { timestamp, timer };
   }
 
   /** Coalesces concurrent refresh requests into one reconciliation transaction. */
@@ -224,11 +312,11 @@ export class Engine {
     if (this.alarmRefresh) {
       return this.alarmRefresh;
     }
-    this.alarmRefresh = this.storage
-      .transaction((transaction) => this.reconcile(transaction))
-      .finally(() => {
-        this.alarmRefresh = undefined;
-      });
+    this.alarmRefresh = this.transaction((transaction) =>
+      this.reconcile(transaction)
+    ).finally(() => {
+      this.alarmRefresh = undefined;
+    });
     return this.alarmRefresh;
   }
 
@@ -255,7 +343,7 @@ export class Engine {
     let removed = 0;
     do {
       // eslint-disable-next-line no-await-in-loop
-      removed = await this.storage.transaction(async (transaction) => {
+      removed = await this.transaction(async (transaction) => {
         const count = await transaction[kind].deleteCreatedBefore(before);
         await this.reconcile(transaction);
         return count;
@@ -360,8 +448,9 @@ export class Engine {
   private armForHandoff(timestamp: number): Promise<void> {
     return this.storage.transaction(async ({ physicalAlarm }) => {
       const currentAlarm = await physicalAlarm.getAlarm();
-      if (currentAlarm === null || currentAlarm > timestamp) {
-        await physicalAlarm.setAlarm(timestamp);
+      const target = Math.max(timestamp, Date.now() + this.alarmMinDelayMs);
+      if (currentAlarm === null || currentAlarm > target) {
+        await physicalAlarm.setAlarm(target);
       }
     });
   }
@@ -481,7 +570,7 @@ export class Engine {
 
     const exhausted = serializeError(spec.exhaustedError());
     let updated = false;
-    await this.storage.transaction(async (transaction) => {
+    await this.transaction(async (transaction) => {
       updated = await transaction[spec.kind].exhaust(
         key,
         row.generation_id,
@@ -516,7 +605,7 @@ export class Engine {
     const decision = decideRetry(spec, attempt, caught);
     const serializedError = serializeError(decision.error);
     let updated = false;
-    await this.storage.transaction(async (transaction) => {
+    await this.transaction(async (transaction) => {
       updated = await transaction[spec.kind].settle(
         key,
         row.generation_id,

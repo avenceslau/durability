@@ -164,11 +164,12 @@ export type DurabilityStorage = RecordStores & {
   ): Promise<T>;
 };
 
-/** Points the shared physical alarm at the earliest pending record among the given kinds. */
+/** Returns the earliest pending time and maintains its bounded physical fallback. */
 export const reconcilePhysicalAlarm = async (
   transaction: DurabilityStorageTransaction,
-  kinds: readonly RecordKind[]
-): Promise<void> => {
+  kinds: readonly RecordKind[],
+  minimumDelayMs: number
+): Promise<number | undefined> => {
   const candidates = await Promise.all(
     kinds.map((kind) => transaction[kind].nextPendingAt())
   );
@@ -182,11 +183,17 @@ export const reconcilePhysicalAlarm = async (
     if (currentAlarm !== null) {
       await transaction.physicalAlarm.deleteAlarm();
     }
-    return;
+    return undefined;
   }
 
-  const target = Math.max(nextAlarmAt, Date.now());
-  if (currentAlarm !== target) {
+  const target = Math.max(nextAlarmAt, Date.now() + minimumDelayMs);
+  // Preserve a fallback inside this range so frequent reconciliation cannot push it later.
+  if (
+    currentAlarm === null ||
+    currentAlarm < nextAlarmAt ||
+    currentAlarm > target
+  ) {
     await transaction.physicalAlarm.setAlarm(target);
   }
+  return nextAlarmAt;
 };

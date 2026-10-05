@@ -325,7 +325,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const generation = crypto.randomUUID();
     let inserted = false;
     let winner: CallRow | undefined;
-    await this.#engine.storage.transaction(async (transaction) => {
+    await this.#engine.transaction(async (transaction) => {
       inserted = await transaction.calls.insert({
         id: input.id,
         operation: input.operation,

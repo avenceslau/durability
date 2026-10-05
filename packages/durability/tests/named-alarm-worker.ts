@@ -28,6 +28,7 @@ export class NamedAlarmTestObject extends DurableObject {
   private readonly scheduler = new DurabilityScheduler({
     context: this.ctx,
     alarmConcurrency: 2,
+    alarmMinDelayMs: 1_000,
     alarmHandoffMs: 10,
   });
 
@@ -101,6 +102,24 @@ export class NamedAlarmTestObject extends DurableObject {
   private readonly alarms = new DurabilityAlarms({
     scheduler: this.scheduler,
     handlers: {
+      nearby: async ({ attempt, idempotencyKey, scheduledTime }) => {
+        await this.ctx.storage.put('nearby-recorded', {
+          attempt,
+          idempotencyKey,
+          scheduledTime,
+        } satisfies RecordedAlarm);
+      },
+      nearbyCrash: async ({ attempt, idempotencyKey, scheduledTime }) => {
+        const recorded =
+          (await this.ctx.storage.get<RecordedAlarm[]>('nearby-crash')) ?? [];
+        await this.ctx.storage.put('nearby-crash', [
+          ...recorded,
+          { attempt, idempotencyKey, scheduledTime },
+        ]);
+        if (attempt === 1) {
+          await new Promise(() => undefined);
+        }
+      },
       cleanup: async ({ attempt, idempotencyKey, scheduledTime }) => {
         const recorded =
           (await this.ctx.storage.get<RecordedAlarm[]>('recorded')) ?? [];
@@ -113,8 +132,31 @@ export class NamedAlarmTestObject extends DurableObject {
         }
       },
     },
-    methods: { cleanup: { retries: { delay: () => 50, maxAttempts: 2 } } },
+    methods: {
+      nearbyCrash: {
+        attemptTimeoutMs: 50,
+        retries: { delay: () => 500, maxAttempts: 2 },
+        retryTimeouts: true,
+      },
+      cleanup: { retries: { delay: () => 50, maxAttempts: 2 } },
+    },
   });
+
+  scheduleNearby(scheduledTime: number) {
+    return this.alarms.nearby(scheduledTime);
+  }
+
+  getNearbyRecorded() {
+    return this.ctx.storage.get<RecordedAlarm>('nearby-recorded');
+  }
+
+  scheduleNearbyCrash(scheduledTime: number) {
+    return this.alarms.nearbyCrash(scheduledTime);
+  }
+
+  getNearbyCrashRecorded() {
+    return this.ctx.storage.get<RecordedAlarm[]>('nearby-crash');
+  }
 
   scheduleCleanup(scheduledTime: number) {
     return this.alarms.cleanup(scheduledTime);
@@ -217,6 +259,7 @@ export class KvAlarmTestObject extends DurableObject {
   private readonly scheduler = new DurabilityScheduler({
     context: this.ctx,
     storageBackend: 'kv',
+    alarmMinDelayMs: 1_000,
   });
 
   private readonly durability = new Durability({
@@ -232,7 +275,7 @@ export class KvAlarmTestObject extends DurableObject {
         return 'done';
       },
     },
-    retries: { delay: () => 5, maxAttempts: 2 },
+    retries: { delay: () => 1_000, maxAttempts: 2 },
   });
 
   private readonly alarms = new DurabilityAlarms({

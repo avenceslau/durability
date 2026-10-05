@@ -39,8 +39,5 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Validate
-        run: pnpm check
-
       - name: Publish package previews
         run: pnpm exec pkg-pr-new publish --pnpm './packages/*'

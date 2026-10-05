@@ -220,7 +220,7 @@ export class DurabilityFanout<Body = unknown> {
 
     const registered: Claim[] = [];
     try {
-      await this.#engine.storage.transaction(async (transaction) => {
+      await this.#engine.transaction(async (transaction) => {
         registered.length = 0;
         const store = transaction.deliveries;
         for (const entry of entries) {
@@ -367,27 +367,25 @@ export class DurabilityFanout<Body = unknown> {
           continue;
         }
         // eslint-disable-next-line no-await-in-loop
-        const attempt = await this.#engine.storage.transaction(
-          async (transaction) => {
-            const claimed = await transaction.deliveries.claimAttempt(
+        const attempt = await this.#engine.transaction(async (transaction) => {
+          const claimed = await transaction.deliveries.claimAttempt(
+            row.id,
+            row.generation_id,
+            policy.maxAttempts
+          );
+          if (claimed !== undefined) {
+            await transaction.deliveries.settle(
               row.id,
               row.generation_id,
-              policy.maxAttempts
+              claimed,
+              {
+                next_attempt_at: Date.now() + policy.attemptTimeoutMs,
+              }
             );
-            if (claimed !== undefined) {
-              await transaction.deliveries.settle(
-                row.id,
-                row.generation_id,
-                claimed,
-                {
-                  next_attempt_at: Date.now() + policy.attemptTimeoutMs,
-                }
-              );
-              await this.#engine.reconcile(transaction);
-            }
-            return claimed;
+            await this.#engine.reconcile(transaction);
           }
-        );
+          return claimed;
+        });
         if (attempt !== undefined) {
           claims.push({ row: { ...row, attempt }, message });
         }
@@ -401,7 +399,7 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   async #postpone(rows: DeliveryRow[]): Promise<void> {
-    await this.#engine.storage.transaction(async (transaction) => {
+    await this.#engine.transaction(async (transaction) => {
       for (const row of rows) {
         // eslint-disable-next-line no-await-in-loop
         await transaction.deliveries.settle(
@@ -611,7 +609,7 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   async #remove(row: DeliveryRow): Promise<void> {
-    await this.#engine.storage.transaction(async (transaction) => {
+    await this.#engine.transaction(async (transaction) => {
       if (
         !(await transaction.deliveries.remove(
           row.id,
@@ -653,7 +651,7 @@ export class DurabilityFanout<Body = unknown> {
       await this.#deadLetter(claim, 'exhausted', serializeError(caught));
       return;
     }
-    await this.#engine.storage.transaction(async (transaction) => {
+    await this.#engine.transaction(async (transaction) => {
       const updated = await transaction.deliveries.settle(
         row.id,
         row.generation_id,
@@ -695,7 +693,7 @@ export class DurabilityFanout<Body = unknown> {
         : { name: row.last_error_name ?? 'Error', message: row.last_error });
     // Persist intent BEFORE external I/O: eviction or timeout must never turn
     // a terminal decision into another consumer delivery.
-    await this.#engine.storage.transaction(async (transaction) => {
+    await this.#engine.transaction(async (transaction) => {
       const updated = await transaction.deliveries.settle(
         row.id,
         row.generation_id,

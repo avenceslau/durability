@@ -64,6 +64,7 @@ export class FakeStorage {
   }
 
   alarmSetupBarrier?: Promise<void>;
+  transactionCommitBarrier?: Promise<void>;
   private transactionTail = Promise.resolve();
 
   async getAlarm(): Promise<number | null> {
@@ -85,9 +86,13 @@ export class FakeStorage {
     const result = this.transactionTail.then(async () => {
       const alarmAt = this.alarmAt;
       try {
-        return await this.database.transactionAsync(() =>
-          closure(this as unknown as DurableObjectTransaction)
-        );
+        return await this.database.transactionAsync(async () => {
+          const value = await closure(
+            this as unknown as DurableObjectTransaction
+          );
+          await this.transactionCommitBarrier;
+          return value;
+        });
       } catch (error) {
         this.alarmAt = alarmAt;
         throw error;
@@ -105,6 +110,7 @@ export class FakeKvStorage {
   private entries = new Map<string, unknown>();
   private transactionTail = Promise.resolve();
   alarmAt: number | null = null;
+  transactionCommitBarrier?: Promise<void>;
 
   async get<T>(key: string): Promise<T | undefined>;
   async get<T>(keys: string[]): Promise<Map<string, T>>;
@@ -192,7 +198,11 @@ export class FakeKvStorage {
       const entries = structuredClone(this.entries);
       const alarmAt = this.alarmAt;
       try {
-        return await closure(this as unknown as DurableObjectTransaction);
+        const value = await closure(
+          this as unknown as DurableObjectTransaction
+        );
+        await this.transactionCommitBarrier;
+        return value;
       } catch (error) {
         this.entries = entries;
         this.alarmAt = alarmAt;

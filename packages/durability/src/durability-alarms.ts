@@ -196,7 +196,7 @@ class DurabilityAlarmsCore<Names extends string> {
 
     const generation = crypto.randomUUID();
     const createdAt = Date.now();
-    await this.#engine.storage.transaction(async (transaction) => {
+    await this.#engine.transaction(async (transaction) => {
       await transaction.alarms.upsert({
         name,
         generation_id: generation,
