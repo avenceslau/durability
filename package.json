@@ -25,6 +25,7 @@
     "@changesets/cli": "^2.31.1",
     "oxfmt": "^0.32.0",
     "oxlint": "1.73.0",
+    "pkg-pr-new": "0.0.88",
     "publint": "^0.3.21",
     "turbo": "^2.10.5"
   }
