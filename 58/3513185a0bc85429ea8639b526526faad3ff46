@@ -1,0 +1,62 @@
+packages/durability/tests/named-alarm-worker.ts
+  s_edc72d8b0ec969::t_455cb38ad463c0 108-110
+  s_edc72d8b0ec969::t_633ee86bd57320 137-139
+  s_edc72d8b0ec969::t_8003e0c42dc51e 111,122,140-142
+  s_edc72d8b0ec969::t_13305c93085ffd 105-107
+  s_edc72d8b0ec969::t_83e70862d78077 112-121
+  s_edc72d8b0ec969::t_bab83e24dbf8b0 135-136
+.changeset/eager-named-alarm-now.md
+  s_571b4df12fc0e5::t_94bd8389d7bd99 1-5
+packages/durability/README.md
+  s_edc72d8b0ec969::t_3502332b454404 161,244,422
+packages/durability/src/scheduler.ts
+  s_edc72d8b0ec969::t_1b9fce1ee4ac8a 224-225,227-228,230-265,409-411
+  s_571b4df12fc0e5::t_4b184b3aaa541c 6,40-41,159,165-167,179,182
+packages/durability/src/index.test.ts
+  s_edc72d8b0ec969::t_69c4e4e5de780d 1225-1227,1231,1234,1241-1242,1246,1265,1294-1296,1300,1302,1304,1306-1307,1310,1327-1329,1333,1338,1341,1343-1344,1347,1364-1377
+  s_edc72d8b0ec969::t_b12eca3fd0dfac 1224
+  s_edc72d8b0ec969::t_1552905f326d88 1228-1230
+  s_edc72d8b0ec969::t_deb75c39115e02 1232-1233
+  s_edc72d8b0ec969::t_d306fddf4be85e 1235-1240
+  s_edc72d8b0ec969::t_f2f3aff3f3f988 1243-1245
+  s_edc72d8b0ec969::t_0c92816e4b98f4 1247-1249,1262-1264
+  s_edc72d8b0ec969::t_24fc86a22ba9a3 1266-1268
+  s_edc72d8b0ec969::t_bb69f6725c77df 1291-1293
+  s_edc72d8b0ec969::t_61278bbd5c5ffe 1297-1299
+  s_edc72d8b0ec969::t_14dc49a8becd25 1301
+  s_edc72d8b0ec969::t_4fe8c23f1f6b74 1303
+  s_edc72d8b0ec969::t_fee136827c8d49 1305
+  s_edc72d8b0ec969::t_5cec580db0f24a 1308-1309
+  s_edc72d8b0ec969::t_95639d4937015d 1311-1313,1324-1326
+  s_edc72d8b0ec969::t_d1b11ca28f0a77 1330-1332
+  s_edc72d8b0ec969::t_6f4db88beb02cd 1334-1337
+  s_edc72d8b0ec969::t_49de8a87f1a3b7 1339-1340
+  s_edc72d8b0ec969::t_1d5c7b33e5a897 1342
+  s_edc72d8b0ec969::t_17ee75c482dd4b 1345-1346
+  s_edc72d8b0ec969::t_9e340c6394863a 1348-1350,1361-1363
+  s_edc72d8b0ec969::t_08a045b139a477 1378
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "583513185a0bc85429ea8639b526526faad3ff46",
+  "prompts": {},
+  "sessions": {
+    "s_571b4df12fc0e5": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10c80-512a-7163-809e-b10fdd0df9e0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_edc72d8b0ec969": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0963d-e34c-7ee9-af9b-1abea2216c85",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
