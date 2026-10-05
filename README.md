@@ -39,16 +39,9 @@ Package versions and release notes are managed with [Changesets](https://github.
 pnpm changeset
 ```
 
-GitHub Actions creates and updates a version pull request, but it never publishes packages. After merging that pull request, publish manually from an up-to-date `main` checkout:
+GitHub Actions creates and updates a version pull request. After that pull request is merged, the release workflow publishes the new package versions from `main` through npm trusted publishing and records provenance for each release.
 
-```sh
-pnpm install --frozen-lockfile
-pnpm check
-pnpm release
-git push --follow-tags
-```
-
-Manual publishing requires npm authentication with access to each package.
+Publishing requires a trusted publisher for each npm package that is restricted to the `release.yml` workflow and the `npm` GitHub environment.
 
 ## License
 
