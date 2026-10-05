@@ -1,0 +1,10 @@
+{
+  "name": "image-jobs-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-07",
+  "durable_objects": {
+    "bindings": [{ "name": "IMAGE_JOBS", "class_name": "ImageJobs" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ImageJobs"] }],
+  "services": [{ "binding": "IMAGE_API", "service": "image-api" }],
+}

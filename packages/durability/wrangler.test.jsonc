@@ -9,12 +9,37 @@
         "name": "ALARM_TEST",
         "class_name": "NamedAlarmTestObject",
       },
+      {
+        "name": "KV_ALARM_TEST",
+        "class_name": "KvAlarmTestObject",
+      },
     ],
   },
+  "services": [
+    {
+      "binding": "CONSUMER",
+      "service": "durability-alarm-test",
+      "entrypoint": "FanoutConsumer",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DEAD_LETTERS",
+      "bucket_name": "queue-test-dead-letters",
+    },
+  ],
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["NamedAlarmTestObject"],
+    },
+    {
+      "tag": "v2",
+      "new_classes": ["KvAlarmTestObject"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["DeliveryObject"],
     },
   ],
 }

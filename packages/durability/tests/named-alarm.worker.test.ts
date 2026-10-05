@@ -1,12 +1,16 @@
 import { env } from 'cloudflare:workers';
 import { evictDurableObject, runDurableObjectAlarm } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { NamedAlarmTestObject } from './named-alarm-worker';
+import type {
+  KvAlarmTestObject,
+  NamedAlarmTestObject,
+} from './named-alarm-worker';
 
 declare global {
   namespace Cloudflare {
     interface Env {
       ALARM_TEST: DurableObjectNamespace<NamedAlarmTestObject>;
+      KV_ALARM_TEST: DurableObjectNamespace<KvAlarmTestObject>;
     }
   }
 }
@@ -25,6 +29,47 @@ const waitFor = async (
     await waitFor(assertion, remaining - 1);
   }
 };
+
+describe('KV-backed durability in workerd', () => {
+  it('retries an operation after eviction without SQLite', async () => {
+    const stub = env.KV_ALARM_TEST.get(env.KV_ALARM_TEST.newUniqueId());
+    await stub.startWork();
+    await waitFor(async () => {
+      expect(await stub.getWorkAttempts()).toEqual([1]);
+    });
+
+    await evictDurableObject(stub);
+    await scheduler.wait(10);
+    const recovered = env.KV_ALARM_TEST.get(stub.id);
+    await runDurableObjectAlarm(recovered);
+
+    await waitFor(async () => {
+      expect(await recovered.getWorkResult()).toEqual({
+        status: 'completed',
+        result: 'done',
+      });
+    });
+    expect(await recovered.getWorkAttempts()).toEqual([1, 2]);
+  });
+
+  it('runs named alarms from KV-backed storage', async () => {
+    const stub = env.KV_ALARM_TEST.get(env.KV_ALARM_TEST.newUniqueId());
+    const scheduledTime = Date.now() + 50;
+
+    await stub.scheduleCleanup(scheduledTime);
+    await scheduler.wait(60);
+    await runDurableObjectAlarm(stub);
+    await waitFor(async () => {
+      expect(await stub.getRecorded()).toEqual([
+        {
+          attempt: 1,
+          idempotencyKey: expect.stringMatching(/^durability-alarm:v1:/),
+          scheduledTime,
+        },
+      ]);
+    });
+  });
+});
 
 describe('durability in workerd', () => {
   it('retries a named alarm with the same idempotency key after eviction', async () => {
@@ -152,11 +197,7 @@ describe('durability in workerd', () => {
       });
     });
 
-    expect(await stub.purgeAll()).toEqual({
-      operations: 1,
-      namedAlarms: 0,
-      total: 1,
-    });
+    expect(await stub.purgeAll()).toBe(1);
     await stub.startReuse();
     await waitFor(async () => {
       expect(await stub.getReuseResult()).toEqual({

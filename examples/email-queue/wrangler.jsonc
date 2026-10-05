@@ -1,0 +1,17 @@
+{
+  "name": "email-queue-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-07",
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["EmailDelivery"] }],
+  "r2_buckets": [
+    { "binding": "DEAD_LETTERS", "bucket_name": "email-dead-letters" },
+  ],
+  "services": [
+    { "binding": "EMAIL_API", "service": "email-api" },
+    {
+      "binding": "EMAIL_CONSUMER",
+      "service": "email-queue-example",
+      "entrypoint": "EmailConsumer",
+    },
+  ],
+}

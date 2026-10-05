@@ -19,6 +19,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./routing": "./src/routing.ts",
     "./utils": "./src/utils.ts"
   },
   "publishConfig": {
@@ -28,6 +29,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./routing": {
+        "types": "./dist/routing.d.ts",
+        "import": "./dist/routing.js"
       },
       "./utils": {
         "types": "./dist/utils.d.ts",
@@ -54,8 +59,8 @@
   ],
   "dependencies": {
     "@durability/storage": "workspace:^",
-    "workers-qb": "1.11.2",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@durability/transforms": "workspace:^"
   },
   "peerDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1"
