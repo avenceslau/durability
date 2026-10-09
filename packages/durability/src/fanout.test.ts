@@ -466,6 +466,86 @@ for (const backend of ['sqlite', 'kv'] as const) {
       expect(deliver).not.toHaveBeenCalled();
     });
 
+    it('acks what an ackOnReturn consumer leaves unsettled and keeps explicit settlements', async () => {
+      const seen: string[] = [];
+      const { fanout } = fixture({
+        one: {
+          ackOnReturn: true,
+          deliver: async (messages) => {
+            seen.push(...messages.map((m) => `${m.id}:${m.attempt}`));
+            const first = messages.find((m) => m.id === 'a');
+            if (first?.attempt === 1) {
+              await first.retry(10);
+            }
+          },
+        },
+      });
+      await fanout.enqueue([
+        { id: 'a', body: 'a' },
+        { id: 'b', body: 'b' },
+        { id: 'c', body: 'c' },
+      ]);
+      await fanout.alarm();
+      await vi.waitFor(async () =>
+        expect((await fanout.load()).outbound.pendingDeliveries).toBe(1)
+      );
+
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.waitFor(async () =>
+        expect((await fanout.load()).outbound.pendingDeliveries).toBe(0)
+      );
+      expect(seen).toEqual(['a:1', 'b:1', 'c:1', 'a:2']);
+    });
+
+    it('does not ack an ackOnReturn batch whose consumer throws', async () => {
+      const deliver = vi.fn(async () => {
+        throw new Error('consumer failed');
+      });
+      const { fanout } = fixture({ one: { ackOnReturn: true, deliver } });
+      await fanout.enqueue([
+        { id: 'a', body: 'a' },
+        { id: 'b', body: 'b' },
+      ]);
+      await fanout.alarm();
+
+      await vi.waitFor(() => expect(deliver).toHaveBeenCalledOnce());
+      expect((await fanout.load()).outbound.pendingDeliveries).toBe(2);
+    });
+
+    it('holds first deliveries for batchDelayMs so nearby messages share one batch', async () => {
+      vi.setSystemTime(1_800_000_000_001);
+      const batches: string[][] = [];
+      const { config } = fixture({
+        one: {
+          ackOnReturn: true,
+          deliver: (messages) => {
+            batches.push(messages.map((m) => m.id));
+          },
+        },
+      });
+      const fanout = new DurabilityFanout({ ...config, batchDelayMs: 100 });
+
+      await fanout.enqueue({ id: 'first', body: 'x' });
+      await vi.advanceTimersByTimeAsync(40);
+      await fanout.enqueue({ id: 'second', body: 'y' });
+      await fanout.alarm();
+      expect(batches).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(60);
+      await vi.waitFor(() => expect(batches).toEqual([['first', 'second']]));
+    });
+
+    it('rejects a negative or fractional batchDelayMs', () => {
+      const { config } = fixture({ one: { deliver: () => undefined } });
+
+      expect(
+        () => new DurabilityFanout({ ...config, batchDelayMs: -1 })
+      ).toThrow(RangeError);
+      expect(
+        () => new DurabilityFanout({ ...config, batchDelayMs: 1.5 })
+      ).toThrow(RangeError);
+    });
+
     it('shares a physical alarm with existing operations and named alarms', async () => {
       const storage =
         backend === 'sqlite' ? new FakeStorage() : new FakeKvStorage();
