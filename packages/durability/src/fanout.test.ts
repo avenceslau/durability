@@ -546,6 +546,45 @@ for (const backend of ['sqlite', 'kv'] as const) {
       ).toThrow(RangeError);
     });
 
+    it('drops exhausted and dead-lettered deliveries when no DLQ is configured', async () => {
+      const events: string[] = [];
+      const { config } = fixture({
+        one: {
+          deliver: async (messages) => {
+            await Promise.all(
+              messages
+                .filter((m) => m.id === 'rejected')
+                .map((m) => m.deadLetter())
+            );
+          },
+        },
+      });
+      const { dlq: _dlq, ...withoutDlq } = config;
+      const fanout = new DurabilityFanout({
+        ...withoutDlq,
+        onLifecycleEvent: (event) => {
+          if (event.type === 'terminal') {
+            events.push(`${event.id}:${event.reason}`);
+          }
+        },
+      });
+      await fanout.enqueue([
+        { id: 'rejected', body: 'x' },
+        { id: 'exhausted', body: 'y' },
+      ]);
+
+      await fanout.alarm();
+      vi.advanceTimersByTime(1_000);
+      await fanout.alarm();
+      await fanout.alarm();
+
+      expect((await fanout.load()).outbound.pendingDeliveries).toBe(0);
+      expect(events.sort()).toEqual([
+        'exhausted:attempts_exhausted',
+        'rejected:dead_lettered',
+      ]);
+    });
+
     it('shares a physical alarm with existing operations and named alarms', async () => {
       const storage =
         backend === 'sqlite' ? new FakeStorage() : new FakeKvStorage();

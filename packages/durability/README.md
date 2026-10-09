@@ -405,7 +405,7 @@ Two write invariants are the application's to uphold:
 - **Key each entry by `id` and refuse to overwrite it.** `id` is stable across delivery attempts, so a retried write collapses onto the same entry (`onlyIf: { etagDoesNotMatch: '*' }` on R2) and a redrive deletes exactly what it re-enqueued. `attempts` and `storedAt` advance between attempts, so entries are not byte-identical.
 - **Delete only after acceptance.** Reading entries back for replay or redrive is application policy, so nothing in the library lists or removes them.
 
-Retention is likewise external: filter on `storedAt` when selecting entries to redrive, and configure a **lifecycle deletion rule** on the prefix (for example 30 days on a DLQ prefix, unbounded for an archive) for physical expiry. A failed dead-letter write retains the terminal intent with a 60-second backoff rather than redelivering to the consumer, and omitting `dlq` retains terminal work rather than silently deleting it.
+Retention is likewise external: filter on `storedAt` when selecting entries to redrive, and configure a **lifecycle deletion rule** on the prefix (for example 30 days on a DLQ prefix, unbounded for an archive) for physical expiry. A failed dead-letter write retains the terminal intent with a 60-second backoff rather than redelivering to the consumer. Omitting `dlq` drops terminal deliveries: nothing could ever accept them, and retrying would keep the object awake indefinitely. The `terminal` lifecycle event still reports each one.
 
 Redrive is explicit application code, not queue sugar. Walk your own storage, select what to replay, then enqueue only the failed target:
 

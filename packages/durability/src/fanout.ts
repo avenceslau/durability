@@ -76,7 +76,7 @@ export type DurabilityFanoutConfig<Body> = SchedulerAttachment &
   ExecutionPolicyOptions & {
     targets: Record<string, FanoutTarget<Body>>;
     routing?: RoutingLoad;
-    /** Receives terminal failures. Without it, terminal work is retained. */
+    /** Receives terminal failures. Without it, terminal deliveries are dropped. */
     dlq?: MessageWrite<Body>;
     maxBatchSize?: number;
     /**
@@ -770,6 +770,13 @@ export class DurabilityFanout<Body = unknown> {
       (row.last_error === null
         ? null
         : { name: row.last_error_name ?? 'Error', message: row.last_error });
+    // Without a DLQ nothing could ever accept this delivery, and retrying the
+    // dead-letter step would keep the object awake forever, so it is dropped.
+    if (!this.#dlq) {
+      await this.#remove(row);
+      this.#emitTerminal(claim, reason, error);
+      return;
+    }
     // Persist intent BEFORE external I/O: eviction or timeout must never turn
     // a terminal decision into another consumer delivery.
     await this.#engine.transaction(async (transaction) => {
@@ -792,9 +799,6 @@ export class DurabilityFanout<Body = unknown> {
       await this.#engine.reconcile(transaction);
     });
     try {
-      if (!this.#dlq) {
-        throw new Error('No DLQ configured; retaining terminal delivery');
-      }
       const stored: StoredMessage<Body> = {
         id: deliveryIdentity(row),
         messageId: message.id,
@@ -807,17 +811,7 @@ export class DurabilityFanout<Body = unknown> {
       };
       await this.#deadline(() => this.#dlq!(stored), infrastructureRetryMs);
       await this.#remove(row);
-      this.#emit({
-        ...entity(claim),
-        type: 'terminal',
-        timestamp: Date.now(),
-        attempt: row.attempt,
-        reason: reason === 'explicit' ? 'dead_lettered' : 'attempts_exhausted',
-        error: error ?? {
-          name: 'DeadLetter',
-          message: 'Dead-lettered by consumer',
-        },
-      });
+      this.#emitTerminal(claim, reason, error);
     } catch (caught) {
       reportFailure(
         'durability.fanout.dead_letter_failed',
@@ -825,6 +819,24 @@ export class DurabilityFanout<Body = unknown> {
         caught
       );
     }
+  }
+
+  #emitTerminal(
+    claim: Claim,
+    reason: DeadLetterReason,
+    error: SerializedError | null
+  ): void {
+    this.#emit({
+      ...entity(claim),
+      type: 'terminal',
+      timestamp: Date.now(),
+      attempt: claim.row.attempt,
+      reason: reason === 'explicit' ? 'dead_lettered' : 'attempts_exhausted',
+      error: error ?? {
+        name: 'DeadLetter',
+        message: 'Dead-lettered by consumer',
+      },
+    });
   }
 
   async #deadline(
