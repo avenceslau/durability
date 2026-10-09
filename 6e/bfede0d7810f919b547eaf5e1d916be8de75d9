@@ -1,0 +1,25 @@
+.changeset/fanout-drop-without-dlq.md
+  s_d0919ebcf1306c::t_5306885f58707b 1-5
+packages/durability/README.md
+  s_d0919ebcf1306c::t_6d91adf73a176c 405
+packages/durability/src/fanout.test.ts
+  s_d0919ebcf1306c::t_0898de3efd2fdb 552-590
+packages/durability/src/fanout.ts
+  s_d0919ebcf1306c::t_79ab3586b296a3 79,775-781,816,826-843
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6ebfede0d7810f919b547eaf5e1d916be8de75d9",
+  "prompts": {},
+  "sessions": {
+    "s_d0919ebcf1306c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10cdc-cd7b-76d7-9c29-96d50515bf20",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
