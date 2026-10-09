@@ -1,0 +1,19 @@
+packages/durability/package.json
+  s_d0919ebcf1306c::t_08bb1efe8074d7 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3d0188c941e253f793100392b5fb837fe92b7e2b",
+  "prompts": {},
+  "sessions": {
+    "s_d0919ebcf1306c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10cdc-cd7b-76d7-9c29-96d50515bf20",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
