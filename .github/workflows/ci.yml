@@ -14,8 +14,26 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  check:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Format
+            command: pnpm format:check
+          - name: Lint
+            command: pnpm lint
+          - name: Build
+            command: pnpm build
+          - name: Typecheck
+            command: pnpm typecheck
+          - name: Test
+            command: pnpm test
+          - name: Package validation
+            command: pnpm pack:check
+            build: true
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -32,5 +50,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Validate
-        run: pnpm check
+      # Tests and typechecks build their dependencies through Turbo. Publint
+      # needs the published dist files built explicitly on its own runner.
+      - name: Build packages for validation
+        if: matrix.build == true
+        run: pnpm build
+
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.command }}
