@@ -1,0 +1,23 @@
+.changeset/fanout-batch-claim.md
+  s_d0919ebcf1306c::t_ee8f31c957c95a 1-5
+packages/durability/src/fanout.test.ts
+  s_d0919ebcf1306c::t_219b1a3d2b41e0 153-154,609-632
+packages/durability/src/fanout.ts
+  s_d0919ebcf1306c::t_e43a5d5a5456ee 378-384,386-387,389-400,405-406,408-420,422-429
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9222234833f10cc46146e0935a4208c7a2027f70",
+  "prompts": {},
+  "sessions": {
+    "s_d0919ebcf1306c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10cdc-cd7b-76d7-9c29-96d50515bf20",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
