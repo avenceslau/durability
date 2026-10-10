@@ -375,46 +375,58 @@ export class DurabilityFanout<Body = unknown> {
         }
         return;
       }
-      const claims: Claim[] = [];
-      for (const row of due) {
-        // eslint-disable-next-line no-await-in-loop
-        const message = await this.#engine.storage.deliveries.getMessage(
-          row.message_key
-        );
-        if (!message || message.generation_id !== row.generation_id) {
-          throw new Error('Fanout delivery is missing its message manifest');
-        }
-        if (row.phase === 'dead_letter' || row.attempt >= policy.maxAttempts) {
+      const terminal: Claim[] = [];
+      // One transaction claims the whole batch: per-message transactions made the
+      // pass cost O(batch) commits, which capped a shard's throughput.
+      const claims = await this.#engine.transaction(async (transaction) => {
+        const claimed: Claim[] = [];
+        const deadline = Date.now() + policy.attemptTimeoutMs;
+        for (const row of due) {
           // eslint-disable-next-line no-await-in-loop
-          await this.#deadLetter(
-            { row, message },
-            row.dead_letter_reason ?? 'exhausted'
+          const message = await transaction.deliveries.getMessage(
+            row.message_key
           );
-          continue;
-        }
-        // eslint-disable-next-line no-await-in-loop
-        const attempt = await this.#engine.transaction(async (transaction) => {
-          const claimed = await transaction.deliveries.claimAttempt(
+          if (!message || message.generation_id !== row.generation_id) {
+            throw new Error('Fanout delivery is missing its message manifest');
+          }
+          if (
+            row.phase === 'dead_letter' ||
+            row.attempt >= policy.maxAttempts
+          ) {
+            terminal.push({ row, message });
+            continue;
+          }
+          // eslint-disable-next-line no-await-in-loop
+          const attempt = await transaction.deliveries.claimAttempt(
             row.id,
             row.generation_id,
             policy.maxAttempts
           );
-          if (claimed !== undefined) {
-            await transaction.deliveries.settle(
-              row.id,
-              row.generation_id,
-              claimed,
-              {
-                next_attempt_at: Date.now() + policy.attemptTimeoutMs,
-              }
-            );
-            await this.#engine.reconcile(transaction);
+          if (attempt === undefined) {
+            continue;
           }
-          return claimed;
-        });
-        if (attempt !== undefined) {
-          claims.push({ row: { ...row, attempt }, message });
+          // eslint-disable-next-line no-await-in-loop
+          await transaction.deliveries.settle(
+            row.id,
+            row.generation_id,
+            attempt,
+            {
+              next_attempt_at: deadline,
+            }
+          );
+          claimed.push({ row: { ...row, attempt }, message });
         }
+        if (claimed.length > 0) {
+          await this.#engine.reconcile(transaction);
+        }
+        return claimed;
+      });
+      for (const claim of terminal) {
+        // eslint-disable-next-line no-await-in-loop
+        await this.#deadLetter(
+          claim,
+          claim.row.dead_letter_reason ?? 'exhausted'
+        );
       }
       if (claims.length > 0) {
         await this.#deliver(target, claims, policy);

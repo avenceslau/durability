@@ -150,6 +150,8 @@ for (const backend of ['sqlite', 'kv'] as const) {
       });
       await fanout.enqueue({ id: 'old', body: 'x' });
       await fanout.alarm();
+      // An evicted instance has no in-memory timers; the retry belongs to the recreated one.
+      vi.clearAllTimers();
       const added = vi.fn(async () => undefined);
       const recreated = new DurabilityFanout({
         ...config,
@@ -602,6 +604,30 @@ for (const backend of ['sqlite', 'kv'] as const) {
 
       await revived.enqueue({ id: 'd', body: 'd' });
       expect((await revived.load()).outbound.pendingDeliveries).toBe(4);
+    });
+
+    it('claims a whole batch in one transaction', async () => {
+      const { fanout, storage } = fixture({
+        one: { ackOnReturn: true, deliver: () => undefined },
+      });
+      const batch = Array.from({ length: 10 }, (_, i) => ({
+        id: `m${i}`,
+        body: 'x',
+      }));
+      await fanout.enqueue(batch);
+      await vi.waitFor(async () =>
+        expect((await fanout.load()).outbound.pendingDeliveries).toBe(0)
+      );
+
+      // Same again, counting transactions: a pass is claim + ack, not one claim per message.
+      await fanout.enqueue(batch.map((m) => ({ ...m, id: `${m.id}-2` })));
+      const transactions = vi.spyOn(storage, 'transaction');
+      await fanout.alarm();
+      await vi.waitFor(async () =>
+        expect((await fanout.load()).outbound.pendingDeliveries).toBe(0)
+      );
+
+      expect(transactions.mock.calls.length).toBeLessThanOrEqual(4);
     });
 
     it('shares a physical alarm with existing operations and named alarms', async () => {
