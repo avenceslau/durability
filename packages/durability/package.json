@@ -1,6 +1,6 @@
 {
   "name": "durability",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Alarm-backed durable operations for Cloudflare Durable Objects",
   "type": "module",
   "license": "ISC",

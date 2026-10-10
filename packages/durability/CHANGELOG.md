@@ -1,5 +1,11 @@
 # durability
 
+## 3.0.1
+
+### Patch Changes
+
+- 2439c38: Run near-term work at its scheduled time with an in-memory timer, while keeping the physical alarm behind the configurable 1-to-15-second `alarmMinDelayMs` fallback.
+
 ## 3.0.0
 
 ### Major Changes
