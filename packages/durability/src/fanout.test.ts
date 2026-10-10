@@ -585,6 +585,25 @@ for (const backend of ['sqlite', 'kv'] as const) {
       ]);
     });
 
+    it('reports the same pending count from a fresh instance over the same storage', async () => {
+      const { fanout, config } = fixture({
+        slow: { deliver: async () => undefined },
+      });
+      await fanout.enqueue([
+        { id: 'a', body: 'a' },
+        { id: 'b', body: 'b' },
+        { id: 'c', body: 'c' },
+      ]);
+      expect((await fanout.load()).outbound.pendingDeliveries).toBe(3);
+
+      // Eviction: a new instance hydrates its count from the table, not from memory.
+      const revived = new DurabilityFanout(config);
+      expect((await revived.load()).outbound.pendingDeliveries).toBe(3);
+
+      await revived.enqueue({ id: 'd', body: 'd' });
+      expect((await revived.load()).outbound.pendingDeliveries).toBe(4);
+    });
+
     it('shares a physical alarm with existing operations and named alarms', async () => {
       const storage =
         backend === 'sqlite' ? new FakeStorage() : new FakeKvStorage();

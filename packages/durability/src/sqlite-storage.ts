@@ -57,6 +57,32 @@ const attemptRowSchema = z.object({
   attempt: z.number().int().nonnegative(),
 });
 const countRowSchema = z.object({ count: z.number().int().nonnegative() });
+
+/**
+ * In-memory pending-delivery count. Counting the table on every enqueue costs
+ * O(backlog), which made a shard that fell behind fall further behind. The
+ * count is hydrated once per object lifetime and kept exact by insert/remove;
+ * anything that could leave it wrong (a failed transaction, a bulk purge)
+ * invalidates it so the next read recounts.
+ */
+class PendingCounter {
+  #value: number | undefined;
+
+  get(count: () => number): number {
+    this.#value ??= count();
+    return this.#value;
+  }
+
+  add(delta: number): void {
+    if (this.#value !== undefined) {
+      this.#value += delta;
+    }
+  }
+
+  invalidate(): void {
+    this.#value = undefined;
+  }
+}
 const messageKeyRowSchema = z.object({ message_key: z.string() });
 const messageCountRowSchema = z.object({
   message_key: z.string(),
@@ -249,8 +275,20 @@ class SqliteDeliveryTable
   extends SqliteTable<DeliveryRow>
   implements DeliveryStore
 {
-  constructor(sql: SqlStorage, atomically: SqliteAtomically) {
+  constructor(
+    sql: SqlStorage,
+    atomically: SqliteAtomically,
+    private readonly pending: PendingCounter
+  ) {
     super(sql, deliveryTable, atomically);
+  }
+
+  override async insert(row: DeliveryRow): Promise<boolean> {
+    const inserted = await super.insert(row);
+    if (inserted) {
+      this.pending.add(1);
+    }
+    return inserted;
   }
 
   async nextSeq(): Promise<number> {
@@ -320,38 +358,71 @@ class SqliteDeliveryTable
     now: number,
     limit: number
   ): Promise<DeliveryRow[]> {
-    return this.rows(
+    // Two indexed queries instead of one sort over every pending row: first
+    // deliveries (attempt = 0) in sequence, then retries.
+    const first = await this.rows(
       `SELECT * FROM durability_fanout_deliveries
-       WHERE target_id = ? AND status = 'pending'
-         AND next_attempt_at <= ?
-       ORDER BY CASE WHEN attempt = 0 THEN 0 ELSE 1 END ASC, seq ASC
+       WHERE target_id = ? AND phase = 'delivery' AND status = 'pending'
+         AND attempt = 0 AND next_attempt_at <= ?
+       ORDER BY seq ASC
        LIMIT ?`,
       target,
       now,
       limit
     );
+    if (first.length >= limit) {
+      return first;
+    }
+
+    const retries = await this.rows(
+      `SELECT * FROM durability_fanout_deliveries
+       WHERE target_id = ? AND status = 'pending'
+         AND attempt > 0 AND next_attempt_at <= ?
+       ORDER BY seq ASC
+       LIMIT ?`,
+      target,
+      now,
+      limit - first.length
+    );
+    return [...first, ...retries];
   }
 
   async pendingCount(): Promise<number> {
-    return countRowSchema.parse(
-      this.sql
-        .exec(
-          `SELECT COUNT(*) AS count FROM durability_fanout_deliveries
-           WHERE status = 'pending'`
-        )
-        .toArray()[0]
-    ).count;
+    return this.pending.get(
+      () =>
+        countRowSchema.parse(
+          this.sql
+            .exec(
+              `SELECT COUNT(*) AS count FROM durability_fanout_deliveries
+               WHERE status = 'pending'`
+            )
+            .toArray()[0]
+        ).count
+    );
   }
 
   override async listDue(now: number, limit: number): Promise<DeliveryRow[]> {
-    return this.rows(
+    const first = await this.rows(
       `SELECT * FROM durability_fanout_deliveries
-       WHERE status = 'pending' AND next_attempt_at <= ?
-       ORDER BY CASE WHEN attempt = 0 THEN 0 ELSE 1 END ASC, seq ASC
+       WHERE status = 'pending' AND attempt = 0 AND next_attempt_at <= ?
+       ORDER BY seq ASC
        LIMIT ?`,
       now,
       limit
     );
+    if (first.length >= limit) {
+      return first;
+    }
+
+    const retries = await this.rows(
+      `SELECT * FROM durability_fanout_deliveries
+       WHERE status = 'pending' AND attempt > 0 AND next_attempt_at <= ?
+       ORDER BY seq ASC
+       LIMIT ?`,
+      now,
+      limit - first.length
+    );
+    return [...first, ...retries];
   }
 
   override async nextPendingAt(): Promise<number | undefined> {
@@ -385,6 +456,7 @@ class SqliteDeliveryTable
       if (messageKey === undefined) {
         return false;
       }
+      this.pending.add(-1);
 
       sql.exec(
         `UPDATE durability_fanout_messages
@@ -402,6 +474,7 @@ class SqliteDeliveryTable
   }
 
   override async deleteCreatedBefore(before: number): Promise<number> {
+    this.pending.invalidate();
     return this.atomically((sql) => {
       const messageCounts = messageCountRowSchema.array().parse(
         sql
@@ -458,29 +531,51 @@ class SqliteSession implements DurabilityStorageTransaction {
   constructor(
     sql: SqlStorage,
     readonly physicalAlarm: PhysicalAlarm,
-    atomically: SqliteAtomically
+    atomically: SqliteAtomically,
+    pending: PendingCounter
   ) {
     this.calls = new SqliteTable(sql, callTable, atomically);
     this.alarms = new SqliteTable(sql, alarmTable, atomically);
-    this.deliveries = new SqliteDeliveryTable(sql, atomically);
+    this.deliveries = new SqliteDeliveryTable(sql, atomically, pending);
   }
 }
 
 export const createSqliteDurabilityStorage = (
   storage: DurableObjectStorage
 ): DurabilityStorage => {
+  const pending = new PendingCounter();
+  // A rolled-back transaction may have adjusted the count; recount next time.
+  const guarded = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      pending.invalidate();
+      throw error;
+    }
+  };
   const transaction = <T>(
     callback: (transaction: DurabilityStorageTransaction) => Promise<T>
   ): Promise<T> =>
-    storage.transaction((durableTransaction) =>
-      callback(
-        new SqliteSession(storage.sql, durableTransaction, (run) =>
-          Promise.resolve(run(storage.sql))
+    guarded(() =>
+      storage.transaction((durableTransaction) =>
+        callback(
+          new SqliteSession(
+            storage.sql,
+            durableTransaction,
+            (run) => Promise.resolve(run(storage.sql)),
+            pending
+          )
         )
       )
     );
-  const session = new SqliteSession(storage.sql, storage, (run) =>
-    storage.transaction(() => Promise.resolve(run(storage.sql)))
+  const session = new SqliteSession(
+    storage.sql,
+    storage,
+    (run) =>
+      guarded(() =>
+        storage.transaction(() => Promise.resolve(run(storage.sql)))
+      ),
+    pending
   );
 
   return {
