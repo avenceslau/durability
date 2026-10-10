@@ -11,6 +11,7 @@ import {
   DurableRetryPolicyError,
   NonRetryableError as DurabilityNonRetryableError,
   type DurableCall,
+  type DurableJobHandle,
   type DurabilityLifecycleEvent,
 } from './index';
 import { migrate } from './migrations';
@@ -554,6 +555,192 @@ describe('Durability', () => {
     ).resolves.toBeUndefined();
 
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  describe.each([
+    {
+      storageBackend: 'sqlite' as const,
+      createContext: () => contextFor(new FakeStorage()),
+    },
+    {
+      storageBackend: 'kv' as const,
+      createContext: () => contextForKv(new FakeKvStorage()),
+    },
+  ])('job handles on $storageBackend', ({ storageBackend, createContext }) => {
+    it('waits for terminal operation results through a job handle', async () => {
+      const context = createContext();
+      let finish: (() => void) | undefined;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const durability = new Durability({
+        context,
+        storageBackend,
+        handlers: {
+          work: async () => {
+            await pending;
+            return 'done';
+          },
+        },
+      });
+
+      await durability.work({ id: 'job:1', payload: null });
+      await vi.waitFor(async () => {
+        await expect(durability.work.getResult('job:1')).resolves.toMatchObject(
+          {
+            status: 'pending',
+            attempt: 1,
+          }
+        );
+      });
+      const job = durability.work.job('job:1');
+      expectTypeOf(job).toEqualTypeOf<DurableJobHandle<string>>();
+      const first = job.wait({ timeoutMs: 1_000 });
+      const second = job.wait({ timeoutMs: 1_000 });
+
+      finish?.();
+
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        { status: 'completed', result: 'done' },
+        { status: 'completed', result: 'done' },
+      ]);
+      await expect(job.getResult()).resolves.toEqual({
+        status: 'completed',
+        result: 'done',
+      });
+    });
+
+    it('settles job waits on terminal operation failure', async () => {
+      const context = createContext();
+      let fail: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        fail = resolve;
+      });
+      const durability = new Durability({
+        context,
+        storageBackend,
+        handlers: {
+          work: async () => {
+            await gate;
+            throw new DurabilityNonRetryableError('job failed');
+          },
+        },
+      });
+
+      await durability.work({ id: 'job:failed', payload: null });
+      const result = durability.work
+        .job('job:failed')
+        .wait({ timeoutMs: 1_000 });
+      fail?.();
+
+      await expect(result).resolves.toMatchObject({
+        status: 'failed',
+        attempt: 1,
+        error: {
+          name: 'NonRetryableError',
+          message: 'job failed',
+        },
+      });
+    });
+
+    it('returns the latest job state when waiting times out', async () => {
+      vi.useFakeTimers();
+      const context = createContext();
+      let finish: (() => void) | undefined;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const durability = new Durability({
+        context,
+        storageBackend,
+        handlers: { work: async () => pending },
+      });
+
+      await durability.work({ id: 'job:timeout', payload: null });
+      const result = durability.work
+        .job('job:timeout')
+        .wait({ timeoutMs: 100 });
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(result).resolves.toMatchObject({
+        status: 'pending',
+        attempt: 1,
+      });
+      await expect(
+        durability.work.job('job:timeout').wait({ timeoutMs: -1 })
+      ).rejects.toThrow('timeoutMs must be a non-negative safe integer');
+
+      finish?.();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    it('settles job waits when the operation is purged', async () => {
+      const context = createContext();
+      let finish: (() => void) | undefined;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const durability = new Durability({
+        context,
+        storageBackend,
+        handlers: { work: async () => pending },
+      });
+
+      await durability.work({ id: 'job:purged', payload: null });
+      const result = durability.work
+        .job('job:purged')
+        .wait({ timeoutMs: 1_000 });
+      await durability.purgeBefore(Number.MAX_SAFE_INTEGER);
+
+      await expect(result).resolves.toEqual({ status: 'not_found' });
+      finish?.();
+      await pending;
+    });
+
+    it('does not wake a new generation when a purged handler finishes', async () => {
+      vi.useFakeTimers();
+      const context = createContext();
+      let finishOld!: () => void;
+      let finishNew!: () => void;
+      const oldGate = new Promise<void>((resolve) => {
+        finishOld = resolve;
+      });
+      const newGate = new Promise<void>((resolve) => {
+        finishNew = resolve;
+      });
+      let calls = 0;
+      const durability = new Durability({
+        context,
+        storageBackend,
+        handlers: {
+          work: async () => {
+            const first = ++calls === 1;
+            await (first ? oldGate : newGate);
+            return first ? 'old' : 'new';
+          },
+        },
+      });
+      await durability.work({ id: 'reuse', payload: null });
+      await vi.advanceTimersByTimeAsync(0);
+      const first = durability.work.job('reuse').wait({ timeoutMs: 1_000 });
+      await vi.advanceTimersByTimeAsync(0);
+      await durability.purgeBefore(Number.MAX_SAFE_INTEGER);
+      await expect(first).resolves.toEqual({ status: 'not_found' });
+      await durability.work({ id: 'reuse', payload: null });
+      await vi.advanceTimersByTimeAsync(0);
+      const settled = vi.fn();
+      const second = durability.work.job('reuse').wait({ timeoutMs: 1_000 });
+      void second.then(settled);
+      await vi.advanceTimersByTimeAsync(0);
+      finishOld();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).not.toHaveBeenCalled();
+      finishNew();
+      await expect(second).resolves.toEqual({
+        status: 'completed',
+        result: 'new',
+      });
+    });
   });
 
   it('retains failed calls and retries them from an alarm', async () => {
