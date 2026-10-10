@@ -152,6 +152,18 @@ export class LogTruncatedError extends Error {
   }
 }
 
+/**
+ * Thrown when settling a lease that no longer exists, was already settled, or
+ * was reclaimed by another worker. A stale ack must fail loudly rather than
+ * advance a range someone else now owns.
+ */
+export class LogLeaseError extends Error {
+  constructor(batchId: string) {
+    super(`Log lease "${batchId}" is not held`);
+    this.name = 'LogLeaseError';
+  }
+}
+
 /** Error thrown when a sharding function returns an invalid shard key. */
 export class RoutingError extends Error {
   constructor(message: string) {

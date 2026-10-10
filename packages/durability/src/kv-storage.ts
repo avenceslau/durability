@@ -7,6 +7,7 @@ import {
   logCursorRowSchema,
   logRecordRowSchema,
   logSegmentRowSchema,
+  logLeaseRowSchema,
   type AlarmRow,
   type CallRow,
   type DeliveryRow,
@@ -19,6 +20,8 @@ import {
   type LogCursorRow,
   type LogRecordRow,
   type LogSegmentRow,
+  type LogLeaseRow,
+  type LogLeaseState,
   type LogStore,
   type RecordPatch,
   type RecordStore,
@@ -75,6 +78,9 @@ const logSegmentPrefix = `${keyPrefix}log-segment:`;
 const logSegmentIndexKey = `${keyPrefix}log-segment-index`;
 const logNextOffsetKey = `${keyPrefix}log-next-offset`;
 const logTotalBytesKey = `${keyPrefix}log-total-bytes`;
+const logAllocationPrefix = `${keyPrefix}log-allocation:`;
+const logLeasePrefix = `${keyPrefix}log-lease:`;
+const logLeaseIndexPrefix = `${keyPrefix}log-lease-index:`;
 
 /**
  * Segment bounds live in one index value so a lookup or expiry scan never
@@ -869,6 +875,229 @@ class KvLogTable implements LogStore {
     }
   }
 
+  async allocation(consumer: string): Promise<number | undefined> {
+    return counterSchema.parse(await this.kv.get(this.allocationKey(consumer)));
+  }
+
+  async setAllocation(consumer: string, offset: number): Promise<void> {
+    await this.kv.put(this.allocationKey(consumer), offset);
+  }
+
+  async insertLease(row: LogLeaseRow): Promise<void> {
+    await this.atomically(async (table) => {
+      if ((await table.getLease(row.batch_id)) !== undefined) {
+        throw new Error(`Lease already exists: ${row.batch_id}`);
+      }
+      await table.kv.put({
+        [table.leaseKey(row.batch_id)]: row,
+        [table.leaseIndexKey(row)]: row.batch_id,
+      });
+    });
+  }
+
+  async getLease(batchId: string): Promise<LogLeaseRow | undefined> {
+    return logLeaseRowSchema
+      .optional()
+      .parse(await this.kv.get(this.leaseKey(batchId)));
+  }
+
+  async claimExpired(
+    consumer: string,
+    now: number,
+    batchId: string,
+    expiresAt: number
+  ): Promise<LogLeaseRow | undefined> {
+    return this.atomically(async (table) => {
+      const prefix = table.leaseIndexPrefix(consumer);
+      let startAfter: string | undefined;
+      for (;;) {
+        // eslint-disable-next-line no-await-in-loop
+        const page = await table.kv.list({
+          prefix,
+          limit: 128,
+          ...(startAfter === undefined ? {} : { startAfter }),
+        });
+        // eslint-disable-next-line no-await-in-loop
+        const rows = await table.leaseRows(keySchema.parse([...page.values()]));
+        for (const row of rows) {
+          if (
+            row === undefined ||
+            (row.state !== 'pending' &&
+              !(row.state === 'active' && row.expires_at <= now))
+          ) {
+            continue;
+          }
+          const updated: LogLeaseRow = {
+            ...row,
+            batch_id: batchId,
+            state: 'active',
+            attempt: row.attempt + 1,
+            expires_at: expiresAt,
+          };
+          // Rewrites the primary and index keys together, so the previous
+          // batch id stops resolving the moment this claim commits.
+          // eslint-disable-next-line no-await-in-loop
+          await table.writeLease(row, updated);
+          return updated;
+        }
+        if (page.size < 128) {
+          return undefined;
+        }
+        const keys = [...page.keys()];
+        startAfter = keys[keys.length - 1];
+      }
+    });
+  }
+
+  async countHeld(consumer: string, now: number): Promise<number> {
+    const rows = await this.listLeaseRows(consumer);
+    return rows.filter(
+      (row) =>
+        row.state === 'pending' ||
+        (row.state === 'active' && row.expires_at > now)
+    ).length;
+  }
+
+  async settleLease(
+    batchId: string,
+    state: LogLeaseState,
+    expiresAt: number
+  ): Promise<boolean> {
+    return this.atomically(async (table) => {
+      const row = await table.getLease(batchId);
+      if (row === undefined || row.state !== 'active') {
+        return false;
+      }
+      await table.kv.put(table.leaseKey(batchId), {
+        ...row,
+        state,
+        expires_at: expiresAt,
+      });
+      return true;
+    });
+  }
+
+  async settledPrefix(
+    consumer: string,
+    from: number,
+    limit: number
+  ): Promise<LogLeaseRow[]> {
+    return this.listLeaseRows(
+      consumer,
+      `${this.leaseIndexPrefix(consumer)}${timestampKey(from)}`,
+      limit
+    );
+  }
+
+  async deleteLeases(batchIds: readonly string[]): Promise<number> {
+    const uniqueBatchIds = [...new Set(batchIds)];
+    if (uniqueBatchIds.length === 0) {
+      return 0;
+    }
+    return this.atomically(async (table) => {
+      const rows: LogLeaseRow[] = [];
+      for (let start = 0; start < uniqueBatchIds.length; start += 128) {
+        // eslint-disable-next-line no-await-in-loop
+        const page = await table.leaseRows(
+          uniqueBatchIds.slice(start, start + 128)
+        );
+        rows.push(
+          ...page.filter((row): row is LogLeaseRow => row !== undefined)
+        );
+      }
+      const doomed = rows.flatMap((row) => [
+        table.leaseKey(row.batch_id),
+        table.leaseIndexKey(row),
+      ]);
+      for (let start = 0; start < doomed.length; start += purgeBatchSize) {
+        // eslint-disable-next-line no-await-in-loop
+        await table.kv.delete(doomed.slice(start, start + purgeBatchSize));
+      }
+      return rows.length;
+    });
+  }
+
+  async leases(consumer: string): Promise<LogLeaseRow[]> {
+    return this.listLeaseRows(consumer);
+  }
+
+  private async listLeaseRows(
+    consumer: string,
+    start?: string,
+    limit?: number
+  ): Promise<LogLeaseRow[]> {
+    if (limit !== undefined && limit <= 0) {
+      return [];
+    }
+    const rows: LogLeaseRow[] = [];
+    const prefix = this.leaseIndexPrefix(consumer);
+    let startAfter: string | undefined;
+    for (;;) {
+      const pageLimit = Math.min(
+        128,
+        limit === undefined ? 128 : limit - rows.length
+      );
+      // eslint-disable-next-line no-await-in-loop
+      const page = await this.kv.list({
+        prefix,
+        limit: pageLimit,
+        ...(startAfter !== undefined
+          ? { startAfter }
+          : start === undefined
+            ? {}
+            : { start }),
+      });
+      // eslint-disable-next-line no-await-in-loop
+      const pageRows = await this.leaseRows(
+        keySchema.parse([...page.values()])
+      );
+      rows.push(
+        ...pageRows.filter((row): row is LogLeaseRow => row !== undefined)
+      );
+      if (
+        page.size < pageLimit ||
+        (limit !== undefined && rows.length >= limit)
+      ) {
+        return limit === undefined ? rows : rows.slice(0, limit);
+      }
+      const keys = [...page.keys()];
+      startAfter = keys[keys.length - 1];
+    }
+  }
+
+  private async leaseRows(
+    batchIds: readonly string[]
+  ): Promise<Array<LogLeaseRow | undefined>> {
+    if (batchIds.length === 0) {
+      return [];
+    }
+    const found = await this.kv.get<unknown>(
+      batchIds.map((batchId) => this.leaseKey(batchId))
+    );
+    return batchIds.map((batchId) =>
+      logLeaseRowSchema.optional().parse(found.get(this.leaseKey(batchId)))
+    );
+  }
+
+  private async writeLease(
+    previous: LogLeaseRow,
+    next: LogLeaseRow
+  ): Promise<void> {
+    const previousKeys = [
+      this.leaseKey(previous.batch_id),
+      this.leaseIndexKey(previous),
+    ];
+    const nextKeys = [this.leaseKey(next.batch_id), this.leaseIndexKey(next)];
+    const stale = previousKeys.filter((key) => !nextKeys.includes(key));
+    if (stale.length > 0) {
+      await this.kv.delete(stale);
+    }
+    await this.kv.put({
+      [this.leaseKey(next.batch_id)]: next,
+      [this.leaseIndexKey(next)]: next.batch_id,
+    });
+  }
+
   private recordKey(offset: number): string {
     return `${logRecordPrefix}${timestampKey(offset)}`;
   }
@@ -883,6 +1112,22 @@ class KvLogTable implements LogStore {
 
   private cursorKey(consumer: string): string {
     return `${logCursorPrefix}${encodeIndexPart(consumer)}`;
+  }
+
+  private allocationKey(consumer: string): string {
+    return `${logAllocationPrefix}${encodeIndexPart(consumer)}`;
+  }
+
+  private leaseKey(batchId: string): string {
+    return `${logLeasePrefix}${encodeIndexPart(batchId)}`;
+  }
+
+  private leaseIndexPrefix(consumer: string): string {
+    return `${logLeaseIndexPrefix}${encodeIndexPart(consumer)}:`;
+  }
+
+  private leaseIndexKey(row: LogLeaseRow): string {
+    return `${this.leaseIndexPrefix(row.consumer)}${timestampKey(row.first_offset)}:${encodeIndexPart(row.batch_id)}`;
   }
 }
 

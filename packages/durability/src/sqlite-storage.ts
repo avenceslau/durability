@@ -15,10 +15,13 @@ import {
   type DurabilityStorageTransaction,
   type DurableRecord,
   type FanoutMessageRow,
+  logLeaseRowSchema,
   logSegmentRowSchema,
   type LogBounds,
   type LogCursorRow,
   type LogRecordRow,
+  type LogLeaseRow,
+  type LogLeaseState,
   type LogSegmentRow,
   type LogStore,
   type PhysicalAlarm,
@@ -76,6 +79,9 @@ const boundsRowSchema = z.object({
   hot: z.number().int().nonnegative().nullable(),
   cold: z.number().int().nonnegative().nullable(),
   next_offset: z.number().int().nonnegative(),
+});
+const allocationRowSchema = z.object({
+  allocated_offset: z.number().int().nonnegative(),
 });
 const totalBytesRowSchema = z.object({
   total_bytes: z.number().int().nonnegative(),
@@ -714,6 +720,171 @@ class SqliteLogTable implements LogStore {
           .exec('SELECT * FROM durability_log_cursors ORDER BY consumer')
           .toArray()
       );
+  }
+
+  async allocation(consumer: string): Promise<number | undefined> {
+    return allocationRowSchema.optional().parse(
+      this.sql
+        .exec(
+          `SELECT allocated_offset FROM durability_log_allocations
+             WHERE consumer = ? LIMIT 1`,
+          consumer
+        )
+        .toArray()[0]
+    )?.allocated_offset;
+  }
+
+  async setAllocation(consumer: string, offset: number): Promise<void> {
+    this.sql.exec(
+      `INSERT INTO durability_log_allocations (consumer, allocated_offset)
+       VALUES (?, ?)
+       ON CONFLICT(consumer) DO UPDATE SET allocated_offset = excluded.allocated_offset`,
+      consumer,
+      offset
+    );
+  }
+
+  async insertLease(row: LogLeaseRow): Promise<void> {
+    this.sql.exec(
+      `INSERT INTO durability_log_leases
+         (batch_id, consumer, first_offset, last_offset, state, attempt,
+          expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      row.batch_id,
+      row.consumer,
+      row.first_offset,
+      row.last_offset,
+      row.state,
+      row.attempt,
+      row.expires_at,
+      row.created_at
+    );
+  }
+
+  async getLease(batchId: string): Promise<LogLeaseRow | undefined> {
+    return logLeaseRowSchema
+      .optional()
+      .parse(
+        this.sql
+          .exec(
+            'SELECT * FROM durability_log_leases WHERE batch_id = ? LIMIT 1',
+            batchId
+          )
+          .toArray()[0]
+      );
+  }
+
+  async claimExpired(
+    consumer: string,
+    now: number,
+    batchId: string,
+    expiresAt: number
+  ): Promise<LogLeaseRow | undefined> {
+    return this.atomically((sql) =>
+      logLeaseRowSchema.optional().parse(
+        sql
+          .exec(
+            `UPDATE durability_log_leases
+             SET batch_id = ?, state = 'active', attempt = attempt + 1,
+                 expires_at = ?
+             WHERE batch_id = (
+               SELECT batch_id FROM durability_log_leases
+               WHERE consumer = ?
+                 AND (state = 'pending'
+                      OR (state = 'active' AND expires_at <= ?))
+               ORDER BY first_offset ASC
+               LIMIT 1
+             )
+             RETURNING *`,
+            batchId,
+            expiresAt,
+            consumer,
+            now
+          )
+          .toArray()[0]
+      )
+    );
+  }
+
+  async countHeld(consumer: string, now: number): Promise<number> {
+    return countRowSchema.parse(
+      this.sql
+        .exec(
+          `SELECT COUNT(*) AS count FROM durability_log_leases
+           WHERE consumer = ?
+             AND (state = 'pending' OR (state = 'active' AND expires_at > ?))`,
+          consumer,
+          now
+        )
+        .toArray()[0]
+    ).count;
+  }
+
+  async settleLease(
+    batchId: string,
+    state: LogLeaseState,
+    expiresAt: number
+  ): Promise<boolean> {
+    return this.changed(
+      `UPDATE durability_log_leases
+       SET state = ?, expires_at = ?
+       WHERE batch_id = ? AND state = 'active'
+       RETURNING batch_id`,
+      state,
+      expiresAt,
+      batchId
+    );
+  }
+
+  async settledPrefix(
+    consumer: string,
+    from: number,
+    limit: number
+  ): Promise<LogLeaseRow[]> {
+    return logLeaseRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_log_leases
+           WHERE consumer = ? AND first_offset >= ?
+           ORDER BY first_offset ASC
+           LIMIT ?`,
+          consumer,
+          from,
+          limit
+        )
+        .toArray()
+    );
+  }
+
+  async deleteLeases(batchIds: readonly string[]): Promise<number> {
+    if (batchIds.length === 0) {
+      return 0;
+    }
+    return this.sql
+      .exec(
+        `DELETE FROM durability_log_leases
+       WHERE batch_id IN (${batchIds.map(() => '?').join(', ')})
+       RETURNING batch_id`,
+        ...batchIds
+      )
+      .toArray().length;
+  }
+
+  async leases(consumer: string): Promise<LogLeaseRow[]> {
+    return logLeaseRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_log_leases
+           WHERE consumer = ?
+           ORDER BY first_offset ASC`,
+          consumer
+        )
+        .toArray()
+    );
+  }
+
+  private changed(query: string, ...bindings: SqlStorageValue[]): boolean {
+    return this.sql.exec(query, ...bindings).toArray().length > 0;
   }
 }
 

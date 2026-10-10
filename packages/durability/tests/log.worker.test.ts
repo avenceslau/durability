@@ -1,5 +1,6 @@
 import { exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject } from 'cloudflare:test';
+import { scheduler } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import type { KvLogTestObject, LogTestObject } from './log-worker';
 
@@ -89,6 +90,48 @@ for (const [label, className] of [
         await stub.read(0);
       }).rejects.toThrow(/was trimmed/);
       expect((await stub.read(2)).records).toHaveLength(3);
+    });
+
+    it('leases distinct ranges and survives eviction mid-flight', async () => {
+      const name = crypto.randomUUID();
+      const stub = objectFor(name);
+      await stub.append(
+        [1, 2, 3].map((value) => ({ body: { topic: 'a', value } }))
+      );
+
+      const first = await stub.lease('search', 1);
+      const second = await stub.lease('search', 1);
+      expect(first?.firstOffset).toBe(0);
+      expect(second?.firstOffset).toBe(1);
+      // Both ranges are held, so a third poller gets nothing.
+      expect(await stub.lease('search', 1)).toBeUndefined();
+
+      await evictDurableObject(stub);
+      const revived = objectFor(name);
+      // Leases are durable, so eviction does not hand offset 0 to anyone else.
+      expect(await revived.lease('search', 1)).toBeUndefined();
+
+      // The later range acking first must not commit past the earlier one.
+      await revived.ackLease('search', second!.batchId);
+      expect(await revived.cursor('search')).toBeUndefined();
+      await revived.ackLease('search', first!.batchId);
+      expect(await revived.cursor('search')).toBe(2);
+    });
+
+    it('fences the previous holder once a lease expires', async () => {
+      const stub = objectFor(crypto.randomUUID());
+      await stub.append([{ body: { topic: 'a', value: 1 } }]);
+      const held = await stub.lease('search', 1);
+
+      await scheduler.wait(1_100);
+      const stolen = await stub.lease('search', 1);
+      expect(stolen).toMatchObject({ firstOffset: 0, attempt: 2 });
+
+      await expect(async () => {
+        await stub.ackLease('search', held!.batchId);
+      }).rejects.toThrow(/is not held/);
+      await stub.ackLease('search', stolen!.batchId);
+      expect(await stub.cursor('search')).toBe(1);
     });
 
     it('reports backlog from the furthest-behind consumer', async () => {

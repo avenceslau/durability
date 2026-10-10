@@ -505,6 +505,32 @@ External storage expires on its own schedule, so mirror a lifecycle rule with `f
 
 Retention still **ignores cursors**, exactly as a log should: a consumer slower than everything readable loses records. It learns loudly rather than silently skipping, because reading below the oldest readable offset throws `LogTruncatedError` carrying `requestedOffset` and `oldestOffset`. Compare `bounds()` against a cursor to detect the risk before it happens.
 
+### Leases for parallel consumers
+
+`read` plus `commit` is enough for one worker per consumer. It is **not** enough when two pollers share a consumer name: both read the same page and both process it. Leases close that gap.
+
+```ts
+const lease = await log.lease('search', 100);
+if (lease) {
+  try {
+    await index(lease.records);
+    await log.ack('search', lease.batchId);
+  } catch {
+    await log.nack('search', lease.batchId);
+  }
+}
+```
+
+`lease` claims a range of offsets durably **before** returning the records, so a second caller gets `undefined` rather than the same offsets. `undefined` means nothing is available right now — either the consumer is at `maxParallelism` or the log has no unleased records — so treat it as a signal to back off.
+
+A range is held until it is acked, nacked, or its lease expires after `leaseMs`. Redelivery always issues a **fresh `batchId`**, which fences the previous holder: its `ack` throws `LogLeaseError` rather than committing a range someone else now owns. Double settlement throws for the same reason.
+
+`maxParallelism` lets one consumer hold several ranges at once, and `ack` commits only over an **unbroken run** of settled ranges starting at the cursor. Acking a later range while an earlier one is still in flight advances nothing, so parallelism never skips offsets. Leases are durable, so eviction mid-flight does not release a range early, and a range that retention flushed while it was held is rehydrated on redelivery.
+
+A range that keeps failing would be redelivered forever. `maxAttempts` bounds that, but only together with `onPoison`: without somewhere to send the records, blocking the consumer beats silently dropping them. With both set, an exhausted range is marked skipped — durably, before the callback runs, so a failing handler cannot resurrect it — and the commit then runs over it like an acked one.
+
+Leases are opt-in. Without the `leases` option no lease tables are created, `read`/`commit` behave exactly as before, and the lease methods throw.
+
 ### What it is not
 
 There is no per-record retry, timeout, or dead letter here: a log tracks positions, not attempts. When a single record must be retried independently of its neighbours, that is fanout's job, and the two compose on one object.

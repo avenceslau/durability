@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DurabilityLog, LogTruncatedError, maxLogBytes } from './index';
+import {
+  DurabilityLog,
+  LogLeaseError,
+  LogTruncatedError,
+  maxLogBytes,
+} from './index';
 import type { LogColdStorage, LogRecord } from './log';
 import { FakeKvStorage, FakeStorage } from './test-fakes';
 
@@ -18,7 +23,7 @@ for (const backend of ['sqlite', 'kv'] as const) {
       options: Partial<
         Pick<
           ConstructorParameters<typeof DurabilityLog<string>>[0],
-          'retention' | 'cold' | 'maxBatchSize'
+          'retention' | 'cold' | 'maxBatchSize' | 'leases'
         >
       > = {}
     ) => {
@@ -376,6 +381,162 @@ for (const backend of ['sqlite', 'kv'] as const) {
       });
       expect(await log.forgetColdBefore(149)).toBe(149);
       await expect(log.read({ from: 0 })).rejects.toThrow(LogTruncatedError);
+    });
+
+    it('never hands the same offsets to two concurrent consumers', async () => {
+      const { log } = fixture({ leases: {} });
+      await offsetsOf(log, ['a', 'b', 'c', 'd']);
+
+      const first = await log.lease('search', 2);
+      // A second poller of the same consumer gets nothing while the first
+      // holds its range: this is the double-processing that plain reads allow.
+      expect(await log.lease('search', 2)).toBeUndefined();
+      expect(first?.records.map((record) => record.body)).toEqual(['a', 'b']);
+
+      await log.ack('search', first!.batchId);
+      const second = await log.lease('search', 2);
+      expect(second?.records.map((record) => record.body)).toEqual(['c', 'd']);
+      expect(second?.batchId).not.toBe(first?.batchId);
+    });
+
+    it('hands different ranges to parallel workers and commits in order', async () => {
+      const { log } = fixture({ leases: { maxParallelism: 2 } });
+      await offsetsOf(log, ['a', 'b', 'c']);
+
+      const first = await log.lease('search', 1);
+      const second = await log.lease('search', 1);
+      expect(first?.firstOffset).toBe(0);
+      expect(second?.firstOffset).toBe(1);
+      expect(await log.lease('search', 1)).toBeUndefined();
+
+      // The later range finishing first must not commit past the earlier one.
+      await log.ack('search', second!.batchId);
+      expect(await log.cursor('search')).toBeUndefined();
+
+      await log.ack('search', first!.batchId);
+      expect(await log.cursor('search')).toBe(2);
+    });
+
+    it('redelivers a nacked range under a fresh batch id', async () => {
+      const { log } = fixture({ leases: {} });
+      await offsetsOf(log, ['a', 'b']);
+
+      const first = await log.lease('search', 1);
+      await log.nack('search', first!.batchId);
+      const retry = await log.lease('search', 1);
+      expect(retry).toMatchObject({ firstOffset: 0, attempt: 2 });
+      expect(retry?.batchId).not.toBe(first?.batchId);
+      expect(retry?.records.map((record) => record.body)).toEqual(['a']);
+    });
+
+    it('reclaims a range whose lease expired', async () => {
+      const { log } = fixture({ leases: { leaseMs: 1_000 } });
+      await offsetsOf(log, ['a']);
+
+      const held = await log.lease('search', 1);
+      expect(await log.lease('search', 1)).toBeUndefined();
+
+      vi.advanceTimersByTime(1_001);
+      const stolen = await log.lease('search', 1);
+      expect(stolen).toMatchObject({ firstOffset: 0, attempt: 2 });
+
+      // The original holder was fenced, so its ack cannot commit the range.
+      await expect(log.ack('search', held!.batchId)).rejects.toThrow(
+        LogLeaseError
+      );
+      await log.ack('search', stolen!.batchId);
+      expect(await log.cursor('search')).toBe(1);
+    });
+
+    it('rejects double settlement of one batch', async () => {
+      const { log } = fixture({ leases: {} });
+      await offsetsOf(log, ['a']);
+      const lease = await log.lease('search');
+      await log.ack('search', lease!.batchId);
+      await expect(log.ack('search', lease!.batchId)).rejects.toThrow(
+        LogLeaseError
+      );
+      await expect(log.nack('search', lease!.batchId)).rejects.toThrow(
+        LogLeaseError
+      );
+    });
+
+    it('keeps consumers independent', async () => {
+      const { log } = fixture({ leases: {} });
+      await offsetsOf(log, ['a', 'b']);
+
+      const search = await log.lease('search', 1);
+      const billing = await log.lease('billing', 1);
+      expect(search?.firstOffset).toBe(0);
+      expect(billing?.firstOffset).toBe(0);
+
+      await log.ack('search', search!.batchId);
+      expect(await log.cursors()).toEqual({ search: 1 });
+    });
+
+    it('blocks on a poison range without somewhere to send it', async () => {
+      const { log } = fixture({ leases: { maxAttempts: 1 } });
+      await offsetsOf(log, ['a', 'b']);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        const lease = await log.lease('search', 1);
+        expect(lease?.firstOffset).toBe(0);
+        // eslint-disable-next-line no-await-in-loop
+        await log.nack('search', lease!.batchId);
+      }
+      expect(await log.cursor('search')).toBeUndefined();
+    });
+
+    it('skips a poison range once it has somewhere to go', async () => {
+      const poisoned: number[] = [];
+      const { log } = fixture({
+        leases: {
+          maxAttempts: 2,
+          onPoison: async (lease) => {
+            poisoned.push(lease.firstOffset);
+          },
+        },
+      });
+      await offsetsOf(log, ['a', 'b']);
+
+      const first = await log.lease('search', 1);
+      await log.nack('search', first!.batchId);
+      const second = await log.lease('search', 1);
+      await log.nack('search', second!.batchId);
+
+      // The third claim exhausts the budget, so the range is skipped.
+      expect(await log.lease('search', 1)).toBeUndefined();
+      expect(poisoned).toEqual([0]);
+
+      const next = await log.lease('search', 1);
+      expect(next?.firstOffset).toBe(1);
+      await log.ack('search', next!.batchId);
+      // Committing runs over the skipped range as well as the acked one.
+      expect(await log.cursor('search')).toBe(2);
+    });
+
+    it('rehydrates a leased range that retention already flushed', async () => {
+      const cold = coldStore();
+      const { log } = fixture({
+        retention: { maxRecords: 1 },
+        cold,
+        leases: {},
+      });
+      await offsetsOf(log, ['a', 'b']);
+
+      const lease = await log.lease('search', 1);
+      await log.nack('search', lease!.batchId);
+      // Retention moves the leased offset to cold storage mid-flight.
+      await log.trim();
+
+      const retry = await log.lease('search', 1);
+      expect(retry?.records.map((record) => record.body)).toEqual(['a']);
+    });
+
+    it('refuses lease calls when leases are not enabled', async () => {
+      const { log } = fixture();
+      await expect(log.lease('search')).rejects.toThrow(/leases option/);
     });
 
     it('reports backlog from the furthest-behind consumer', async () => {

@@ -92,6 +92,26 @@ export const logSegmentRowSchema = z.object({
 
 export type LogSegmentRow = z.infer<typeof logSegmentRowSchema>;
 
+/**
+ * One in-flight or settled range of offsets held by a consumer. A range is
+ * redelivered under a fresh `batch_id`, so an ack from a previous holder is
+ * rejected rather than advancing a range someone else now owns.
+ */
+export const logLeaseRowSchema = z.object({
+  batch_id: z.string(),
+  consumer: z.string(),
+  first_offset: z.number().int().nonnegative(),
+  last_offset: z.number().int().nonnegative(),
+  state: z.enum(['active', 'pending', 'acked', 'skipped']),
+  attempt: z.number().int().positive(),
+  expires_at: z.number().int().nonnegative(),
+  created_at: z.number().int().nonnegative(),
+});
+
+export type LogLeaseRow = z.infer<typeof logLeaseRowSchema>;
+
+export type LogLeaseState = LogLeaseRow['state'];
+
 export type LogBounds = {
   /**
    * Lowest readable offset, counting flushed segments that can be rehydrated.
@@ -143,6 +163,40 @@ export interface LogStore {
   /** Advances a cursor, ignoring regressions so a late commit cannot rewind it. */
   commit(consumer: string, offset: number, committedAt: number): Promise<void>;
   cursors(): Promise<LogCursorRow[]>;
+  /** Highest offset handed to a lease, which runs ahead of the commit. */
+  allocation(consumer: string): Promise<number | undefined>;
+  setAllocation(consumer: string, offset: number): Promise<void>;
+  insertLease(row: LogLeaseRow): Promise<void>;
+  getLease(batchId: string): Promise<LogLeaseRow | undefined>;
+  /**
+   * Oldest range owed redelivery: explicitly nacked, or held past its
+   * expiry. Claiming rewrites its `batch_id`, fencing the previous holder.
+   */
+  claimExpired(
+    consumer: string,
+    now: number,
+    batchId: string,
+    expiresAt: number
+  ): Promise<LogLeaseRow | undefined>;
+  /** Ranges still held, so parallelism can be bounded per consumer. */
+  countHeld(consumer: string, now: number): Promise<number>;
+  /** Settles one range, failing when the batch was fenced or already settled. */
+  settleLease(
+    batchId: string,
+    state: LogLeaseState,
+    expiresAt: number
+  ): Promise<boolean>;
+  /**
+   * Settled ranges forming an unbroken run from `from`, so a commit advances
+   * only over offsets nobody is still working on.
+   */
+  settledPrefix(
+    consumer: string,
+    from: number,
+    limit: number
+  ): Promise<LogLeaseRow[]>;
+  deleteLeases(batchIds: readonly string[]): Promise<number>;
+  leases(consumer: string): Promise<LogLeaseRow[]>;
 }
 
 export type ColumnValue = string | number | null;
