@@ -1,0 +1,23 @@
+.changeset/fanout-pending-count.md
+  s_d0919ebcf1306c::t_a8c9b815448acd 1-5
+packages/durability/src/fanout.test.ts
+  s_d0919ebcf1306c::t_4df689519928d6 588-606
+packages/durability/src/sqlite-storage.ts
+  s_d0919ebcf1306c::t_b0d1e49893700a 60-85,278-282,286-293,361-363,365-367,373-387,391-401,405,407-408,413-425,459,477,534-535,539,546-555,559-567,571-578
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fe89294f9a4107b6be62531cea431bc5336bb481",
+  "prompts": {},
+  "sessions": {
+    "s_d0919ebcf1306c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a10cdc-cd7b-76d7-9c29-96d50515bf20",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
