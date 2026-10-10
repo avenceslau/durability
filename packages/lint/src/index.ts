@@ -54,7 +54,12 @@ type Scope = {
 type RuleContext = {
   report: (input: {
     node: AstNode;
-    messageId: 'delegateOnly' | 'tableCreation' | 'tableName';
+    messageId:
+      | 'delegateOnly'
+      | 'missingAlarm'
+      | 'physicalAlarm'
+      | 'tableCreation'
+      | 'tableName';
   }) => void;
   sourceCode: {
     getDeclaredVariables: (node: AstNode) => ScopeVariable[];
@@ -161,9 +166,14 @@ const alarmRunnerRule = {
     messages: {
       delegateOnly:
         'A durability alarm runner must only return the durability alarm handler, such as this.durability.alarm(alarmInfo).',
+      missingAlarm:
+        'A class using createDurability must delegate alarm() directly to durability.alarm(alarmInfo).',
+      physicalAlarm:
+        'A class using createDurability must schedule logical alarms through durability named alarms instead of calling setAlarm() or deleteAlarm().',
     },
   },
   create(context: RuleContext) {
+    const durabilityClasses = new WeakSet<AstNode>();
     const checkClass = (node: AstNode) => {
       const members = bodyMembers(node);
       const alarm = members.find(
@@ -171,12 +181,8 @@ const alarmRunnerRule = {
           member.type === 'MethodDefinition' &&
           propertyName(member.key) === 'alarm'
       );
-      if (!alarm) {
-        return;
-      }
-
       const fields = durabilityFields(members);
-      const statements = bodyMembers(nodeValue(alarm.value));
+      const statements = bodyMembers(nodeValue(alarm?.value));
       const usesDurability =
         fields.size > 0 ||
         statements.some(
@@ -185,6 +191,12 @@ const alarmRunnerRule = {
             isDurabilityAlarmCall(statement.argument, fields)
         );
       if (!usesDurability) {
+        return;
+      }
+
+      durabilityClasses.add(node);
+      if (!alarm) {
+        context.report({ node, messageId: 'missingAlarm' });
         return;
       }
 
@@ -201,6 +213,27 @@ const alarmRunnerRule = {
     return {
       ClassDeclaration: checkClass,
       ClassExpression: checkClass,
+      CallExpression(node: AstNode) {
+        if (node.callee?.type !== 'MemberExpression') {
+          return;
+        }
+        const method = propertyName(node.callee.property);
+        if (method !== 'setAlarm' && method !== 'deleteAlarm') {
+          return;
+        }
+
+        let parent = node.parent;
+        while (
+          parent &&
+          parent.type !== 'ClassDeclaration' &&
+          parent.type !== 'ClassExpression'
+        ) {
+          parent = parent.parent;
+        }
+        if (parent && durabilityClasses.has(parent)) {
+          context.report({ node, messageId: 'physicalAlarm' });
+        }
+      },
     };
   },
 };
