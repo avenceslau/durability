@@ -417,6 +417,100 @@ Routing uses the actual `@durability/transforms` runtime. For example, `routing.
 
 Loopback namespaces need the application DO declared in Wrangler migrations (or the platform's supported class configuration), but no redundant DO binding block is needed. Consumer transport is explicitly wired by the application, such as a service binding or loopback entrypoint. See the typechecked [email queue composition](../../examples/email-queue).
 
+## Retained log
+
+Fanout deletes a record once every target settles it, which is what a work queue wants. A log wants the opposite: records are **retained** so a consumer can rewind, a new consumer can start from the beginning, and several consumers can read the same history at different speeds. `DurabilityLog` is that second shape, and it attaches to the same scheduler.
+
+```ts
+import { DurabilityLog, DurabilityScheduler, type LogRecord } from 'durability';
+
+export class Partition extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly log = new DurabilityLog<Event>({
+    scheduler: this.scheduler,
+    retention: {
+      maxAgeMs: 7 * 24 * 60 * 60 * 1_000,
+      maxRecords: 100_000,
+      maxBytes: 512 * 1024 * 1024,
+    },
+    // Flushed records stay readable: `write` returns a locator the log keeps,
+    // and `read` hands the segment back when a consumer asks for it.
+    cold: {
+      write: async ({ records, firstOffset }) => {
+        const locator = `segment/${this.ctx.id}/${firstOffset}`;
+        await this.env.COLD.put(locator, JSON.stringify(records), {
+          onlyIf: { etagDoesNotMatch: '*' },
+        });
+        return locator;
+      },
+      read: async (locator) => {
+        const stored = await this.env.COLD.get(locator);
+        return stored ? await stored.json<LogRecord<Event>[]>() : undefined;
+      },
+    },
+  });
+
+  append(events: Event[]) {
+    return this.log.append(events.map((body) => ({ body })));
+  }
+}
+```
+
+`append` mirrors `enqueue`: the batch commits atomically, definite input rejections return `success: false`, and storage or commit uncertainty throws. It returns each record's **offset** in input order. Passing a `key` makes an append idempotent — re-appending an existing key returns its original offset and consumes no new one — so a producer that retries after an uncertain commit does not duplicate records.
+
+Consumers **pull** and own their position:
+
+```ts
+const from = (await log.cursor('search')) ?? (await log.bounds()).oldestOffset;
+const page = await log.read({ from, limit: 100 });
+await index(page.records);
+await log.commit('search', page.nextOffset);
+```
+
+`commit` only ever advances, so a late or duplicated commit cannot rewind a cursor. Cursors are independent: `log.cursors()` returns every consumer's position, and `log.load()` reports the furthest-behind cursor as backlog so routing can weigh partitions by consumer lag rather than by queue depth.
+
+### Retention is not acknowledgement
+
+Records leave only through `trim()`, which enforces `maxAgeMs` and `maxRecords`, oldest first. Retention is deliberately not automatic, because no capability should schedule work an application did not ask for. A `DurabilityAlarms` handler is the composition that gives it a schedule, and it keeps `alarm()` a pure delegation:
+
+```ts
+private readonly alarms = new DurabilityAlarms({
+  scheduler: this.scheduler,
+  handlers: { compact: () => this.log.trim() },
+});
+
+alarm(info?: AlarmInvocationInfo) {
+  return this.scheduler.alarm(info);
+}
+```
+
+`maxBytes` is the budget that actually matters, because a Durable Object holds a hot window rather than an unbounded log. It counts payload bytes held in the object and is capped at `maxLogBytes` (1 GiB), leaving room for the other capabilities sharing that object's storage.
+
+### Flushing to cold storage, and reading it back
+
+Retention has two possible destinations. Without `cold`, expiring records are **deleted**. With `cold`, they are **flushed** and stay readable:
+
+```ts
+type LogColdStorage<Body> = {
+  write(segment: LogSegment<Body>): Promise<string>;
+  read(locator: string): Promise<LogRecord<Body>[] | undefined>;
+};
+```
+
+`write` receives one contiguous run of records, oldest first, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
+
+`read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
+
+External storage expires on its own schedule, so mirror a lifecycle rule with `forgetColdBefore(offset)` to drop stale index entries. Returning `undefined` from `read` is also honoured: a segment the index outlived surfaces as truncation rather than a silent gap.
+
+Retention still **ignores cursors**, exactly as a log should: a consumer slower than everything readable loses records. It learns loudly rather than silently skipping, because reading below the oldest readable offset throws `LogTruncatedError` carrying `requestedOffset` and `oldestOffset`. Compare `bounds()` against a cursor to detect the risk before it happens.
+
+### What it is not
+
+There is no per-record retry, timeout, or dead letter here: a log tracks positions, not attempts. When a single record must be retried independently of its neighbours, that is fanout's job, and the two compose on one object.
+
+There is also no key compaction. `deduplicationKey` is unique per retained record, which is the opposite of a compaction key, and deduplication lasts only while the original record is retained — re-appending a key after its record was flushed or deleted creates a new record.
+
 ## Long-running alarm calls
 
 Alarm invocations have a 15-minute wall-time limit. If work is still pending after `alarmHandoffMs` (default 14 minutes), the scheduler retains its promise in memory, arms a fallback after `alarmMinDelayMs`, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again. If the object is evicted during a handoff, the next alarm reconstructs and executes the persisted pending work.

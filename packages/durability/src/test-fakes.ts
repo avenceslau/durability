@@ -120,6 +120,9 @@ export class FakeKvStorage {
     if (typeof keyOrKeys === 'string') {
       return this.entries.get(keyOrKeys) as T | undefined;
     }
+    if (keyOrKeys.length > 128) {
+      throw new RangeError('get batch exceeds Durable Object KV limit');
+    }
     return new Map(
       keyOrKeys.flatMap((key) =>
         this.entries.has(key) ? [[key, this.entries.get(key) as T]] : []

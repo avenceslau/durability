@@ -4,6 +4,9 @@ import {
   callRowSchema,
   deliveryRowSchema,
   fanoutMessageRowSchema,
+  logCursorRowSchema,
+  logRecordRowSchema,
+  logSegmentRowSchema,
   type AlarmRow,
   type CallRow,
   type DeliveryRow,
@@ -12,6 +15,11 @@ import {
   type DurabilityStorageTransaction,
   type DurableRecord,
   type FanoutMessageRow,
+  type LogBounds,
+  type LogCursorRow,
+  type LogRecordRow,
+  type LogSegmentRow,
+  type LogStore,
   type RecordPatch,
   type RecordStore,
 } from './storage.js';
@@ -60,6 +68,25 @@ const counterSchema = z.number().int().nonnegative().optional();
 /** Deleting more keys than this in one KV call exceeds the Durable Object limit. */
 const purgeBatchSize = 20;
 
+const logRecordPrefix = `${keyPrefix}log-record:`;
+const logKeyIndexPrefix = `${keyPrefix}log-key:`;
+const logCursorPrefix = `${keyPrefix}log-cursor:`;
+const logSegmentPrefix = `${keyPrefix}log-segment:`;
+const logSegmentIndexKey = `${keyPrefix}log-segment-index`;
+const logNextOffsetKey = `${keyPrefix}log-next-offset`;
+const logTotalBytesKey = `${keyPrefix}log-total-bytes`;
+
+/**
+ * Segment bounds live in one index value so a lookup or expiry scan never
+ * batch-reads segment rows, which would exceed the KV multi-get limit.
+ */
+const logSegmentIndexSchema = z
+  .object({
+    first: z.number().int().nonnegative(),
+    last: z.number().int().nonnegative(),
+  })
+  .array();
+
 const encodeIndexPart = (value: string): string => encodeURIComponent(value);
 
 const deliveryAttemptClass = (row: DeliveryRow): number =>
@@ -67,6 +94,10 @@ const deliveryAttemptClass = (row: DeliveryRow): number =>
 
 type Atomically<Row extends DurableRecord> = <T>(
   callback: (table: KvTable<Row>) => Promise<T>
+) => Promise<T>;
+
+type LogAtomically = <T>(
+  callback: (table: KvLogTable) => Promise<T>
 ) => Promise<T>;
 
 /**
@@ -547,10 +578,319 @@ class KvDeliveryTable extends KvTable<DeliveryRow> implements DeliveryStore {
   }
 }
 
+class KvLogTable implements LogStore {
+  constructor(
+    private readonly kv: KvStorage,
+    private readonly atomically: LogAtomically
+  ) {}
+
+  async append(
+    records: readonly Pick<LogRecordRow, 'dedup_key' | 'payload' | 'bytes'>[],
+    appendedAt: number
+  ): Promise<number[]> {
+    if (records.length === 0) {
+      return [];
+    }
+
+    return this.atomically(async (table) => {
+      const payloads = new Map(
+        records.map((record) => [record.dedup_key, record])
+      );
+      const keys = [...payloads.keys()];
+      const indexes = await table.kv.get<unknown>(
+        keys.map((key) => table.keyIndex(key))
+      );
+      const assigned = new Map<string, number>();
+      for (const key of keys) {
+        const offset = counterSchema.parse(indexes.get(table.keyIndex(key)));
+        if (offset !== undefined) {
+          assigned.set(key, offset);
+        }
+      }
+
+      const fresh = keys.filter((key) => !assigned.has(key));
+      if (fresh.length > 0) {
+        const first =
+          counterSchema.parse(await table.kv.get(logNextOffsetKey)) ?? 0;
+        const next = first + fresh.length;
+        if (!Number.isSafeInteger(next)) {
+          throw new RangeError('Log offset exhausted');
+        }
+        const added = fresh.reduce(
+          (total, key) => total + payloads.get(key)!.bytes,
+          0
+        );
+        const total =
+          counterSchema.parse(await table.kv.get(logTotalBytesKey)) ?? 0;
+
+        const entries: Record<string, unknown> = {
+          [logNextOffsetKey]: next,
+          [logTotalBytesKey]: total + added,
+        };
+        fresh.forEach((key, index) => {
+          const offset = first + index;
+          assigned.set(key, offset);
+          const record = payloads.get(key)!;
+          entries[table.recordKey(offset)] = {
+            offset,
+            dedup_key: key,
+            payload: record.payload,
+            bytes: record.bytes,
+            appended_at: appendedAt,
+          };
+          entries[table.keyIndex(key)] = offset;
+        });
+        await table.kv.put(entries);
+      }
+
+      return records.map(({ dedup_key }) => assigned.get(dedup_key)!);
+    });
+  }
+
+  async read(from: number, limit: number): Promise<LogRecordRow[]> {
+    if (limit <= 0) {
+      return [];
+    }
+    const index = await this.kv.list({
+      prefix: logRecordPrefix,
+      start: this.recordKey(from),
+      limit,
+    });
+    return logRecordRowSchema.array().parse([...index.values()]);
+  }
+
+  async bounds(): Promise<LogBounds> {
+    const nextOffset =
+      counterSchema.parse(await this.kv.get(logNextOffsetKey)) ?? 0;
+    const hotIndex = await this.kv.list({
+      prefix: logRecordPrefix,
+      limit: 1,
+    });
+    const first = hotIndex.keys().next().value;
+    const hotOffset =
+      typeof first === 'string'
+        ? indexTimestampSchema.parse(
+            first.slice(
+              logRecordPrefix.length,
+              logRecordPrefix.length + timestampWidth
+            )
+          )
+        : nextOffset;
+    const segmentIndex =
+      logSegmentIndexSchema
+        .optional()
+        .parse(await this.kv.get(logSegmentIndexKey)) ?? [];
+    const coldOffset = segmentIndex[0]?.first;
+
+    return {
+      oldestOffset: Math.min(coldOffset ?? hotOffset, hotOffset),
+      hotOffset,
+      nextOffset,
+    };
+  }
+
+  async count(): Promise<number> {
+    let count = 0;
+    let startAfter: string | undefined;
+    for (;;) {
+      // Each page starts after the previous one, so it cannot be parallel.
+      // eslint-disable-next-line no-await-in-loop
+      const page = await this.kv.list({
+        prefix: logRecordPrefix,
+        limit: 128,
+        ...(startAfter === undefined ? {} : { startAfter }),
+      });
+      count += page.size;
+      if (page.size < 128) {
+        return count;
+      }
+      startAfter = [...page.keys()][page.size - 1];
+    }
+  }
+
+  async totalBytes(): Promise<number> {
+    return counterSchema.parse(await this.kv.get(logTotalBytesKey)) ?? 0;
+  }
+
+  async listOldest(limit: number): Promise<LogRecordRow[]> {
+    if (limit <= 0) {
+      return [];
+    }
+    const index = await this.kv.list({ prefix: logRecordPrefix, limit });
+    return logRecordRowSchema.array().parse([...index.values()]);
+  }
+
+  async trimThrough(through: number, limit: number): Promise<number> {
+    if (limit <= 0) {
+      return 0;
+    }
+    return this.atomically(async (table) => {
+      const index = await table.kv.list({
+        prefix: logRecordPrefix,
+        end: table.recordKey(through),
+        limit,
+      });
+      const rows = logRecordRowSchema.array().parse([...index.values()]);
+      if (rows.length === 0) {
+        return 0;
+      }
+
+      const primaryKeys = [...index.keys()];
+      const doomed = rows.flatMap((row, position) => [
+        primaryKeys[position]!,
+        table.keyIndex(row.dedup_key),
+      ]);
+      for (let start = 0; start < doomed.length; start += purgeBatchSize) {
+        // eslint-disable-next-line no-await-in-loop
+        await table.kv.delete(doomed.slice(start, start + purgeBatchSize));
+      }
+      const total =
+        counterSchema.parse(await table.kv.get(logTotalBytesKey)) ?? 0;
+      const removedBytes = rows.reduce((sum, row) => sum + row.bytes, 0);
+      await table.kv.put(logTotalBytesKey, Math.max(0, total - removedBytes));
+      return rows.length;
+    });
+  }
+
+  async insertSegment(row: LogSegmentRow): Promise<void> {
+    await this.atomically(async (table) => {
+      const current =
+        logSegmentIndexSchema
+          .optional()
+          .parse(await table.kv.get(logSegmentIndexKey)) ?? [];
+      const entry = { first: row.first_offset, last: row.last_offset };
+      const next = [
+        ...current.filter(({ first }) => first !== row.first_offset),
+        entry,
+      ].sort((left, right) => left.first - right.first);
+      await table.kv.put({
+        [table.segmentKey(row.first_offset)]: row,
+        [logSegmentIndexKey]: next,
+      });
+    });
+  }
+
+  async findSegment(offset: number): Promise<LogSegmentRow | undefined> {
+    const segments =
+      logSegmentIndexSchema
+        .optional()
+        .parse(await this.kv.get(logSegmentIndexKey)) ?? [];
+    let low = 0;
+    let high = segments.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (segments[middle]!.first <= offset) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    const candidate = segments[low - 1];
+    if (candidate === undefined || candidate.last < offset) {
+      return undefined;
+    }
+    return logSegmentRowSchema
+      .optional()
+      .parse(await this.kv.get(this.segmentKey(candidate.first)));
+  }
+
+  async deleteSegmentsBefore(offset: number): Promise<number> {
+    return this.atomically(async (table) => {
+      const segments =
+        logSegmentIndexSchema
+          .optional()
+          .parse(await table.kv.get(logSegmentIndexKey)) ?? [];
+      const doomed = segments.filter(({ last }) => last < offset);
+      if (doomed.length === 0) {
+        return 0;
+      }
+
+      const doomedKeys = doomed.map(({ first }) => table.segmentKey(first));
+      for (let start = 0; start < doomedKeys.length; start += purgeBatchSize) {
+        // eslint-disable-next-line no-await-in-loop
+        await table.kv.delete(doomedKeys.slice(start, start + purgeBatchSize));
+      }
+      await table.kv.put(
+        logSegmentIndexKey,
+        segments.filter(({ last }) => last >= offset)
+      );
+      return doomed.length;
+    });
+  }
+
+  async cursor(consumer: string): Promise<number | undefined> {
+    return logCursorRowSchema
+      .optional()
+      .parse(await this.kv.get(this.cursorKey(consumer)))?.offset;
+  }
+
+  async commit(
+    consumer: string,
+    offset: number,
+    committedAt: number
+  ): Promise<void> {
+    await this.atomically(async (table) => {
+      const key = table.cursorKey(consumer);
+      const current = logCursorRowSchema
+        .optional()
+        .parse(await table.kv.get(key));
+      if (current !== undefined && offset <= current.offset) {
+        return;
+      }
+      await table.kv.put(key, {
+        consumer,
+        offset,
+        committed_at: committedAt,
+      });
+    });
+  }
+
+  async cursors(): Promise<LogCursorRow[]> {
+    const rows: LogCursorRow[] = [];
+    let startAfter: string | undefined;
+    for (;;) {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await this.kv.list({
+        prefix: logCursorPrefix,
+        limit: 128,
+        ...(startAfter === undefined ? {} : { startAfter }),
+      });
+      rows.push(...logCursorRowSchema.array().parse([...page.values()]));
+      if (page.size < 128) {
+        return rows.sort((left, right) =>
+          left.consumer < right.consumer
+            ? -1
+            : left.consumer > right.consumer
+              ? 1
+              : 0
+        );
+      }
+      startAfter = [...page.keys()][page.size - 1];
+    }
+  }
+
+  private recordKey(offset: number): string {
+    return `${logRecordPrefix}${timestampKey(offset)}`;
+  }
+
+  private segmentKey(firstOffset: number): string {
+    return `${logSegmentPrefix}${timestampKey(firstOffset)}`;
+  }
+
+  private keyIndex(dedupKey: string): string {
+    return `${logKeyIndexPrefix}${encodeIndexPart(dedupKey)}`;
+  }
+
+  private cursorKey(consumer: string): string {
+    return `${logCursorPrefix}${encodeIndexPart(consumer)}`;
+  }
+}
+
 class KvSession implements DurabilityStorageTransaction {
   readonly calls: KvTable<CallRow>;
   readonly alarms: KvTable<AlarmRow>;
   readonly deliveries: KvDeliveryTable;
+  readonly log: KvLogTable;
 
   constructor(
     readonly physicalAlarm: KvStorage,
@@ -564,6 +904,9 @@ class KvSession implements DurabilityStorageTransaction {
     );
     this.deliveries = new KvDeliveryTable(physicalAlarm, (callback) =>
       atomically((session) => callback(session.deliveries))
+    );
+    this.log = new KvLogTable(physicalAlarm, (callback) =>
+      atomically((session) => callback(session.log))
     );
   }
 }
@@ -588,6 +931,7 @@ export const createKvDurabilityStorage = (
     calls: session.calls,
     alarms: session.alarms,
     deliveries: session.deliveries,
+    log: session.log,
     transaction,
   };
 };

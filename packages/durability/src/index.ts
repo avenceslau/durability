@@ -27,6 +27,19 @@ export {
   type FanoutEnqueueOptions,
 } from './fanout.js';
 export {
+  DurabilityLog,
+  maxLogBytes,
+  type DurabilityLogConfig,
+  type LogAppendInput,
+  type LogColdStorage,
+  type LogPage,
+  type LogReadOptions,
+  type LogRecord,
+  type LogRetention,
+  type LogSegment,
+} from './log.js';
+export type { LogBounds } from './storage.js';
+export {
   RoutingLoad,
   type EnqueueResult,
   type LoadSnapshot,
@@ -52,6 +65,8 @@ export {
   FanoutTimeoutError,
   FanoutSettlementError,
   FanoutEnqueueError,
+  LogAppendError,
+  LogTruncatedError,
   RoutingError,
 } from './errors.js';
 export type { DurabilityLifecycleEvent } from './lifecycle.js';
@@ -59,6 +74,7 @@ export {
   durabilityNamedAlarmMigrations,
   durabilityOperationMigrations,
   durabilityFanoutMigrations,
+  durabilityLogMigrations,
   type DurabilityMigrationResult,
   type MigrationCapability,
 } from './migrations.js';

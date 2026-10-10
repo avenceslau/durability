@@ -6,6 +6,7 @@ import {
   type DurableCall,
 } from '../src';
 export { DeliveryObject, FanoutConsumer } from './fanout-worker';
+export { KvLogTestObject, LogTestObject } from './log-worker';
 
 export type RecordedAlarm = {
   attempt: number;

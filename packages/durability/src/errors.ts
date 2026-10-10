@@ -127,6 +127,31 @@ export class FanoutEnqueueError extends Error {
   }
 }
 
+/** A definite rejection before records were durably appended. */
+export class LogAppendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LogAppendError';
+  }
+}
+
+/**
+ * Thrown when a read starts below the retained window, so a consumer that
+ * falls further behind than retention learns it lost records instead of
+ * silently skipping them.
+ */
+export class LogTruncatedError extends Error {
+  constructor(
+    readonly requestedOffset: number,
+    readonly oldestOffset: number
+  ) {
+    super(
+      `Log offset ${requestedOffset} was trimmed; the oldest retained offset is ${oldestOffset}`
+    );
+    this.name = 'LogTruncatedError';
+  }
+}
+
 /** Error thrown when a sharding function returns an invalid shard key. */
 export class RoutingError extends Error {
   constructor(message: string) {
