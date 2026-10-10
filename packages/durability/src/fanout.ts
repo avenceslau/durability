@@ -56,9 +56,15 @@ export type FanoutTarget<Body> = ExecutionPolicyOptions &
         deliver(
           messages: DurabilityFanoutMessage<Body>[]
         ): unknown | Promise<unknown>;
+        /**
+         * Acks every message the consumer leaves unsettled when `deliver`
+         * returns without throwing, in one transaction instead of one call
+         * per message. Explicit `retry()` and `deadLetter()` still apply.
+         */
+        ackOnReturn?: boolean;
         storage?: never;
       }
-    | { storage: MessageWrite<Body>; deliver?: never }
+    | { storage: MessageWrite<Body>; deliver?: never; ackOnReturn?: never }
   );
 
 export type FanoutEnqueueOptions = {
@@ -70,9 +76,14 @@ export type DurabilityFanoutConfig<Body> = SchedulerAttachment &
   ExecutionPolicyOptions & {
     targets: Record<string, FanoutTarget<Body>>;
     routing?: RoutingLoad;
-    /** Receives terminal failures. Without it, terminal work is retained. */
+    /** Receives terminal failures. Without it, terminal deliveries are dropped. */
     dlq?: MessageWrite<Body>;
     maxBatchSize?: number;
+    /**
+     * Holds first deliveries for up to this many milliseconds so messages
+     * arriving together share a batch. Defaults to 0 (deliver immediately).
+     */
+    batchDelayMs?: number;
     onLifecycleEvent?: LifecycleHook;
   };
 
@@ -112,12 +123,17 @@ export class DurabilityFanout<Body = unknown> {
   readonly #policies: Map<string, AttemptPolicy>;
   readonly #dlq: MessageWrite<Body> | undefined;
   readonly #maxBatchSize: number;
+  readonly #batchDelayMs: number;
   readonly #emit: Emit;
   readonly #running = new Map<string, Promise<void>>();
 
   constructor(config: DurabilityFanoutConfig<Body>) {
     this.#maxBatchSize = config.maxBatchSize ?? 10;
     assertPositiveInteger('maxBatchSize', this.#maxBatchSize);
+    this.#batchDelayMs = config.batchDelayMs ?? 0;
+    if (!Number.isSafeInteger(this.#batchDelayMs) || this.#batchDelayMs < 0) {
+      throw new RangeError('batchDelayMs must be a non-negative integer');
+    }
     this.#targets = new Map(
       Object.entries(config.targets).map(([id, target]) => [id, { ...target }])
     );
@@ -260,7 +276,7 @@ export class DurabilityFanout<Body = unknown> {
               status: 'pending',
               phase: 'delivery',
               attempt: 0,
-              next_attempt_at: message.created_at,
+              next_attempt_at: this.#firstAttemptAt(message.created_at),
               last_error: null,
               last_error_name: null,
               dead_lettered_at: null,
@@ -298,7 +314,8 @@ export class DurabilityFanout<Body = unknown> {
       });
     }
     const load = await this.load();
-    if (registered.length > 0) {
+    // Delayed first attempts are not due yet; the scheduler wakes for them.
+    if (registered.length > 0 && this.#batchDelayMs === 0) {
       const onError = (error: unknown) =>
         reportFailure('durability.fanout.failed', {}, error);
       const work = this.#runDue()
@@ -307,6 +324,15 @@ export class DurabilityFanout<Body = unknown> {
       this.#engine.waitUntil(work, onError);
     }
     return { success: true, value: entries.map(({ id }) => id), load };
+  }
+
+  // Rounding up to a shared boundary makes every message in the window due together.
+  #firstAttemptAt(createdAt: number): number {
+    if (this.#batchDelayMs === 0) {
+      return createdAt;
+    }
+
+    return Math.ceil(createdAt / this.#batchDelayMs) * this.#batchDelayMs;
   }
 
   async #runDue(): Promise<void> {
@@ -476,6 +502,9 @@ export class DurabilityFanout<Body = unknown> {
         for (const state of states) {
           state.closed = true;
         }
+        if (!invocationFailed && target.ackOnReturn) {
+          this.#ackUnsettled(states, startedAt);
+        }
         // A callback failure must not bypass already-started settlements.
         // The outer deadline still bounds a hung storage or RPC operation.
         const settlements = await Promise.allSettled(
@@ -531,6 +560,56 @@ export class DurabilityFanout<Body = unknown> {
         serializeError(failure),
         startedAt
       );
+    }
+  }
+
+  /** Acks every unsettled message of a batch in one transaction. */
+  #ackUnsettled(states: Settlement[], startedAt: number): void {
+    const unsettled = states.filter((state) => state.outcome === undefined);
+    if (unsettled.length === 0) {
+      return;
+    }
+
+    const removed = this.#engine.transaction(async (transaction) => {
+      const ids = new Set<string>();
+      for (const { claim } of unsettled) {
+        // eslint-disable-next-line no-await-in-loop
+        const deleted = await transaction.deliveries.remove(
+          claim.row.id,
+          claim.row.generation_id,
+          claim.row.attempt
+        );
+        if (deleted) {
+          ids.add(claim.row.id);
+        }
+      }
+      await this.#engine.reconcile(transaction);
+      return ids;
+    });
+
+    for (const state of unsettled) {
+      state.outcome = 'ack';
+      state.pending = removed
+        .then((ids) => {
+          // A row a later attempt already reclaimed stays with that attempt.
+          if (!ids.has(state.claim.row.id)) {
+            return undefined;
+          }
+          state.completed = true;
+          this.#emit({
+            ...entity(state.claim),
+            type: 'attempt_settled',
+            timestamp: Date.now(),
+            attempt: state.claim.row.attempt,
+            durationMs: Math.max(0, Date.now() - startedAt),
+            outcome: 'completed',
+          });
+          return undefined;
+        })
+        .finally(() => {
+          state.finished = true;
+        });
+      void state.pending.catch(() => undefined);
     }
   }
 
@@ -691,6 +770,13 @@ export class DurabilityFanout<Body = unknown> {
       (row.last_error === null
         ? null
         : { name: row.last_error_name ?? 'Error', message: row.last_error });
+    // Without a DLQ nothing could ever accept this delivery, and retrying the
+    // dead-letter step would keep the object awake forever, so it is dropped.
+    if (!this.#dlq) {
+      await this.#remove(row);
+      this.#emitTerminal(claim, reason, error);
+      return;
+    }
     // Persist intent BEFORE external I/O: eviction or timeout must never turn
     // a terminal decision into another consumer delivery.
     await this.#engine.transaction(async (transaction) => {
@@ -713,9 +799,6 @@ export class DurabilityFanout<Body = unknown> {
       await this.#engine.reconcile(transaction);
     });
     try {
-      if (!this.#dlq) {
-        throw new Error('No DLQ configured; retaining terminal delivery');
-      }
       const stored: StoredMessage<Body> = {
         id: deliveryIdentity(row),
         messageId: message.id,
@@ -728,17 +811,7 @@ export class DurabilityFanout<Body = unknown> {
       };
       await this.#deadline(() => this.#dlq!(stored), infrastructureRetryMs);
       await this.#remove(row);
-      this.#emit({
-        ...entity(claim),
-        type: 'terminal',
-        timestamp: Date.now(),
-        attempt: row.attempt,
-        reason: reason === 'explicit' ? 'dead_lettered' : 'attempts_exhausted',
-        error: error ?? {
-          name: 'DeadLetter',
-          message: 'Dead-lettered by consumer',
-        },
-      });
+      this.#emitTerminal(claim, reason, error);
     } catch (caught) {
       reportFailure(
         'durability.fanout.dead_letter_failed',
@@ -746,6 +819,24 @@ export class DurabilityFanout<Body = unknown> {
         caught
       );
     }
+  }
+
+  #emitTerminal(
+    claim: Claim,
+    reason: DeadLetterReason,
+    error: SerializedError | null
+  ): void {
+    this.#emit({
+      ...entity(claim),
+      type: 'terminal',
+      timestamp: Date.now(),
+      attempt: claim.row.attempt,
+      reason: reason === 'explicit' ? 'dead_lettered' : 'attempts_exhausted',
+      error: error ?? {
+        name: 'DeadLetter',
+        message: 'Dead-lettered by consumer',
+      },
+    });
   }
 
   async #deadline(
