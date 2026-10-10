@@ -1,5 +1,15 @@
 # @durability/lint
 
+## 0.3.0
+
+### Minor Changes
+
+- bfb08ea: Add the `transform-next-once` rule to report transform handlers that invoke their `next` function more than once.
+
+### Patch Changes
+
+- c6d97b6: Reject durability classes that omit alarm delegation or write physical alarms directly.
+
 ## 0.2.0
 
 ### Minor Changes
