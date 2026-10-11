@@ -365,12 +365,26 @@ Without custom sharding, routing starts with one shard, samples two candidate sh
 
 First deliveries are ordered by enqueue sequence per shard and target. Waiting retries do not block later first deliveries; completion order is not guaranteed. Each scheduler pass advances a bounded batch per target (`maxBatchSize`, default 10) with the shared concurrency pool. Different targets progress independently subject to that capacity.
 
+Set `batchDelayMs` to hold first deliveries for up to that many milliseconds, so messages enqueued together reach the consumer as one batch instead of one call each. Each first attempt is rounded up to the next multiple of `batchDelayMs`, so messages enqueued within the same window become due at the same time. It delays delivery, not acceptance: `enqueue` still returns once the batch commits. Retries keep their policy delay.
+
 Consumer callbacks may forward the batch to any ordinary WorkerEntrypoint RPC method. Messages include `id`, `deliveryId`, `target`, `body`, `attempt`, `enqueuedAt`, and callable settlement capabilities:
 
 - `ack()` settles this target only.
 - `retry(10)` schedules eligibility after 10 ms, overriding the policy delay. It is not a real-time delivery guarantee.
 - `deadLetter()` records durable terminal intent before writing to the DLQ. Exhaustion does the same automatically.
 - Returning, throwing, or timing out leaves unsettled messages eligible for retry. A second or late settlement call rejects with `FanoutSettlementError`.
+
+Each settlement call is an RPC back into the Durable Object plus a storage transaction. For consumers that only ever acknowledge the whole batch, set `ackOnReturn: true` on the target: when `deliver` returns without throwing, every message the consumer did not settle explicitly is acknowledged in one transaction, without a call per message. Explicit `retry()` and `deadLetter()` calls still apply, and a throw or timeout acknowledges nothing.
+
+```ts
+targets: {
+  consumer: {
+    deliver: (messages) => this.env.CONSUMER.consume(messages),
+    ackOnReturn: true,
+  },
+},
+batchDelayMs: 100,
+```
 
 Await settlement calls. Timed-out RPCs cannot be forcibly cancelled, so side effects may overlap later attempts. Storage targets automatically acknowledge successful writes; failed writes retry independently of consumer targets. Their write contract must be idempotent by the supplied delivery identity.
 
@@ -391,7 +405,7 @@ Two write invariants are the application's to uphold:
 - **Key each entry by `id` and refuse to overwrite it.** `id` is stable across delivery attempts, so a retried write collapses onto the same entry (`onlyIf: { etagDoesNotMatch: '*' }` on R2) and a redrive deletes exactly what it re-enqueued. `attempts` and `storedAt` advance between attempts, so entries are not byte-identical.
 - **Delete only after acceptance.** Reading entries back for replay or redrive is application policy, so nothing in the library lists or removes them.
 
-Retention is likewise external: filter on `storedAt` when selecting entries to redrive, and configure a **lifecycle deletion rule** on the prefix (for example 30 days on a DLQ prefix, unbounded for an archive) for physical expiry. A failed dead-letter write retains the terminal intent with a 60-second backoff rather than redelivering to the consumer, and omitting `dlq` retains terminal work rather than silently deleting it.
+Retention is likewise external: filter on `storedAt` when selecting entries to redrive, and configure a **lifecycle deletion rule** on the prefix (for example 30 days on a DLQ prefix, unbounded for an archive) for physical expiry. A failed dead-letter write retains the terminal intent with a 60-second backoff rather than redelivering to the consumer. Omitting `dlq` drops terminal deliveries: nothing could ever accept them, and retrying would keep the object awake indefinitely. The `terminal` lifecycle event still reports each one.
 
 Redrive is explicit application code, not queue sugar. Walk your own storage, select what to replay, then enqueue only the failed target:
 
