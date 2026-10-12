@@ -51,7 +51,12 @@ export type DurabilityLifecycleEvent =
       timestamp: number;
       attempt: number;
     })
-  | (LifecycleEntity & AttemptSettled & { outcome: 'completed' })
+  | (LifecycleEntity &
+      AttemptSettled & {
+        outcome: 'completed';
+        /** The handler's return value. Absent for fanout acknowledgements. */
+        result?: unknown;
+      })
   | (LifecycleEntity &
       AttemptSettled & {
         outcome: 'retry_scheduled';
@@ -80,6 +85,37 @@ export type LifecycleHook = (
 ) => void | Promise<void>;
 
 export type Emit = (event: DurabilityLifecycleEvent) => void;
+
+export type LifecycleHooks = {
+  emit: Emit;
+  add: (hook: LifecycleHook) => () => void;
+};
+
+/** Fans one helper's lifecycle events out to every attached hook. */
+export const createLifecycleHooks = (
+  emitter: (hook: LifecycleHook) => Emit,
+  initial: LifecycleHook | undefined
+): LifecycleHooks => {
+  const emits = new Set<Emit>();
+  const add = (hook: LifecycleHook) => {
+    const emit = emitter(hook);
+    emits.add(emit);
+    return () => {
+      emits.delete(emit);
+    };
+  };
+  if (initial) {
+    add(initial);
+  }
+  return {
+    emit: (event) => {
+      for (const emit of emits) {
+        emit(event);
+      }
+    },
+    add,
+  };
+};
 
 /**
  * Wraps a consumer hook so it can never affect queue state: synchronous throws

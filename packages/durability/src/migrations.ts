@@ -228,6 +228,25 @@ export const durabilityFanoutMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Ordered SQLite migrations for the outbound event log owned by
+ * {@link DurabilitySocket}. Applied automatically on construction.
+ */
+export const durabilitySocketMigrations = [
+  {
+    name: 'durability_0006_create_socket_events',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_socket_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `,
+    down: 'DROP TABLE IF EXISTS durability_socket_events;',
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -236,7 +255,11 @@ export type DurabilityMigrationResult = {
   rolledBack: string[];
 };
 
-export type MigrationCapability = 'operations' | 'namedAlarms' | 'fanout';
+export type MigrationCapability =
+  | 'operations'
+  | 'namedAlarms'
+  | 'fanout'
+  | 'socket';
 
 /**
  * Newer library versions may leave migrations this one does not know about.

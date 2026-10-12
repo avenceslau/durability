@@ -1,0 +1,9 @@
+{
+  "name": "realtime-todos-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-07",
+  "durable_objects": {
+    "bindings": [{ "name": "TODO_LISTS", "class_name": "TodoList" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TodoList"] }],
+}

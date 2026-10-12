@@ -8,6 +8,7 @@ Source recipes for the durability primitives, typechecked and linted by `pnpm ch
 | [`subscription-renewals`](./subscription-renewals) | `DurabilityAlarms` + `DurabilityScheduler`         | Recurring alarms registering operations and sharing one physical alarm.                                                                                                                    |
 | [`email-queue`](./email-queue)                     | `DurabilityRouting` + `DurabilityFanout` + storage | Application-owned DO, static consumer and archive targets, per-target DLQ redrive, acceptance/load envelopes, location hints and caller transforms. No queue wrapper or generated classes. |
 | [`rpc-transforms`](./rpc-transforms)               | `@durability/transforms`                           | Standalone caller/callee middleware, context transport, timeout and retry on a plain DO.                                                                                                   |
+| [`realtime-todos`](./realtime-todos)               | `DurabilitySocket` + `Durability`                  | Browser WebSocket RPC with validated inbound handlers, outbound events, durable operation completion bridged through the lifecycle hook, and a dependency-free browser client.             |
 
 Each example includes Wrangler configuration; upstream service bindings must point to real services or local stubs. Authenticate and validate HTTP inputs before using these sketches in an application. Administrative redrive should be protected, not exposed publicly.
 

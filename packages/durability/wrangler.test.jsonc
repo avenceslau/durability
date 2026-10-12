@@ -13,6 +13,10 @@
         "name": "KV_ALARM_TEST",
         "class_name": "KvAlarmTestObject",
       },
+      {
+        "name": "SOCKET_TEST",
+        "class_name": "SocketTestObject",
+      },
     ],
   },
   "services": [
@@ -40,6 +44,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["DeliveryObject"],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["SocketTestObject"],
     },
   ],
 }
