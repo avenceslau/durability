@@ -20,6 +20,9 @@ export type TestContext = {
   requestId?: string;
 };
 
+// Lives outside the object because ctx.abort() discards its in-memory state.
+const abortedKeys = new Set<string>();
+
 export class ContextDO extends DurableObject {
   setContext(context: TestContext) {
     return createTransformContextTarget(this, context);
@@ -31,6 +34,18 @@ export class ContextDO extends DurableObject {
 
   async result(): Promise<Result<number, never>> {
     return Result.ok(42);
+  }
+
+  async ping(): Promise<string> {
+    return 'pong';
+  }
+
+  async abortOnce(key: string): Promise<string> {
+    if (!abortedKeys.has(key)) {
+      abortedKeys.add(key);
+      this.ctx.abort('broken');
+    }
+    return 'recovered';
   }
 
   async abort(reason: string): Promise<void> {

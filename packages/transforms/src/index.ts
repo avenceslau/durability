@@ -417,6 +417,23 @@ type PipelineNode = {
   call(args: unknown[]): Promise<unknown>;
 };
 
+/** Shared by a stub and every `.with` view of it so a restore reaches all of them. */
+type StubSource<TTarget extends object> = {
+  stub: TTarget;
+  broken: boolean;
+  reopen?: () => TTarget;
+};
+
+function currentStub<TTarget extends object>(
+  source: StubSource<TTarget>
+): TTarget {
+  if (source.broken && source.reopen) {
+    source.stub = source.reopen();
+    source.broken = false;
+  }
+  return source.stub;
+}
+
 /**
  * Emulates RpcPromise pipelining for transformed calls. Transforms must observe
  * the settled result, so a pipelined member access or call waits for it and then
@@ -501,8 +518,56 @@ export function createTransformStub<TTarget extends object>(
     return target;
   }
 
-  return new Proxy(target, {
-    get(stub, property) {
+  return createSourceStub({ stub: target, broken: false }, transforms);
+}
+
+/**
+ * Returns a `get`-like function whose transformable stubs replace themselves
+ * after a call throws, because many Durable Object errors leave a stub broken.
+ *
+ * The failed call is not retried; the next call, including one made by the
+ * {@link retry} transform, uses a stub freshly obtained from the namespace with
+ * the original arguments. The Vite plugin inserts this for namespace `get` and
+ * `getByName` calls when `restoreBrokenStubs` is enabled.
+ *
+ * Returns `undefined` when the namespace or method is missing so rewritten
+ * optional calls keep short-circuiting.
+ *
+ * @example
+ * ```ts
+ * const stub = createRestorableStubFactory(env.MY_DURABLE_OBJECT, 'getByName')(
+ *   'room'
+ * );
+ * ```
+ */
+export function createRestorableStubFactory(
+  namespace: unknown,
+  method: string
+): ((...args: unknown[]) => TransformStub<object>) | undefined {
+  if (
+    (typeof namespace !== 'object' && typeof namespace !== 'function') ||
+    namespace === null
+  ) {
+    return undefined;
+  }
+
+  const get: unknown = Reflect.get(namespace, method);
+  if (typeof get !== 'function') {
+    return undefined;
+  }
+
+  return (...args) => {
+    const reopen = () => Reflect.apply(get, namespace, args) as object;
+    return createSourceStub({ stub: reopen(), broken: false, reopen }, []);
+  };
+}
+
+function createSourceStub<TTarget extends object>(
+  source: StubSource<TTarget>,
+  transforms: ConfiguredCallerTransform[]
+): TransformStub<TTarget> {
+  return new Proxy(source.stub, {
+    get(_target, property) {
       if (property === 'with') {
         return (
           transform: TransformIdentity & {
@@ -521,7 +586,7 @@ export function createTransformStub<TTarget extends object>(
             );
           }
 
-          return createTransformStub(target, [
+          return createSourceStub(source, [
             ...transforms,
             (context) =>
               Promise.resolve(Reflect.apply(configured, undefined, [context])),
@@ -529,58 +594,117 @@ export function createTransformStub<TTarget extends object>(
         };
       }
 
+      const accessedStub = currentStub(source);
       // Native bindings expose accessors that reject a Proxy receiver.
-      const value: unknown = Reflect.get(stub, property);
+      const value: unknown = Reflect.get(accessedStub, property);
       if (typeof value !== 'function' || typeof property !== 'string') {
         return value;
       }
 
+      // A concurrent call may already have replaced the broken stub.
+      const markBroken = (stub: TTarget) => {
+        if (source.stub === stub) {
+          source.broken = true;
+        }
+      };
+
+      // Observes failures without adopting the result, so pipelining survives.
+      const callObserved = (
+        method: (...args: unknown[]) => unknown,
+        initialArgs: unknown[]
+      ): unknown => {
+        let result: unknown;
+        try {
+          result = Reflect.apply(method, accessedStub, initialArgs);
+        } catch (error) {
+          markBroken(accessedStub);
+          throw error;
+        }
+        const then: unknown =
+          (typeof result === 'object' || typeof result === 'function') &&
+          result !== null
+            ? Reflect.get(result, 'then')
+            : undefined;
+        if (typeof then === 'function') {
+          Reflect.apply(then, result, [
+            () => undefined,
+            () => markBroken(accessedStub),
+          ]);
+        }
+        return result;
+      };
+
       const callWithTransforms = (initialArgs: unknown[]): Promise<unknown> => {
+        const call = (
+          stub: TTarget,
+          context: TransformContext
+        ): Promise<unknown> => {
+          if (Object.keys(context).length === 0) {
+            return Promise.resolve(
+              Reflect.apply(
+                (stub === accessedStub
+                  ? value
+                  : Reflect.get(stub, property)) as (
+                  ...args: unknown[]
+                ) => unknown,
+                stub,
+                initialArgs
+              )
+            );
+          }
+
+          const setContext = Reflect.get(stub, 'setContext');
+          if (typeof setContext !== 'function') {
+            throw new TypeError(
+              'Cannot send transform context to a target without setContext'
+            );
+          }
+
+          const contextualTarget: unknown = Reflect.apply(setContext, stub, [
+            context,
+          ]);
+          if (
+            (typeof contextualTarget !== 'object' &&
+              typeof contextualTarget !== 'function') ||
+            contextualTarget === null
+          ) {
+            throw new TypeError(
+              'setContext must return a transform context target'
+            );
+          }
+          const invoke = Reflect.get(contextualTarget, 'invoke');
+          if (typeof invoke !== 'function') {
+            throw new TypeError(
+              'setContext must return a target with an invoke method'
+            );
+          }
+          return Reflect.apply(invoke, contextualTarget, [
+            property,
+            initialArgs,
+          ]);
+        };
+
+        const callRestorable = async (
+          context: TransformContext
+        ): Promise<unknown> => {
+          const stub = currentStub(source);
+          try {
+            return await call(stub, context);
+          } catch (error) {
+            markBroken(stub);
+            throw error;
+          }
+        };
+
         const run = (
           index: number,
           context: TransformContext
         ): Promise<unknown> => {
           const transform = transforms[index];
           if (!transform) {
-            if (Object.keys(context).length === 0) {
-              return Promise.resolve(
-                Reflect.apply(
-                  value as (...args: unknown[]) => unknown,
-                  stub,
-                  initialArgs
-                )
-              );
-            }
-
-            const setContext = Reflect.get(stub, 'setContext');
-            if (typeof setContext !== 'function') {
-              throw new TypeError(
-                'Cannot send transform context to a target without setContext'
-              );
-            }
-
-            const contextualTarget: unknown = Reflect.apply(setContext, stub, [
-              context,
-            ]);
-            if (
-              (typeof contextualTarget !== 'object' &&
-                typeof contextualTarget !== 'function') ||
-              contextualTarget === null
-            ) {
-              throw new TypeError(
-                'setContext must return a transform context target'
-              );
-            }
-            const invoke = Reflect.get(contextualTarget, 'invoke');
-            if (typeof invoke !== 'function') {
-              throw new TypeError(
-                'setContext must return a target with an invoke method'
-              );
-            }
-            return Reflect.apply(invoke, contextualTarget, [
-              property,
-              initialArgs,
-            ]);
+            return source.reopen
+              ? callRestorable(context)
+              : call(source.stub, context);
           }
 
           return transform({
@@ -609,10 +733,16 @@ export function createTransformStub<TTarget extends object>(
             : member;
         },
         apply: (method, _thisArg, initialArgs: unknown[]) => {
-          if (transforms.length === 0) {
-            return Reflect.apply(method, stub, initialArgs);
+          if (transforms.length > 0) {
+            return pipelinedPromise(callWithTransforms(initialArgs));
           }
-          return pipelinedPromise(callWithTransforms(initialArgs));
+          if (source.reopen) {
+            return callObserved(
+              method as (...args: unknown[]) => unknown,
+              initialArgs
+            );
+          }
+          return Reflect.apply(method, accessedStub, initialArgs);
         },
       });
     },
