@@ -1,0 +1,65 @@
+.changeset/socket-sync.md
+  s_6e09dd2724ff44::t_260589a0f3dcbd 1-5
+README.md
+  s_6e09dd2724ff44::t_dd664d5716e86f 7-12
+examples/README.md
+  s_6e09dd2724ff44::t_54af7a54d2ab0c 11
+examples/package.json
+  s_6e09dd2724ff44::t_ab9d1f1fd6449a 13-14
+examples/realtime-todos/client.ts
+  s_6e09dd2724ff44::t_c5798f506d733d 1-46
+examples/realtime-todos/worker.ts
+  s_6e09dd2724ff44::t_cab90699bca580 1-141
+examples/realtime-todos/wrangler.jsonc
+  s_6e09dd2724ff44::t_5d734ba7e87d24 1-9
+packages/durability/README.md
+  s_6e09dd2724ff44::t_1af4c230dbee06 9,274-381
+packages/durability/package.json
+  s_6e09dd2724ff44::t_ee34db9083320b 4,18,22,24,35-38,43-46,72-74
+packages/durability/src/client.test.ts
+  s_6e09dd2724ff44::t_964183cfae63dc 1-435
+packages/durability/src/client.ts
+  s_6e09dd2724ff44::t_3e994431978ed5 1-580
+packages/durability/src/durability.ts
+  s_6e09dd2724ff44::t_3900a885bda8bf 11-12,14,125-156,228-229,242-246,290-299
+packages/durability/src/index.test.ts
+  s_6e09dd2724ff44::t_6634f2a5cfdfe2 2048-2093
+packages/durability/src/index.ts
+  s_6e09dd2724ff44::t_7f9ea26ff0b258 10,18,26,60
+packages/durability/src/socket-protocol.ts
+  s_6e09dd2724ff44::t_824bb546bd1f1f 1-198
+packages/durability/src/socket.test.ts
+  s_6e09dd2724ff44::t_e44b37780bb6a1 1-436
+packages/durability/src/socket.ts
+  s_6e09dd2724ff44::t_0ff9263bbfe68e 1-520
+packages/durability/tests/named-alarm-worker.ts
+  s_6e09dd2724ff44::t_7b63a6900f51ac 9-10,323-326
+packages/durability/tests/socket-worker.ts
+  s_6e09dd2724ff44::t_50be26ded1e9ed 1-102
+packages/durability/tests/socket.worker.test.ts
+  s_6e09dd2724ff44::t_a2468bdfac212a 1-159
+packages/durability/tsconfig.build.json
+  s_6e09dd2724ff44::t_6f725f1714d257 12-18
+packages/durability/tsconfig.client.json
+  s_6e09dd2724ff44::t_f53a76e168b72d 1-8
+packages/durability/wrangler.test.jsonc
+  s_6e09dd2724ff44::t_bffef4ed83c923 16-19,48-51
+pnpm-lock.yaml
+  s_6e09dd2724ff44::t_bb1e4c481120b1 38-40,63-65,262-321,2030-2059,3178-3184,3186-3192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "86bd0a96e3f4528c9831c1ea6374cdd657d497c9",
+  "prompts": {},
+  "sessions": {
+    "s_6e09dd2724ff44": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a12d50-6271-7048-8557-4ff6bb50b6ff",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
