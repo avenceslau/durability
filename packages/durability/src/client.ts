@@ -101,9 +101,15 @@ type EventHandlers<Outbound> = {
 } & {
   /** Observes connection status; the handler runs immediately with the current value. */
   status: (handler: (status: SocketStatus) => void) => () => void;
-  /** Fires when missed events could not be replayed and state must be rebuilt from a snapshot. */
-  resync: (handler: () => void) => () => void;
+  /**
+   * Fires when subscribers to `names` have no continuous history: on their
+   * first subscription, and whenever missed events could not be replayed.
+   * Rebuild their state from a snapshot.
+   */
+  resync: (handler: (info: SocketResync) => void) => () => void;
 };
+
+export type SocketResync = { names: string[] };
 
 /** One connection to one Durable Object. */
 export type SocketConnection<Socket extends AnySocketShape> = {
@@ -133,7 +139,9 @@ class Connection {
   readonly #pending = new Map<string, PendingCall>();
   readonly #handlers = new Map<string, Set<(payload: unknown) => void>>();
   readonly #statusHandlers = new Set<(status: SocketStatus) => void>();
-  readonly #resyncHandlers = new Set<() => void>();
+  readonly #resyncHandlers = new Set<(info: SocketResync) => void>();
+  readonly #subscribes = new Map<string, string[]>();
+  #acknowledged = new Set<string>();
 
   #status: SocketStatus = 'disconnected';
   #ws: WebSocket | undefined;
@@ -199,7 +207,7 @@ class Connection {
     };
   }
 
-  onResync(handler: () => void): () => void {
+  onResync(handler: (info: SocketResync) => void): () => void {
     this.#resyncHandlers.add(handler);
     return () => {
       this.#resyncHandlers.delete(handler);
@@ -262,14 +270,33 @@ class Connection {
       this.#connect();
       return;
     }
+    const names = [...this.#handlers.keys()];
     const frame: SocketClientFrame = {
       v: socketProtocolVersion,
       type: 'subscribe',
       id: `subscribe:${++this.#nextId}`,
-      names: [...this.#handlers.keys()],
+      names,
       ...(this.#lastSeq === undefined ? {} : { since: this.#lastSeq }),
     };
+    this.#subscribes.set(frame.id, names);
     this.#ws?.send(JSON.stringify(frame));
+  }
+
+  /** Names whose subscribers start without history: new ones, or all when replay failed. */
+  #subscribed(frame: Extract<SocketServerFrame, { type: 'subscribed' }>): void {
+    this.#lastSeq = frame.seq;
+    const names = this.#subscribes.get(frame.id) ?? [];
+    this.#subscribes.delete(frame.id);
+    const fresh = frame.replayed
+      ? names.filter((name) => !this.#acknowledged.has(name))
+      : names;
+    this.#acknowledged = new Set(names);
+    if (fresh.length === 0) {
+      return;
+    }
+    for (const handler of this.#resyncHandlers) {
+      this.#invoke(handler, { names: fresh }, 'resync');
+    }
   }
 
   /** Sends unsent calls; opens the connection first when needed. */
@@ -347,18 +374,13 @@ class Connection {
         this.#dispatch(frame.name, frame.payload);
         return;
       case 'subscribed':
-        this.#lastSeq = frame.seq;
-        if (!frame.replayed) {
-          for (const handler of this.#resyncHandlers) {
-            this.#invoke(handler, undefined, 'resync');
-          }
-        }
+        this.#subscribed(frame);
         return;
       case 'result':
         this.#settle(frame, (pending) => pending.resolve(frame.output));
         return;
       case 'error':
-        if (frame.id.startsWith('subscribe:')) {
+        if (this.#subscribes.delete(frame.id)) {
           reportFailure('durability.socket.subscribe_failed', {}, frame.error);
           return;
         }
@@ -403,6 +425,7 @@ class Connection {
   #disconnected(code: number): void {
     this.#stopTimers();
     this.#ws = undefined;
+    this.#subscribes.clear();
     for (const [id, pending] of this.#pending) {
       if (!pending.sent) {
         continue;
@@ -534,7 +557,8 @@ export class DurabilitySocketClient<Socket extends AnySocketShape> {
             connection.onStatus(handler);
         }
         if (name === 'resync') {
-          return (handler: () => void) => connection.onResync(handler);
+          return (handler: (info: SocketResync) => void) =>
+            connection.onResync(handler);
         }
         return typeof name === 'string'
           ? (handler: (payload: unknown) => void) =>
@@ -571,10 +595,12 @@ export const logging =
   };
 
 export {
+  socketShape,
   type AnySocketShape,
   type InboundOf,
   type OutboundOf,
   type SocketInboundInput,
   type SocketInboundOutput,
   type SocketOutboundPayload,
+  type SocketShape,
 } from './socket-protocol.js';

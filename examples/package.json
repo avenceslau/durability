@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@durability/tanstack-db": "workspace:^",
     "@durability/transforms": "workspace:^",
+    "@tanstack/db": "^0.13.0",
     "durability": "workspace:^",
     "zod": "^4.4.3"
   },

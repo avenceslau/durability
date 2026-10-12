@@ -223,7 +223,7 @@ describe('DurabilitySocketClient', () => {
       seq: 4,
       replayed: false,
     });
-    expect(resyncs).toHaveBeenCalledTimes(1);
+    expect(resyncs).toHaveBeenCalledWith({ names: ['created'] });
     ws.receive({
       type: 'event',
       seq: 5,
@@ -232,6 +232,7 @@ describe('DurabilitySocketClient', () => {
     });
     expect(seen).toEqual([{ id: '1', title: 'x' }]);
 
+    // Adding a name on a live socket resyncs only that name.
     conn.on.removed(() => undefined);
     expect(ws.frames()[1]).toEqual({
       v: 1,
@@ -240,9 +241,24 @@ describe('DurabilitySocketClient', () => {
       names: ['created', 'removed'],
       since: 5,
     });
+    ws.receive({
+      type: 'subscribed',
+      id: 'subscribe:2',
+      seq: 5,
+      replayed: true,
+    });
+    expect(resyncs).toHaveBeenLastCalledWith({ names: ['removed'] });
+    expect(resyncs).toHaveBeenCalledTimes(2);
 
     stop();
     expect(ws.frames()[2]).toMatchObject({ names: ['removed'], since: 5 });
+    ws.receive({
+      type: 'subscribed',
+      id: 'subscribe:3',
+      seq: 5,
+      replayed: true,
+    });
+    expect(resyncs).toHaveBeenCalledTimes(2);
     ws.receive({
       type: 'event',
       seq: 6,

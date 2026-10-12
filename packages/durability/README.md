@@ -421,10 +421,12 @@ conn.on.lifecycle((e) => {
     markSettled(e.id);
   }
 });
-conn.on.resync(() => reload()); // first connect, and after an unreplayable gap
+conn.on.resync(({ names }) => reload(names)); // first subscription, and after an unreplayable gap
 conn.on.status((status) => showStatus(status)); // connecting | connected | disconnected | closed
 conn.close();
 ```
+
+`on.resync` reports the outbound events whose subscribers have no continuous history: every mapped name on their first subscription, newly added names on a live connection, and all names after an unreplayable gap. Rebuild the affected state from an inbound snapshot call; `@durability/tanstack-db` does this for collections.
 
 Connections open lazily on the first call or subscription and reconnect with jittered exponential backoff. Calls queued before the socket opens are sent once; calls already sent when the connection drops reject with `SocketConnectionLostError` and are never replayed, because the server may have run them. Route retried mutations through `Durability` with a stable idempotency key rather than re-calling. Calls reject with `SocketTimeoutError` after `timeoutMs` (default 2 minutes). Server-side handler failures reject with `SocketRemoteError`, carrying the server error's `name` and `message`. `with(transform)` returns a new client that wraps every call; transforms receive `{ method, input, next }` and may replace the input.
 
