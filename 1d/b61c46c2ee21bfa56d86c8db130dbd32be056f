@@ -1,0 +1,43 @@
+.changeset/restore-broken-do-stubs.md
+  s_852c5c775f3947::t_4c9cab4064cef5 1-5
+packages/transforms/README.md
+  s_852c5c775f3947::t_4c93c6a30cced2 46-55
+packages/transforms/src/index.ts
+  s_09e45b615b5e46::t_d36b6fe508b307 394-410,428-477,496,504-505,511-574,581-583
+packages/transforms/src/vite.ts
+  s_09e45b615b5e46::t_f82abd2236eb7d 13-32,42,149-202,1060,1084-1090,1133,1153-1158,1160-1174,1179
+packages/transforms/tests/index.test.ts
+  s_852c5c775f3947::t_14a168fc13bdfe 4,9,12,360-452
+packages/transforms/tests/restore-broken-stubs.worker.test.ts
+  s_852c5c775f3947::t_4b8f113ff1ad54 1-42
+packages/transforms/tests/test-worker.ts
+  s_852c5c775f3947::t_2f086f25f8c52a 16-18,32-43
+packages/transforms/tests/vite.test.ts
+  s_852c5c775f3947::t_77e3e5159ab026 236-313
+packages/transforms/vite.config.ts
+  s_852c5c775f3947::t_ea3c7ef2097a07 8-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1db61c46c2ee21bfa56d86c8db130dbd32be056f",
+  "prompts": {},
+  "sessions": {
+    "s_09e45b615b5e46": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a12d98-9847-75a3-b2ba-d53b7194343e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_852c5c775f3947": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a12d8f-a785-7482-89a7-f8585196f78f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
