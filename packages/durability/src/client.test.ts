@@ -20,6 +20,22 @@ import {
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { SocketShape, socketShape } from './socket-protocol';
 
+// Node's undici/WebSocket stack exposes MessageEvent/Event but not CloseEvent.
+if (typeof CloseEvent === 'undefined') {
+  class NodeCloseEvent extends Event {
+    readonly code: number;
+    readonly reason: string;
+    readonly wasClean: boolean;
+    constructor(type: string, init: CloseEventInit = {}) {
+      super(type, init);
+      this.code = init.code ?? 0;
+      this.reason = init.reason ?? '';
+      this.wasClean = init.wasClean ?? false;
+    }
+  }
+  globalThis.CloseEvent = NodeCloseEvent as typeof CloseEvent;
+}
+
 type Todo = { id: string; title: string };
 
 type TestSocket = {
