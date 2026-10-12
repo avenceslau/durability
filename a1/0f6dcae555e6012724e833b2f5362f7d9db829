@@ -1,0 +1,19 @@
+packages/durability/README.md
+  s_6e09dd2724ff44::t_174d4b454ba98b 290-294,296-304,307-308,312-315,322-324,331-336,347-349,354,366,370,374-377,379-393,404,412-416,431
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a10f6dcae555e6012724e833b2f5362f7d9db829",
+  "prompts": {},
+  "sessions": {
+    "s_6e09dd2724ff44": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a12d50-6271-7048-8557-4ff6bb50b6ff",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
