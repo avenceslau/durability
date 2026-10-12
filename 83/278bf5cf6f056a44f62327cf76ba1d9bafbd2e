@@ -1,0 +1,53 @@
+.changeset/socket-resync-names.md
+  s_6e09dd2724ff44::t_030bbd9b6e7af1 1-5
+.changeset/tanstack-db.md
+  s_6e09dd2724ff44::t_d9e1848aa2a8ed 1-5
+examples/README.md
+  s_6e09dd2724ff44::t_da7960cd4efede 5-11
+examples/package.json
+  s_6e09dd2724ff44::t_9f69f7cfd52081 12,14
+examples/realtime-todos/collection.ts
+  s_6e09dd2724ff44::t_bba844b99acce7 1-40
+package.json
+  s_6e09dd2724ff44::t_986b45fb4b054e 18
+packages/durability/README.md
+  s_6e09dd2724ff44::t_97856ca227b968 424,429-430
+packages/durability/src/client.test.ts
+  s_6e09dd2724ff44::t_a1200326b9f4c6 226,235,244-251,255-261
+packages/durability/src/client.ts
+  s_6e09dd2724ff44::t_f923ceca7949a2 104-109,112-113,142-144,210,273,278,281,285-301,377,383,428,560-561,598,605
+packages/tanstack-db/LICENSE
+  s_6e09dd2724ff44::t_21405cdbc6518c 1-15
+packages/tanstack-db/README.md
+  s_6e09dd2724ff44::t_62d42e20c5786b 1-86
+packages/tanstack-db/package.json
+  s_6e09dd2724ff44::t_8502938d526eb6 1-62
+packages/tanstack-db/src/index.test.ts
+  s_6e09dd2724ff44::t_201ac767312dd4 1-352
+packages/tanstack-db/src/index.ts
+  s_6e09dd2724ff44::t_0802f1f15c4920 1-315
+packages/tanstack-db/tsconfig.build.json
+  s_6e09dd2724ff44::t_78fd31a56a5220 1-13
+packages/tanstack-db/tsconfig.json
+  s_6e09dd2724ff44::t_82751d434036e7 1-16
+packages/tanstack-db/vitest.config.ts
+  s_6e09dd2724ff44::t_1b66c42a51b05f 1-7
+pnpm-lock.yaml
+  s_6e09dd2724ff44::t_aa1f57107a6718 32-34,38-40,125-145,1088-1101,1302-1305,1657-1659,2549-2563,2766-2767,3131-3132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "83278bf5cf6f056a44f62327cf76ba1d9bafbd2e",
+  "prompts": {},
+  "sessions": {
+    "s_6e09dd2724ff44": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a12d50-6271-7048-8557-4ff6bb50b6ff",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
