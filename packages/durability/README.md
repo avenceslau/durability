@@ -287,30 +287,53 @@ const detach = durability.lifecycle((event) => {
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
-import { Durability, type DurableCall } from 'durability';
+import {
+  Durability,
+  type DurableCall,
+  type DurabilityLifecycleEvent,
+} from 'durability';
 import { DurabilitySocket, event, type SocketCall } from 'durability/socket';
+import { z } from 'zod';
+
+const TodoSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  done: z.boolean(),
+});
+type Todo = z.infer<typeof TodoSchema>;
+type Metadata = { userId: string };
 
 export class TodoList extends DurableObject<Env> {
+  private readonly todos = new Map<string, Todo>();
+
   readonly durability = new Durability({
     context: this.ctx,
     handlers: {
-      createTodo: async ({ payload }: DurableCall<Todo>) =>
-        this.repo.insert(payload),
+      createTodo: async ({ payload }: DurableCall<Todo>) => {
+        this.todos.set(payload.id, payload);
+        return payload;
+      },
     },
   });
 
   readonly socket = new DurabilitySocket({
     context: this.ctx,
     inbound: {
-      list: () => this.repo.list(),
+      // Bare handlers take no input (or `unknown` input they validate themselves).
+      list: () => [...this.todos.values()],
+      // Typed input requires a Standard Schema; here the handler is a durable operation.
       createTodo: {
         input: z.object({ id: z.string(), payload: TodoSchema }),
         handle: this.durability.createTodo,
       },
       toggle: {
         input: z.string(),
-        handle: async (id: string, call: SocketCall<{ userId: string }>) => {
-          const todo = await this.repo.toggle(id, call.metadata.userId);
+        handle: (id: string, call: SocketCall<Metadata>) => {
+          const todo = this.todos.get(id);
+          if (!todo) {
+            throw new RangeError(`No todo "${id}" for ${call.metadata.userId}`);
+          }
+          todo.done = !todo.done;
           this.socket.updated(todo);
           return todo;
         },
@@ -321,11 +344,14 @@ export class TodoList extends DurableObject<Env> {
       updated: event<Todo>(),
       lifecycle: event<DurabilityLifecycleEvent>(),
     },
-    metadata: (request) => ({ userId: request.headers.get('x-user-id')! }),
+    metadata: (request): Metadata => ({
+      userId: request.headers.get('x-user-id') ?? 'anonymous',
+    }),
   });
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // Push a durable operation's result to every subscriber once it has committed.
     this.durability.lifecycle((e) => {
       if (e.type === 'attempt_settled' && e.outcome === 'completed') {
         this.socket.created(e.result);
@@ -337,13 +363,34 @@ export class TodoList extends DurableObject<Env> {
   fetch(request: Request) {
     return this.socket.fetch(request);
   }
+
   webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     return this.socket.webSocketMessage(ws, message);
   }
+
   webSocketClose(ws: WebSocket) {
     this.socket.webSocketClose(ws);
   }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.durability.alarm(info);
+  }
 }
+
+// The Worker authenticates, then forwards the upgrade with trusted metadata.
+export default {
+  async fetch(request: Request, env: Env) {
+    const listId = new URL(request.url).pathname.split('/').pop() ?? '';
+    const userId = await authenticate(request);
+    if (!userId) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+    const upgrade = new Request(request, {
+      headers: { ...Object.fromEntries(request.headers), 'x-user-id': userId },
+    });
+    return env.TODO_LISTS.getByName(listId).fetch(upgrade);
+  },
+};
 ```
 
 An inbound handler is either a bare function, which receives no input or `unknown` input it validates itself, or `{ input, handle }`, where `input` is any [Standard Schema](https://standardschema.dev) validator (zod, Valibot, ArkType, …) and `handle` declares its parameter type. A bare function that claims a typed parameter does not compile. Handlers receive `call.metadata`, the value `metadata(request)` returned at upgrade time; it is stored in the WebSocket attachment, so it survives hibernation. The fronting Worker is responsible for authentication and for routing the upgrade to the right object; the socket does no authorization of its own. `metadata` must be assignable to every `SocketCall<…>` annotation the handlers declare.
@@ -354,7 +401,7 @@ The browser client derives every method and event type from the socket:
 
 ```ts
 import { DurabilitySocketClient, logging } from 'durability/client';
-import type { TodoList } from '../worker';
+import type { TodoList } from '../worker'; // type-only: nothing from the Worker is bundled
 
 const client = new DurabilitySocketClient<TodoList['socket']>({
   url: (listId) => `wss://example.com/lists/${listId}/ws`,
@@ -362,7 +409,11 @@ const client = new DurabilitySocketClient<TodoList['socket']>({
 
 const conn = client.connect('personal');
 const todos = await conn.rpc.list();
-await conn.rpc.toggle(todos[0].id);
+await conn.rpc.createTodo({
+  id: crypto.randomUUID(),
+  payload: { id: 'todo-1', title: 'Ship it', done: false },
+});
+await conn.rpc.toggle('todo-1');
 
 conn.on.updated((todo) => render(todo));
 conn.on.lifecycle((e) => {
@@ -377,7 +428,7 @@ conn.close();
 
 Connections open lazily on the first call or subscription and reconnect with jittered exponential backoff. Calls queued before the socket opens are sent once; calls already sent when the connection drops reject with `SocketConnectionLostError` and are never replayed, because the server may have run them. Route retried mutations through `Durability` with a stable idempotency key rather than re-calling. Calls reject with `SocketTimeoutError` after `timeoutMs` (default 2 minutes). Server-side handler failures reject with `SocketRemoteError`, carrying the server error's `name` and `message`. `with(transform)` returns a new client that wraps every call; transforms receive `{ method, input, next }` and may replace the input.
 
-`durability/client` imports nothing from `cloudflare:workers` and is typechecked against DOM types only.
+`durability/client` imports nothing from `cloudflare:workers` and is typechecked against DOM types only. The complete, typechecked version of this example lives in [`examples/realtime-todos`](../../examples/realtime-todos).
 
 ## Routing and fanout
 
