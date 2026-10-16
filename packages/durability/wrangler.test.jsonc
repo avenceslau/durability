@@ -17,6 +17,10 @@
         "name": "TRACKER_TEST",
         "class_name": "TrackerTestObject",
       },
+      {
+        "name": "OUTBOX_TEST",
+        "class_name": "OutboxObject",
+      },
     ],
   },
   "services": [
@@ -52,6 +56,10 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["TrackerTestObject"],
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["OutboxObject"],
     },
   ],
 }

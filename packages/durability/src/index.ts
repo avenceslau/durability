@@ -45,6 +45,12 @@ export {
   type LogBounds,
 } from './log.js';
 export {
+  DurabilityOutbox,
+  type DurabilityOutboxConfig,
+  type DurabilityOutboxEvent,
+  type OutboxEntry,
+} from './outbox.js';
+export {
   RoutingLoad,
   type EnqueueResult,
   type LoadSnapshot,
@@ -73,6 +79,7 @@ export {
   LogAppendError,
   LogLeaseError,
   LogTruncatedError,
+  OutboxTimeoutError,
   RoutingError,
 } from './errors.js';
 export type { DurabilityLifecycleEvent, LifecycleHook } from './lifecycle.js';
@@ -82,6 +89,7 @@ export {
   durabilityFanoutMigrations,
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
+  durabilityOutboxMigrations,
   type DurabilityMigrationResult,
   type MigrationCapability,
 } from './migrations.js';
