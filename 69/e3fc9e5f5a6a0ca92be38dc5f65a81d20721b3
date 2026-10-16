@@ -1,0 +1,55 @@
+.changeset/durability-outbox.md
+  s_f53e9c1eeeed43::t_69db9279ca39ef 1-5
+packages/durability/README.md
+  s_f53e9c1eeeed43::t_152ebb98e765f6 8,274-331
+packages/durability/src/errors.ts
+  s_f53e9c1eeeed43::t_faaa1eb5c59419 122-129
+packages/durability/src/index.ts
+  s_f53e9c1eeeed43::t_f6baa63c4ae470 29-34,61,69
+packages/durability/src/kv-storage.ts
+  s_c38883cbb1b412::t_f2ec81f9fe1509 7,16-17,51-56,559-690,695,710-712,736
+packages/durability/src/lifecycle.ts
+  s_f53e9c1eeeed43::t_2b7d3550671aad 24-32,36-37,48-52
+packages/durability/src/migrations.ts
+  s_f53e9c1eeeed43::t_2f02603aa6846b 231-274,283-287
+packages/durability/src/outbox.test.ts
+  s_f53e9c1eeeed43::t_175348dd5656f8 1-314
+packages/durability/src/outbox.ts
+  s_f53e9c1eeeed43::t_e4154f31c7fee8 1-484
+packages/durability/src/sqlite-storage.ts
+  s_f53e9c1eeeed43::t_79dd521f5673f6 7,17-18,59-66,103,538-592,597,608,654
+packages/durability/src/storage.ts
+  s_c38883cbb1b412::t_a984d56b59408f 66-82,166-181,186
+packages/durability/tests/named-alarm-worker.ts
+  s_f53e9c1eeeed43::t_d81258fadd50e9 9
+packages/durability/tests/outbox-worker.ts
+  s_f53e9c1eeeed43::t_9d1955c01f2029 1-117
+packages/durability/tests/outbox.worker.test.ts
+  s_f53e9c1eeeed43::t_e84491380898c7 1-49
+packages/durability/wrangler.test.jsonc
+  s_f53e9c1eeeed43::t_ffc2c280471348 16-23,52-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "69e3fc9e5f5a6a0ca92be38dc5f65a81d20721b3",
+  "prompts": {},
+  "sessions": {
+    "s_c38883cbb1b412": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a145aa-9163-720a-a5c8-66a69a1cbda8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f53e9c1eeeed43": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13c4e-5038-746a-9ef6-8989b8468b05",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
