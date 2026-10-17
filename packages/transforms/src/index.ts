@@ -335,10 +335,10 @@ type TransformCallerResult<TResult, TTransform> = TTransform extends {
       ? BetterResult<TResult | undefined, never>
       : TResult;
 
-// Transforms that keep the result type preserve each async method's declared
-// signature, which keeps overloads and pipelined RpcPromise types intact.
-// Synchronous methods become async because transforms run around them;
-// `setContext` is excluded because context transport never goes through them.
+// Transformed calls are always asynchronous. Transforms that keep the result
+// type preserve each async method's declared signature, which keeps overloads
+// and pipelined RpcPromise types intact. `setContext` is excluded because
+// context transport never goes through caller transforms.
 type ApplyCallerResult<
   TTarget extends object,
   TTransform,
@@ -346,13 +346,13 @@ type ApplyCallerResult<
   readonly callerResult: string;
 }
   ? {
-      [TKey in Exclude<keyof TTarget, 'with'>]: TTarget[TKey] extends (
-        ...args: infer TArgs
-      ) => Promise<infer TResult>
-        ? (
-            ...args: TArgs
-          ) => Promise<TransformCallerResult<TResult, TTransform>>
-        : TTarget[TKey];
+      [TKey in Exclude<keyof TTarget, 'with'>]: TKey extends 'setContext'
+        ? TTarget[TKey]
+        : TTarget[TKey] extends (...args: infer TArgs) => infer TResult
+          ? (
+              ...args: TArgs
+            ) => Promise<TransformCallerResult<Awaited<TResult>, TTransform>>
+          : TTarget[TKey];
     }
   : {
       [TKey in Exclude<keyof TTarget, 'with'>]: TKey extends 'setContext'

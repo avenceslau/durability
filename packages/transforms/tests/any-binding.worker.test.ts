@@ -110,6 +110,16 @@ describe('R2', () => {
     ).resolves.toMatchObject({ key: 'sync.txt', uploadId: 'upload-id' });
     expect(calls.map((call) => call.method)).toEqual(['resumeMultipartUpload']);
   });
+
+  it('types synchronous methods as async with result-changing transforms', async () => {
+    const result = await env.BUCKET.with(errorBoundary).resumeMultipartUpload(
+      'sync.txt',
+      'upload-id'
+    );
+
+    expect(Result.isOk(result)).toBe(true);
+    expect(Result.isOk(result) && result.value.key).toBe('sync.txt');
+  });
 });
 
 describe('Workflows', () => {

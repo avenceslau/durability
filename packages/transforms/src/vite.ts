@@ -545,6 +545,11 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       const typesPath = options.types
         ? resolve(config.root, options.types)
         : resolve(dirname(mainPath), 'do-transforms.generated.d.ts');
+      if (!typesPath.endsWith('.d.ts')) {
+        throw new Error(
+          `do-transforms types path must end in .d.ts: ${typesPath}`
+        );
+      }
       let modulePath = relative(dirname(typesPath), mainPath)
         .split('\\')
         .join('/');
@@ -567,12 +572,23 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           localClass,
         };
       });
-      const { env: wranglerEnvTypes } =
-        await wranglerModule.experimental_generateTypes({
-          config: wranglerPath,
-          includeRuntime: false,
-          path: typesPath,
-        });
+      let wranglerEnvTypes: string | null;
+      try {
+        ({ env: wranglerEnvTypes } =
+          await wranglerModule.experimental_generateTypes({
+            config: wranglerPath,
+            includeRuntime: false,
+            path: typesPath,
+          }));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw Object.assign(
+          new Error(
+            `do-transforms could not generate Wrangler binding types for ${wranglerPath}: ${detail}`
+          ),
+          { cause: error }
+        );
+      }
       const bindingTypes = wranglerBindingTypes(wranglerEnvTypes ?? '');
       const stubTypeEntries = [...stubBindingNames].flatMap((name) => {
         const type = bindingTypes.get(name);

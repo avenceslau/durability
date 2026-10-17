@@ -305,6 +305,17 @@ export default {
       `do-transforms could not load a valid Wrangler configuration at ${wranglerPath}: Expected services to be an array`
     );
   });
+
+  it('rejects a types path that is not a declaration file', async () => {
+    const typesPlugin = doTransforms({
+      wrangler: './wrangler.test.jsonc',
+      types: './env.ts',
+    }) as unknown as TestPlugin;
+
+    await expect(
+      typesPlugin.configResolved({ root: packageRoot } as ResolvedConfig)
+    ).rejects.toThrow('do-transforms types path must end in .d.ts');
+  });
 });
 
 describe('DurabilityRouting exportName injection', () => {
