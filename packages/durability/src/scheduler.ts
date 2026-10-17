@@ -472,10 +472,33 @@ export class Engine {
   }
 
   /**
+   * Runs due work and re-arms the physical alarm. A failure that would
+   * otherwise propagate to the platform is turned into a retry of our own,
+   * because the platform drops an alarm after a few failed deliveries.
+   */
+  async alarm(info?: AlarmInvocationInfo): Promise<void> {
+    try {
+      await this.runAlarm(info);
+    } catch (error) {
+      // Throwing lets the platform retry, but it gives up after a few failures
+      // and drops the alarm, stranding pending work. Keeping our own alarm
+      // armed turns the failure into a retry we control instead.
+      if (!(await this.armFallbackAlarm())) {
+        throw error;
+      }
+      reportFailure(
+        'durability.alarm.failed',
+        { retryInMs: this.alarmMinDelayMs },
+        error
+      );
+    }
+  }
+
+  /**
    * Runs every participant's due work, hands off to a fresh alarm if the
    * invocation approaches its wall-time limit, and re-arms the physical alarm.
    */
-  async alarm(info?: AlarmInvocationInfo): Promise<void> {
+  private async runAlarm(info?: AlarmInvocationInfo): Promise<void> {
     const startedAt = Date.now();
     const execution = Promise.all(
       this.participants.map((participant) =>
@@ -506,6 +529,16 @@ export class Engine {
       return;
     }
     await this.scheduleNextAlarm();
+  }
+
+  /** Arms the physical alarm directly, outside any transaction; the next run reconciles properly. */
+  private async armFallbackAlarm(): Promise<boolean> {
+    try {
+      await this.context.storage.setAlarm(Date.now() + this.alarmMinDelayMs);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private armForHandoff(timestamp: number): Promise<void> {
