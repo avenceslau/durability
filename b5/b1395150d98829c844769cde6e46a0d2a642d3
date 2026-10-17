@@ -1,0 +1,27 @@
+.changeset/wake-reconcile.md
+  s_89dff2fd3753ec::t_a1842ba14b4ec5 1-5
+packages/durability/README.md
+  s_89dff2fd3753ec::t_34e6246d11424c 795-798
+packages/durability/src/fanout.test.ts
+  s_89dff2fd3753ec::t_4670e2c9633908 546-561
+packages/durability/src/index.test.ts
+  s_89dff2fd3753ec::t_30e234c50f1efd 617-619,810-842
+packages/durability/src/scheduler.ts
+  s_89dff2fd3753ec::t_52c11b5c2fb078 175-176,211-249,288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b5b1395150d98829c844769cde6e46a0d2a642d3",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
