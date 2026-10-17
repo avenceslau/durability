@@ -22,7 +22,7 @@ Caller transforms run on the client only. Callee transforms and caller context s
 
 Without transforms, wrapped bindings behave exactly like the originals, including synchronous methods and RPC promise pipelining. With transforms, every call returns a promise that still supports pipelined access such as `stub.with(timeout, 1_000).counter().increment()`; the chained call waits for the transformed result instead of sharing its round trip. Methods on returned objects, such as a `WorkflowInstance`, are not transformed.
 
-For `DurabilityRouting.client({...})`, the plugin injects `exportName` from the targeted Durable Object's same-module export. The target must be a local class exported by that module and declared as a local Durable Object class in Wrangler (including migration classes). Export aliases are supported:
+For `DurabilityRouting.client({...})` and `DurabilitySemaphore.client({...})`, the plugin injects `exportName` from the targeted Durable Object's same-module export. The target must be a local class exported by that module and declared as a local Durable Object class in Wrangler (including migration classes). Export aliases are supported:
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';

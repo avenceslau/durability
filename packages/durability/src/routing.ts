@@ -1,9 +1,12 @@
-import { exports as workerExports } from 'cloudflare:workers';
 import {
   createTransformStub,
   type TransformContext,
   type TransformStub,
 } from '@durability/transforms';
+import {
+  resolveNamespace,
+  type DurableObjectTarget,
+} from './durable-object-target.js';
 import { RoutingError } from './errors.js';
 import { RoutingLoad, type EnqueueResult } from './load.js';
 import { RoutingClient, type Sharding } from './routing-client.js';
@@ -27,13 +30,7 @@ export type DurabilityRoutingConfig<
   Input,
   Value,
   Context = unknown,
-> = {
-  /** Application-owned exported Durable Object class. */
-  target: { prototype: Target };
-  /** Injected by the Vite plugin; explicit for builds without it. */
-  exportName?: string;
-  /** Explicit namespace escape hatch for cross-worker or non-Vite consumers. */
-  namespace?: () => DurableObjectNamespace<Target>;
+> = DurableObjectTarget<Target> & {
   /** Chooses the application method/capability to invoke; never hardcoded. */
   invoke(
     stub: DurableObjectStub<Target>,
@@ -59,28 +56,10 @@ export class DurabilityRouting extends RoutingLoad {
   ): TransformStub<RoutingSession<Input, Value, Context>> {
     const client = new RoutingClient<Input, Value, Context>({
       invoke: (address, input) => {
-        let namespace = config.namespace?.();
-        if (!namespace) {
-          if (!config.exportName) {
-            throw new RoutingError(
-              'Use the durability Vite plugin, exportName, or an explicit namespace to resolve the routing target'
-            );
-          }
-          const exported: unknown = Reflect.get(
-            workerExports,
-            config.exportName
-          );
-          if (
-            exported === null ||
-            (typeof exported !== 'object' && typeof exported !== 'function') ||
-            typeof Reflect.get(exported, 'getByName') !== 'function'
-          ) {
-            throw new RoutingError(
-              `Export "${config.exportName}" is not a Durable Object namespace`
-            );
-          }
-          namespace = exported as DurableObjectNamespace<Target>;
-        }
+        const namespace = resolveNamespace(
+          config,
+          (message) => new RoutingError(message)
+        );
         const stub = namespace.getByName(
           address.shard,
           address.locationHint === undefined

@@ -135,10 +135,12 @@ export const createLifecycleHooks = (
  * Wraps a consumer hook so it can never affect queue state: synchronous throws
  * and rejections are logged, and promises ride on `waitUntil` when available.
  */
-export const createEmitter = (
-  hook: LifecycleHook | undefined,
+export const createEmitter = <
+  Event extends { entityKind: string; type: string } = DurabilityLifecycleEvent,
+>(
+  hook: ((event: Event) => void | Promise<void>) | undefined,
   waitUntil: ((promise: Promise<unknown>) => void) | undefined
-): Emit => {
+): ((event: Event) => void) => {
   if (!hook) {
     return () => undefined;
   }
