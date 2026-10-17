@@ -10,7 +10,7 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 
 Durable capabilities own their storage and migrations. Routing observations are in-memory and advisory. When an object composes durable capabilities, one `DurabilityScheduler` shares its physical alarm and concurrency pool. No queue factory, generated DO class, or special consumer superclass is required.
 
-Durability is not an event-sourcing, replay-log, or workflow-orchestration engine. Operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed work is retried from later alarms. Both SQLite-backed and KV-backed Durable Object classes are supported.
+Durability is not an event-sourcing, replay-log, or workflow-orchestration engine. Operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed work is retried from later alarms. Only SQLite-backed Durable Object classes are supported.
 
 ## Migrating to v3
 
@@ -128,7 +128,7 @@ A timeout aborts the handler's `signal` and is terminal by default because the e
 
 ## Using both in one Durable Object
 
-A Durable Object has one physical alarm. When one object uses both helpers, create a `DurabilityScheduler` and pass it to each so they share the alarm, the storage backend, and the concurrency pool:
+A Durable Object has one physical alarm. When one object uses both helpers, create a `DurabilityScheduler` and pass it to each so they share the alarm, the storage, and the concurrency pool:
 
 ```ts
 import { Durability, DurabilityAlarms, DurabilityScheduler } from 'durability';
@@ -159,11 +159,11 @@ export class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`storageBackend`, `alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
+A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
 
-## Storage backends
+## Storage
 
-SQLite is the default. Configure the Durable Object class with `new_sqlite_classes`; no option is required:
+Durability stores its records in the object's SQLite database. Configure the Durable Object class with `new_sqlite_classes`:
 
 ```jsonc
 {
@@ -172,24 +172,6 @@ SQLite is the default. Configure the Durable Object class with `new_sqlite_class
 ```
 
 `Durability` creates and migrates `durability_calls`; `DurabilityAlarms` does the same for `durability_alarms`. Both histories are tracked in the shared `durability_migrations` table and only the constructed helpers' tables exist.
-
-For a class backed only by the KV storage API, configure it with `new_classes` and select the backend:
-
-```jsonc
-{
-  "migrations": [{ "tag": "v1", "new_classes": ["ImageJobs"] }],
-}
-```
-
-```ts
-const durability = new Durability({
-  context: this.ctx,
-  handlers,
-  storageBackend: 'kv',
-});
-```
-
-KV mode stores records and ordered pending/created indexes in the object's private key-value storage, never touches `storage.sql`, and creates no migration records. Records are not converted between backends; deploy a separate class or copy records explicitly before switching.
 
 ### Explicit migrations
 
@@ -255,7 +237,7 @@ const removedOperations = await this.durability.purgeBefore(retentionCutoff);
 const removedAlarms = await this.alarms.purgeBefore(retentionCutoff);
 ```
 
-SQLite purges in one transaction. KV purges in bounded transactions until no matching record remains, so retry if the invocation is interrupted. The purge best-effort aborts matching active handlers, but cannot force an abort-ignoring handler to stop. Operation IDs can be reused immediately; a late old generation cannot overwrite the replacement record.
+The purge runs in one transaction. It best-effort aborts matching active handlers, but cannot force an abort-ignoring handler to stop. Operation IDs can be reused immediately; a late old generation cannot overwrite the replacement record.
 
 ## Lifecycle metrics hook
 
@@ -395,7 +377,7 @@ export default {
 
 An inbound handler is either a bare function, which receives no input or `unknown` input it validates itself, or `{ input, handle }`, where `input` is any [Standard Schema](https://standardschema.dev) validator (zod, Valibot, ArkType, …) and `handle` declares its parameter type. A bare function that claims a typed parameter does not compile. Handlers receive `call.metadata`, the value `metadata(request)` returned at upgrade time; it is stored in the WebSocket attachment, so it survives hibernation. The fronting Worker is responsible for authentication and for routing the upgrade to the right object; the socket does no authorization of its own. `metadata` must be assignable to every `SocketCall<…>` annotation the handlers declare.
 
-Every outbound event is persisted to `durability_socket_events` with a sequence number before it is pushed. A reconnecting client subscribes from the last sequence it saw: events still within `retention` (default 1000) are replayed in order, otherwise the client is told to resync and should rebuild its state from an inbound snapshot call. Payloads must be JSON. The socket requires SQLite storage and throws for `storageBackend: 'kv'`. Keep-alive pings are answered by the runtime through `setWebSocketAutoResponse`, so idle connections never wake the object. Frames over 1 MiB are rejected; malformed frames close the connection with code `4002`.
+Every outbound event is persisted to `durability_socket_events` with a sequence number before it is pushed. A reconnecting client subscribes from the last sequence it saw: events still within `retention` (default 1000) are replayed in order, otherwise the client is told to resync and should rebuild its state from an inbound snapshot call. Payloads must be JSON. Keep-alive pings are answered by the runtime through `setWebSocketAutoResponse`, so idle connections never wake the object. Frames over 1 MiB are rejected; malformed frames close the connection with code `4002`.
 
 The browser client derives every method and event type from the socket:
 
