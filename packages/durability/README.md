@@ -688,20 +688,18 @@ export class Account extends DurableObject<Env> {
   private readonly topology = new DurabilityOutbox<Topology>({
     scheduler: this.scheduler,
     channel: 'topology',
+    // The sink keeps the highest version it has seen per key, so a slow
+    // publication of an older version can never overwrite a newer one.
     publish: async (entries) => {
-      const writes = await Promise.allSettled(
-        entries.map((entry) =>
-          this.env.TOPOLOGY.put(entry.key, JSON.stringify(entry.value), {
-            metadata: { version: entry.version },
-          })
-        )
+      const results = await this.env.TOPOLOGY_INDEX.replace(
+        entries.map(({ key, version, value }) => ({ key, version, value }))
       );
       // Returning acknowledges every entry not marked for retry.
-      writes.forEach((write, index) => {
-        if (write.status === 'rejected') {
+      for (const [index, result] of results.entries()) {
+        if (!result.ok) {
           entries[index]!.retry();
         }
-      });
+      }
     },
   });
 
@@ -723,11 +721,11 @@ export class Account extends DurableObject<Env> {
 ```
 
 - **Atomic with application state.** `stage()` inside `ctx.storage.transaction()` commits or rolls back with the application's writes.
-- **Versions.** Every `stage()` returns a version that is monotonic across the whole object, including after acknowledged entries are deleted. Sinks must be idempotent on `(key, version)` and keep the highest version they have seen: a slow publication of an older version can land after a newer one.
+- **Versions.** Every `stage()` returns a version that is monotonic across the whole object, including after acknowledged entries are deleted. Sinks must be idempotent on `(key, version)` and keep the highest version they have seen: a slow publication of an older version can land after a newer one. A plain `KV.put` cannot do this; compare versions in a Durable Object, a transactional store, or a conditional write.
 - **Acknowledgement.** `publish` returning acknowledges every entry not marked with `entry.retry(delayMs?)`; throwing or exceeding `attemptTimeoutMs` (default 60 seconds) retries the whole batch. Acknowledging a version deletes the entry only if it is still the newest, so an in-flight publication can never discard a later stage.
 - **Retries never give up.** Dropping the newest state would leave the sink stale forever, so there is no attempt limit or dead-letter queue; `retries.delay(attempt)` controls backoff (default: jittered exponential capped at 5 minutes).
-- **Channels.** Several outboxes share one scheduler and one set of tables, partitioned by `channel` (default `default`); each owns its own `publish`, and the same key in different channels is independent. Attaching two outboxes with the same channel to one scheduler throws. Entries of a channel no outbox attaches are retained and postponed, as fanout does for a removed target. Channels starting with `durability.` are reserved for helpers built on the outbox.
-- **Batching.** `maxBatchSize` (default 50) bounds one `publish` call; `batchDelayMs` holds first publication so rapid restages coalesce.
+- **Channels.** Several outboxes share one scheduler and one set of tables, partitioned by `channel` (default `default`); each owns its own `publish`, and the same key in different channels is independent. Attaching two outboxes with the same channel to one scheduler throws. Entries of a channel no outbox attaches are retained and postponed, as fanout does for a removed target.
+- **Batching.** `maxBatchSize` (default 50) bounds one `publish` call. `batchDelayMs` rounds first publication up to the next multiple of the delay, so stages within one window coalesce into a batch; a stage landing exactly on a boundary is due immediately.
 
 `DurabilityOutbox.migrate(this.ctx, null)` removes the outbox schema.
 

@@ -134,6 +134,85 @@ describe('outbox', () => {
     ]);
   });
 
+  it('publishes only the newer version after a timed-out publication of the older one', async () => {
+    const { scheduler } = fixture();
+    let releaseFirst!: () => void;
+    const sink = new Map<string, { version: number; value: string }>();
+    const outbox = new DurabilityOutbox<string>({
+      scheduler,
+      attemptTimeoutMs: 1_000,
+      retries: { delay: () => 0 },
+      publish: async (entries) => {
+        if (entries[0]!.version === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        for (const entry of entries) {
+          const current = sink.get(entry.key);
+          if (!current || current.version < entry.version) {
+            sink.set(entry.key, {
+              version: entry.version,
+              value: entry.value,
+            });
+          }
+        }
+      },
+    });
+
+    await outbox.stage('a', 'one');
+    const firstRun = outbox.alarm();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await firstRun;
+    await outbox.stage('a', 'two');
+    await outbox.alarm();
+    expect(sink.get('a')).toEqual({ version: 2, value: 'two' });
+
+    // The timed-out publication completes late; a version-aware sink ignores it.
+    releaseFirst();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sink.get('a')).toEqual({ version: 2, value: 'two' });
+    await outbox.alarm();
+    expect(sink.get('a')).toEqual({ version: 2, value: 'two' });
+  });
+
+  it('keeps a restaged key pending when the older attempt fails, and runs one batch at a time', async () => {
+    const { scheduler } = fixture();
+    let gate: (() => void) | undefined;
+    const versions: number[] = [];
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const outbox = new DurabilityOutbox<string>({
+      scheduler,
+      retries: { delay: () => 0 },
+      publish: async (entries) => {
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        try {
+          if (gate === undefined) {
+            await new Promise<void>((resolve) => {
+              gate = resolve;
+            });
+            throw new Error('sink unavailable');
+          }
+          versions.push(...entries.map((entry) => entry.version));
+        } finally {
+          concurrent -= 1;
+        }
+      },
+    });
+
+    await outbox.stage('a', 'one');
+    const failing = outbox.alarm();
+    await vi.waitFor(() => expect(gate).toBeDefined());
+    await outbox.stage('a', 'two');
+    gate!();
+    await failing;
+
+    await Promise.all([outbox.alarm(), outbox.alarm(), outbox.alarm()]);
+    expect(versions).toEqual([2]);
+    expect(maxConcurrent).toBe(1);
+  });
   it('retries only the entries the publisher marks', async () => {
     const { scheduler } = fixture();
     const seen: string[] = [];

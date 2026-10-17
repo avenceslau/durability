@@ -124,7 +124,10 @@ export type DurabilityOutboxConfig<Value> = SchedulerAttachment & {
   publish(entries: OutboxEntry<Value>[]): unknown | Promise<unknown>;
   /** Defaults to 50. */
   maxBatchSize?: number;
-  /** Holds first publication so rapid restages coalesce. Defaults to 0. */
+  /**
+   * Rounds first publication up to the next multiple of this delay so stages
+   * within one window share a batch. Defaults to 0.
+   */
   batchDelayMs?: number;
   /** Maximum duration of one `publish` call. Defaults to 60 seconds. */
   attemptTimeoutMs?: number;
