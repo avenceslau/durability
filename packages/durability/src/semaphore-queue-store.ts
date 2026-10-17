@@ -1,0 +1,283 @@
+import { z } from 'zod';
+
+export const queueItemRowSchema = z.object({
+  id: z.string(),
+  key: z.string(),
+  grp: z.string(),
+  payload: z.string(),
+  /** queued: waiting for permits; claiming: counted against a grant, awaiting confirmation; admitted: running. */
+  status: z.enum(['queued', 'claiming', 'admitted']),
+  grant_id: z.string().nullable(),
+  created_at: z.number().int().nonnegative(),
+  admitted_at: z.number().int().nonnegative().nullable(),
+  /** 0 until `admit()` has returned for this item. */
+  notified: z.number().int().min(0).max(1),
+  attempt: z.number().int().nonnegative(),
+  next_attempt_at: z.number().int().nonnegative(),
+});
+
+export type QueueItemRow = z.infer<typeof queueItemRowSchema>;
+
+export const queueGrantRowSchema = z.object({
+  grant_id: z.string(),
+  key: z.string(),
+  grp: z.string(),
+  permits: z.number().int().nonnegative(),
+  /** Permits counted against this grant locally, as a high-water mark. */
+  claimed: z.number().int().nonnegative(),
+  /** Claims the holder has confirmed. */
+  confirmed: z.number().int().nonnegative(),
+  released: z.number().int().nonnegative(),
+  created_at: z.number().int().nonnegative(),
+});
+
+export type QueueGrantRow = z.infer<typeof queueGrantRowSchema>;
+
+export const queueKeyRowSchema = z.object({
+  key: z.string(),
+  /** Earliest time the next permit request for this key may be sent. */
+  next_request_at: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative(),
+});
+
+export type QueueKeyRow = z.infer<typeof queueKeyRowSchema>;
+
+const queueItemColumns = queueItemRowSchema.keyof().options;
+const queueGrantColumns = queueGrantRowSchema.keyof().options;
+const statusCountSchema = z.object({
+  status: queueItemRowSchema.shape.status,
+  count: z.number().int().nonnegative(),
+});
+
+/**
+ * A semaphore client's queue: items, the grants it holds per key, and per-key
+ * request pacing. Due work is a key whose request time has passed with items
+ * queued, or an admitted item whose `admit()` notification is outstanding.
+ */
+export class QueueStore {
+  constructor(private readonly sql: SqlStorage) {}
+
+  getItem(id: string): QueueItemRow | undefined {
+    return this.items(
+      'SELECT * FROM durability_semaphore_queue_items WHERE id = ? LIMIT 1',
+      id
+    )[0];
+  }
+
+  insertItem(row: QueueItemRow): boolean {
+    return (
+      this.sql
+        .exec(
+          `INSERT INTO durability_semaphore_queue_items (${queueItemColumns.join(', ')})
+           VALUES (${queueItemColumns.map(() => '?').join(', ')})
+           ON CONFLICT(id) DO NOTHING
+           RETURNING id`,
+          ...queueItemColumns.map((column) => row[column])
+        )
+        .toArray().length > 0
+    );
+  }
+
+  updateItem(row: QueueItemRow): void {
+    this.sql.exec(
+      `UPDATE durability_semaphore_queue_items
+       SET status = ?, grant_id = ?, admitted_at = ?, notified = ?,
+         attempt = ?, next_attempt_at = ?
+       WHERE id = ?`,
+      row.status,
+      row.grant_id,
+      row.admitted_at,
+      row.notified,
+      row.attempt,
+      row.next_attempt_at,
+      row.id
+    );
+  }
+
+  removeItem(id: string): void {
+    this.sql.exec(
+      'DELETE FROM durability_semaphore_queue_items WHERE id = ?',
+      id
+    );
+  }
+
+  listItems(
+    key: string,
+    status: QueueItemRow['status'],
+    limit: number
+  ): QueueItemRow[] {
+    return this.items(
+      `SELECT * FROM durability_semaphore_queue_items
+       WHERE key = ? AND status = ?
+       ORDER BY created_at ASC, id ASC
+       LIMIT ?`,
+      key,
+      status,
+      limit
+    );
+  }
+
+  listItemsByGrant(grantId: string): QueueItemRow[] {
+    return this.items(
+      `SELECT * FROM durability_semaphore_queue_items
+       WHERE grant_id = ?
+       ORDER BY created_at ASC, id ASC`,
+      grantId
+    );
+  }
+
+  listUnnotified(now: number, limit: number): QueueItemRow[] {
+    return this.items(
+      `SELECT * FROM durability_semaphore_queue_items
+       WHERE status = 'admitted' AND notified = 0 AND next_attempt_at <= ?
+       ORDER BY next_attempt_at ASC
+       LIMIT ?`,
+      now,
+      limit
+    );
+  }
+
+  countItems(): Record<QueueItemRow['status'], number> {
+    const counts = { queued: 0, claiming: 0, admitted: 0 };
+    for (const row of statusCountSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT status, COUNT(*) AS count FROM durability_semaphore_queue_items
+           GROUP BY status`
+        )
+        .toArray()
+    )) {
+      counts[row.status] = row.count;
+    }
+    return counts;
+  }
+
+  getGrant(grantId: string): QueueGrantRow | undefined {
+    return queueGrantRowSchema
+      .optional()
+      .parse(
+        this.sql
+          .exec(
+            'SELECT * FROM durability_semaphore_queue_grants WHERE grant_id = ? LIMIT 1',
+            grantId
+          )
+          .toArray()[0]
+      );
+  }
+
+  insertGrant(row: QueueGrantRow): boolean {
+    return (
+      this.sql
+        .exec(
+          `INSERT INTO durability_semaphore_queue_grants (${queueGrantColumns.join(', ')})
+           VALUES (${queueGrantColumns.map(() => '?').join(', ')})
+           ON CONFLICT(grant_id) DO NOTHING
+           RETURNING grant_id`,
+          ...queueGrantColumns.map((column) => row[column])
+        )
+        .toArray().length > 0
+    );
+  }
+
+  updateGrant(row: QueueGrantRow): void {
+    this.sql.exec(
+      `UPDATE durability_semaphore_queue_grants
+       SET permits = ?, claimed = ?, confirmed = ?, released = ?
+       WHERE grant_id = ?`,
+      row.permits,
+      row.claimed,
+      row.confirmed,
+      row.released,
+      row.grant_id
+    );
+  }
+
+  removeGrant(grantId: string): void {
+    this.sql.exec(
+      'DELETE FROM durability_semaphore_queue_grants WHERE grant_id = ?',
+      grantId
+    );
+  }
+
+  listGrants(key: string): QueueGrantRow[] {
+    return queueGrantRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_grants
+           WHERE key = ? ORDER BY created_at ASC, grant_id ASC`,
+          key
+        )
+        .toArray()
+    );
+  }
+
+  getKey(key: string): QueueKeyRow | undefined {
+    return queueKeyRowSchema
+      .optional()
+      .parse(
+        this.sql
+          .exec(
+            'SELECT * FROM durability_semaphore_queue_keys WHERE key = ? LIMIT 1',
+            key
+          )
+          .toArray()[0]
+      );
+  }
+
+  upsertKey(row: QueueKeyRow): void {
+    this.sql.exec(
+      `INSERT INTO durability_semaphore_queue_keys (key, next_request_at, queued)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         next_request_at = excluded.next_request_at, queued = excluded.queued`,
+      row.key,
+      row.next_request_at,
+      row.queued
+    );
+  }
+
+  removeKey(key: string): void {
+    this.sql.exec(
+      'DELETE FROM durability_semaphore_queue_keys WHERE key = ?',
+      key
+    );
+  }
+
+  listDueKeys(now: number): QueueKeyRow[] {
+    return queueKeyRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_keys
+           WHERE queued > 0 AND next_request_at <= ?
+           ORDER BY next_request_at ASC`,
+          now
+        )
+        .toArray()
+    );
+  }
+
+  nextPendingAt(): number | undefined {
+    const candidates = [
+      this.sql
+        .exec(
+          `SELECT next_request_at AS at FROM durability_semaphore_queue_keys
+           WHERE queued > 0 ORDER BY next_request_at ASC LIMIT 1`
+        )
+        .toArray()[0]?.['at'],
+      this.sql
+        .exec(
+          `SELECT next_attempt_at AS at FROM durability_semaphore_queue_items
+           WHERE status = 'admitted' AND notified = 0
+           ORDER BY next_attempt_at ASC LIMIT 1`
+        )
+        .toArray()[0]?.['at'],
+    ].filter((value): value is number => typeof value === 'number');
+    return candidates.length === 0 ? undefined : Math.min(...candidates);
+  }
+
+  private items(query: string, ...bindings: SqlStorageValue[]): QueueItemRow[] {
+    return queueItemRowSchema
+      .array()
+      .parse(this.sql.exec(query, ...bindings).toArray());
+  }
+}

@@ -565,9 +565,64 @@ const grant = await limits.with(timeout, 5_000).request(accountId, {
 - **Grants and reports.** Each `(client, group)` that receives permits gets a grant. Clients report `claimed` (permits actually used) and `released` (claimed permits returned) per grant as cumulative high-water marks, piggybacked on requests or sent with a `sync` message. Counts only move forward and are clamped to the grant, so lost, repeated, or reordered reports can never free capacity twice. Permits a client never claims within `grantTimeoutMs` (default 10 seconds) are reclaimed; a later claim is answered with the clamped count and `status: 'expired'`.
 - **Blocked attribution.** Demand that stays queued is explained per group: `group_limit`, `limit`, `not_permitted` (`canGrant` returned false), or `limit_resolution_error` (`groupLimit` threw; the group fails closed).
 - **Limits are live.** `limit` and `groupLimit` are resolved once per round. Lowering a limit never evicts running work; it stops new admissions until usage is below the new ceiling.
-- **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`. A queueing client helper that drives this protocol is planned; today the client Durable Object owns its queue.
+- **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`.
 
 `usage()` reports the limit, outstanding permits, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
+
+### Queueing work in a client Durable Object
+
+`DurabilitySemaphoreQueue` is the client half: it queues items per semaphore key in arrival order, drives the protocol above against the holder, and hands items to the application once a permit is confirmed. Claims and releases are published through an internal `DurabilityOutbox` channel as cumulative counts, so a crash or lost response never loses or double-counts a permit.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { timeout } from '@durability/transforms';
+import { Durability, DurabilityScheduler } from 'durability';
+import { DurabilitySemaphoreQueue } from 'durability/semaphore';
+
+/** Many shards, each queueing jobs for many accounts. */
+export class JobShard extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly jobs = new Durability({
+    scheduler: this.scheduler,
+    handlers: { run: (job: Job) => runJob(this.env, job) },
+    // Return the permit when the operation reaches a terminal state.
+    onLifecycleEvent: (event) => {
+      if (
+        event.type === 'terminal' ||
+        (event.type === 'attempt_settled' && event.outcome === 'completed')
+      ) {
+        return this.permits.release(event.id).then(() => undefined);
+      }
+    },
+  });
+  private readonly permits = new DurabilitySemaphoreQueue<Job>({
+    scheduler: this.scheduler,
+    clientId: this.ctx.id.toString(),
+    server: limits.with(timeout, 5_000),
+    admit: (items) =>
+      Promise.all(
+        items.map((item) => this.jobs.run({ id: item.id, payload: item.body }))
+      ),
+  });
+
+  submit(job: Job) {
+    return this.permits.enqueue([
+      { id: job.id, key: job.accountId, group: job.workflowId, body: job },
+    ]);
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+```
+
+- **States.** An item is `queued` until permits arrive, `claiming` while the holder confirms the claim, and `admitted` once `admit()` has been handed the item. `admit()` runs after the admission commits and is retried under `retries.delay` until it returns, so it must be idempotent on item ID. `release(id)` returns the permit; `cancel(id)` removes an item that is still `queued`.
+- **Requests.** Each key is asked at most once per `nextRequestAt`, with demand aggregated per group from the oldest queued items. A failed request is retried with backoff. Items whose key already holds unclaimed permits — a grant sized for demand that was cancelled, say — are admitted without a request.
+- **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
+- **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
+
+`DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema.
 
 ## Routing and fanout
 

@@ -82,6 +82,7 @@ export {
   durabilityFanoutMigrations,
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
+  durabilitySemaphoreQueueMigrations,
   type DurabilityMigrationResult,
   type MigrationCapability,
 } from './migrations.js';
