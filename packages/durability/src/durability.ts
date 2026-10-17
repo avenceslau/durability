@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   DuplicateDurableCallError,
+  DuplicateDurablePayloadError,
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
   DurableResultSerializationError,
@@ -34,7 +35,7 @@ import {
   type Engine,
   type SchedulerAttachment,
 } from './scheduler.js';
-import { deserialize, serialize } from './serialization.js';
+import { canonical, deserialize, serialize } from './serialization.js';
 import { listCreated, updateAttempt, type DurableTable } from './storage.js';
 import {
   registerTrackedSource,
@@ -119,7 +120,7 @@ export type OperationResults<Handlers extends HandlerMap> = {
 };
 
 type DurableOperationInput<Handler> = {
-  /** Stable idempotency key used to deduplicate the operation. */
+  /** Stable idempotency key; bound to the operation and its payload. */
   id: string;
   /** JSON-serializable input passed to the operation handler. */
   payload: HandlerPayload<Handler>;
@@ -484,6 +485,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
         throw new Error(`Durable call "${input.id}" was not persisted`);
       }
       assertOperation(input.id, current.operation, input.operation);
+      // Reuse is idempotent only for the same data; anything else is a caller
+      // bug that would otherwise be dropped silently.
+      if (!created && canonical(current.payload) !== canonical(payload)) {
+        throw new DuplicateDurablePayloadError(input.id, input.operation);
+      }
       return { inserted: created, winner: current };
     });
     if (!inserted) {
