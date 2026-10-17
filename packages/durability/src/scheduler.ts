@@ -535,6 +535,7 @@ export class Engine {
             attempt,
             durationMs: Math.max(0, timestamp - startedAt),
             outcome: 'completed',
+            result,
           });
         }
       } catch (caught) {

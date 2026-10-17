@@ -9,8 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@durability/tanstack-db": "workspace:^",
     "@durability/transforms": "workspace:^",
-    "durability": "workspace:^"
+    "@tanstack/db": "^0.13.0",
+    "durability": "workspace:^",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",

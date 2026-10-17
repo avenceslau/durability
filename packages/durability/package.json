@@ -1,7 +1,7 @@
 {
   "name": "durability",
   "version": "3.0.1",
-  "description": "Alarm-backed durable operations for Cloudflare Durable Objects",
+  "description": "Alarm-backed durable operations and typed WebSocket sync for Cloudflare Durable Objects",
   "type": "module",
   "license": "ISC",
   "sideEffects": false,
@@ -15,11 +15,13 @@
     "lint": "oxlint",
     "prepack": "pnpm build",
     "test": "vitest run && vitest run --config vitest.workers.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json"
   },
   "exports": {
     ".": "./src/index.ts",
+    "./client": "./src/client.ts",
     "./routing": "./src/routing.ts",
+    "./socket": "./src/socket.ts",
     "./utils": "./src/utils.ts"
   },
   "publishConfig": {
@@ -30,9 +32,17 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       },
+      "./client": {
+        "types": "./dist/client.d.ts",
+        "import": "./dist/client.js"
+      },
       "./routing": {
         "types": "./dist/routing.d.ts",
         "import": "./dist/routing.js"
+      },
+      "./socket": {
+        "types": "./dist/socket.d.ts",
+        "import": "./dist/socket.js"
       },
       "./utils": {
         "types": "./dist/utils.d.ts",
@@ -59,8 +69,9 @@
   ],
   "dependencies": {
     "@durability/storage": "workspace:^",
-    "zod": "^4.4.3",
-    "@durability/transforms": "workspace:^"
+    "@durability/transforms": "workspace:^",
+    "@standard-schema/spec": "^1.1.0",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1"

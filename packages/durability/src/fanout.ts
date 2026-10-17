@@ -7,10 +7,12 @@ import {
   serializeError,
   type SerializedError,
 } from './errors.js';
-import type {
-  Emit,
-  FanoutLifecycleEntity,
-  LifecycleHook,
+import {
+  createLifecycleHooks,
+  type DurabilityLifecycleEvent,
+  type FanoutLifecycleEntity,
+  type LifecycleHook,
+  type LifecycleHooks,
 } from './lifecycle.js';
 import { RoutingLoad, type EnqueueResult, type LoadSnapshot } from './load.js';
 import type { MessageWrite, StoredMessage } from './stored-message.js';
@@ -111,6 +113,11 @@ const entity = (claim: Claim): FanoutLifecycleEntity => ({
 const deliveryIdentity = (row: DeliveryRow): string =>
   JSON.stringify([row.generation_id, row.target_id]);
 
+/** A lifecycle event for one of this instance's deliveries. */
+export type DurabilityFanoutEvent =
+  | Extract<DurabilityLifecycleEvent, { entityKind: 'fanout_delivery' }>
+  | Extract<DurabilityLifecycleEvent, { type: 'purged' }>;
+
 /**
  * A composable DO capability: durable, independent delivery to static named
  * targets. Share a scheduler with operations/alarms on the same object.
@@ -124,7 +131,8 @@ export class DurabilityFanout<Body = unknown> {
   readonly #dlq: MessageWrite<Body> | undefined;
   readonly #maxBatchSize: number;
   readonly #batchDelayMs: number;
-  readonly #emit: Emit;
+  readonly #lifecycle: LifecycleHooks;
+  readonly #emit: LifecycleHooks['emit'];
   readonly #running = new Map<string, Promise<void>>();
 
   constructor(config: DurabilityFanoutConfig<Body>) {
@@ -157,7 +165,11 @@ export class DurabilityFanout<Body = unknown> {
     this.#engine = engineFor(config);
     this.#routing = config.routing ?? new RoutingLoad();
     this.#dlq = config.dlq;
-    this.#emit = this.#engine.emitter(config.onLifecycleEvent);
+    this.#lifecycle = createLifecycleHooks(
+      (hook) => this.#engine.emitter(hook),
+      config.onLifecycleEvent
+    );
+    this.#emit = this.#lifecycle.emit;
     this.#engine.migrateSchema('fanout', durabilityFanoutMigrations);
     this.#engine.register({ kind: 'deliveries', runDue: () => this.#runDue() });
   }
@@ -176,6 +188,16 @@ export class DurabilityFanout<Body = unknown> {
 
   alarm(info?: AlarmInvocationInfo): Promise<void> {
     return this.#engine.alarm(info);
+  }
+
+  /**
+   * Attaches a best-effort lifecycle hook alongside `onLifecycleEvent` and
+   * returns a function that detaches it.
+   */
+  lifecycle(
+    hook: (event: DurabilityFanoutEvent) => void | Promise<void>
+  ): () => void {
+    return this.#lifecycle.add(hook as LifecycleHook);
   }
 
   async load(): Promise<LoadSnapshot> {

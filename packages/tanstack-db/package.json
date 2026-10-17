@@ -1,0 +1,62 @@
+{
+  "name": "@durability/tanstack-db",
+  "version": "0.0.0",
+  "description": "TanStack DB collections synced over a DurabilitySocket",
+  "type": "module",
+  "license": "ISC",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "lint": "oxlint",
+    "prepack": "pnpm build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avenceslau/durability.git",
+    "directory": "packages/tanstack-db"
+  },
+  "homepage": "https://github.com/avenceslau/durability/tree/main/packages/tanstack-db#readme",
+  "bugs": {
+    "url": "https://github.com/avenceslau/durability/issues"
+  },
+  "keywords": [
+    "cloudflare",
+    "durable-objects",
+    "realtime",
+    "sync",
+    "tanstack-db",
+    "workers"
+  ],
+  "peerDependencies": {
+    "@tanstack/db": ">=0.13.0",
+    "durability": "workspace:^"
+  },
+  "devDependencies": {
+    "@durability/typescript-config": "workspace:*",
+    "@standard-schema/spec": "^1.1.0",
+    "@tanstack/db": "^0.13.0",
+    "durability": "workspace:^",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.5"
+  }
+}

@@ -50,9 +50,59 @@ export class NodeSqlStorage {
       rowsRead: rows.length,
       rowsWritten: 0,
       toArray: () => rows,
+      one: () => {
+        if (rows.length !== 1) {
+          throw new Error(`Expected exactly one row, got ${rows.length}`);
+        }
+        return rows[0];
+      },
     } as unknown as SqlStorageCursor<T>;
   }
 }
+
+/** A hibernatable WebSocket stand-in that records sent frames and its attachment. */
+export class FakeWebSocket {
+  readyState = 1;
+  readonly sent: string[] = [];
+  closed: { code: number; reason: string } | undefined;
+  private attachment: unknown = null;
+
+  send(message: string): void {
+    this.sent.push(message);
+  }
+
+  close(code: number, reason: string): void {
+    this.readyState = 3;
+    this.closed = { code, reason };
+  }
+
+  serializeAttachment(value: unknown): void {
+    this.attachment = structuredClone(value);
+  }
+
+  deserializeAttachment(): unknown {
+    return this.attachment;
+  }
+
+  frames(): unknown[] {
+    return this.sent.map((text) => JSON.parse(text));
+  }
+}
+
+export const socketContextFor = (storage: FakeStorage) => {
+  const sockets: FakeWebSocket[] = [];
+  return {
+    storage: storage as unknown as DurableObjectStorage,
+    sockets,
+    acceptWebSocket(ws: WebSocket) {
+      sockets.push(ws as unknown as FakeWebSocket);
+    },
+    getWebSockets() {
+      return sockets as unknown as WebSocket[];
+    },
+    setWebSocketAutoResponse() {},
+  };
+};
 
 export class FakeStorage {
   private readonly database = new NodeSqlStorage();

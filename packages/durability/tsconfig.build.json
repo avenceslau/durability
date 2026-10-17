@@ -9,6 +9,12 @@
     "sourceMap": false,
     "types": ["@cloudflare/workers-types", "node"]
   },
-  "include": ["src/index.ts", "src/routing.ts", "src/utils.ts"],
+  "include": [
+    "src/index.ts",
+    "src/client.ts",
+    "src/routing.ts",
+    "src/socket.ts",
+    "src/utils.ts"
+  ],
   "exclude": ["dist", "node_modules", "src/**/*.test.ts"]
 }

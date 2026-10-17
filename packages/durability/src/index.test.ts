@@ -2045,3 +2045,49 @@ describe('DurabilityScheduler', () => {
     ).toThrow('already attached');
   });
 });
+
+describe('lifecycle hooks', () => {
+  it('fans events out to attached hooks with typed completed results', async () => {
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async ({ payload }: DurableCall<number>) => payload * 2,
+      },
+    });
+    const configured: string[] = [];
+    const results: number[] = [];
+    const detach = durability.lifecycle((event) => {
+      if (event.type === 'attempt_settled' && event.outcome === 'completed') {
+        expectTypeOf(event.result).toEqualTypeOf<number>();
+        expectTypeOf(event.operation).toEqualTypeOf<'work'>();
+        results.push(event.result);
+      }
+    });
+    durability.lifecycle((event) => {
+      configured.push(event.type);
+    });
+
+    await durability.work({ id: 'first', payload: 21 });
+    await vi.waitFor(() => expect(results).toEqual([42]));
+
+    detach();
+    await durability.work({ id: 'second', payload: 1 });
+    await vi.waitFor(() =>
+      expect(
+        configured.filter((type) => type === 'attempt_settled')
+      ).toHaveLength(2)
+    );
+    expect(results).toEqual([42]);
+  });
+
+  it('reserves "lifecycle" as a handler name', () => {
+    expect(
+      () =>
+        new Durability({
+          context: contextFor(new FakeStorage()),
+          handlers: { lifecycle: async () => undefined },
+        })
+    ).toThrow('"lifecycle" is reserved by Durability');
+  });
+});

@@ -6,6 +6,8 @@ import {
   type DurableCall,
 } from '../src';
 export { DeliveryObject, FanoutConsumer } from './fanout-worker';
+import socketWorker, { SocketTestObject } from './socket-worker';
+export { SocketTestObject };
 
 export type RecordedAlarm = {
   attempt: number;
@@ -318,7 +320,10 @@ export class KvAlarmTestObject extends DurableObject {
 }
 
 export default {
-  fetch() {
+  fetch(request: Request, env: Parameters<typeof socketWorker.fetch>[1]) {
+    if (new URL(request.url).pathname.startsWith('/socket/')) {
+      return socketWorker.fetch(request, env);
+    }
     return new Response('Not found', { status: 404 });
   },
 };
