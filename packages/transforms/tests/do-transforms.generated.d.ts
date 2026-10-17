@@ -18,6 +18,9 @@ declare global {
     CONTEXT_DO: TransformDurableObjectNamespace<
       import("./test-worker").ContextDO
     >;
+    PIPELINE_DO: TransformDurableObjectNamespace<
+      import("./test-worker").PipelineDO
+    >;
     CONTEXT_SERVICE: TransformStub<
       Service<typeof import("./test-worker").ContextService>
     >;
@@ -27,6 +30,9 @@ declare global {
     interface Env {
       CONTEXT_DO: TransformDurableObjectNamespace<
         import("./test-worker").ContextDO
+      >;
+      PIPELINE_DO: TransformDurableObjectNamespace<
+        import("./test-worker").PipelineDO
       >;
       CONTEXT_SERVICE: TransformStub<
         Service<typeof import("./test-worker").ContextService>

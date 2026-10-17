@@ -1,4 +1,11 @@
-import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
+import {
+  DurableObject,
+  RpcTarget,
+  WorkerEntrypoint,
+  WorkflowEntrypoint,
+  type WorkflowEvent,
+  type WorkflowStep,
+} from 'cloudflare:workers';
 import { Result } from 'better-result';
 import {
   applyTransforms,
@@ -95,3 +102,30 @@ export default {
     return new Response('ok');
   },
 };
+
+export class EchoWorkflow extends WorkflowEntrypoint<Env, { value: string }> {
+  override async run(
+    event: WorkflowEvent<{ value: string }>,
+    step: WorkflowStep
+  ) {
+    return step.do('echo', async () => event.payload.value);
+  }
+}
+
+export class CounterTarget extends RpcTarget {
+  #count = 0;
+  increment(): number {
+    this.#count += 1;
+    return this.#count;
+  }
+}
+
+export class PipelineDO extends DurableObject {
+  counter(): CounterTarget {
+    return new CounterTarget();
+  }
+
+  async echo(value: string): Promise<string> {
+    return value;
+  }
+}
