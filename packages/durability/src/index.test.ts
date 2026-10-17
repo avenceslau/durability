@@ -614,9 +614,7 @@ describe('Durability', () => {
       alarmMinDelayMs: 1_000,
       alarmHandoffMs: 10_000,
     });
-    // Waking with a pending row and no alarm re-arms it; the handoff below is asserted on its own.
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(storage.alarmAt).not.toBeNull();
+    vi.advanceTimersByTime(1_000);
     storage.alarmAt = null;
 
     const firstAlarm = durability.alarm({
@@ -807,37 +805,43 @@ describe('Durability', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('re-arms the alarm on wake when pending work was left with none', async () => {
+  it('keeps its alarm armed when a run cannot reconcile, instead of failing the alarm', async () => {
     const storage = new FakeStorage();
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async (_call: DurableCall<null>) => 'done' },
+      alarmMinDelayMs: 1_000,
     });
-    const handlers = {
-      work: async (_call: DurableCall<null>) => {
-        await gate;
-        return 'done';
-      },
-    };
-    const first = new Durability({ context: contextFor(storage), handlers });
-    await first.work({ id: 'stranded', payload: null });
-    // The platform abandoned the alarm after repeated handler failures.
-    storage.alarmAt = null;
-
-    // A fresh instance that finds pending work and no alarm arms one itself.
-    const woken = new Durability({ context: contextFor(storage), handlers });
-    await vi.waitFor(() => expect(storage.alarmAt).not.toBeNull());
-
-    // Once the work completes, an instance that wakes with nothing pending changes nothing.
-    release();
-    await woken.alarm();
-    await expect(woken.work.getResult('stranded')).resolves.toMatchObject({
-      status: 'completed',
+    await durability.work({ id: 'job', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('job')).resolves.toMatchObject({
+        status: 'completed',
+      });
     });
+
+    // The platform fires the alarm while storage is failing: the run cannot
+    // reconcile, but it must not throw, and the alarm must still be set.
+    const getAlarm = storage.getAlarm.bind(storage);
+    storage.getAlarm = () => Promise.reject(new Error('storage unavailable'));
+    const reported = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const before = Date.now();
     storage.alarmAt = null;
-    new Durability({ context: contextFor(storage), handlers });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(storage.alarmAt).toBeNull();
+    await expect(durability.alarm()).resolves.toBeUndefined();
+    expect(storage.alarmAt).toBeGreaterThanOrEqual(before + 1_000);
+    expect(storage.alarmAt).toBeLessThan(before + 2_000);
+    expect(reported).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'durability.alarm.failed' })
+    );
+
+    // Only when even the fallback cannot be armed does the failure reach the platform.
+    const setAlarm = storage.setAlarm.bind(storage);
+    storage.setAlarm = () => Promise.reject(new Error('storage unavailable'));
+    await expect(durability.alarm()).rejects.toThrow('storage unavailable');
+
+    storage.getAlarm = getAlarm;
+    storage.setAlarm = setAlarm;
   });
 
   it('rejects handler names that collide with instance members', () => {

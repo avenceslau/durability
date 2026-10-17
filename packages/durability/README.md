@@ -792,9 +792,9 @@ There is no per-record retry, timeout, or dead letter here: a log tracks positio
 
 There is also no key compaction. `deduplicationKey` is unique per retained record, which is the opposite of a compaction key, and deduplication lasts only while the original record is retained — re-appending a key after its record was flushed or deleted creates a new record.
 
-## When the platform gives up on the alarm
+## When a run cannot finish
 
-A Durable Object alarm whose handler throws is retried with backoff a limited number of times and then dropped. Storage errors while a helper reconciles can make `alarm()` throw, and enough in a row would leave pending work with nothing armed. So construction has one deferred side effect: once the constructing code has registered every helper, an object that finds pending work and no alarm reconciles, which arms one. An object woken by a write or by its alarm reconciles through those instead, and an object with an alarm set or nothing pending is left exactly as it was. The check costs an idle wake one `getAlarm()` and one count per helper, and its failure is reported, never thrown from construction.
+A Durable Object alarm whose handler throws is retried with backoff a limited number of times and then dropped. Every helper's `alarm()` ends by reconciling the physical alarm, and a storage error there would otherwise propagate, so enough of them in a row would leave pending work with nothing armed. Instead, a run that fails arms the physical alarm directly at `alarmMinDelayMs` from now and returns, reporting `durability.alarm.failed` with the error; the next run reconciles properly. Only when even that `setAlarm` fails does the failure reach the platform and its retries.
 
 ## Long-running alarm calls
 

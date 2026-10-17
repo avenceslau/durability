@@ -172,9 +172,6 @@ export class Engine {
   private availablePermits: number;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
-  private wakeReconcile: Promise<void> | undefined;
-  /** Set by any write or alarm run, each of which reconciles on its own. */
-  private reconciling = false;
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
     | undefined;
@@ -209,51 +206,6 @@ export class Engine {
       throw new Error(`A ${name} helper is already attached to this scheduler`);
     }
     this.participants.push(participant);
-    this.reconcileOnWake();
-  }
-
-  /**
-   * The platform abandons an alarm whose handler failed six times in a row, for
-   * example through storage errors while reconciling. Pending work would then
-   * wait with nothing armed until some request happened to write. Once the
-   * constructing request has registered every helper, an object that finds
-   * pending work and no alarm re-arms itself, so it recovers the next time it
-   * is instantiated for any reason. Anything else is left exactly as it was,
-   * and an object woken by a write or by its alarm reconciles through those.
-   */
-  private reconcileOnWake(): void {
-    if (this.wakeReconcile) {
-      return;
-    }
-    this.wakeReconcile = Promise.resolve()
-      .then(async () => {
-        // Only an object that woke idle needs this; a write or an alarm run reconciles itself.
-        if (
-          this.reconciling ||
-          (await this.context.storage.getAlarm()) !== null
-        ) {
-          return;
-        }
-        if (this.reconciling) {
-          return;
-        }
-        const pending = this.participants.some(
-          ({ table }) =>
-            countRowSchema.parse(
-              this.sql
-                .exec(
-                  `SELECT COUNT(*) AS count FROM ${table.name} WHERE status = 'pending'`
-                )
-                .toArray()[0]
-            ).count > 0
-        );
-        if (pending && !this.reconciling) {
-          await this.scheduleNextAlarm();
-        }
-      })
-      .catch((error: unknown) =>
-        reportFailure('durability.wake_reconcile.failed', {}, error)
-      );
   }
 
   waitUntil(
@@ -292,7 +244,6 @@ export class Engine {
    * transaction, then publishes the in-memory timer only after commit.
    */
   async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
-    this.reconciling = true;
     let nextPendingAt: number | undefined;
     const result = await this.context.storage.transaction(
       async (transaction) => {
@@ -521,11 +472,33 @@ export class Engine {
   }
 
   /**
+   * Runs due work and re-arms the physical alarm. A failure that would
+   * otherwise propagate to the platform is turned into a retry of our own,
+   * because the platform drops an alarm after a few failed deliveries.
+   */
+  async alarm(info?: AlarmInvocationInfo): Promise<void> {
+    try {
+      await this.runAlarm(info);
+    } catch (error) {
+      // Throwing lets the platform retry, but it gives up after a few failures
+      // and drops the alarm, stranding pending work. Keeping our own alarm
+      // armed turns the failure into a retry we control instead.
+      if (!(await this.armFallbackAlarm())) {
+        throw error;
+      }
+      reportFailure(
+        'durability.alarm.failed',
+        { retryInMs: this.alarmMinDelayMs },
+        error
+      );
+    }
+  }
+
+  /**
    * Runs every participant's due work, hands off to a fresh alarm if the
    * invocation approaches its wall-time limit, and re-arms the physical alarm.
    */
-  async alarm(info?: AlarmInvocationInfo): Promise<void> {
-    this.reconciling = true;
+  private async runAlarm(info?: AlarmInvocationInfo): Promise<void> {
     const startedAt = Date.now();
     const execution = Promise.all(
       this.participants.map((participant) =>
@@ -556,6 +529,16 @@ export class Engine {
       return;
     }
     await this.scheduleNextAlarm();
+  }
+
+  /** Arms the physical alarm directly, outside any transaction; the next run reconciles properly. */
+  private async armFallbackAlarm(): Promise<boolean> {
+    try {
+      await this.context.storage.setAlarm(Date.now() + this.alarmMinDelayMs);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private armForHandoff(timestamp: number): Promise<void> {
