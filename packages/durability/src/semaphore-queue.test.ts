@@ -165,6 +165,54 @@ describe('semaphore queue', () => {
     expect(calls.request).toBe(2);
   });
 
+  it('draws from leases locally and keeps drawn permits one-shot', async () => {
+    const { queue, holderFor, admitted, calls } = fixture({
+      limit: 2,
+      leases: { provisioning: { mode: 'over', extra: 4 } },
+    });
+    await queue.enqueue(
+      ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, key: 'acct', body: id }))
+    );
+    await settle();
+    // Two through confirmed grants, three drawn from the lease of 4.
+    expect(admitted.map((item) => `${item.id}:${item.via}`).sort()).toEqual([
+      'a:grant',
+      'b:grant',
+      'c:lease',
+      'd:lease',
+      'e:lease',
+    ]);
+    expect(await holderFor('acct').usage()).toMatchObject({
+      granted: 2,
+      leased: 4,
+    });
+    expect(calls.request).toBe(1);
+
+    // The fourth lease permit admits without a request; a release does not
+    // make a drawn permit drawable again, so the next item must ask.
+    await queue.enqueue([{ id: 'f', key: 'acct', body: 'f' }]);
+    await settle(10);
+    expect(admitted.map((item) => item.id)).toContain('f');
+    expect(calls.request).toBe(1);
+
+    await queue.release('c');
+    await queue.enqueue([{ id: 'g', key: 'acct', body: 'g' }]);
+    await settle(10);
+    expect(admitted.map((item) => item.id)).not.toContain('g');
+    expect(await queue.status('g')).toMatchObject({ state: 'queued' });
+    await settle(4_000);
+    expect(calls.request).toBeGreaterThan(1);
+    // The release freed one permit of budget; the holder issued it as a new
+    // lease, and 'g' drew from that.
+    expect(admitted.find((item) => item.id === 'g')).toMatchObject({
+      via: 'lease',
+    });
+    expect(await holderFor('acct').usage()).toMatchObject({
+      granted: 2,
+      leased: 4,
+    });
+  });
+
   /** A queue against a scripted holder, for protocol edge cases. */
   const scripted = (
     server: DurabilitySemaphoreQueueConfig<string>['server'],

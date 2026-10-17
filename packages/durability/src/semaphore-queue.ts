@@ -18,6 +18,8 @@ import {
 import type {
   GrantReport,
   GrantResult,
+  LeaseGrant,
+  LeaseReport,
   PermitGrant,
   PermitRequest,
   PermitSync,
@@ -29,6 +31,7 @@ import {
   QueueStore,
   type QueueGrantRow,
   type QueueItemRow,
+  type QueueLeaseRow,
 } from './semaphore-queue-store.js';
 import type { DurableTable } from './storage.js';
 import { exponential, jitter } from './utils.js';
@@ -55,6 +58,8 @@ export type AdmittedItem<Body> = {
   body: Body;
   enqueuedAt: number;
   admittedAt: number;
+  /** `grant`: confirmed by the holder; `lease`: drawn locally from a lease. */
+  via: 'grant' | 'lease';
 };
 
 export type SemaphoreItemStatus =
@@ -126,7 +131,9 @@ export type DurabilitySemaphoreQueueEvent =
       count: number;
     };
 
-type Report = { claimed: number; released: number };
+type Report =
+  | { kind: 'grant'; claimed: number; released: number }
+  | { kind: 'lease'; drawn: number; released: number };
 
 const outboxChannel = 'durability.semaphore-queue';
 /** Queued items read per key when building a request's demand. */
@@ -143,6 +150,15 @@ const grantReport = (grant: QueueGrantRow): GrantReport => ({
   claimed: grant.claimed,
   released: grant.released,
 });
+
+const leaseReport = (lease: QueueLeaseRow): LeaseReport => ({
+  leaseId: lease.lease_id,
+  drawn: lease.drawn,
+  released: lease.released,
+});
+
+const drawable = (lease: QueueLeaseRow, now: number): boolean =>
+  lease.drawn < lease.permits && lease.expires_at > now;
 
 /**
  * A composable DO capability for the client side of {@link DurabilitySemaphore}:
@@ -270,6 +286,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         payload: serialize(item.body),
         status: 'queued',
         grant_id: null,
+        lease_id: null,
         created_at: now,
         admitted_at: null,
         notified: 0,
@@ -314,15 +331,28 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     const released = await this.#engine.transaction(() => {
       const store = this.#store;
       const item = store.getItem(id);
-      if (!item || item.status !== 'admitted' || item.grant_id === null) {
+      if (!item || item.status !== 'admitted') {
         return undefined;
       }
-      const grant = store.getGrant(item.grant_id);
       store.removeItem(id);
-      if (grant) {
-        const updated = { ...grant, released: grant.released + 1 };
-        store.updateGrant(updated);
-        this.#stageReport(updated);
+      if (item.lease_id !== null) {
+        const lease = store.getLease(item.lease_id);
+        if (lease) {
+          const updated = { ...lease, released: lease.released + 1 };
+          if (updated.released >= updated.permits) {
+            store.removeLease(lease.lease_id);
+          } else {
+            store.updateLease(updated);
+          }
+          this.#stageLeaseReport(updated);
+        }
+      } else if (item.grant_id !== null) {
+        const grant = store.getGrant(item.grant_id);
+        if (grant) {
+          const updated = { ...grant, released: grant.released + 1 };
+          store.updateGrant(updated);
+          this.#stageReport(updated);
+        }
       }
       return item;
     });
@@ -394,12 +424,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   async #runDue(now: number): Promise<void> {
-    const store = this.#store;
-    const [, , keys] = await Promise.all([
-      this.#notify(),
-      this.#releaseFinished(now),
-      store.listDueKeys(now),
-    ]);
+    const keys = this.#store.listDueKeys(now);
+    await Promise.all([this.#notify(), this.#releaseFinished(now)]);
     await Promise.all(
       keys
         .filter(({ key }) => !this.#requesting.has(key))
@@ -412,10 +438,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     this.#requesting.add(key);
     try {
       const store = this.#store;
-      const [queued, grants] = await Promise.all([
-        store.listItems(key, 'queued', demandScanLimit),
-        store.listGrants(key),
-      ]);
+      const queued = store.listItems(key, 'queued', demandScanLimit);
+      const grants = store.listGrants(key);
+      const leases = store.listLeases(key);
       if (queued.length === 0) {
         await this.#engine.transaction(() => {
           this.#refreshKey(key);
@@ -439,6 +464,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         clientId: this.#clientId,
         demand: [...demand].map(([group, entry]) => ({ group, ...entry })),
         grants: grants.map(grantReport),
+        // Always present: it opts this client into leases when the holder offers them.
+        leases: leases.map(leaseReport),
       };
 
       // While the holder holds the request for its round, the key must not
@@ -489,6 +516,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
             created_at: Date.now(),
           });
         }
+        this.#applyLeaseGrants(key, grant.leases ?? []);
         this.#claimLocally(key);
         this.#applyResults(key, grant.grantResults);
         const remaining = this.#refreshKey(key, grant.nextRequestAt);
@@ -533,6 +561,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       .listGrants(key)
       .filter((grant) => grant.claimed < grant.permits);
     if (grants.length === 0) {
+      this.#drawLeases(key);
       return;
     }
     const queued = store.listItems(key, 'queued', demandScanLimit);
@@ -556,6 +585,87 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     for (const grant of touched.values()) {
       store.updateGrant(grant);
       this.#stageReport(grant);
+    }
+    this.#drawLeases(key);
+  }
+
+  /**
+   * Admits queued items against leases with undrawn permits, oldest first,
+   * with no round trip. A drawn permit is one-shot: releasing the item frees
+   * footprint at the holder but never makes the permit drawable again.
+   */
+  #drawLeases(key: string): void {
+    const store = this.#store;
+    const now = Date.now();
+    const leases = store
+      .listLeases(key)
+      .filter((lease) => drawable(lease, now));
+    if (leases.length === 0) {
+      return;
+    }
+    const queued = store.listItems(key, 'queued', demandScanLimit);
+    const touched = new Map<string, QueueLeaseRow>();
+    for (const item of queued) {
+      const lease = leases.find(
+        (candidate) => candidate.grp === item.grp && drawable(candidate, now)
+      );
+      if (!lease) {
+        continue;
+      }
+      lease.drawn += 1;
+      touched.set(lease.lease_id, lease);
+      store.updateItem({
+        ...item,
+        status: 'admitted',
+        lease_id: lease.lease_id,
+        admitted_at: now,
+        notified: 0,
+        attempt: 0,
+        next_attempt_at: now,
+      });
+    }
+    for (const lease of touched.values()) {
+      store.updateLease(lease);
+      this.#stageLeaseReport(lease);
+    }
+  }
+
+  /**
+   * Records leases the holder granted or refreshed; `expiresAt <= now`
+   * retires a lease, so it shrinks to what was drawn and is dropped once
+   * those items release.
+   */
+  #applyLeaseGrants(key: string, grants: LeaseGrant[]): void {
+    const store = this.#store;
+    const now = Date.now();
+    for (const grant of grants) {
+      const lease = store.getLease(grant.leaseId);
+      if (grant.expiresAt <= now) {
+        if (!lease) {
+          continue;
+        }
+        const retired = { ...lease, permits: lease.drawn, expires_at: now };
+        if (retired.released >= retired.permits) {
+          store.removeLease(lease.lease_id);
+        } else {
+          store.updateLease(retired);
+        }
+        continue;
+      }
+      if (lease) {
+        store.updateLease({ ...lease, expires_at: grant.expiresAt });
+        continue;
+      }
+      store.insertLease({
+        lease_id: grant.leaseId,
+        key,
+        grp: grant.group,
+        permits: grant.permits,
+        drawn: 0,
+        released: 0,
+        created_at: now,
+        expires_at: grant.expiresAt,
+      });
     }
   }
 
@@ -647,11 +757,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     stageWithin(
       this.#outbox,
       this.#engine.sql,
-      pairKey(grant.key, grant.grant_id),
-      {
-        claimed: grant.claimed,
-        released: grant.released,
-      }
+      pairKey(grant.key, `grant:${grant.grant_id}`),
+      { kind: 'grant', claimed: grant.claimed, released: grant.released }
+    );
+  }
+
+  #stageLeaseReport(lease: QueueLeaseRow): void {
+    stageWithin(
+      this.#outbox,
+      this.#engine.sql,
+      pairKey(lease.key, `lease:${lease.lease_id}`),
+      { kind: 'lease', drawn: lease.drawn, released: lease.released }
     );
   }
 
@@ -664,16 +780,34 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     }
     await Promise.all(
       [...byKey].map(async ([key, keyEntries]) => {
+        const grants: GrantReport[] = [];
+        const leases: LeaseReport[] = [];
+        for (const entry of keyEntries) {
+          const id = parsePairKey(entry.key)[1].slice(
+            entry.value.kind.length + 1
+          );
+          if (entry.value.kind === 'grant') {
+            grants.push({
+              grantId: id,
+              claimed: entry.value.claimed,
+              released: entry.value.released,
+            });
+          } else {
+            leases.push({
+              leaseId: id,
+              drawn: entry.value.drawn,
+              released: entry.value.released,
+            });
+          }
+        }
         let synced: PermitSyncResult;
         try {
           synced = await this.#server.sync(key, {
             type: 'sync',
             v: 1,
             clientId: this.#clientId,
-            grants: keyEntries.map((entry) => ({
-              grantId: parsePairKey(entry.key)[1],
-              ...entry.value,
-            })),
+            grants,
+            leases,
           });
         } catch (error) {
           reportFailure(
@@ -688,6 +822,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         }
         await this.#engine.transaction(() => {
           this.#applyResults(key, synced.grantResults);
+          this.#applyLeaseGrants(key, synced.leases ?? []);
           this.#refreshKey(key);
         });
       })
@@ -792,6 +927,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           body: deserialize(row.payload) as Body,
           enqueuedAt: row.created_at,
           admittedAt: row.admitted_at ?? row.created_at,
+          via: row.lease_id === null ? 'grant' : 'lease',
         })
       );
       let failure: unknown;
