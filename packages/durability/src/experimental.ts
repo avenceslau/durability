@@ -18,6 +18,7 @@ export {
   type TrackerRecordPage,
 } from './tracker.js';
 export type {
+  TrackedEntry,
   TrackedPage,
   TrackedQuery,
   TrackedRecord,

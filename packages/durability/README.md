@@ -479,6 +479,8 @@ readonly socket = new DurabilitySocket({
 });
 ```
 
+A complete two-object version, with push through `DurabilityFanout` and request/response through a pipelined `wait`, lives in [`examples/job-dashboard`](../../examples/job-dashboard).
+
 ### Sources
 
 `Durability` lists every operation. `DurabilityAlarms` lists pending and failed occurrences only, because success deletes an occurrence; a waiter still sees `completed`. Rescheduling an alarm replaces its occurrence, so waiters on the old one receive `not_found`.
