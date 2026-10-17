@@ -238,6 +238,74 @@ describe('semaphore queue', () => {
     expect(requests).toBeGreaterThanOrEqual(2);
   });
 
+  it('never admits beyond confirmed claims when a stale result follows a release', async () => {
+    // Grant of 3; the holder confirms the first two claims, then keeps
+    // answering with that stale count. After one release deletes a row, a
+    // third item claims the spare permit: the stale "claimed: 2" must not
+    // admit it, because only two claims were ever confirmed.
+    const { queue, admitted } = scripted({
+      request: async () => grantOf('g1', 3),
+      sync: async (_key, message) => ({
+        type: 'synced',
+        v: 1,
+        grantResults: message.grants.map((grant) => ({
+          grantId: grant.grantId,
+          claimed: Math.min(grant.claimed, 2),
+          status: 'ok' as const,
+        })),
+      }),
+    });
+    await queue.enqueue([
+      { id: 'a', key: 'k', body: 'A' },
+      { id: 'b', key: 'k', body: 'B' },
+    ]);
+    await settle();
+    expect(admitted.map((item) => item.id)).toEqual(['a', 'b']);
+
+    await queue.release('a');
+    await queue.enqueue([{ id: 'c', key: 'k', body: 'C' }]);
+    await settle(2_500);
+    expect(admitted.map((item) => item.id)).toEqual(['a', 'b']);
+    expect(await queue.status('c')).toMatchObject({ state: 'claiming' });
+  });
+
+  it('keeps an admitted item runnable when the holder forgets its grant', async () => {
+    let forget = false;
+    const { queue, admitted } = scripted({
+      request: async () => grantOf('g1', 1),
+      sync: async (_key, message) => ({
+        type: 'synced',
+        v: 1,
+        grantResults: message.grants.map((grant) =>
+          forget
+            ? {
+                grantId: grant.grantId,
+                claimed: 0,
+                status: 'not_found' as const,
+              }
+            : {
+                grantId: grant.grantId,
+                claimed: grant.claimed,
+                status: 'ok' as const,
+              }
+        ),
+      }),
+    });
+    await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+    await settle();
+    expect(admitted.map((item) => item.id)).toEqual(['a']);
+
+    forget = true;
+    expect(await queue.release('a')).toBe(true);
+    await settle();
+    expect(await queue.usage()).toEqual({
+      queued: 0,
+      claiming: 0,
+      admitted: 0,
+    });
+    expect(await queue.status('a')).toBeUndefined();
+  });
+
   it('retries admit() until it returns and reports failures', async () => {
     let fail = true;
     const { queue, admitted } = fixture(

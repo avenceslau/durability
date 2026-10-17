@@ -425,9 +425,9 @@ export const durabilitySemaphoreQueueMigrations = [
         next_attempt_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS durability_semaphore_queue_items_key_idx
-      ON durability_semaphore_queue_items (key, status, created_at);
+      ON durability_semaphore_queue_items (key, status, created_at, id);
       CREATE INDEX IF NOT EXISTS durability_semaphore_queue_items_grant_idx
-      ON durability_semaphore_queue_items (grant_id, created_at);
+      ON durability_semaphore_queue_items (grant_id, created_at, id);
       CREATE INDEX IF NOT EXISTS durability_semaphore_queue_items_notify_idx
       ON durability_semaphore_queue_items (next_attempt_at)
       WHERE status = 'admitted' AND notified = 0;
@@ -438,6 +438,7 @@ export const durabilitySemaphoreQueueMigrations = [
         permits INTEGER NOT NULL,
         claimed INTEGER NOT NULL DEFAULT 0,
         confirmed INTEGER NOT NULL DEFAULT 0,
+        admitted INTEGER NOT NULL DEFAULT 0,
         released INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL
       );
