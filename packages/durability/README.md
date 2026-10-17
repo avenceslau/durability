@@ -5,6 +5,7 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 - **`Durability`** — effectively-once operations with retries, idempotency, and result lookup.
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
+- **`DurabilityOutbox`** — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
 - **`DurabilityRouting`** — a DO-side load observer and client-side shard selector (`durability/routing`), supporting location hints and caller transforms.
 - **`DurabilitySocket`** — typed WebSocket RPC and replayable event push from a Durable Object to browsers (`durability/socket`), with a dependency-free browser client (`durability/client`).
 - **`DurabilityTracker`** _(experimental, `durability/experimental`)_ — lists work across capabilities and custom sources, as RPC handles that can be waited on or as plain records.
@@ -671,6 +672,62 @@ Routing uses the actual `@durability/transforms` runtime. For example, `routing.
 `doTransforms` from `@durability/transforms/vite` maps `DurabilityRouting.client({ target: Mailbox, ... })` to its same-module exported class name and validates it against Wrangler. It injects `exportName`, not a generated DO or a magic application method. Without the plugin, set `exportName: 'Mailbox'` explicitly; `namespace: () => env.MAILBOXES` is an escape hatch for explicit or remote bindings.
 
 Loopback namespaces need the application DO declared in Wrangler migrations (or the platform's supported class configuration), but no redundant DO binding block is needed. Consumer transport is explicitly wired by the application, such as a service binding or loopback entrypoint. See the typechecked [email queue composition](../../examples/email-queue).
+
+## Outbox
+
+`DurabilityOutbox` publishes the newest state of a key to something outside the object — a KV namespace, another Durable Object, an API — and keeps retrying until the sink accepts it. Use it when consumers need the latest value, not every change: restaging a key before it is published replaces the pending version, so superseded versions may never be sent. For message delivery where every message matters, use `DurabilityFanout`.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityOutbox, DurabilityScheduler } from 'durability';
+
+type Topology = { workflowId: string; steps: string[] };
+
+export class Account extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly topology = new DurabilityOutbox<Topology>({
+    scheduler: this.scheduler,
+    channel: 'topology',
+    // The sink keeps the highest version it has seen per key, so a slow
+    // publication of an older version can never overwrite a newer one.
+    publish: async (entries) => {
+      const results = await this.env.TOPOLOGY_INDEX.replace(
+        entries.map(({ key, version, value }) => ({ key, version, value }))
+      );
+      // Returning acknowledges every entry not marked for retry.
+      for (const [index, result] of results.entries()) {
+        if (!result.ok) {
+          entries[index]!.retry();
+        }
+      }
+    },
+  });
+
+  async saveTopology(topology: Topology) {
+    await this.ctx.storage.transaction(async () => {
+      this.ctx.storage.sql.exec(
+        'INSERT OR REPLACE INTO topologies (id, body) VALUES (?, ?)',
+        topology.workflowId,
+        JSON.stringify(topology)
+      );
+      await this.topology.stage(topology.workflowId, topology);
+    });
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+```
+
+- **Atomic with application state.** `stage()` inside `ctx.storage.transaction()` commits or rolls back with the application's writes.
+- **Versions.** Every `stage()` returns a version that is monotonic across the whole object, including after acknowledged entries are deleted. Sinks must be idempotent on `(key, version)` and keep the highest version they have seen: a slow publication of an older version can land after a newer one. A plain `KV.put` cannot do this; compare versions in a Durable Object, a transactional store, or a conditional write.
+- **Acknowledgement.** `publish` returning acknowledges every entry not marked with `entry.retry(delayMs?)`; throwing or exceeding `attemptTimeoutMs` (default 60 seconds) retries the whole batch. Acknowledging a version deletes the entry only if it is still the newest, so an in-flight publication can never discard a later stage.
+- **Retries never give up.** Dropping the newest state would leave the sink stale forever, so there is no attempt limit or dead-letter queue; `retries.delay(attempt)` controls backoff (default: jittered exponential capped at 5 minutes).
+- **Channels.** Several outboxes share one scheduler and one set of tables, partitioned by `channel` (default `default`); each owns its own `publish`, and the same key in different channels is independent. Attaching two outboxes with the same channel to one scheduler throws. Entries of a channel no outbox attaches are retained and postponed, as fanout does for a removed target.
+- **Batching.** `maxBatchSize` (default 50) bounds one `publish` call. `batchDelayMs` rounds first publication up to the next multiple of the delay, so stages within one window coalesce into a batch; a stage landing exactly on a boundary is due immediately.
+
+`DurabilityOutbox.migrate(this.ctx, null)` removes the outbox schema.
 
 ## Retained log
 

@@ -129,6 +129,14 @@ export class FanoutTimeoutError extends Error {
   }
 }
 
+/** Error recorded when an outbox `publish` call exceeds its configured timeout. */
+export class OutboxTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Outbox publication timed out after ${timeoutMs}ms`);
+    this.name = 'OutboxTimeoutError';
+  }
+}
+
 /** A definite rejection before the batch was durably accepted. */
 export class FanoutEnqueueError extends Error {
   constructor(message: string) {
