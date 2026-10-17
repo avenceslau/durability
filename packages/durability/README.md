@@ -6,6 +6,7 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
 - **`DurabilityRouting`** — a DO-side load observer and client-side shard selector (`durability/routing`), supporting location hints and caller transforms.
+- **`DurabilitySocket`** — typed WebSocket RPC and replayable event push from a Durable Object to browsers (`durability/socket`), with a dependency-free browser client (`durability/client`).
 
 Durable capabilities own their storage and migrations. Routing observations are in-memory and advisory. When an object composes durable capabilities, one `DurabilityScheduler` shares its physical alarm and concurrency pool. No queue factory, generated DO class, or special consumer superclass is required.
 
@@ -269,6 +270,167 @@ const durability = new Durability({
 ```
 
 The hook is best-effort and non-blocking, is not a durable journal, and may duplicate or drop events across crashes. Hook failures are reported to `console.error` and never change queue state. Returned promises are attached to `waitUntil` when the context exposes it.
+
+Further hooks attach after construction with `lifecycle(hook)`, which returns a function that detaches it. `Durability` hooks are typed per operation: a `completed` settlement carries the handler's `result`.
+
+```ts
+const detach = durability.lifecycle((event) => {
+  if (event.type === 'attempt_settled' && event.outcome === 'completed') {
+    publish(event.operation, event.result);
+  }
+});
+```
+
+## Browser sockets
+
+`DurabilitySocket` lets browsers call a Durable Object and receive events from it over one hibernatable WebSocket. `inbound` handlers become callable methods on the client; `outbound` events become methods on the socket that push to every subscribed connection. Nothing outside `inbound` is reachable, and no result is broadcast unless an outbound method sends it.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import {
+  Durability,
+  type DurableCall,
+  type DurabilityLifecycleEvent,
+} from 'durability';
+import { DurabilitySocket, event, type SocketCall } from 'durability/socket';
+import { z } from 'zod';
+
+const TodoSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  done: z.boolean(),
+});
+type Todo = z.infer<typeof TodoSchema>;
+type Metadata = { userId: string };
+
+export class TodoList extends DurableObject<Env> {
+  private readonly todos = new Map<string, Todo>();
+
+  readonly durability = new Durability({
+    context: this.ctx,
+    handlers: {
+      createTodo: async ({ payload }: DurableCall<Todo>) => {
+        this.todos.set(payload.id, payload);
+        return payload;
+      },
+    },
+  });
+
+  readonly socket = new DurabilitySocket({
+    context: this.ctx,
+    inbound: {
+      // Bare handlers take no input (or `unknown` input they validate themselves).
+      list: () => [...this.todos.values()],
+      // Typed input requires a Standard Schema; here the handler is a durable operation.
+      createTodo: {
+        input: z.object({ id: z.string(), payload: TodoSchema }),
+        handle: this.durability.createTodo,
+      },
+      toggle: {
+        input: z.string(),
+        handle: (id: string, call: SocketCall<Metadata>) => {
+          const todo = this.todos.get(id);
+          if (!todo) {
+            throw new RangeError(`No todo "${id}" for ${call.metadata.userId}`);
+          }
+          todo.done = !todo.done;
+          this.socket.updated(todo);
+          return todo;
+        },
+      },
+    },
+    outbound: {
+      created: event<Todo>(),
+      updated: event<Todo>(),
+      lifecycle: event<DurabilityLifecycleEvent>(),
+    },
+    metadata: (request): Metadata => ({
+      userId: request.headers.get('x-user-id') ?? 'anonymous',
+    }),
+  });
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Push a durable operation's result to every subscriber once it has committed.
+    this.durability.lifecycle((e) => {
+      if (e.type === 'attempt_settled' && e.outcome === 'completed') {
+        this.socket.created(e.result);
+      }
+    });
+    this.durability.lifecycle(this.socket.lifecycle);
+  }
+
+  fetch(request: Request) {
+    return this.socket.fetch(request);
+  }
+
+  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+    return this.socket.webSocketMessage(ws, message);
+  }
+
+  webSocketClose(ws: WebSocket) {
+    this.socket.webSocketClose(ws);
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.durability.alarm(info);
+  }
+}
+
+// The Worker authenticates, then forwards the upgrade with trusted metadata.
+export default {
+  async fetch(request: Request, env: Env) {
+    const listId = new URL(request.url).pathname.split('/').pop() ?? '';
+    const userId = await authenticate(request);
+    if (!userId) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+    const upgrade = new Request(request, {
+      headers: { ...Object.fromEntries(request.headers), 'x-user-id': userId },
+    });
+    return env.TODO_LISTS.getByName(listId).fetch(upgrade);
+  },
+};
+```
+
+An inbound handler is either a bare function, which receives no input or `unknown` input it validates itself, or `{ input, handle }`, where `input` is any [Standard Schema](https://standardschema.dev) validator (zod, Valibot, ArkType, …) and `handle` declares its parameter type. A bare function that claims a typed parameter does not compile. Handlers receive `call.metadata`, the value `metadata(request)` returned at upgrade time; it is stored in the WebSocket attachment, so it survives hibernation. The fronting Worker is responsible for authentication and for routing the upgrade to the right object; the socket does no authorization of its own. `metadata` must be assignable to every `SocketCall<…>` annotation the handlers declare.
+
+Every outbound event is persisted to `durability_socket_events` with a sequence number before it is pushed. A reconnecting client subscribes from the last sequence it saw: events still within `retention` (default 1000) are replayed in order, otherwise the client is told to resync and should rebuild its state from an inbound snapshot call. Payloads must be JSON. The socket requires SQLite storage and throws for `storageBackend: 'kv'`. Keep-alive pings are answered by the runtime through `setWebSocketAutoResponse`, so idle connections never wake the object. Frames over 1 MiB are rejected; malformed frames close the connection with code `4002`.
+
+The browser client derives every method and event type from the socket:
+
+```ts
+import { DurabilitySocketClient, logging } from 'durability/client';
+import type { TodoList } from '../worker'; // type-only: nothing from the Worker is bundled
+
+const client = new DurabilitySocketClient<TodoList['socket']>({
+  url: (listId) => `wss://example.com/lists/${listId}/ws`,
+}).with(logging());
+
+const conn = client.connect('personal');
+const todos = await conn.rpc.list();
+await conn.rpc.createTodo({
+  id: crypto.randomUUID(),
+  payload: { id: 'todo-1', title: 'Ship it', done: false },
+});
+await conn.rpc.toggle('todo-1');
+
+conn.on.updated((todo) => render(todo));
+conn.on.lifecycle((e) => {
+  if (e.entityKind === 'operation' && e.type === 'attempt_settled') {
+    markSettled(e.id);
+  }
+});
+conn.on.resync(({ names }) => reload(names)); // first subscription, and after an unreplayable gap
+conn.on.status((status) => showStatus(status)); // connecting | connected | disconnected | closed
+conn.close();
+```
+
+`on.resync` reports the outbound events whose subscribers have no continuous history: every mapped name on their first subscription, newly added names on a live connection, and all names after an unreplayable gap. Rebuild the affected state from an inbound snapshot call; `@durability/tanstack-db` does this for collections.
+
+Connections open lazily on the first call or subscription and reconnect with jittered exponential backoff. Calls queued before the socket opens are sent once; calls already sent when the connection drops reject with `SocketConnectionLostError` and are never replayed, because the server may have run them. Route retried mutations through `Durability` with a stable idempotency key rather than re-calling. Calls reject with `SocketTimeoutError` after `timeoutMs` (default 2 minutes). Server-side handler failures reject with `SocketRemoteError`, carrying the server error's `name` and `message`. `with(transform)` returns a new client that wraps every call; transforms receive `{ method, input, next }` and may replace the input.
+
+`durability/client` imports nothing from `cloudflare:workers` and is typechecked against DOM types only. The complete, typechecked version of this example lives in [`examples/realtime-todos`](../../examples/realtime-todos).
 
 ## Routing and fanout
 

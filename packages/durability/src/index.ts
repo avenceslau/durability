@@ -7,6 +7,7 @@ export {
   type DurableHandler,
   type DurableOperation,
   type DurableOperationResult,
+  type DurabilityOperationEvent,
   type HandlerMap,
 } from './durability.js';
 export {
@@ -14,6 +15,7 @@ export {
   type DurabilityAlarmsConfig,
   type DurabilityAlarmsConstructor,
   type DurabilityAlarmsOptions,
+  type DurabilityAlarmEvent,
   type DurableAlarmHandler,
   type DurableAlarmInfo,
   type DurableNamedAlarm,
@@ -21,6 +23,7 @@ export {
 export {
   DurabilityFanout,
   type DurabilityFanoutConfig,
+  type DurabilityFanoutEvent,
   type DurabilityFanoutMessage,
   type FanoutInput,
   type FanoutTarget,
@@ -54,7 +57,7 @@ export {
   FanoutEnqueueError,
   RoutingError,
 } from './errors.js';
-export type { DurabilityLifecycleEvent } from './lifecycle.js';
+export type { DurabilityLifecycleEvent, LifecycleHook } from './lifecycle.js';
 export {
   durabilityNamedAlarmMigrations,
   durabilityOperationMigrations,

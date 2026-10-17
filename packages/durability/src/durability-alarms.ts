@@ -6,9 +6,11 @@ import {
   NonRetryableError,
 } from './errors.js';
 import {
+  createLifecycleHooks,
   type AlarmLifecycleEntity,
-  type Emit,
+  type DurabilityLifecycleEvent,
   type LifecycleHook,
+  type LifecycleHooks,
 } from './lifecycle.js';
 import {
   durabilityNamedAlarmMigrations,
@@ -81,6 +83,11 @@ export type DurabilityAlarmsConfig<Names extends string = string> =
       handlers: Record<Names, DurableAlarmHandler>;
     };
 
+/** A lifecycle event for one of this instance's named alarms. */
+export type DurabilityAlarmEvent =
+  | Extract<DurabilityLifecycleEvent, { entityKind: 'named_alarm' }>
+  | Extract<DurabilityLifecycleEvent, { type: 'purged' }>;
+
 /** Schedules (or replaces) the named alarm's pending occurrence. */
 export type DurableNamedAlarm = (scheduledTime: number) => Promise<void>;
 
@@ -95,7 +102,8 @@ class DurabilityAlarmsCore<Names extends string> {
   readonly #engine: Engine;
   readonly #handlers: Map<string, DurableAlarmHandler>;
   readonly #policy: PolicyResolver<AlarmMethodPolicy>;
-  readonly #emit: Emit;
+  readonly #lifecycle: LifecycleHooks;
+  readonly #emit: LifecycleHooks['emit'];
   readonly #active = new Map<string, ActiveExecution>();
 
   constructor(config: DurabilityAlarmsConfig<Names>) {
@@ -110,7 +118,11 @@ class DurabilityAlarmsCore<Names extends string> {
       config.methods ?? {},
       alarmMethodOptionsSchema
     );
-    this.#emit = this.#engine.emitter(config.onLifecycleEvent);
+    this.#lifecycle = createLifecycleHooks(
+      (hook) => this.#engine.emitter(hook),
+      config.onLifecycleEvent
+    );
+    this.#emit = this.#lifecycle.emit;
 
     const reserved = new Set(
       Object.getOwnPropertyNames(DurabilityAlarmsCore.prototype)
@@ -148,6 +160,16 @@ class DurabilityAlarmsCore<Names extends string> {
   /** Runs due named alarms and re-arms the physical alarm. */
   alarm(info?: AlarmInvocationInfo): Promise<void> {
     return this.#engine.alarm(info);
+  }
+
+  /**
+   * Attaches a best-effort lifecycle hook alongside `onLifecycleEvent` and
+   * returns a function that detaches it.
+   */
+  lifecycle(
+    hook: (event: DurabilityAlarmEvent) => void | Promise<void>
+  ): () => void {
+    return this.#lifecycle.add(hook as LifecycleHook);
   }
 
   /**

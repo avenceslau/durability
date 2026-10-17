@@ -8,8 +8,10 @@ import {
   reportFailure,
 } from './errors.js';
 import {
-  type Emit,
+  createLifecycleHooks,
+  type DurabilityLifecycleEvent,
   type LifecycleHook,
+  type LifecycleHooks,
   type OperationLifecycleEntity,
 } from './lifecycle.js';
 import {
@@ -120,6 +122,38 @@ export type DurableOperationResult<Result> =
       result: Result;
     };
 
+type OperationEvent = Extract<
+  DurabilityLifecycleEvent,
+  { entityKind: 'operation' }
+>;
+
+type TypedOperationEvent<
+  Operation extends string,
+  Result,
+> = OperationEvent extends infer Event
+  ? Event extends { outcome: 'completed' }
+    ? Omit<Event, 'operation' | 'result'> & {
+        operation: Operation;
+        result: Result;
+      }
+    : Event extends object
+      ? Omit<Event, 'operation'> & { operation: Operation }
+      : never
+  : never;
+
+/**
+ * A lifecycle event for one of this instance's operations. Completed events
+ * carry the handler's typed result.
+ */
+export type DurabilityOperationEvent<Handlers extends HandlerMap> =
+  | {
+      [Operation in Extract<keyof Handlers, string>]: TypedOperationEvent<
+        Operation,
+        HandlerResult<Handlers[Operation]>
+      >;
+    }[Extract<keyof Handlers, string>]
+  | Extract<DurabilityLifecycleEvent, { type: 'purged' }>;
+
 /** Registers calls for one handler and reads their persisted results. */
 export type DurableOperation<Handler> = ((
   input: DurableOperationInput<Handler>
@@ -191,7 +225,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
   readonly #engine: Engine;
   readonly #handlers: Handlers;
   readonly #policy: PolicyResolver<MethodPolicy>;
-  readonly #emit: Emit;
+  readonly #lifecycle: LifecycleHooks;
+  readonly #emit: LifecycleHooks['emit'];
   readonly #active = new Map<string, ActiveExecution>();
   readonly #executionStarts = new Map<string, Promise<void>>();
 
@@ -204,7 +239,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
       config.methods ?? {},
       methodOptionsSchema
     );
-    this.#emit = this.#engine.emitter(config.onLifecycleEvent);
+    this.#lifecycle = createLifecycleHooks(
+      (hook) => this.#engine.emitter(hook),
+      config.onLifecycleEvent
+    );
+    this.#emit = this.#lifecycle.emit;
 
     const reserved = new Set(
       Object.getOwnPropertyNames(DurabilityCore.prototype)
@@ -246,6 +285,16 @@ class DurabilityCore<Handlers extends HandlerMap> {
   /** Processes due operations and re-arms the physical alarm. */
   alarm(info?: AlarmInvocationInfo): Promise<void> {
     return this.#engine.alarm(info);
+  }
+
+  /**
+   * Attaches a best-effort lifecycle hook alongside `onLifecycleEvent` and
+   * returns a function that detaches it.
+   */
+  lifecycle(
+    hook: (event: DurabilityOperationEvent<Handlers>) => void | Promise<void>
+  ): () => void {
+    return this.#lifecycle.add(hook as LifecycleHook);
   }
 
   /**

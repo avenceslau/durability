@@ -15,7 +15,7 @@
     "format": "oxfmt --write \"**/*.{json,jsonc,md,ts}\"",
     "format:check": "oxfmt --check \"**/*.{json,jsonc,md,ts}\"",
     "lint": "turbo run lint",
-    "pack:check": "pnpm --filter durability --filter @durability/storage --filter @durability/transforms --filter @durability/lint exec publint",
+    "pack:check": "pnpm --filter durability --filter @durability/storage --filter @durability/transforms --filter @durability/lint --filter @durability/tanstack-db exec publint",
     "release": "pnpm build && changeset publish",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
