@@ -53,6 +53,16 @@ export default defineConfig({
 
 The generated declaration defaults to `do-transforms.generated.d.ts` beside the Wrangler `main` module. Include that file in the application's TypeScript project.
 
+### Restore broken Durable Object stubs
+
+Many Durable Object errors leave a stub broken, so every later call through it fails with the same error. Enable `restoreBrokenStubs` to have the plugin rewrite configured namespace `get` and `getByName` calls so the resulting stub replaces itself after a call throws:
+
+```ts
+doTransforms({ wrangler: './wrangler.jsonc', restoreBrokenStubs: true });
+```
+
+The failed call still rejects and is not retried. The next call obtains a new stub from the namespace with the original arguments, which are evaluated only once, so `env.MY_DO.get(env.MY_DO.newUniqueId())` keeps addressing the same object. The replacement happens at the end of the caller transform chain, so each attempt made by `retry` runs on a fresh stub. Without the plugin, use `createRestorableStubFactory(env.MY_DO, 'getByName')(name)`.
+
 ## Define and install a transform
 
 ```ts

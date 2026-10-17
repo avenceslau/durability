@@ -292,6 +292,84 @@ export default {
     expect(result?.match(/__doTransformsCreateStub\(/g)).toHaveLength(1);
   });
 
+  it('rewrites namespace stubs to restorable factories when enabled', async () => {
+    const restorePlugin = doTransforms({
+      wrangler: './wrangler.test.jsonc',
+      types: false,
+      restoreBrokenStubs: true,
+    }) as unknown as TestPlugin;
+    await restorePlugin.configResolved({ root: packageRoot } as ResolvedConfig);
+
+    const result = await transformWith(
+      restorePlugin,
+      `
+export default {
+  fetch(request, env) {
+    env.CONTEXT_SERVICE.greet();
+    env.CONTEXT_DO.get(env.CONTEXT_DO.newUniqueId());
+    env["CONTEXT_DO"].getByName("direct");
+    env?.CONTEXT_DO?.get?.(env.dynamicName);
+    env?.CONTEXT_DO.getByName("chain").greet();
+    (env.CONTEXT_DO).getByName("parens");
+    (env.CONTEXT_DO as any).get(id);
+    (env.CONTEXT_DO.getByName)("callee");
+    (env.CONTEXT_DO /* keep ) */).getByName("comment");
+  }
+};
+`
+    );
+
+    expect(result).toContain(
+      "import { createTransformStub as __doTransformsCreateStub, createRestorableStubFactory as __doTransformsRestorableStub } from '@durability/transforms';"
+    );
+    expect(result).toContain(
+      '__doTransformsCreateStub(env.CONTEXT_SERVICE).greet()'
+    );
+    expect(result).toContain(
+      '__doTransformsRestorableStub(env.CONTEXT_DO, "get")(env.CONTEXT_DO.newUniqueId())'
+    );
+    expect(result).toContain(
+      '__doTransformsRestorableStub(env["CONTEXT_DO"], "getByName")("direct")'
+    );
+    expect(result).toContain(
+      '__doTransformsRestorableStub(env?.CONTEXT_DO, "get")?.(env.dynamicName)'
+    );
+    expect(result).toContain(
+      '__doTransformsRestorableStub(env?.CONTEXT_DO, "getByName")?.("chain").greet()'
+    );
+    expect(result).toContain(
+      '__doTransformsRestorableStub((env.CONTEXT_DO), "getByName")("parens")'
+    );
+    expect(result).toContain(
+      '__doTransformsRestorableStub((env.CONTEXT_DO as any), "get")(id)'
+    );
+    expect(result).toContain(
+      '(__doTransformsRestorableStub(env.CONTEXT_DO, "getByName"))("callee")'
+    );
+    expect(result).toContain(
+      '__doTransformsRestorableStub((env.CONTEXT_DO /* keep ) */), "getByName")("comment")'
+    );
+  });
+
+  it('only imports the restorable factory when no service is wrapped', async () => {
+    const restorePlugin = doTransforms({
+      wrangler: './wrangler.test.jsonc',
+      types: false,
+      restoreBrokenStubs: true,
+    }) as unknown as TestPlugin;
+    await restorePlugin.configResolved({ root: packageRoot } as ResolvedConfig);
+
+    const result = await transformWith(
+      restorePlugin,
+      'export default { fetch(request, env) { return env.CONTEXT_DO.getByName("a"); } };'
+    );
+
+    expect(result).toContain(
+      "import { createRestorableStubFactory as __doTransformsRestorableStub } from '@durability/transforms';"
+    );
+    expect(result).not.toContain('createTransformStub');
+  });
+
   it('reports invalid Wrangler configuration', async () => {
     const wranglerPath = join(packageRoot, 'invalid.jsonc');
     const invalidPlugin = doTransforms({

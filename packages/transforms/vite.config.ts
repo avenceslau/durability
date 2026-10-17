@@ -5,7 +5,10 @@ import { doTransforms } from './src/vite';
 
 export default defineConfig({
   plugins: [
-    doTransforms({ wrangler: './wrangler.test.jsonc' }),
+    doTransforms({
+      wrangler: './wrangler.test.jsonc',
+      restoreBrokenStubs: true,
+    }),
     cloudflareTest(async () => {
       const result = await build({
         configFile: false,

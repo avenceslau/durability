@@ -1,12 +1,15 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   applyTransforms,
+  createRestorableStubFactory,
   createTransformContextTarget,
   createTransformStub,
   defineTransform,
   registerTransform,
+  retry,
   withTransforms,
 } from '../src/index';
+import type { TransformStub } from '../src/index';
 
 type ObservabilityContext = {
   requestId?: string;
@@ -353,5 +356,98 @@ describe('DO transforms', () => {
         { requestId: 'request-1' }
       )
     ).toThrow('Transform does not define a callee');
+  });
+
+  it('restores a broken stub for later calls without retrying the failed call', async () => {
+    let opened = 0;
+    const namespace = {
+      getByName(name: string) {
+        opened += 1;
+        const generation = opened;
+        return {
+          name,
+          async read() {
+            if (generation === 1) {
+              throw new Error('broken');
+            }
+            return `${name}:${generation}`;
+          },
+        };
+      },
+    };
+
+    const stub = createRestorableStubFactory(
+      namespace,
+      'getByName'
+    )?.('room') as unknown as { name: string; read(): Promise<string> };
+
+    await expect(stub.read()).rejects.toThrow('broken');
+    expect(opened).toBe(1);
+    await expect(stub.read()).resolves.toBe('room:2');
+    await expect(stub.read()).resolves.toBe('room:2');
+    expect(stub.name).toBe('room');
+    expect(opened).toBe(2);
+  });
+
+  it('retries on a restored stub and shares restoration across with views', async () => {
+    let opened = 0;
+    const namespace = {
+      get(id: string) {
+        opened += 1;
+        const generation = opened;
+        return {
+          read: async () => {
+            if (generation === 1) {
+              throw new Error('broken');
+            }
+            return `${id}:${generation}`;
+          },
+        };
+      },
+    };
+
+    const base = createRestorableStubFactory(
+      namespace,
+      'get'
+    )?.('id') as unknown as TransformStub<{ read(): Promise<string> }>;
+    const retried = base.with(retry, { retries: 1, delay: () => 0 });
+
+    await expect(retried.read()).resolves.toBe('id:2');
+    await expect(base.read()).resolves.toBe('id:2');
+    expect(opened).toBe(2);
+  });
+
+  it('replaces a broken stub once when concurrent calls fail', async () => {
+    let opened = 0;
+    const namespace = {
+      get() {
+        opened += 1;
+        const generation = opened;
+        return {
+          read: async () => {
+            if (generation === 1) {
+              throw new Error('broken');
+            }
+            return generation;
+          },
+        };
+      },
+    };
+
+    const stub = createRestorableStubFactory(
+      namespace,
+      'get'
+    )?.() as unknown as { read(): Promise<number> };
+
+    await Promise.allSettled([stub.read(), stub.read()]);
+    await expect(Promise.all([stub.read(), stub.read()])).resolves.toEqual([
+      2, 2,
+    ]);
+    expect(opened).toBe(2);
+  });
+
+  it('returns no factory for a missing namespace or method', () => {
+    expect(createRestorableStubFactory(undefined, 'get')).toBeUndefined();
+    expect(createRestorableStubFactory({}, 'get')).toBeUndefined();
   });
 });
