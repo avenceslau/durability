@@ -1,0 +1,35 @@
+.changeset/transforms-all-bindings.md
+  s_cc65d1c4e8f94e::t_ab18fa17a3e3dd 1-5
+packages/transforms/README.md
+  s_cc65d1c4e8f94e::t_bd760887ae3fe8 13-23
+packages/transforms/src/index.ts
+  s_cc65d1c4e8f94e::t_77d564ad4f227e 338-365,415-475,477-481,483-485,497-503,505,532-533,538,600-617
+packages/transforms/src/vite.ts
+  s_cc65d1c4e8f94e::t_041c725e0958d6 53,402-413,415-464,466-467,469-470,484,495,498,516-528,570-579,584-587,598-600,614,918,932,979-980,992,1093,1105
+packages/transforms/tests/any-binding.worker.test.ts
+  s_cc65d1c4e8f94e::t_427f712c2091f2 4,17-20,24,27,31,49,61,64,86,97-112,115,118,132,135,142,145,148-150,152-153,156-163,165-166
+packages/transforms/tests/do-transforms.generated.d.ts
+  s_cc65d1c4e8f94e::t_fd7c4da086be44 24-27,38-41
+packages/transforms/tests/test-worker.ts
+  s_cc65d1c4e8f94e::t_ebdb6c6b72bd8d 124-127,132-135
+packages/transforms/tests/vite.test.ts
+  s_cc65d1c4e8f94e::t_56ceae7b334187 25-27,54-88,159-180
+packages/transforms/wrangler.test.jsonc
+  s_cc65d1c4e8f94e::t_8eec8b42474a59 19-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "24d0f4a520ec9656f692640cec16cfd1d222687b",
+  "prompts": {},
+  "sessions": {
+    "s_cc65d1c4e8f94e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a149e7-40dd-7313-a98a-80e009602acc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
