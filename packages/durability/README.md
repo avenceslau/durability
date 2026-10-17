@@ -6,6 +6,7 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
 - **`DurabilityOutbox`** — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
+- **`DurabilitySemaphore`** — one concurrency limit shared by many client Durable Objects (`durability/semaphore`), allocated in arrival-ordered rounds with cumulative claim/release accounting.
 - **`DurabilityRouting`** — a DO-side load observer and client-side shard selector (`durability/routing`), supporting location hints and caller transforms.
 - **`DurabilitySocket`** — typed WebSocket RPC and replayable event push from a Durable Object to browsers (`durability/socket`), with a dependency-free browser client (`durability/client`).
 - **`DurabilityTracker`** _(experimental, `durability/experimental`)_ — lists work across capabilities and custom sources, as RPC handles that can be waited on or as plain records.
@@ -511,6 +512,60 @@ new DurabilityTracker({ sources: { jobs: this.durability, approvals } });
 - `watch(id, listener)` is optional and returns an unsubscribe function. Call `listener()` after a record may have settled; pass the settled record when it can no longer be read. Without `watch`, `wait` reads again only at its timeout.
 
 New members of `TrackedSource` are always optional, so a custom source keeps compiling across releases.
+
+## Semaphore
+
+`DurabilitySemaphore` holds one concurrency limit — say, an account's maximum running jobs — inside an application-owned Durable Object, and hands permits to many client Durable Objects that queue work. Requests arriving within a round are allocated together in arrival order, so the oldest queued work across all clients is admitted first. Groups (a workflow, a tenant) may carry their own ceiling under the shared limit.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { timeout } from '@durability/transforms';
+import { DurabilityScheduler } from 'durability';
+import {
+  DurabilitySemaphore,
+  type SemaphoreRequest,
+} from 'durability/semaphore';
+
+/** One instance per account; the account id is the semaphore key. */
+export class AccountLimit extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly semaphore = new DurabilitySemaphore({
+    scheduler: this.scheduler,
+    limit: () => this.env.ACCOUNT_CONCURRENCY,
+    groupLimit: (workflowId) => this.workflowLimits.get(workflowId),
+  });
+
+  permits(message: SemaphoreRequest) {
+    return this.semaphore.handle(message);
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+
+export const limits = DurabilitySemaphore.client({
+  target: AccountLimit, // Vite injects exportName
+  invoke: (stub, message) => stub.permits(message),
+});
+
+// From a client Durable Object:
+const grant = await limits.with(timeout, 5_000).request(accountId, {
+  type: 'request',
+  v: 1,
+  clientId: this.ctx.id.toString(),
+  demand: [{ group: workflowId, count: queued, oldestAt: oldestEnqueuedAt }],
+  grants: [{ grantId, claimed: 3, released: 1 }], // cumulative reports
+});
+```
+
+- **Rounds.** `handle()` holds a request for up to `roundWaitMs` (default 1 second) so concurrent requests are allocated together, and runs rounds no closer than `roundPeriodMs` (default 2 seconds). The response's `nextRequestAt` tells the client when it may ask again.
+- **Grants and reports.** Each `(client, group)` that receives permits gets a grant. Clients report `claimed` (permits actually used) and `released` (claimed permits returned) per grant as cumulative high-water marks, piggybacked on requests or sent with a `sync` message. Counts only move forward and are clamped to the grant, so lost, repeated, or reordered reports can never free capacity twice. Permits a client never claims within `grantTimeoutMs` (default 10 seconds) are reclaimed; a later claim is answered with the clamped count and `status: 'expired'`.
+- **Blocked attribution.** Demand that stays queued is explained per group: `group_limit`, `limit`, `not_permitted` (`canGrant` returned false), or `limit_resolution_error` (`groupLimit` threw; the group fails closed).
+- **Limits are live.** `limit` and `groupLimit` are resolved once per round. Lowering a limit never evicts running work; it stops new admissions until usage is below the new ceiling.
+- **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`. A queueing client helper that drives this protocol is planned; today the client Durable Object owns its queue.
+
+`usage()` reports the limit, outstanding permits, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
 
 ## Routing and fanout
 

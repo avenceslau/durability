@@ -21,6 +21,10 @@
         "name": "OUTBOX_TEST",
         "class_name": "OutboxObject",
       },
+      {
+        "name": "LIMIT_TEST",
+        "class_name": "LimitObject",
+      },
     ],
   },
   "services": [
@@ -60,6 +64,10 @@
     {
       "tag": "v6",
       "new_sqlite_classes": ["OutboxObject"],
+    },
+    {
+      "tag": "v7",
+      "new_sqlite_classes": ["LimitObject"],
     },
   ],
 }

@@ -14,6 +14,7 @@
     "src/client.ts",
     "src/experimental.ts",
     "src/routing.ts",
+    "src/semaphore.ts",
     "src/socket.ts",
     "src/utils.ts"
   ],

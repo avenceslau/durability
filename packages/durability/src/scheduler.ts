@@ -8,9 +8,9 @@ import {
 } from './errors.js';
 import {
   createEmitter,
+  type DurabilityLifecycleEvent,
   type Emit,
   type LifecycleEntity,
-  type LifecycleHook,
 } from './lifecycle.js';
 import { migrate, type MigrationCapability } from './migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
@@ -66,6 +66,8 @@ type PhysicalAlarm = Pick<
 export type Participant = {
   table: DurableTable;
   runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
+  /** Earliest due time, for tables without `status` and `next_attempt_at` columns. */
+  nextPendingAt?(sql: SqlStorage): number | undefined;
 };
 
 /**
@@ -222,8 +224,15 @@ export class Engine {
     }
   }
 
-  emitter(hook: LifecycleHook | undefined): Emit {
-    return createEmitter(hook, (promise) => this.context.waitUntil?.(promise));
+  emitter<
+    Event extends { entityKind: string; type: string } =
+      DurabilityLifecycleEvent,
+  >(
+    hook: ((event: Event) => void | Promise<void>) | undefined
+  ): (event: Event) => void {
+    return createEmitter<Event>(hook, (promise) =>
+      this.context.waitUntil?.(promise)
+    );
   }
 
   /** Applies a helper's SQLite migrations. */
@@ -260,21 +269,25 @@ export class Engine {
   private async reconcile(
     physicalAlarm: PhysicalAlarm
   ): Promise<number | undefined> {
-    const scheduled = this.participants.flatMap(({ table }) =>
-      nextAttemptRowSchema
+    const scheduled = this.participants.flatMap((participant) => {
+      if (participant.nextPendingAt) {
+        const at = participant.nextPendingAt(this.sql);
+        return at === undefined ? [] : [at];
+      }
+      return nextAttemptRowSchema
         .array()
         .parse(
           this.sql
             .exec(
-              `SELECT next_attempt_at FROM ${table.name}
+              `SELECT next_attempt_at FROM ${participant.table.name}
                WHERE status = 'pending'
                ORDER BY next_attempt_at ASC
                LIMIT 1`
             )
             .toArray()
         )
-        .map((row) => row.next_attempt_at)
-    );
+        .map((row) => row.next_attempt_at);
+    });
     const nextAlarmAt =
       scheduled.length === 0 ? undefined : Math.min(...scheduled);
     const currentAlarm = await physicalAlarm.getAlarm();

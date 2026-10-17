@@ -375,6 +375,34 @@ export const durabilityOutboxMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Ordered SQLite migrations for semaphore grants. Applied automatically on
+ * construction.
+ */
+export const durabilitySemaphoreMigrations = [
+  {
+    name: 'durability_0007_create_semaphore',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_semaphore_grants (
+        grant_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_grants_expires_idx
+      ON durability_semaphore_grants (expires_at) WHERE claimed < permits;
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_semaphore_grants_expires_idx;
+      DROP TABLE IF EXISTS durability_semaphore_grants;
+    `,
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -390,7 +418,8 @@ export type MigrationCapability =
   | 'socket'
   | 'log'
   | 'logLeases'
-  | 'outbox';
+  | 'outbox'
+  | 'semaphore';
 
 /**
  * Newer library versions may leave migrations this one does not know about.

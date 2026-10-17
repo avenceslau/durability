@@ -182,6 +182,14 @@ export class LogLeaseError extends Error {
   }
 }
 
+/** A malformed or unexpected semaphore message. */
+export class SemaphoreProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SemaphoreProtocolError';
+  }
+}
+
 /** Error thrown when a sharding function returns an invalid shard key. */
 export class RoutingError extends Error {
   constructor(message: string) {
