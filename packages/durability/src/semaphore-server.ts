@@ -350,9 +350,15 @@ export class DurabilitySemaphoreServer {
     let round: RoundResult;
     try {
       const limit = await this.#resolveLimit();
-      const groups = new Set(
-        pending.flatMap(({ request }) => request.demand.map((d) => d.group))
-      );
+      // Held leases are re-checked every round, not only when their group is
+      // requested, so a group that became limited or blocked is retired.
+      const leaseGroups = this.#leases
+        ? this.#store.listLeases().map((lease) => lease.grp)
+        : [];
+      const groups = new Set([
+        ...pending.flatMap(({ request }) => request.demand.map((d) => d.group)),
+        ...leaseGroups,
+      ]);
       const policies = new Map(
         await Promise.all(
           [...groups].map(
@@ -535,8 +541,9 @@ export class DurabilitySemaphoreServer {
               oldestAt: demand.oldestAt,
             }))
       );
+      // The allocator nets out live footprint itself; hand it gross capacity.
       const leaseBudget = budget.shared
-        ? Math.max(0, remaining)
+        ? Math.max(0, limit - total - granted)
         : budget.leases;
       const outcome = allocateLeases(store, this.#leases, {
         budget: leaseBudget,
@@ -550,9 +557,14 @@ export class DurabilitySemaphoreServer {
       leased = outcome.footprint;
       leaseEvents = outcome.events;
       for (const [entry, allocation] of allocations) {
-        allocation.leases.push(
-          ...(outcome.grants.get(entry.request.clientId) ?? [])
+        // One echo per lease; the allocator's view (e.g. retired) supersedes the report's.
+        const byLease = new Map(
+          [
+            ...allocation.leases,
+            ...(outcome.grants.get(entry.request.clientId) ?? []),
+          ].map((lease) => [lease.leaseId, lease] as const)
         );
+        allocation.leases = [...byLease.values()];
       }
       if (budget.shared) {
         remaining = limit - total - granted - leased;

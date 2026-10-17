@@ -25,6 +25,8 @@ export const leaseRowSchema = z.object({
   created_at: z.number().int().nonnegative(),
   /** Refreshed by every report; the lease is swept once this passes. */
   expires_at: z.number().int().nonnegative(),
+  /** 1 once no more permits may be drawn; footprint stays until released. */
+  retired: z.number().int().min(0).max(1),
 });
 
 export type LeaseRow = z.infer<typeof leaseRowSchema>;
@@ -152,11 +154,12 @@ export class HolderStore {
   updateLease(row: LeaseRow): void {
     this.sql.exec(
       `UPDATE durability_semaphore_leases
-       SET permits = ?, released = ?, expires_at = ?
+       SET permits = ?, released = ?, expires_at = ?, retired = ?
        WHERE lease_id = ?`,
       row.permits,
       row.released,
       row.expires_at,
+      row.retired,
       row.lease_id
     );
   }

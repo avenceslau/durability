@@ -148,8 +148,14 @@ const leaseReport = (lease: QueueLeaseRow): LeaseReport => ({
   released: lease.released,
 });
 
+/**
+ * The holder sweeps a lease at its expiry by its own clock; stopping local
+ * draws this long before it bounds the window a skewed clock could open.
+ */
+const leaseDrawMarginMs = 30_000;
+
 const drawable = (lease: QueueLeaseRow, now: number): boolean =>
-  lease.drawn < lease.permits && lease.expires_at > now;
+  lease.drawn < lease.permits && lease.expires_at - leaseDrawMarginMs > now;
 
 /**
  * A composable DO capability for the client side of {@link DurabilitySemaphore}:

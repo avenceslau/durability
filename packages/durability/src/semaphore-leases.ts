@@ -117,11 +117,12 @@ export const budgets = (
 export const leaseFootprint = (lease: LeaseRow): number =>
   Math.max(0, lease.permits - lease.released);
 
-const toLeaseGrant = (lease: LeaseRow): LeaseGrant => ({
+/** A retired lease is echoed as expired so the client stops drawing at once. */
+const toLeaseGrant = (lease: LeaseRow, now: number): LeaseGrant => ({
   leaseId: lease.lease_id,
   group: lease.grp,
   permits: lease.permits,
-  expiresAt: lease.expires_at,
+  expiresAt: lease.retired ? now : lease.expires_at,
 });
 
 export const leaseEligible = (
@@ -179,18 +180,21 @@ export const applyLeaseReports = (
       lease.released,
       Math.min(Math.max(0, report.released), drawn)
     );
-    if (released >= lease.permits) {
+    // A retired lease shrinks to what the client has drawn; nothing more is coming.
+    const permits = lease.retired ? Math.max(released, drawn) : lease.permits;
+    if (released >= permits) {
       store.removeLease(lease.lease_id);
-      outcome.echoes.push({ ...toLeaseGrant(lease), expiresAt: now });
+      outcome.echoes.push({ ...toLeaseGrant(lease, now), expiresAt: now });
       continue;
     }
     const refreshed: LeaseRow = {
       ...lease,
+      permits,
       released,
       expires_at: now + policy.ttlMs,
     };
     store.updateLease(refreshed);
-    outcome.echoes.push(toLeaseGrant(refreshed));
+    outcome.echoes.push(toLeaseGrant(refreshed, now));
   }
   return outcome;
 };
@@ -243,9 +247,18 @@ export const allocateLeases = (
       continue;
     }
     const group = input.policies.get(lease.grp) ?? {};
-    if (!leaseEligible(policy, group)) {
-      store.updateLease({ ...lease, expires_at: now });
-      echo(lease.client_id, { ...toLeaseGrant(lease), expiresAt: now });
+    let current = lease;
+    if (!lease.retired && !leaseEligible(policy, group)) {
+      // Stop draws now; footprint stays until the client reports and releases.
+      const drawn = input.drawn.get(lease.lease_id);
+      current = {
+        ...lease,
+        retired: 1,
+        permits:
+          drawn === undefined ? lease.permits : Math.max(lease.released, drawn),
+      };
+      store.updateLease(current);
+      echo(lease.client_id, toLeaseGrant(current, now));
       events.push({
         entityKind: 'semaphore',
         type: 'lease_retired',
@@ -253,16 +266,18 @@ export const allocateLeases = (
         leaseId: lease.lease_id,
         clientId: lease.client_id,
         group: lease.grp,
-        permits: leaseFootprint(lease),
+        permits: lease.permits - current.permits,
       });
-      continue;
     }
 
-    const live = leaseFootprint(lease);
+    const live = leaseFootprint(current);
     footprint += live;
     groupFootprint.set(lease.grp, (groupFootprint.get(lease.grp) ?? 0) + live);
     // An unreported lease is assumed fully drawn, as gatekeeper does.
-    if ((input.drawn.get(lease.lease_id) ?? lease.permits) < lease.permits) {
+    if (
+      !current.retired &&
+      (input.drawn.get(lease.lease_id) ?? lease.permits) < lease.permits
+    ) {
       usable.add(JSON.stringify([lease.client_id, lease.grp]));
     }
   }
@@ -299,6 +314,52 @@ export const allocateLeases = (
     .slice(0, policy.maxGroups)
     .flatMap(({ clients }) => clients);
 
+  // A lowered budget retires undrawn headroom: leases whose client reported
+  // fewer drawn permits than granted shrink to what was drawn, newest first.
+  let excess = footprint + input.unknownDebt - input.budget;
+  if (excess > 0) {
+    const live = store
+      .listLeases()
+      .filter((lease) => lease.expires_at > now && !lease.retired)
+      .sort((a, b) => b.created_at - a.created_at);
+    for (const lease of live) {
+      if (excess <= 0) {
+        break;
+      }
+      const drawn = input.drawn.get(lease.lease_id);
+      if (drawn === undefined || drawn >= lease.permits) {
+        continue;
+      }
+      const shrunk = Math.min(lease.permits - drawn, excess);
+      const retired: LeaseRow = {
+        ...lease,
+        permits: lease.permits - shrunk,
+        retired: 1,
+      };
+      if (retired.released >= retired.permits) {
+        store.removeLease(lease.lease_id);
+      } else {
+        store.updateLease(retired);
+      }
+      footprint -= shrunk;
+      excess -= shrunk;
+      groupFootprint.set(
+        lease.grp,
+        (groupFootprint.get(lease.grp) ?? 0) - shrunk
+      );
+      echo(lease.client_id, toLeaseGrant(retired, now));
+      events.push({
+        entityKind: 'semaphore',
+        type: 'lease_retired',
+        timestamp: now,
+        leaseId: lease.lease_id,
+        clientId: lease.client_id,
+        group: lease.grp,
+        permits: shrunk,
+      });
+    }
+  }
+
   const remaining = Math.max(0, input.budget - footprint - input.unknownDebt);
   if (chosen.length === 0 || remaining === 0) {
     return { grants, footprint, events };
@@ -331,6 +392,7 @@ export const allocateLeases = (
       released: 0,
       created_at: now,
       expires_at: now + policy.ttlMs,
+      retired: 0,
     };
     store.insertLease(lease);
     footprint += permits;
@@ -338,7 +400,7 @@ export const allocateLeases = (
       candidate.group,
       (groupFootprint.get(candidate.group) ?? 0) + permits
     );
-    echo(candidate.clientId, toLeaseGrant(lease));
+    echo(candidate.clientId, toLeaseGrant(lease, now));
     events.push({
       entityKind: 'semaphore',
       type: 'lease_granted',
