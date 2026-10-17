@@ -332,6 +332,33 @@ describe('DurabilitySocket', () => {
     expect(c.frames()).toEqual([]);
   });
 
+  it('publishes payloads that carry undefined properties, as lifecycle events do', async () => {
+    const { context, socket } = createSocket();
+    await connect(socket);
+    const ws = serverSide(context);
+    await socket.webSocketMessage(
+      ws as unknown as WebSocket,
+      frame({ type: 'subscribe', id: 's', names: ['created'] })
+    );
+
+    // A completed operation whose handler returned nothing looks like this.
+    socket.created({
+      id: '1',
+      title: 't',
+      done: false,
+      by: 'a',
+      result: undefined,
+    } as Todo & { by: string });
+
+    expect(ws.frames()[ws.frames().length - 1]).toEqual({
+      v: 1,
+      type: 'event',
+      seq: 1,
+      name: 'created',
+      payload: { id: '1', title: 't', done: false, by: 'a' },
+    });
+  });
+
   it('rejects subscriptions to unknown events', async () => {
     const { context, socket } = createSocket();
     await connect(socket);
