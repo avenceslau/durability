@@ -13,6 +13,10 @@
         "name": "SOCKET_TEST",
         "class_name": "SocketTestObject",
       },
+      {
+        "name": "TRACKER_TEST",
+        "class_name": "TrackerTestObject",
+      },
     ],
   },
   "services": [
@@ -44,6 +48,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["LogTestObject"],
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["TrackerTestObject"],
     },
   ],
 }

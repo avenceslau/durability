@@ -112,3 +112,68 @@ export const exhaustAttempts = (
       )
       .toArray()[0]
   )?.attempt;
+
+export type CreatedQuery = {
+  limit: number;
+  /** Opaque position from a previous page's `next`. */
+  after?: string | undefined;
+  status?: string | undefined;
+  name?: string | undefined;
+};
+
+export type CreatedPage = {
+  rows: Record<string, SqlStorageValue>[];
+  /** Present only when more records follow. */
+  next?: string;
+};
+
+const createdCursorSchema = z.tuple([
+  z.number().int().nonnegative(),
+  z.string(),
+]);
+
+/**
+ * Lists records in creation order, then by key, filtered by status and by the
+ * value of `nameColumn`.
+ */
+export const listCreated = (
+  sql: SqlStorage,
+  table: DurableTable,
+  nameColumn: string,
+  query: CreatedQuery
+): CreatedPage => {
+  const [createdAt, key] =
+    query.after === undefined
+      ? [-1, '']
+      : createdCursorSchema.parse(JSON.parse(query.after));
+  const status = query.status ?? null;
+  const name = query.name ?? null;
+  const found = sql
+    .exec(
+      `SELECT * FROM ${table.name}
+       WHERE (? IS NULL OR status = ?)
+         AND (? IS NULL OR ${nameColumn} = ?)
+         AND (created_at > ? OR (created_at = ? AND ${table.key} > ?))
+       ORDER BY created_at ASC, ${table.key} ASC
+       LIMIT ?`,
+      status,
+      status,
+      name,
+      name,
+      createdAt,
+      createdAt,
+      key,
+      query.limit + 1
+    )
+    .toArray();
+
+  const rows = found.slice(0, query.limit);
+  const last = rows[rows.length - 1];
+  if (found.length <= query.limit || !last) {
+    return { rows };
+  }
+  return {
+    rows,
+    next: JSON.stringify([last['created_at'], last[table.key]]),
+  };
+};

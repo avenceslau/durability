@@ -5,6 +5,7 @@ import {
   type DurableCall,
   type DurabilityLifecycleEvent,
 } from '../src';
+import { DurabilityTracker } from '../src/experimental';
 import { DurabilitySocket, event, type SocketCall } from '../src/socket';
 
 export type Todo = { id: string; title: string; done: boolean };
@@ -30,10 +31,15 @@ export class SocketTestObject extends DurableObject<Env> {
     },
   });
 
+  private readonly tracker = new DurabilityTracker({
+    sources: { todos: this.durability },
+  });
+
   readonly socket = new DurabilitySocket({
     context: this.ctx,
     inbound: {
       list: () => [...this.todos.values()],
+      work: () => this.tracker.records(),
       whoami: (_input: unknown, call: SocketCall<{ user: string }>) =>
         call.metadata.user,
       create: {
