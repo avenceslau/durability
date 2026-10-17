@@ -794,7 +794,7 @@ There is also no key compaction. `deduplicationKey` is unique per retained recor
 
 ## When the platform gives up on the alarm
 
-A Durable Object alarm whose handler throws is retried with backoff up to six times and then dropped. Storage errors while a helper reconciles can make `alarm()` throw, and six in a row would leave pending work with nothing armed. An object that wakes, for any request, and finds pending work with no alarm re-arms it before doing anything else, so the work resumes the next time the object is instantiated. An object that nobody touches cannot run anyway; a write reconciles on its own, so the check costs an idle wake one `getAlarm()` and one count per helper, and changes nothing otherwise.
+A Durable Object alarm whose handler throws is retried with backoff a limited number of times and then dropped. Storage errors while a helper reconciles can make `alarm()` throw, and enough in a row would leave pending work with nothing armed. So construction has one deferred side effect: once the constructing code has registered every helper, an object that finds pending work and no alarm reconciles, which arms one. An object woken by a write or by its alarm reconciles through those instead, and an object with an alarm set or nothing pending is left exactly as it was. The check costs an idle wake one `getAlarm()` and one count per helper, and its failure is reported, never thrown from construction.
 
 ## Long-running alarm calls
 

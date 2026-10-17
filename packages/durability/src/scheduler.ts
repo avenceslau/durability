@@ -173,7 +173,8 @@ export class Engine {
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
   private wakeReconcile: Promise<void> | undefined;
-  private written = false;
+  /** Set by any write or alarm run, each of which reconciles on its own. */
+  private reconciling = false;
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
     | undefined;
@@ -217,7 +218,8 @@ export class Engine {
    * wait with nothing armed until some request happened to write. Once the
    * constructing request has registered every helper, an object that finds
    * pending work and no alarm re-arms itself, so it recovers the next time it
-   * is instantiated for any reason. Anything else is left exactly as it was.
+   * is instantiated for any reason. Anything else is left exactly as it was,
+   * and an object woken by a write or by its alarm reconciles through those.
    */
   private reconcileOnWake(): void {
     if (this.wakeReconcile) {
@@ -225,8 +227,14 @@ export class Engine {
     }
     this.wakeReconcile = Promise.resolve()
       .then(async () => {
-        // Any write reconciles the alarm itself; only an object that woke idle needs this.
-        if (this.written || (await this.context.storage.getAlarm()) !== null) {
+        // Only an object that woke idle needs this; a write or an alarm run reconciles itself.
+        if (
+          this.reconciling ||
+          (await this.context.storage.getAlarm()) !== null
+        ) {
+          return;
+        }
+        if (this.reconciling) {
           return;
         }
         const pending = this.participants.some(
@@ -239,8 +247,7 @@ export class Engine {
                 .toArray()[0]
             ).count > 0
         );
-        // A write that began meanwhile reconciles on its own; two reconciliations would race.
-        if (pending && !this.written) {
+        if (pending && !this.reconciling) {
           await this.scheduleNextAlarm();
         }
       })
@@ -285,7 +292,7 @@ export class Engine {
    * transaction, then publishes the in-memory timer only after commit.
    */
   async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
-    this.written = true;
+    this.reconciling = true;
     let nextPendingAt: number | undefined;
     const result = await this.context.storage.transaction(
       async (transaction) => {
@@ -518,6 +525,7 @@ export class Engine {
    * invocation approaches its wall-time limit, and re-arms the physical alarm.
    */
   async alarm(info?: AlarmInvocationInfo): Promise<void> {
+    this.reconciling = true;
     const startedAt = Date.now();
     const execution = Promise.all(
       this.participants.map((participant) =>
