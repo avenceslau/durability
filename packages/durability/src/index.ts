@@ -74,6 +74,7 @@ export {
   LogLeaseError,
   LogTruncatedError,
   RoutingError,
+  SemaphoreProtocolError,
 } from './errors.js';
 export type { DurabilityLifecycleEvent, LifecycleHook } from './lifecycle.js';
 export {
@@ -82,6 +83,7 @@ export {
   durabilityFanoutMigrations,
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
+  durabilitySemaphoreMigrations,
   type DurabilityMigrationResult,
   type MigrationCapability,
 } from './migrations.js';

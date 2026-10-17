@@ -11,6 +11,7 @@ export { SocketTestObject };
 export { LogTestObject } from './log-worker';
 export { TrackerTestObject } from './tracker-worker';
 export { OutboxObject } from './outbox-worker';
+export { LimitObject } from './semaphore-worker';
 
 export type RecordedAlarm = {
   attempt: number;
