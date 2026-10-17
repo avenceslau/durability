@@ -1,0 +1,110 @@
+.changeset/durability-outbox.md
+  s_f53e9c1eeeed43::t_69db9279ca39ef 1-5
+packages/durability/README.md
+  s_f53e9c1eeeed43::t_152ebb98e765f6 8,262,274-276,284,292,303-305,346,540-545,560-561,567,569
+  s_f53e9c1eeeed43::t_0b88cf64fd10b7 9,516-569
+packages/durability/src/errors.ts
+  s_f53e9c1eeeed43::t_faaa1eb5c59419 132-139
+  s_f53e9c1eeeed43::t_abf60050757252 185-192
+packages/durability/src/index.ts
+  s_f53e9c1eeeed43::t_f6baa63c4ae470 47-52,82,93
+  s_f53e9c1eeeed43::t_cc77857f7ed357 84,94
+packages/durability/src/lifecycle.ts
+  s_f53e9c1eeeed43::t_2b7d3550671aad 24-32,36-37,48-52
+  s_f53e9c1eeeed43::t_e6fe7bd1ce6036 138-141,143
+packages/durability/src/migrations.ts
+  s_f53e9c1eeeed43::t_2f02603aa6846b 334-377,414-417
+  s_f53e9c1eeeed43::t_f629b14c26e0df 378-405,421-422
+packages/durability/src/outbox.test.ts
+  s_f53e9c1eeeed43::t_175348dd5656f8 1-7,9-23,29,53,60,64,82-83,157-158,161-162,196-197,203-204,227,254-255,278-279,308,311,320,322,334,343,351,361
+  s_f53e9c1eeeed43::t_8be7e8886043c9 193,195,197,203-204,227,231-232
+packages/durability/src/outbox.ts
+  s_f53e9c1eeeed43::t_e4154f31c7fee8 1-27,34,96-126,131-171,181,184-199,202,209-210,211-290,293-309,324-341,343-377,381-387,391-398,406-407,408-474,476,482,484-490,499-503,504-567
+  s_f53e9c1eeeed43::t_2affc76a56bd87 127-130
+packages/durability/src/storage.ts
+  s_c38883cbb1b412::t_a984d56b59408f 50,53
+  s_f53e9c1eeeed43::t_79dc0de5958576 128-129
+packages/durability/tests/outbox-worker.ts
+  s_f53e9c1eeeed43::t_9d1955c01f2029 1-68
+packages/durability/tests/outbox.worker.test.ts
+  s_f53e9c1eeeed43::t_e84491380898c7 1-3,5-8,9-21,22
+packages/durability/wrangler.test.jsonc
+  s_f53e9c1eeeed43::t_ffc2c280471348 20-24,27,56-57,59-61,71
+  s_f53e9c1eeeed43::t_34fb3b507a67ef 24-27,64-65,70-71
+.changeset/durability-semaphore.md
+  s_f53e9c1eeeed43::t_5e38a821e04647 1-5
+.changeset/transforms-client-factories.md
+  s_f53e9c1eeeed43::t_e9fa679740fde7 1-5
+packages/durability/package.json
+  s_f53e9c1eeeed43::t_2b33c0d55e044c 26,53-56
+packages/durability/src/durable-object-target.ts
+  s_f53e9c1eeeed43::t_52d1a996dd1fe3 1-38
+packages/durability/src/routing.ts
+  s_f53e9c1eeeed43::t_6e4b52a48ddc1b 6-9,33,59-62
+packages/durability/src/scheduler.ts
+  s_f53e9c1eeeed43::t_0ba14c4e89e5b5 11,227-235
+packages/durability/src/semaphore-client.ts
+  s_23da8a6c174207::t_818c27aae0fa0e 1-83
+packages/durability/src/semaphore-protocol.ts
+  s_ec3d3a36104468::t_35e0a67919d222 1-100
+packages/durability/src/semaphore-server.ts
+  s_f53e9c1eeeed43::t_0ce68e61806374 1-24,113-279,281,283-322,324-325,327-377,380-412,415-418,420-424,427-435,437-485,487-503,504-529,533-539,542-544,546-547,549-569,571,573-583,585,587-594,596,598-613,616-652
+packages/durability/src/semaphore.test.ts
+  s_f53e9c1eeeed43::t_61c0fff2b74788 1-13,15-33,58,63,71,81,89,99,109,121,134,146,155,185-187,192,201,214,219,231,244,250,255,263,273-274,286,289,296
+packages/durability/src/semaphore.ts
+  s_f53e9c1eeeed43::t_68bd03e9d204f3 1-115
+packages/durability/tests/named-alarm-worker.ts
+  s_f53e9c1eeeed43::t_f6d9a79c965715 14
+packages/durability/tests/semaphore-worker.ts
+  s_f53e9c1eeeed43::t_c5eb35d8934b7d 1-34
+packages/durability/tests/semaphore.worker.test.ts
+  s_f53e9c1eeeed43::t_4d4990ead704b6 1-62
+packages/durability/tsconfig.build.json
+  s_f53e9c1eeeed43::t_7154eaa145e496 12-13,16-17,19-20
+packages/transforms/README.md
+  s_f53e9c1eeeed43::t_6cfa3fe5800db1 25
+packages/transforms/src/vite.ts
+  s_f53e9c1eeeed43::t_5688cd77fe050e 75-80,281,339,346,351,357,382,388,391,394,418,429,432,712-714,927,931-933,935-936
+packages/transforms/tests/vite.test.ts
+  s_f53e9c1eeeed43::t_c8452970a911c4 414-436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "46d33086cf62007476d47c1c5cf9d1d6663d5330",
+  "prompts": {},
+  "sessions": {
+    "s_23da8a6c174207": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1459b-87b4-720a-a5c8-66989eafcede",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_c38883cbb1b412": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a145aa-9163-720a-a5c8-66a69a1cbda8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_ec3d3a36104468": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a145aa-914f-720a-a5c8-66a53a843a9b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f53e9c1eeeed43": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13c4e-5038-746a-9ef6-8989b8468b05",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
