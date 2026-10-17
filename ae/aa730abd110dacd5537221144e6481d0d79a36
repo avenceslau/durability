@@ -1,0 +1,31 @@
+.changeset/duplicate-payload.md
+  s_89dff2fd3753ec::t_57879cc7bdb00c 1-5
+packages/durability/README.md
+  s_89dff2fd3753ec::t_e814322d8d95fa 91-92
+packages/durability/src/durability.ts
+  s_89dff2fd3753ec::t_37656f7c0f3b10 4,38,123,488-492
+packages/durability/src/errors.ts
+  s_89dff2fd3753ec::t_976ae8cd84643b 96-105
+packages/durability/src/index.test.ts
+  s_89dff2fd3753ec::t_24161ca0aed54d 9,765-807
+packages/durability/src/index.ts
+  s_89dff2fd3753ec::t_7c74054ca458ca 63
+packages/durability/src/serialization.ts
+  s_89dff2fd3753ec::t_849947979d6dbc 20-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "aeaa730abd110dacd5537221144e6481d0d79a36",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
