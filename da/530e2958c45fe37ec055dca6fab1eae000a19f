@@ -1,0 +1,27 @@
+.changeset/serialize-undefined.md
+  s_89dff2fd3753ec::t_c525b858cfef34 1-5
+packages/durability/README.md
+  s_89dff2fd3753ec::t_0ac7486ae91031 89
+packages/durability/src/serialization.test.ts
+  s_89dff2fd3753ec::t_5d6809417d7fb7 1-30
+packages/durability/src/serialization.ts
+  s_89dff2fd3753ec::t_f4ba7b239a8261 8-32,38
+packages/durability/src/socket.test.ts
+  s_89dff2fd3753ec::t_22963f556bfca5 335-361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da530e2958c45fe37ec055dca6fab1eae000a19f",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
