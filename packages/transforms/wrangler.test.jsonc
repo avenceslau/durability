@@ -16,7 +16,9 @@
     },
   ],
   "kv_namespaces": [{ "binding": "KV", "id": "transforms-test-kv" }],
-  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "transforms-test-bucket" }],
+  "r2_buckets": [
+    { "binding": "BUCKET", "bucket_name": "transforms-test-bucket" },
+  ],
   "workflows": [
     {
       "binding": "WORKFLOW",

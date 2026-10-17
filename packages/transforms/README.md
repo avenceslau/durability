@@ -10,7 +10,17 @@ npm install @durability/transforms
 
 ## Vite setup
 
-The Vite plugin requires Wrangler, reads its validated binding configuration, wraps matching RPC stubs, and generates declarations that add `.with(...)` to their types.
+The Vite plugin requires Wrangler, reads its validated binding configuration, wraps Durable Object stubs and every other object binding (services, KV, R2, Workflows, queues, and so on), and generates declarations that add `.with(...)` to their Wrangler-inferred types. Vars, secrets, and module blobs are left untouched. Bindings whose type Wrangler cannot infer, such as cross-Worker services, are wrapped at runtime but keep their hand-written declarations.
+
+```ts
+const value = await env.CACHE.with(timeout, 1_000).get('key');
+await env.MEDIA.with(retry, 2).put('file.txt', body);
+const instance = await env.JOBS.with(timeout, 5_000).create({ params });
+```
+
+Caller transforms run on the client only. Callee transforms and caller context still require a Durable Object or WorkerEntrypoint that you own.
+
+Without transforms, wrapped bindings behave exactly like the originals, including synchronous methods and RPC promise pipelining. With transforms, every call returns a promise that still supports pipelined access such as `stub.with(timeout, 1_000).counter().increment()`; the chained call waits for the transformed result instead of sharing its round trip. Methods on returned objects, such as a `WorkflowInstance`, are not transformed.
 
 For `DurabilityRouting.client({...})`, the plugin injects `exportName` from the targeted Durable Object's same-module export. The target must be a local class exported by that module and declared as a local Durable Object class in Wrangler (including migration classes). Export aliases are supported:
 

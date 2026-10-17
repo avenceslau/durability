@@ -121,8 +121,16 @@ export class CounterTarget extends RpcTarget {
 }
 
 export class PipelineDO extends DurableObject {
+  get label(): string {
+    return 'pipeline';
+  }
+
   counter(): CounterTarget {
     return new CounterTarget();
+  }
+
+  async fail(): Promise<CounterTarget> {
+    throw new Error('pipeline failure');
   }
 
   async echo(value: string): Promise<string> {

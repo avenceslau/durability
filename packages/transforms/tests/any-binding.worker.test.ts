@@ -1,13 +1,7 @@
 import { env } from 'cloudflare:test';
 import { Result } from 'better-result';
 import { describe, expect, it } from 'vitest';
-import {
-  createTransformStub,
-  defineTransform,
-  errorBoundary,
-  retry,
-  timeout,
-} from '../src/index';
+import { defineTransform, errorBoundary, retry, timeout } from '../src/index';
 
 type Call = { method: string; args: unknown[] };
 
@@ -20,31 +14,24 @@ const recorder = defineTransform<object>().caller(
 );
 
 describe('Vite plugin coverage', () => {
-  it('does not wrap KV, R2, or Workflow bindings', () => {
-    expect(Reflect.get(env.KV, 'with')).toBeUndefined();
-    expect(Reflect.get(env.BUCKET, 'with')).toBeUndefined();
-    expect(Reflect.get(env.WORKFLOW, 'with')).toBeUndefined();
+  it('wraps KV, R2, and Workflow bindings', () => {
+    expect(env.KV.with).toBeTypeOf('function');
+    expect(env.BUCKET.with).toBeTypeOf('function');
+    expect(env.WORKFLOW.with).toBeTypeOf('function');
   });
 });
 
-describe('KV through createTransformStub', () => {
+describe('KV', () => {
   it('runs caller transforms around put, get, list, and delete', async () => {
     const calls: Call[] = [];
-    const kv = createTransformStub(env.KV)
-      .with(timeout, 1_000)
-      .with(recorder, calls);
+    const kv = env.KV.with(timeout, 1_000).with(recorder, calls);
 
     await kv.put('greeting', 'hello');
-    // @ts-expect-error -- .with() collapses KVNamespace.get overloads to the string[] signature
     await expect(kv.get('greeting')).resolves.toBe('hello');
-    await expect(
-      // @ts-expect-error -- .with() collapses KVNamespace.get overloads to the string[] signature
-      kv.get('greeting', 'json').catch(() => 'not-json')
-    ).resolves.toBe('not-json');
+    await expect(kv.get('greeting', 'json')).rejects.toThrow(SyntaxError);
     const listed = await kv.list({ prefix: 'greet' });
     expect(listed.keys.map((key) => key.name)).toEqual(['greeting']);
     await kv.delete('greeting');
-    // @ts-expect-error -- .with() collapses KVNamespace.get overloads to the string[] signature
     await expect(kv.get('greeting')).resolves.toBeNull();
 
     expect(calls.map((call) => call.method)).toEqual([
@@ -59,8 +46,7 @@ describe('KV through createTransformStub', () => {
 
   it('retries real binding errors and wraps them with errorBoundary', async () => {
     const calls: Call[] = [];
-    const kv = createTransformStub(env.KV)
-      .with(errorBoundary)
+    const kv = env.KV.with(errorBoundary)
       .with(retry, { retries: 2, delay: () => 0 })
       .with(recorder, calls);
 
@@ -72,10 +58,10 @@ describe('KV through createTransformStub', () => {
   });
 });
 
-describe('R2 through createTransformStub', () => {
+describe('R2', () => {
   it('runs caller transforms around put, get, head, and delete', async () => {
     const calls: Call[] = [];
-    const bucket = createTransformStub(env.BUCKET).with(recorder, calls);
+    const bucket = env.BUCKET.with(recorder, calls);
 
     await bucket.put('file.txt', 'contents');
     const object = await bucket.get('file.txt');
@@ -97,7 +83,7 @@ describe('R2 through createTransformStub', () => {
   });
 
   it('streams a request body through a transformed put', async () => {
-    const bucket = createTransformStub(env.BUCKET).with(timeout, 1_000);
+    const bucket = env.BUCKET.with(timeout, 1_000);
     const body = new Blob(['streamed']).stream();
 
     await bucket.put('stream.txt', body, {
@@ -108,12 +94,28 @@ describe('R2 through createTransformStub', () => {
     expect(object?.httpMetadata?.contentType).toBe('text/plain');
     await expect(object?.text()).resolves.toBe('streamed');
   });
+
+  it('keeps synchronous methods synchronous without transforms', () => {
+    const upload = env.BUCKET.resumeMultipartUpload('sync.txt', 'upload-id');
+
+    expect(upload.key).toBe('sync.txt');
+  });
+
+  it('pipelines through synchronous methods with transforms', async () => {
+    const calls: Call[] = [];
+    const bucket = env.BUCKET.with(recorder, calls);
+
+    await expect(
+      bucket.resumeMultipartUpload('sync.txt', 'upload-id')
+    ).resolves.toMatchObject({ key: 'sync.txt', uploadId: 'upload-id' });
+    expect(calls.map((call) => call.method)).toEqual(['resumeMultipartUpload']);
+  });
 });
 
-describe('Workflows through createTransformStub', () => {
+describe('Workflows', () => {
   it('runs caller transforms around create and get', async () => {
     const calls: Call[] = [];
-    const workflow = createTransformStub(env.WORKFLOW).with(recorder, calls);
+    const workflow = env.WORKFLOW.with(recorder, calls);
 
     const created = await workflow.create({
       id: 'transform-probe',
@@ -127,36 +129,40 @@ describe('Workflows through createTransformStub', () => {
 
   it('does not transform methods on the returned WorkflowInstance', async () => {
     const calls: Call[] = [];
-    const workflow = createTransformStub(env.WORKFLOW).with(recorder, calls);
+    const workflow = env.WORKFLOW.with(recorder, calls);
 
     const instance = await workflow.create({ params: { value: 'nested' } });
-    await instance.status();
+    await expect(instance.status()).resolves.toHaveProperty('status');
 
     expect(calls.map((call) => call.method)).toEqual(['create']);
   });
 });
 
 describe('Durable Object promise pipelining', () => {
-  it('cannot pipeline through a plugin-wrapped stub', () => {
+  it('pipelines through a plugin-wrapped stub without transforms', async () => {
     const stub = env.PIPELINE_DO.getByName('pipeline');
 
-    expect(() =>
-      (stub.counter() as unknown as { increment(): unknown }).increment()
-    ).toThrow(/increment is not a function/);
+    await expect(stub.counter().increment()).resolves.toBe(1);
   });
 
-  it('works through a plugin-wrapped stub when each hop is awaited', async () => {
-    const counter = await env.PIPELINE_DO.getByName('awaited').counter();
+  it('pipelines through a stub with transforms', async () => {
+    const calls: Call[] = [];
+    const stub = env.PIPELINE_DO.getByName('pipeline').with(recorder, calls);
 
-    await expect(counter.increment()).resolves.toBe(1);
+    await expect(stub.counter().increment()).resolves.toBe(1);
+    expect(calls.map((call) => call.method)).toEqual(['counter']);
   });
 
-  it('can pipeline through an unwrapped stub', async () => {
-    const namespace = env.PIPELINE_DO;
-    const raw = Reflect.apply(namespace.getByName, namespace, [
-      'pipeline',
-    ]) as DurableObjectStub<import('./test-worker').PipelineDO>;
+  it('rejects pipelined calls when the transformed call fails', async () => {
+    const stub = env.PIPELINE_DO.getByName('pipeline').with(timeout, 1_000);
 
-    await expect(raw.counter().increment()).resolves.toBe(1);
+    await expect(stub.fail().increment()).rejects.toThrow('pipeline failure');
+  });
+
+  it('reads RPC properties through wrapped stubs', async () => {
+    const stub = env.PIPELINE_DO.getByName('pipeline');
+
+    await expect(stub.label).resolves.toBe('pipeline');
+    await expect(stub.with(timeout, 1_000).label).resolves.toBe('pipeline');
   });
 });
