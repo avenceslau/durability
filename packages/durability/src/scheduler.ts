@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import {
   DurableRetryPolicyError,
   isErrorInstance,
@@ -6,7 +5,6 @@ import {
   reportFailure,
   serializeError,
 } from './errors.js';
-import { createKvDurabilityStorage } from './kv-storage.js';
 import {
   createEmitter,
   type Emit,
@@ -15,8 +13,8 @@ import {
 } from './lifecycle.js';
 import { migrate, type MigrationCapability } from './migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
-import { createSqliteDurabilityStorage } from './sqlite-storage.js';
 import {
+  createDurabilityStorage,
   reconcilePhysicalAlarm,
   type DurabilityStorage,
   type DurabilityStorageTransaction,
@@ -29,12 +27,8 @@ import type { DurableMigrations } from '@durability/storage';
 export type DurabilityContext = Pick<DurableObjectState, 'storage'> &
   Partial<Pick<DurableObjectState, 'waitUntil'>>;
 
-export type DurabilityStorageBackend = 'sqlite' | 'kv';
-
 /** Options for the scheduler shared by every durability helper in one Durable Object. */
 export type DurabilitySchedulerOptions = {
-  /** Storage backend configured for the Durable Object class. Defaults to SQLite. */
-  storageBackend?: DurabilityStorageBackend;
   /** Maximum handlers running at once across eager operations and alarm work. Defaults to 10. */
   alarmConcurrency?: number;
   /** Physical-alarm delay from 1 to 15 seconds. Defaults to 15 seconds. */
@@ -56,7 +50,6 @@ export type SchedulerAttachment =
   | { scheduler: DurabilityScheduler; context?: never }
   | (DurabilitySchedulerConfig & { scheduler?: never });
 
-const storageBackendSchema = z.enum(['sqlite', 'kv']);
 const minAlarmDelayMs = 1_000;
 const maxAlarmDelayMs = 15_000;
 
@@ -155,7 +148,6 @@ const decideRetry = (
  */
 export class Engine {
   readonly storage: DurabilityStorage;
-  private readonly backend: DurabilityStorageBackend;
   private readonly context: DurabilityContext;
   private readonly alarmConcurrency: number;
   private readonly alarmMinDelayMs: number;
@@ -174,13 +166,7 @@ export class Engine {
 
   constructor(context: DurabilityContext, options: DurabilitySchedulerOptions) {
     this.context = context;
-    this.backend = storageBackendSchema.parse(
-      options.storageBackend ?? 'sqlite'
-    );
-    this.storage =
-      this.backend === 'kv'
-        ? createKvDurabilityStorage(context.storage)
-        : createSqliteDurabilityStorage(context.storage);
+    this.storage = createDurabilityStorage(context.storage);
     this.alarmConcurrency = options.alarmConcurrency ?? 10;
     this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
     this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
@@ -225,14 +211,12 @@ export class Engine {
     return createEmitter(hook, (promise) => this.context.waitUntil?.(promise));
   }
 
-  /** Applies a helper's SQLite migrations; KV storage has no schema. */
+  /** Applies a helper's SQLite migrations. */
   migrateSchema(
     capability: MigrationCapability,
     migrations: DurableMigrations
   ): void {
-    if (this.backend === 'sqlite') {
-      migrate(this.context.storage, capability, migrations, undefined);
-    }
+    migrate(this.context.storage, capability, migrations, undefined);
   }
 
   /** Runs a storage transaction and publishes its timer state only after commit. */
@@ -322,7 +306,7 @@ export class Engine {
 
   /**
    * Aborts matching active handlers, then deletes one kind's records created
-   * before the timestamp, reconciling the alarm after each committed batch.
+   * before the timestamp and reconciles the alarm in the same transaction.
    */
   async purge(
     kind: RecordKind,
@@ -339,18 +323,11 @@ export class Engine {
       }
     }
 
-    let total = 0;
-    let removed = 0;
-    do {
-      // eslint-disable-next-line no-await-in-loop
-      removed = await this.transaction(async (transaction) => {
-        const count = await transaction[kind].deleteCreatedBefore(before);
-        await this.reconcile(transaction);
-        return count;
-      });
-      total += removed;
-    } while (removed > 0);
-    return total;
+    return this.transaction(async (transaction) => {
+      const count = await transaction[kind].deleteCreatedBefore(before);
+      await this.reconcile(transaction);
+      return count;
+    });
   }
 
   tryAcquirePermit(): (() => void) | undefined {
@@ -647,7 +624,7 @@ export class Engine {
 const engines = new WeakMap<DurabilityScheduler, Engine>();
 
 /**
- * Owns the Durable Object's physical alarm, storage backend, and concurrency
+ * Owns the Durable Object's physical alarm, storage, and concurrency
  * pool so {@link Durability} and {@link DurabilityAlarms} can share them.
  *
  * Construct one per Durable Object when using both helpers, pass it to each,

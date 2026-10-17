@@ -14,12 +14,7 @@ import {
   type DurabilityLifecycleEvent,
 } from './index';
 import { migrate } from './migrations';
-import {
-  contextFor,
-  contextForKv,
-  FakeKvStorage,
-  FakeStorage,
-} from './test-fakes';
+import { contextFor, FakeStorage } from './test-fakes';
 import { exponential, jitter } from './utils';
 
 afterEach(() => {
@@ -346,100 +341,17 @@ describe('migrations', () => {
   });
 });
 
-describe('KV storage', () => {
-  it('persists operations without SQLite and retains deduplication', async () => {
-    const storage = new FakeKvStorage();
-    const handler = vi.fn(
-      async ({ payload }: DurableCall<{ value: number }>) => payload.value * 2
-    );
-    const durability = new Durability({
-      context: contextForKv(storage),
-      handlers: { double: handler },
-      storageBackend: 'kv',
-    });
-
-    await durability.double({ id: 'double:ü/2', payload: { value: 2 } });
-    await vi.waitFor(async () => {
-      await expect(durability.double.getResult('double:ü/2')).resolves.toEqual({
-        status: 'completed',
-        result: 4,
-      });
-    });
-    await durability.double({ id: 'double:ü/2', payload: { value: 2 } });
-
-    expect(handler).toHaveBeenCalledTimes(1);
-    await expect(durability.purgeBefore(Number.MAX_SAFE_INTEGER)).resolves.toBe(
-      1
-    );
-    await expect(durability.double.getResult('double:ü/2')).resolves.toEqual({
-      status: 'not_found',
-    });
-  });
-
-  it('retries operations and named alarms from ordered KV indexes', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
-    const storage = new FakeKvStorage();
-    const scheduler = new DurabilityScheduler({
-      context: contextForKv(storage),
-      storageBackend: 'kv',
-      alarmMinDelayMs: 1_000,
-    });
-    const operation = vi
-      .fn<() => Promise<string>>()
-      .mockRejectedValueOnce(new Error('retry operation'))
-      .mockResolvedValue('done');
-    const durability = new Durability({
-      scheduler: scheduler,
-      handlers: { work: operation },
-      retries: { delay: () => 1_000 },
-    });
-    const alarmAttempts: number[] = [];
-    const alarms = new DurabilityAlarms({
-      scheduler: scheduler,
-      handlers: {
-        cleanup: async ({ attempt }) => {
-          alarmAttempts.push(attempt);
-          if (attempt === 1) {
-            throw new Error('retry alarm');
-          }
-        },
-      },
-      methods: { cleanup: { retries: { delay: () => 500 } } },
-    });
-
-    const fallbackAt = Date.now() + 1_000;
-    await durability.work({ id: 'work', payload: null });
-    await alarms.cleanup(Date.now());
-    storage.alarmAt = null;
-    await scheduler.alarm();
-    expect(storage.alarmAt).toBe(fallbackAt);
-
-    await vi.advanceTimersByTimeAsync(500);
-    await vi.waitFor(() => expect(alarmAttempts).toEqual([1, 2]));
-    expect(storage.alarmAt).toBe(fallbackAt);
-
-    vi.advanceTimersByTime(fallbackAt - Date.now());
-    storage.alarmAt = null;
-    await scheduler.alarm();
-    await expect(durability.work.getResult('work')).resolves.toEqual({
-      status: 'completed',
-      result: 'done',
-    });
-    expect(storage.alarmAt).toBeNull();
-  });
-
+describe('Durability', () => {
   it('does not overlap eager and alarm execution during async lookup', async () => {
-    const storage = new FakeKvStorage();
+    const storage = new FakeStorage();
     let finish: (() => void) | undefined;
     const pending = new Promise<void>((resolve) => {
       finish = resolve;
     });
     const handler = vi.fn(async () => pending);
     const durability = new Durability({
-      context: contextForKv(storage),
+      context: contextFor(storage),
       handlers: { work: handler },
-      storageBackend: 'kv',
     });
 
     await Promise.all([
@@ -457,56 +369,6 @@ describe('KV storage', () => {
     });
   });
 
-  it('purges KV records in bounded batches', async () => {
-    const durability = new Durability({
-      context: contextForKv(new FakeKvStorage()),
-      handlers: { work: async () => undefined },
-      storageBackend: 'kv',
-      alarmConcurrency: 1,
-    });
-
-    await Promise.all(
-      Array.from({ length: 70 }, (_, index) =>
-        durability.work({ id: `purge:${index}`, payload: null })
-      )
-    );
-
-    await expect(durability.purgeBefore(Number.MAX_SAFE_INTEGER)).resolves.toBe(
-      70
-    );
-    await expect(durability.work.getResult('purge:69')).resolves.toEqual({
-      status: 'not_found',
-    });
-  });
-
-  it('atomically validates concurrent same-ID registration', async () => {
-    const durability = new Durability({
-      context: contextForKv(new FakeKvStorage()),
-      handlers: {
-        first: async () => 'first',
-        second: async () => 'second',
-      },
-      storageBackend: 'kv',
-    });
-
-    const registrations = await Promise.allSettled([
-      durability.first({ id: 'race', payload: null }),
-      durability.second({ id: 'race', payload: null }),
-    ]);
-
-    expect(
-      registrations.filter(({ status }) => status === 'fulfilled')
-    ).toHaveLength(1);
-    expect(
-      registrations.find(({ status }) => status === 'rejected')
-    ).toMatchObject({
-      status: 'rejected',
-      reason: expect.any(DuplicateDurableCallError),
-    });
-  });
-});
-
-describe('Durability', () => {
   it('registers and arms the first alarm transactionally', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
@@ -1309,10 +1171,7 @@ describe('DurabilityAlarms', () => {
 
   it('publishes timer changes only after the storage transaction commits', async () => {
     vi.useFakeTimers();
-    const assertRollback = async (
-      storage: FakeStorage | FakeKvStorage,
-      storageBackend?: 'kv'
-    ): Promise<void> => {
+    const assertRollback = async (storage: FakeStorage): Promise<void> => {
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
       const cleanup = vi.fn(async () => undefined);
       const alarms = new DurabilityAlarms({
@@ -1320,7 +1179,6 @@ describe('DurabilityAlarms', () => {
           storage: storage as unknown as DurableObjectStorage,
         },
         handlers: { cleanup },
-        ...(storageBackend ? { storageBackend } : {}),
       });
       const scheduledTime = Date.now() + 5_000;
 
@@ -1341,7 +1199,6 @@ describe('DurabilityAlarms', () => {
     };
 
     await assertRollback(new FakeStorage());
-    await assertRollback(new FakeKvStorage(), 'kv');
   });
 
   it('uses the configured physical-alarm minimum as the timer boundary', async () => {

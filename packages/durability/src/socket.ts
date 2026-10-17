@@ -5,7 +5,6 @@ import {
   migrate,
   type DurabilityMigrationResult,
 } from './migrations.js';
-import type { DurabilityStorageBackend } from './scheduler.js';
 import { deserialize, serialize } from './serialization.js';
 import {
   parseClientFrame,
@@ -45,8 +44,6 @@ export type DurabilitySocketConfig<
    * the WebSocket attachment, so it survives hibernation without re-auth.
    */
   metadata?: (request: Request) => Metadata | Promise<Metadata>;
-  /** Storage backend configured for the Durable Object class. Only SQLite is supported. */
-  storageBackend?: DurabilityStorageBackend;
   /** Outbound events kept for replay to reconnecting clients. Defaults to 1000. */
   retention?: number;
 };
@@ -145,11 +142,6 @@ class DurabilitySocketCore<
   readonly #retention: number;
 
   constructor(config: DurabilitySocketConfig<Inbound, Outbound, Metadata>) {
-    if (config.storageBackend === 'kv') {
-      throw new RangeError(
-        'DurabilitySocket requires SQLite storage; KV-backed Durable Objects are not supported'
-      );
-    }
     const retention = config.retention ?? 1_000;
     if (!Number.isSafeInteger(retention) || retention <= 0) {
       throw new RangeError('retention must be a positive safe integer');

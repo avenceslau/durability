@@ -1,15 +1,15 @@
 # Durability
 
-Durable operation tooling for Cloudflare Workers and SQLite- or KV-backed Durable Objects.
+Durable operation tooling for Cloudflare Workers and SQLite-backed Durable Objects.
 
 ## Packages
 
-| Package                                           | Description                                                                                                                                                                 |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`durability`](./packages/durability)             | Composable `Durability` operations, `DurabilityAlarms`, `DurabilityFanout`, `DurabilityRouting`, and `DurabilitySocket` browser sync for application-owned Durable Objects. |
-| [`@durability/storage`](./packages/storage)       | Shared migration types for Durable Object storage.                                                                                                                          |
-| [`@durability/transforms`](./packages/transforms) | Typed caller and callee transforms for Cloudflare RPC, including a Vite plugin.                                                                                             |
-| [`@durability/lint`](./packages/lint)             | Oxlint rules for durability migrations and alarm delegation.                                                                                                                |
+| Package                                           | Description                                                                                                                                                                               |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`durability`](./packages/durability)             | Composable `Durability` operations, `DurabilityAlarms`, `DurabilityFanout`, `DurabilityRouting`, and `DurabilitySocket` browser sync for application-owned SQLite-backed Durable Objects. |
+| [`@durability/storage`](./packages/storage)       | Shared migration types for Durable Object storage.                                                                                                                                        |
+| [`@durability/transforms`](./packages/transforms) | Typed caller and callee transforms for Cloudflare RPC, including a Vite plugin.                                                                                                           |
+| [`@durability/lint`](./packages/lint)             | Oxlint rules for durability migrations and alarm delegation.                                                                                                                              |
 
 Each package has its own API documentation. Complete example Workers for every primitive live in [`examples/`](./examples); they are type-checked as part of the validation suite.
 
