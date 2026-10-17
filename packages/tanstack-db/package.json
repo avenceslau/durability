@@ -49,7 +49,7 @@
   ],
   "peerDependencies": {
     "@tanstack/db": ">=0.13.0",
-    "durability": "workspace:^"
+    "durability": "workspace:^4.0.0"
   },
   "devDependencies": {
     "@durability/typescript-config": "workspace:*",
