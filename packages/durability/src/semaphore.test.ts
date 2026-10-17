@@ -242,6 +242,74 @@ describe('semaphore', () => {
     expect((await third).nextRequestAt).toBe(roundAt + 6_000);
   });
 
+  it('never overlaps rounds when limit resolution is slow', async () => {
+    let resolveLimit!: (limit: number) => void;
+    const { semaphore, grantOf } = fixture({
+      roundWaitMs: 100,
+      roundPeriodMs: 100,
+      limit: () =>
+        new Promise<number>((resolve) => {
+          resolveLimit = resolve;
+        }),
+    });
+    const first = grantOf(
+      request('a', [{ group: 'g', count: 1, oldestAt: 1 }])
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    // The round is now awaiting limit(); this request must join the next round.
+    const second = grantOf(
+      request('b', [{ group: 'g', count: 1, oldestAt: 2 }])
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    let secondSettled = false;
+    void second.finally(() => {
+      secondSettled = true;
+    });
+    expect(secondSettled).toBe(false);
+
+    resolveLimit(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(given(await first)).toEqual([{ group: 'g', permits: 1 }]);
+    await vi.advanceTimersByTimeAsync(100);
+    resolveLimit(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await second).blocked).toEqual([{ group: 'g', reason: 'limit' }]);
+    expect((await second).nextRequestAt).toBeGreaterThan(
+      (await first).nextRequestAt
+    );
+    const usage = semaphore.usage();
+    resolveLimit(1);
+    expect((await usage).granted).toBe(1);
+  });
+
+  it('handles more grants than one storage page', async () => {
+    const { semaphore, round } = fixture({ limit: 300 });
+    const clients = Array.from({ length: 130 }, (_, index) =>
+      request(`client-${String(index).padStart(3, '0')}`, [
+        { group: 'g', count: 1, oldestAt: index },
+      ])
+    );
+    const grants = await round(...clients);
+    expect(grants.every((grant) => grant.grants.length === 1)).toBe(true);
+    expect((await semaphore.usage()).granted).toBe(130);
+
+    // Release half; the rest stays outstanding.
+    for (const [index, grant] of grants.entries()) {
+      if (index % 2 === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await semaphore.handle({
+          type: 'sync',
+          v: 1,
+          clientId: clients[index]!.clientId,
+          grants: [
+            { grantId: grant.grants[0]!.grantId, claimed: 1, released: 1 },
+          ],
+        });
+      }
+    }
+    expect((await semaphore.usage()).granted).toBe(65);
+  });
+
   it('rejects malformed messages and failed rounds', async () => {
     const { semaphore } = fixture({
       limit: (): number => {
@@ -251,6 +319,18 @@ describe('semaphore', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expect(
       semaphore.handle({ type: 'nonsense' } as unknown as SemaphoreRequest)
+    ).rejects.toThrow('Malformed semaphore message');
+    await expect(
+      semaphore.handle(
+        request(
+          'a',
+          Array.from({ length: 101 }, (_, index) => ({
+            group: `g${index}`,
+            count: 1,
+            oldestAt: 1,
+          }))
+        )
+      )
     ).rejects.toThrow('Malformed semaphore message');
 
     await expect(
