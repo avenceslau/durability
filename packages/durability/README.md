@@ -654,7 +654,7 @@ export class JobShard extends DurableObject<Env> {
 - **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
 - **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
 
-`DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema.
+`DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema. See the typechecked [account concurrency composition](../../examples/account-concurrency).
 
 ## Routing and fanout
 
