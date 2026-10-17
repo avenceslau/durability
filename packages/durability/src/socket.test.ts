@@ -108,17 +108,8 @@ const serverSide = (context: ReturnType<typeof socketContextFor>) =>
 const frame = (value: object) => JSON.stringify({ v: 1, ...value });
 
 describe('DurabilitySocket', () => {
-  it('rejects KV storage and reserved outbound names', () => {
+  it('rejects reserved outbound names', () => {
     const context = socketContextFor(new FakeStorage());
-    expect(
-      () =>
-        new DurabilitySocket({
-          context,
-          inbound: {},
-          outbound: {},
-          storageBackend: 'kv',
-        })
-    ).toThrow(RangeError);
     expect(
       () =>
         new DurabilitySocket({

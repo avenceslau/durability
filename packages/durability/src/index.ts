@@ -41,7 +41,6 @@ export {
   type DurabilityContext,
   type DurabilitySchedulerConfig,
   type DurabilitySchedulerOptions,
-  type DurabilityStorageBackend,
   type SchedulerAttachment,
 } from './scheduler.js';
 export {

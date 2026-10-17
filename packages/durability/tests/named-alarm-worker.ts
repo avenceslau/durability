@@ -257,68 +257,6 @@ export class NamedAlarmTestObject extends DurableObject {
   }
 }
 
-export class KvAlarmTestObject extends DurableObject {
-  private readonly scheduler = new DurabilityScheduler({
-    context: this.ctx,
-    storageBackend: 'kv',
-    alarmMinDelayMs: 1_000,
-  });
-
-  private readonly durability = new Durability({
-    scheduler: this.scheduler,
-    handlers: {
-      work: async ({ attempt }: DurableCall<null>) => {
-        const attempts =
-          (await this.ctx.storage.get<number[]>('kv-work-attempts')) ?? [];
-        await this.ctx.storage.put('kv-work-attempts', [...attempts, attempt]);
-        if (attempt === 1) {
-          throw new Error('retry work');
-        }
-        return 'done';
-      },
-    },
-    retries: { delay: () => 1_000, maxAttempts: 2 },
-  });
-
-  private readonly alarms = new DurabilityAlarms({
-    scheduler: this.scheduler,
-    handlers: {
-      cleanup: async ({ attempt, idempotencyKey, scheduledTime }) => {
-        const recorded =
-          (await this.ctx.storage.get<RecordedAlarm[]>('kv-recorded')) ?? [];
-        await this.ctx.storage.put('kv-recorded', [
-          ...recorded,
-          { attempt, idempotencyKey, scheduledTime },
-        ]);
-      },
-    },
-  });
-
-  startWork() {
-    return this.durability.work({ id: 'work', payload: null });
-  }
-
-  getWorkAttempts() {
-    return this.ctx.storage.get<number[]>('kv-work-attempts');
-  }
-
-  getWorkResult() {
-    return this.durability.work.getResult('work');
-  }
-
-  scheduleCleanup(scheduledTime: number) {
-    return this.alarms.cleanup(scheduledTime);
-  }
-
-  getRecorded() {
-    return this.ctx.storage.get<RecordedAlarm[]>('kv-recorded');
-  }
-
-  override alarm(info?: AlarmInvocationInfo) {
-    return this.scheduler.alarm(info);
-  }
-}
-
 export default {
   fetch(request: Request, env: Parameters<typeof socketWorker.fetch>[1]) {
     if (new URL(request.url).pathname.startsWith('/socket/')) {

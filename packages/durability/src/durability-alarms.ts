@@ -31,7 +31,23 @@ import {
   type Engine,
   type SchedulerAttachment,
 } from './scheduler.js';
-import type { AlarmRow } from './storage.js';
+import { deleteAttempt, type DurableTable } from './storage.js';
+
+const alarmRowSchema = z.object({
+  name: z.string(),
+  generation_id: z.string(),
+  status: z.enum(['pending', 'failed']),
+  scheduled_at: z.number().int().nonnegative(),
+  next_attempt_at: z.number().int().nonnegative(),
+  attempt: z.number().int().nonnegative(),
+  last_error: z.string().nullable(),
+  last_error_name: z.string().nullable(),
+  created_at: z.number().int().nonnegative(),
+});
+
+type AlarmRow = z.infer<typeof alarmRowSchema>;
+
+const alarmsTable: DurableTable = { name: 'durability_alarms', key: 'name' };
 
 /** Information passed to a named alarm handler for one execution attempt. */
 export type DurableAlarmInfo = {
@@ -139,7 +155,7 @@ class DurabilityAlarmsCore<Names extends string> {
 
     this.#engine.migrateSchema('namedAlarms', durabilityNamedAlarmMigrations);
     this.#engine.register({
-      kind: 'alarms',
+      table: alarmsTable,
       runDue: (now, info) => this.#runDue(now, info),
     });
   }
@@ -178,7 +194,7 @@ class DurabilityAlarmsCore<Names extends string> {
    */
   async purgeBefore(before: number): Promise<number> {
     const count = await this.#engine.purge(
-      'alarms',
+      alarmsTable,
       before,
       this.#active,
       'Durable alarm was purged'
@@ -197,7 +213,17 @@ class DurabilityAlarmsCore<Names extends string> {
     now: number,
     info: AlarmInvocationInfo | undefined
   ): Promise<void> {
-    const due = await this.#engine.storage.alarms.listDue(now, 100);
+    const due = alarmRowSchema.array().parse(
+      this.#engine.sql
+        .exec(
+          `SELECT * FROM durability_alarms
+             WHERE status = 'pending' AND next_attempt_at <= ?
+             ORDER BY next_attempt_at ASC
+             LIMIT 100`,
+          now
+        )
+        .toArray()
+    );
     const failures: unknown[] = [];
     await this.#engine.runConcurrent(due, async (row) => {
       try {
@@ -218,19 +244,27 @@ class DurabilityAlarmsCore<Names extends string> {
 
     const generation = crypto.randomUUID();
     const createdAt = Date.now();
-    await this.#engine.transaction(async (transaction) => {
-      await transaction.alarms.upsert({
+    await this.#engine.transaction((sql) => {
+      sql.exec(
+        `INSERT INTO durability_alarms
+           (name, generation_id, status, scheduled_at, next_attempt_at,
+            attempt, last_error, last_error_name, created_at)
+         VALUES (?, ?, 'pending', ?, ?, 0, NULL, NULL, ?)
+         ON CONFLICT(name) DO UPDATE SET
+           generation_id = excluded.generation_id,
+           status = excluded.status,
+           scheduled_at = excluded.scheduled_at,
+           next_attempt_at = excluded.next_attempt_at,
+           attempt = excluded.attempt,
+           last_error = excluded.last_error,
+           last_error_name = excluded.last_error_name,
+           created_at = excluded.created_at`,
         name,
-        generation_id: generation,
-        status: 'pending',
-        scheduled_at: scheduledTime,
-        next_attempt_at: scheduledTime,
-        attempt: 0,
-        last_error: null,
-        last_error_name: null,
-        created_at: createdAt,
-      });
-      await this.#engine.reconcile(transaction);
+        generation,
+        scheduledTime,
+        scheduledTime,
+        createdAt
+      );
     });
     this.#emit({
       type: 'scheduled',
@@ -257,7 +291,7 @@ class DurabilityAlarmsCore<Names extends string> {
     const policy = this.#policy(row.name);
     const retryTimeouts = policy.method?.retryTimeouts ?? false;
     return this.#engine.startExecution({
-      kind: 'alarms',
+      table: alarmsTable,
       key: row.name,
       row,
       label: `named alarm "${row.name}"`,
@@ -291,13 +325,13 @@ class DurabilityAlarmsCore<Names extends string> {
           platform,
         });
       },
-      complete: async (_result, attempt) => {
+      complete: (_result, attempt) => {
         const timestamp = Date.now();
-        const removed = await this.#engine.storage.alarms.remove(
-          row.name,
-          row.generation_id,
-          attempt
-        );
+        const removed = deleteAttempt(this.#engine.sql, alarmsTable, {
+          key: row.name,
+          generation: row.generation_id,
+          attempt,
+        });
         return removed ? timestamp : undefined;
       },
       isTerminal: (error) =>

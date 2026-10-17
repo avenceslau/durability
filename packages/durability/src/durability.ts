@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   DuplicateDurableCallError,
   DurableAttemptsExhaustedError,
@@ -34,7 +35,33 @@ import {
   type SchedulerAttachment,
 } from './scheduler.js';
 import { deserialize, serialize } from './serialization.js';
-import type { CallRow } from './storage.js';
+import { updateAttempt, type DurableTable } from './storage.js';
+
+const callRowSchema = z.object({
+  id: z.string(),
+  operation: z.string(),
+  payload: z.string(),
+  status: z.enum(['pending', 'completed', 'failed']),
+  result: z.string().nullable(),
+  attempt: z.number().int().nonnegative(),
+  next_attempt_at: z.number().int().nonnegative(),
+  last_error: z.string().nullable(),
+  last_error_name: z.string().nullable(),
+  completed_at: z.number().int().nonnegative().nullable(),
+  created_at: z.number().int().nonnegative(),
+  generation_id: z.string(),
+});
+
+type CallRow = z.infer<typeof callRowSchema>;
+
+const callsTable: DurableTable = { name: 'durability_calls', key: 'id' };
+
+const readCall = (sql: SqlStorage, id: string): CallRow | undefined =>
+  callRowSchema
+    .optional()
+    .parse(
+      sql.exec('SELECT * FROM durability_calls WHERE id = ?', id).toArray()[0]
+    );
 
 /**
  * The context passed to a durable operation handler for each attempt.
@@ -264,7 +291,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
     this.#engine.migrateSchema('operations', durabilityOperationMigrations);
     this.#engine.register({
-      kind: 'calls',
+      table: callsTable,
       runDue: (now) => this.#runDue(now),
     });
   }
@@ -303,7 +330,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
    */
   async purgeBefore(before: number): Promise<number> {
     const count = await this.#engine.purge(
-      'calls',
+      callsTable,
       before,
       this.#active,
       'Durable operation was purged'
@@ -319,7 +346,20 @@ class DurabilityCore<Handlers extends HandlerMap> {
   }
 
   async #runDue(now: number): Promise<void> {
-    const due = await this.#engine.storage.calls.listDue(now, 100);
+    const due = z
+      .object({ id: z.string() })
+      .array()
+      .parse(
+        this.#engine.sql
+          .exec(
+            `SELECT id FROM durability_calls
+             WHERE status = 'pending' AND next_attempt_at <= ?
+             ORDER BY next_attempt_at ASC
+             LIMIT 100`,
+            now
+          )
+          .toArray()
+      );
     await this.#engine.runConcurrent(due, async ({ id }) => {
       try {
         await this.#execute(id);
@@ -333,7 +373,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string,
     idempotencyKey: string
   ): Promise<DurableOperationResult<unknown>> {
-    const call = await this.#engine.storage.calls.get(idempotencyKey);
+    const call = readCall(this.#engine.sql, idempotencyKey);
     if (!call) {
       return { status: 'not_found' };
     }
@@ -372,31 +412,32 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const payload = serialize(input.payload);
     const now = Date.now();
     const generation = crypto.randomUUID();
-    let inserted = false;
-    let winner: CallRow | undefined;
-    await this.#engine.transaction(async (transaction) => {
-      inserted = await transaction.calls.insert({
-        id: input.id,
-        operation: input.operation,
-        payload,
-        status: 'pending',
-        result: null,
-        attempt: 0,
-        next_attempt_at: now,
-        last_error: null,
-        last_error_name: null,
-        completed_at: null,
-        created_at: now,
-        generation_id: generation,
-      });
-      winner = await transaction.calls.get(input.id);
-      if (!winner) {
+    const { inserted, winner } = await this.#engine.transaction((sql) => {
+      const created =
+        sql
+          .exec(
+            `INSERT INTO durability_calls
+               (id, operation, payload, status, attempt, next_attempt_at,
+                created_at, generation_id)
+             VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+             ON CONFLICT(id) DO NOTHING
+             RETURNING id`,
+            input.id,
+            input.operation,
+            payload,
+            now,
+            now,
+            generation
+          )
+          .toArray().length > 0;
+      const current = readCall(sql, input.id);
+      if (!current) {
         throw new Error(`Durable call "${input.id}" was not persisted`);
       }
-      assertOperation(input.id, winner.operation, input.operation);
-      await this.#engine.reconcile(transaction);
+      assertOperation(input.id, current.operation, input.operation);
+      return { inserted: created, winner: current };
     });
-    if (!inserted || !winner) {
+    if (!inserted) {
       return;
     }
 
@@ -439,7 +480,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
     try {
       await previousStart;
-      const call = await this.#engine.storage.calls.get(id);
+      const call = readCall(this.#engine.sql, id);
       if (!call || call.status !== 'pending') {
         return;
       }
@@ -472,7 +513,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       | undefined;
     return this.#engine.startExecution(
       {
-        kind: 'calls',
+        table: callsTable,
         key: call.id,
         row: call,
         label: `operation "${call.operation}"`,
@@ -505,7 +546,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
             signal,
           });
         },
-        complete: async (result, attempt) => {
+        complete: (result, attempt) => {
           let serialized: string;
           try {
             serialized = serialize(result);
@@ -513,17 +554,14 @@ class DurabilityCore<Handlers extends HandlerMap> {
             throw new DurableResultSerializationError(call.operation, error);
           }
           const timestamp = Date.now();
-          const updated = await this.#engine.storage.calls.settle(
-            call.id,
-            call.generation_id,
-            attempt,
-            {
-              status: 'completed',
-              result: serialized,
-              last_error: null,
-              last_error_name: null,
-              completed_at: timestamp,
-            }
+          const updated = updateAttempt(
+            this.#engine.sql,
+            callsTable,
+            { key: call.id, generation: call.generation_id, attempt },
+            `status = 'completed', result = ?, last_error = NULL,
+             last_error_name = NULL, completed_at = ?`,
+            serialized,
+            timestamp
           );
           return updated ? timestamp : undefined;
         },

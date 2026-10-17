@@ -6,7 +6,6 @@ import {
   reportFailure,
   serializeError,
 } from './errors.js';
-import { createKvDurabilityStorage } from './kv-storage.js';
 import {
   createEmitter,
   type Emit,
@@ -15,13 +14,11 @@ import {
 } from './lifecycle.js';
 import { migrate, type MigrationCapability } from './migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
-import { createSqliteDurabilityStorage } from './sqlite-storage.js';
 import {
-  reconcilePhysicalAlarm,
-  type DurabilityStorage,
-  type DurabilityStorageTransaction,
-  type DurableRecord,
-  type RecordKind,
+  claimAttempt,
+  exhaustAttempts,
+  updateAttempt,
+  type DurableTable,
 } from './storage.js';
 import type { DurableMigrations } from '@durability/storage';
 
@@ -29,12 +26,8 @@ import type { DurableMigrations } from '@durability/storage';
 export type DurabilityContext = Pick<DurableObjectState, 'storage'> &
   Partial<Pick<DurableObjectState, 'waitUntil'>>;
 
-export type DurabilityStorageBackend = 'sqlite' | 'kv';
-
 /** Options for the scheduler shared by every durability helper in one Durable Object. */
 export type DurabilitySchedulerOptions = {
-  /** Storage backend configured for the Durable Object class. Defaults to SQLite. */
-  storageBackend?: DurabilityStorageBackend;
   /** Maximum handlers running at once across eager operations and alarm work. Defaults to 10. */
   alarmConcurrency?: number;
   /** Physical-alarm delay from 1 to 15 seconds. Defaults to 15 seconds. */
@@ -56,13 +49,22 @@ export type SchedulerAttachment =
   | { scheduler: DurabilityScheduler; context?: never }
   | (DurabilitySchedulerConfig & { scheduler?: never });
 
-const storageBackendSchema = z.enum(['sqlite', 'kv']);
 const minAlarmDelayMs = 1_000;
 const maxAlarmDelayMs = 15_000;
 
-/** One record kind attached to the scheduler: how to find and run its due work. */
+const nextAttemptRowSchema = z.object({
+  next_attempt_at: z.number().int().nonnegative(),
+});
+const countRowSchema = z.object({ count: z.number().int().nonnegative() });
+
+type PhysicalAlarm = Pick<
+  DurableObjectTransaction,
+  'getAlarm' | 'setAlarm' | 'deleteAlarm'
+>;
+
+/** One record table attached to the scheduler: how to find and run its due work. */
 export type Participant = {
-  kind: RecordKind;
+  table: DurableTable;
   runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
 };
 
@@ -75,9 +77,9 @@ export type ActiveExecution = {
 
 /** Everything that differs between running a durable operation and a named alarm attempt. */
 export type ExecutionSpec = {
-  kind: RecordKind;
+  table: DurableTable;
   key: string;
-  row: DurableRecord;
+  row: { generation_id: string; created_at: number };
   label: string;
   entity: LifecycleEntity;
   active: Map<string, ActiveExecution>;
@@ -91,7 +93,7 @@ export type ExecutionSpec = {
    * undefined when a newer generation won. May throw to turn the success into
    * a failure.
    */
-  complete: (result: unknown, attempt: number) => Promise<number | undefined>;
+  complete: (result: unknown, attempt: number) => number | undefined;
   /** Kind-specific terminal rule beyond non-retryable errors and exhausted attempts. */
   isTerminal: (error: unknown) => boolean;
 };
@@ -150,12 +152,11 @@ const decideRetry = (
 };
 
 /**
- * Shared machinery behind {@link DurabilityScheduler}: storage, the physical
+ * Shared machinery behind {@link DurabilityScheduler}: transactions, the physical
  * alarm, the concurrency pool, and the attempt lifecycle. Package-internal.
  */
 export class Engine {
-  readonly storage: DurabilityStorage;
-  private readonly backend: DurabilityStorageBackend;
+  readonly sql: SqlStorage;
   private readonly context: DurabilityContext;
   private readonly alarmConcurrency: number;
   private readonly alarmMinDelayMs: number;
@@ -167,20 +168,10 @@ export class Engine {
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
     | undefined;
-  private readonly transactionReconciliations = new WeakMap<
-    DurabilityStorageTransaction,
-    { nextPendingAt: number | undefined; reconciled: boolean }
-  >();
 
   constructor(context: DurabilityContext, options: DurabilitySchedulerOptions) {
     this.context = context;
-    this.backend = storageBackendSchema.parse(
-      options.storageBackend ?? 'sqlite'
-    );
-    this.storage =
-      this.backend === 'kv'
-        ? createKvDurabilityStorage(context.storage)
-        : createSqliteDurabilityStorage(context.storage);
+    this.sql = context.storage.sql;
     this.alarmConcurrency = options.alarmConcurrency ?? 10;
     this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
     this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
@@ -199,10 +190,9 @@ export class Engine {
   }
 
   register(participant: Participant): void {
-    if (this.participants.some(({ kind }) => kind === participant.kind)) {
-      throw new Error(
-        `A ${participant.kind} helper is already attached to this scheduler`
-      );
+    const { name } = participant.table;
+    if (this.participants.some(({ table }) => table.name === name)) {
+      throw new Error(`A ${name} helper is already attached to this scheduler`);
     }
     this.participants.push(participant);
   }
@@ -225,51 +215,70 @@ export class Engine {
     return createEmitter(hook, (promise) => this.context.waitUntil?.(promise));
   }
 
-  /** Applies a helper's SQLite migrations; KV storage has no schema. */
+  /** Applies a helper's SQLite migrations. */
   migrateSchema(
     capability: MigrationCapability,
     migrations: DurableMigrations
   ): void {
-    if (this.backend === 'sqlite') {
-      migrate(this.context.storage, capability, migrations, undefined);
-    }
+    migrate(this.context.storage, capability, migrations, undefined);
   }
 
-  /** Runs a storage transaction and publishes its timer state only after commit. */
-  async transaction<T>(
-    callback: (transaction: DurabilityStorageTransaction) => Promise<T>
-  ): Promise<T> {
-    let reconciliation:
-      | { nextPendingAt: number | undefined; reconciled: boolean }
-      | undefined;
-    const result = await this.storage.transaction(async (transaction) => {
-      reconciliation = { nextPendingAt: undefined, reconciled: false };
-      this.transactionReconciliations.set(transaction, reconciliation);
-      try {
-        return await callback(transaction);
-      } finally {
-        this.transactionReconciliations.delete(transaction);
+  /**
+   * Runs the writes and reconciles the physical alarm in one storage
+   * transaction, then publishes the in-memory timer only after commit.
+   */
+  async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
+    let nextPendingAt: number | undefined;
+    const result = await this.context.storage.transaction(
+      async (transaction) => {
+        const value = write(this.sql);
+        nextPendingAt = await this.reconcile(transaction);
+        return value;
       }
-    });
-    if (reconciliation?.reconciled) {
-      this.scheduleEarlyAlarm(reconciliation.nextPendingAt);
-    }
+    );
+    this.scheduleEarlyAlarm(nextPendingAt);
     return result;
   }
 
-  async reconcile(transaction: DurabilityStorageTransaction): Promise<void> {
-    const reconciliation = this.transactionReconciliations.get(transaction);
-    if (!reconciliation) {
-      throw new Error(
-        'Scheduler reconciliation requires an Engine transaction'
-      );
-    }
-    reconciliation.nextPendingAt = await reconcilePhysicalAlarm(
-      transaction,
-      this.participants.map(({ kind }) => kind),
-      this.alarmMinDelayMs
+  /** Returns the earliest pending time and maintains its bounded physical fallback. */
+  private async reconcile(
+    physicalAlarm: PhysicalAlarm
+  ): Promise<number | undefined> {
+    const scheduled = this.participants.flatMap(({ table }) =>
+      nextAttemptRowSchema
+        .array()
+        .parse(
+          this.sql
+            .exec(
+              `SELECT next_attempt_at FROM ${table.name}
+               WHERE status = 'pending'
+               ORDER BY next_attempt_at ASC
+               LIMIT 1`
+            )
+            .toArray()
+        )
+        .map((row) => row.next_attempt_at)
     );
-    reconciliation.reconciled = true;
+    const nextAlarmAt =
+      scheduled.length === 0 ? undefined : Math.min(...scheduled);
+    const currentAlarm = await physicalAlarm.getAlarm();
+    if (nextAlarmAt === undefined) {
+      if (currentAlarm !== null) {
+        await physicalAlarm.deleteAlarm();
+      }
+      return undefined;
+    }
+
+    const target = Math.max(nextAlarmAt, Date.now() + this.alarmMinDelayMs);
+    // Preserve a fallback inside this range so frequent reconciliation cannot push it later.
+    if (
+      currentAlarm === null ||
+      currentAlarm < nextAlarmAt ||
+      currentAlarm > target
+    ) {
+      await physicalAlarm.setAlarm(target);
+    }
+    return nextAlarmAt;
   }
 
   private scheduleEarlyAlarm(timestamp: number | undefined): void {
@@ -312,9 +321,7 @@ export class Engine {
     if (this.alarmRefresh) {
       return this.alarmRefresh;
     }
-    this.alarmRefresh = this.transaction((transaction) =>
-      this.reconcile(transaction)
-    ).finally(() => {
+    this.alarmRefresh = this.transaction(() => undefined).finally(() => {
       this.alarmRefresh = undefined;
     });
     return this.alarmRefresh;
@@ -322,10 +329,10 @@ export class Engine {
 
   /**
    * Aborts matching active handlers, then deletes one kind's records created
-   * before the timestamp, reconciling the alarm after each committed batch.
+   * before the timestamp and reconciles the alarm in the same transaction.
    */
   async purge(
-    kind: RecordKind,
+    table: DurableTable,
     before: number,
     active: Map<string, ActiveExecution>,
     abortReason: string
@@ -339,18 +346,18 @@ export class Engine {
       }
     }
 
-    let total = 0;
-    let removed = 0;
-    do {
-      // eslint-disable-next-line no-await-in-loop
-      removed = await this.transaction(async (transaction) => {
-        const count = await transaction[kind].deleteCreatedBefore(before);
-        await this.reconcile(transaction);
-        return count;
-      });
-      total += removed;
-    } while (removed > 0);
-    return total;
+    return this.transaction((sql) => {
+      const { count } = countRowSchema.parse(
+        sql
+          .exec(
+            `SELECT COUNT(*) AS count FROM ${table.name} WHERE created_at < ?`,
+            before
+          )
+          .toArray()[0]
+      );
+      sql.exec(`DELETE FROM ${table.name} WHERE created_at < ?`, before);
+      return count;
+    });
   }
 
   tryAcquirePermit(): (() => void) | undefined {
@@ -446,7 +453,7 @@ export class Engine {
   }
 
   private armForHandoff(timestamp: number): Promise<void> {
-    return this.storage.transaction(async ({ physicalAlarm }) => {
+    return this.context.storage.transaction(async (physicalAlarm) => {
       const currentAlarm = await physicalAlarm.getAlarm();
       const target = Math.max(timestamp, Date.now() + this.alarmMinDelayMs);
       if (currentAlarm === null || currentAlarm > target) {
@@ -486,7 +493,9 @@ export class Engine {
 
     const execution = (async (): Promise<void> => {
       releasePermit ??= await this.acquirePermit();
-      const attempt = await this.storage[spec.kind].claimAttempt(
+      const attempt = claimAttempt(
+        this.sql,
+        spec.table,
         key,
         row.generation_id,
         policy.maxAttempts
@@ -526,7 +535,7 @@ export class Engine {
         });
         const result = await Promise.race([handlerResult, timeoutResult]);
 
-        const timestamp = await spec.complete(result, attempt);
+        const timestamp = spec.complete(result, attempt);
         if (timestamp !== undefined) {
           spec.emit({
             ...spec.entity,
@@ -560,40 +569,29 @@ export class Engine {
 
   private async failExhausted(spec: ExecutionSpec): Promise<void> {
     const { key, row, policy } = spec;
-    const current = await this.storage[spec.kind].get(key);
-    if (
-      current?.generation_id !== row.generation_id ||
-      current.status !== 'pending' ||
-      current.attempt < policy.maxAttempts
-    ) {
-      return;
-    }
-
     const exhausted = serializeError(spec.exhaustedError());
-    let updated = false;
-    await this.transaction(async (transaction) => {
-      updated = await transaction[spec.kind].exhaust(
+    const attempt = await this.transaction((sql) =>
+      exhaustAttempts(
+        sql,
+        spec.table,
         key,
         row.generation_id,
         policy.maxAttempts,
-        {
-          status: 'failed',
-          last_error: exhausted.message,
-          last_error_name: exhausted.name,
-        }
-      );
-      await this.reconcile(transaction);
-    });
-    if (updated) {
-      spec.emit({
-        ...spec.entity,
-        type: 'terminal',
-        timestamp: Date.now(),
-        attempt: current.attempt,
-        reason: 'attempts_exhausted',
-        error: exhausted,
-      });
+        exhausted
+      )
+    );
+    if (attempt === undefined) {
+      return;
     }
+
+    spec.emit({
+      ...spec.entity,
+      type: 'terminal',
+      timestamp: Date.now(),
+      attempt,
+      reason: 'attempts_exhausted',
+      error: exhausted,
+    });
   }
 
   private async settleFailure(
@@ -605,21 +603,18 @@ export class Engine {
     const { key, row } = spec;
     const decision = decideRetry(spec, attempt, caught);
     const serializedError = serializeError(decision.error);
-    let updated = false;
-    await this.transaction(async (transaction) => {
-      updated = await transaction[spec.kind].settle(
-        key,
-        row.generation_id,
-        attempt,
-        {
-          status: decision.terminal ? 'failed' : 'pending',
-          next_attempt_at: decision.nextAttemptAt,
-          last_error: serializedError.message,
-          last_error_name: serializedError.name,
-        }
-      );
-      await this.reconcile(transaction);
-    });
+    const updated = await this.transaction((sql) =>
+      updateAttempt(
+        sql,
+        spec.table,
+        { key, generation: row.generation_id, attempt },
+        'status = ?, next_attempt_at = ?, last_error = ?, last_error_name = ?',
+        decision.terminal ? 'failed' : 'pending',
+        decision.nextAttemptAt,
+        serializedError.message,
+        serializedError.name
+      )
+    );
     if (!updated) {
       return;
     }
@@ -647,7 +642,7 @@ export class Engine {
 const engines = new WeakMap<DurabilityScheduler, Engine>();
 
 /**
- * Owns the Durable Object's physical alarm, storage backend, and concurrency
+ * Owns the Durable Object's physical alarm, storage, and concurrency
  * pool so {@link Durability} and {@link DurabilityAlarms} can share them.
  *
  * Construct one per Durable Object when using both helpers, pass it to each,
