@@ -6,6 +6,7 @@ import {
   durabilityNamedAlarmMigrations,
   durabilityOperationMigrations,
   DuplicateDurableCallError,
+  DuplicateDurablePayloadError,
   DurableAttemptsExhaustedError,
   DurableResultSerializationError,
   DurableRetryPolicyError,
@@ -759,6 +760,49 @@ describe('Durability', () => {
     await expect(
       durability.second({ id: 'shared', payload: null })
     ).rejects.toBeInstanceOf(DuplicateDurableCallError);
+  });
+
+  it('rejects reuse of an ID with a different payload and accepts the same data', async () => {
+    const calls: unknown[] = [];
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        send: async ({
+          payload,
+        }: DurableCall<{ to: string; tags?: string[] }>) => {
+          calls.push(payload);
+          return payload.to;
+        },
+      },
+    });
+
+    await durability.send({
+      id: 'mail',
+      payload: { to: 'ana', tags: ['a', 'b'] },
+    });
+    // Key order does not matter; the second registration is a no-op.
+    await durability.send({
+      id: 'mail',
+      payload: { tags: ['a', 'b'], to: 'ana' },
+    });
+    await vi.waitFor(async () => {
+      await expect(durability.send.getResult('mail')).resolves.toMatchObject({
+        status: 'completed',
+        result: 'ana',
+      });
+    });
+    expect(calls).toHaveLength(1);
+
+    // Array order and values do matter, before and after completion.
+    await expect(
+      durability.send({ id: 'mail', payload: { to: 'ana', tags: ['b', 'a'] } })
+    ).rejects.toBeInstanceOf(DuplicateDurablePayloadError);
+    await expect(
+      durability.send({ id: 'mail', payload: { to: 'bob' } })
+    ).rejects.toThrow(
+      'Durable call "mail" for operation "send" was registered with a different payload'
+    );
+    expect(calls).toHaveLength(1);
   });
 
   it('rejects handler names that collide with instance members', () => {

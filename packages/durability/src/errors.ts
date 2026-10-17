@@ -93,6 +93,16 @@ export class DuplicateDurableCallError extends Error {
   }
 }
 
+/** Thrown when an idempotency key is reused for the same operation with a different payload. */
+export class DuplicateDurablePayloadError extends Error {
+  constructor(id: string, operation: string) {
+    super(
+      `Durable call "${id}" for operation "${operation}" was registered with a different payload`
+    );
+    this.name = 'DuplicateDurablePayloadError';
+  }
+}
+
 /**
  * Error thrown when a fanout delivery is settled twice.
  *

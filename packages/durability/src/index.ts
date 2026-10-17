@@ -60,6 +60,7 @@ export {
 } from './scheduler.js';
 export {
   DuplicateDurableCallError,
+  DuplicateDurablePayloadError,
   DurableAlarmTimeoutError,
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
