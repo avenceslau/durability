@@ -92,6 +92,7 @@ export {
   durabilityLogMigrations,
   durabilityOutboxMigrations,
   durabilitySemaphoreMigrations,
+  durabilitySemaphoreQueueMigrations,
   type DurabilityMigrationResult,
   type MigrationCapability,
 } from './migrations.js';

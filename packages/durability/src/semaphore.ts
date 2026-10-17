@@ -40,6 +40,15 @@ export type {
   DurabilitySemaphoreEvent,
   SemaphoreUsage,
 } from './semaphore-server.js';
+export {
+  DurabilitySemaphoreQueue,
+  type AdmittedItem,
+  type DurabilitySemaphoreQueueConfig,
+  type DurabilitySemaphoreQueueEvent,
+  type SemaphoreHolder,
+  type SemaphoreInput,
+  type SemaphoreItemStatus,
+} from './semaphore-queue.js';
 
 export type SemaphoreSession = {
   request(key: string, message: PermitRequest): Promise<PermitGrant>;

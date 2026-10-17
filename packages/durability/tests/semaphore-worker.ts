@@ -1,6 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
+import { timeout } from '@durability/transforms';
 import { DurabilityScheduler } from '../src';
-import { DurabilitySemaphore, type SemaphoreRequest } from '../src/semaphore';
+import {
+  DurabilitySemaphore,
+  DurabilitySemaphoreQueue,
+  type SemaphoreRequest,
+} from '../src/semaphore';
 
 /** Holds one account's limit; keyed by account id. */
 export class LimitObject extends DurableObject {
@@ -32,3 +37,53 @@ export const limits = DurabilitySemaphore.client({
   invoke: (stub, message) => stub.permits(message),
   locationHint: () => 'weur',
 });
+
+/** A client shard: queues jobs per account and records admissions. */
+export class JobShard extends DurableObject {
+  protected readonly scheduler = new DurabilityScheduler(
+    this.schedulerConfig()
+  );
+  private readonly permits = new DurabilitySemaphoreQueue<string>({
+    scheduler: this.scheduler,
+    clientId: this.ctx.id.toString(),
+    server: limits.with(timeout, 5_000),
+    admit: async (items) => {
+      const admitted = (await this.ctx.storage.get<string[]>('admitted')) ?? [];
+      admitted.push(...items.map((item) => item.id));
+      await this.ctx.storage.put('admitted', admitted);
+    },
+  });
+
+  submit(account: string, jobs: { id: string; group?: string }[]) {
+    return this.permits.enqueue(
+      jobs.map((job) => ({
+        id: job.id,
+        key: account,
+        body: job.id,
+        ...(job.group === undefined ? {} : { group: job.group }),
+      }))
+    );
+  }
+
+  finish(id: string) {
+    return this.permits.release(id);
+  }
+
+  admitted() {
+    return this.ctx.storage.get<string[]>('admitted');
+  }
+
+  usage() {
+    return this.permits.usage();
+  }
+
+  protected schedulerConfig(): ConstructorParameters<
+    typeof DurabilityScheduler
+  >[0] {
+    return { context: this.ctx };
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
