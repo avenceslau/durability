@@ -8,6 +8,7 @@ export const queueItemRowSchema = z.object({
   /** queued: waiting for permits; claiming: counted against a grant, awaiting confirmation; admitted: running. */
   status: z.enum(['queued', 'claiming', 'admitted']),
   grant_id: z.string().nullable(),
+  lease_id: z.string().nullable(),
   created_at: z.number().int().nonnegative(),
   admitted_at: z.number().int().nonnegative().nullable(),
   /** 0 until `admit()` has returned for this item. */
@@ -44,8 +45,23 @@ export const queueKeyRowSchema = z.object({
 
 export type QueueKeyRow = z.infer<typeof queueKeyRowSchema>;
 
+export const queueLeaseRowSchema = z.object({
+  lease_id: z.string(),
+  key: z.string(),
+  grp: z.string(),
+  permits: z.number().int().nonnegative(),
+  /** Permits drawn so far; a drawn permit is never drawable again. */
+  drawn: z.number().int().nonnegative(),
+  released: z.number().int().nonnegative(),
+  created_at: z.number().int().nonnegative(),
+  expires_at: z.number().int().nonnegative(),
+});
+
+export type QueueLeaseRow = z.infer<typeof queueLeaseRowSchema>;
+
 const queueItemColumns = queueItemRowSchema.keyof().options;
 const queueGrantColumns = queueGrantRowSchema.keyof().options;
+const queueLeaseColumns = queueLeaseRowSchema.keyof().options;
 const statusCountSchema = z.object({
   status: queueItemRowSchema.shape.status,
   count: z.number().int().nonnegative(),
@@ -83,11 +99,12 @@ export class QueueStore {
   updateItem(row: QueueItemRow): void {
     this.sql.exec(
       `UPDATE durability_semaphore_queue_items
-       SET status = ?, grant_id = ?, admitted_at = ?, notified = ?,
+       SET status = ?, grant_id = ?, lease_id = ?, admitted_at = ?, notified = ?,
          attempt = ?, next_attempt_at = ?
        WHERE id = ?`,
       row.status,
       row.grant_id,
+      row.lease_id,
       row.admitted_at,
       row.notified,
       row.attempt,
@@ -208,6 +225,65 @@ export class QueueStore {
         .exec(
           `SELECT * FROM durability_semaphore_queue_grants
            WHERE key = ? ORDER BY created_at ASC, grant_id ASC`,
+          key
+        )
+        .toArray()
+    );
+  }
+
+  getLease(leaseId: string): QueueLeaseRow | undefined {
+    return queueLeaseRowSchema
+      .optional()
+      .parse(
+        this.sql
+          .exec(
+            'SELECT * FROM durability_semaphore_queue_leases WHERE lease_id = ? LIMIT 1',
+            leaseId
+          )
+          .toArray()[0]
+      );
+  }
+
+  insertLease(row: QueueLeaseRow): boolean {
+    return (
+      this.sql
+        .exec(
+          `INSERT INTO durability_semaphore_queue_leases (${queueLeaseColumns.join(', ')})
+           VALUES (${queueLeaseColumns.map(() => '?').join(', ')})
+           ON CONFLICT(lease_id) DO NOTHING
+           RETURNING lease_id`,
+          ...queueLeaseColumns.map((column) => row[column])
+        )
+        .toArray().length > 0
+    );
+  }
+
+  updateLease(row: QueueLeaseRow): void {
+    this.sql.exec(
+      `UPDATE durability_semaphore_queue_leases
+       SET permits = ?, drawn = ?, released = ?, expires_at = ?
+       WHERE lease_id = ?`,
+      row.permits,
+      row.drawn,
+      row.released,
+      row.expires_at,
+      row.lease_id
+    );
+  }
+
+  removeLease(leaseId: string): void {
+    this.sql.exec(
+      'DELETE FROM durability_semaphore_queue_leases WHERE lease_id = ?',
+      leaseId
+    );
+  }
+
+  listLeases(key: string): QueueLeaseRow[] {
+    return queueLeaseRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_leases
+           WHERE key = ? ORDER BY created_at ASC, lease_id ASC`,
           key
         )
         .toArray()

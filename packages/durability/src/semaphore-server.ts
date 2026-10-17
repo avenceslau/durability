@@ -6,6 +6,17 @@ import {
 } from './migrations.js';
 import { assertPositiveInteger } from './policy.js';
 import {
+  allocateLeases,
+  applyLeaseReports,
+  budgets,
+  leaseFootprint,
+  resolveLeasePolicy,
+  type LeaseCandidate,
+  type LeaseEvent,
+  type LeasePolicy,
+  type SemaphoreLeaseOptions,
+} from './semaphore-leases.js';
+import {
   engineFor,
   type Engine,
   type SchedulerAttachment,
@@ -14,6 +25,7 @@ import {
   semaphoreRequestSchema,
   type GrantReport,
   type GrantResult,
+  type LeaseGrant,
   type PermitGrant,
   type PermitRequest,
   type PermitSync,
@@ -22,93 +34,12 @@ import {
   type SemaphoreRequest,
   type SemaphoreResponse,
 } from './semaphore-protocol.js';
+import { HolderStore, type GrantRow } from './semaphore-store.js';
 import type { DurableTable } from './storage.js';
-import { z } from 'zod';
 
 const grantsTable: DurableTable = {
   name: 'durability_semaphore_grants',
   key: 'grant_id',
-};
-
-const grantRowSchema = z.object({
-  grant_id: z.string(),
-  client_id: z.string(),
-  grp: z.string(),
-  permits: z.number().int().nonnegative(),
-  claimed: z.number().int().nonnegative(),
-  released: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
-  /** Unclaimed permits are reclaimed once this passes. */
-  expires_at: z.number().int().nonnegative(),
-});
-
-type GrantRow = z.infer<typeof grantRowSchema>;
-
-const grantColumns = grantRowSchema.keyof().options;
-
-/** Grants are small and bounded by live clients, so aggregates are computed from `list`. */
-const grants = {
-  list: (sql: SqlStorage): GrantRow[] =>
-    grantRowSchema
-      .array()
-      .parse(
-        sql
-          .exec('SELECT * FROM durability_semaphore_grants ORDER BY created_at')
-          .toArray()
-      ),
-  get: (sql: SqlStorage, grantId: string): GrantRow | undefined =>
-    grantRowSchema
-      .optional()
-      .parse(
-        sql
-          .exec(
-            'SELECT * FROM durability_semaphore_grants WHERE grant_id = ? LIMIT 1',
-            grantId
-          )
-          .toArray()[0]
-      ),
-  nextPendingAt: (sql: SqlStorage): number | undefined =>
-    grantRowSchema
-      .pick({ expires_at: true })
-      .optional()
-      .parse(
-        sql
-          .exec(
-            `SELECT expires_at FROM durability_semaphore_grants
-             WHERE claimed < permits
-             ORDER BY expires_at ASC
-             LIMIT 1`
-          )
-          .toArray()[0]
-      )?.expires_at,
-  insert: (sql: SqlStorage, row: GrantRow): boolean =>
-    sql
-      .exec(
-        `INSERT INTO durability_semaphore_grants (${grantColumns.join(', ')})
-         VALUES (${grantColumns.map(() => '?').join(', ')})
-         ON CONFLICT(grant_id) DO NOTHING
-         RETURNING grant_id`,
-        ...grantColumns.map((column) => row[column])
-      )
-      .toArray().length > 0,
-  update: (sql: SqlStorage, row: GrantRow): void => {
-    sql.exec(
-      `UPDATE durability_semaphore_grants
-       SET permits = ?, claimed = ?, released = ?, expires_at = ?
-       WHERE grant_id = ?`,
-      row.permits,
-      row.claimed,
-      row.released,
-      row.expires_at,
-      row.grant_id
-    );
-  },
-  remove: (sql: SqlStorage, grantId: string): void => {
-    sql.exec(
-      'DELETE FROM durability_semaphore_grants WHERE grant_id = ?',
-      grantId
-    );
-  },
 };
 
 export type DurabilitySemaphoreEvent =
@@ -130,6 +61,7 @@ export type DurabilitySemaphoreEvent =
       /** Permits that stayed queued behind the limit. */
       count: number;
     }
+  | LeaseEvent
   | {
       entityKind: 'semaphore';
       type: 'grant_reclaimed';
@@ -159,6 +91,8 @@ export type DurabilitySemaphoreConfig = SchedulerAttachment & {
   roundPeriodMs?: number;
   /** Granted permits a client never claims are reclaimed after this. Defaults to 10 seconds. */
   grantTimeoutMs?: number;
+  /** Omit to disable leases: clients then admit only through confirmed grants. */
+  leases?: SemaphoreLeaseOptions;
   onLifecycleEvent?: (event: DurabilitySemaphoreEvent) => void | Promise<void>;
 };
 
@@ -169,6 +103,9 @@ export type SemaphoreUsage = {
    * exceed `limit` after it was lowered: running work is never evicted.
    */
   granted: number;
+  /** Live lease footprint: lease permits not yet released. */
+  leased: number;
+  /** Permits grants may still receive, under the provisioning mode. */
   available: number;
   groups: ReadonlyMap<string, { granted: number; limit?: number }>;
 };
@@ -185,6 +122,7 @@ type Allocation = {
   grants: PermitGrant['grants'];
   blocked: PermitGrant['blocked'];
   grantResults: GrantResult[];
+  leases: LeaseGrant[];
 };
 
 type RoundResult = {
@@ -193,6 +131,7 @@ type RoundResult = {
   requested: number;
   granted: number;
   reclaimed: DurabilitySemaphoreEvent[];
+  leaseEvents: LeaseEvent[];
 };
 
 // setTimeout overflows past 2^31 - 1 ms.
@@ -239,12 +178,14 @@ const blockedCounts = (
  */
 export class DurabilitySemaphoreServer {
   readonly #engine: Engine;
+  readonly #store: HolderStore;
   readonly #limit: () => number | Promise<number>;
   readonly #groupLimit: DurabilitySemaphoreConfig['groupLimit'];
   readonly #canGrant: DurabilitySemaphoreConfig['canGrant'];
   readonly #roundWaitMs: number;
   readonly #roundPeriodMs: number;
   readonly #grantTimeoutMs: number;
+  readonly #leases: LeasePolicy | undefined;
   readonly #emit: (event: DurabilitySemaphoreEvent) => void;
   #pending: Pending[] = [];
   #roundTimer: ReturnType<typeof setTimeout> | undefined;
@@ -265,6 +206,7 @@ export class DurabilitySemaphoreServer {
     this.#roundWaitMs = config.roundWaitMs ?? 1_000;
     this.#roundPeriodMs = config.roundPeriodMs ?? 2_000;
     this.#grantTimeoutMs = config.grantTimeoutMs ?? 10_000;
+    this.#leases = config.leases && resolveLeasePolicy(config.leases);
     for (const [name, value] of [
       ['roundWaitMs', this.#roundWaitMs],
       ['roundPeriodMs', this.#roundPeriodMs],
@@ -281,10 +223,11 @@ export class DurabilitySemaphoreServer {
       config.onLifecycleEvent
     );
     this.#engine.migrateSchema('semaphore', durabilitySemaphoreMigrations);
+    this.#store = new HolderStore(this.#engine.sql);
     this.#engine.register({
       table: grantsTable,
       runDue: () => this.#reclaimExpired(),
-      nextPendingAt: grants.nextPendingAt,
+      nextPendingAt: () => this.#store.nextPendingAt(),
     });
   }
 
@@ -331,14 +274,22 @@ export class DurabilitySemaphoreServer {
   async usage(): Promise<SemaphoreUsage> {
     const now = Date.now();
     const limit = await this.#resolveLimit();
+    const grants = this.#store.list();
+    const leases = this.#store.listLeases();
     const groups = new Map<string, { granted: number; limit?: number }>();
     let granted = 0;
-    for (const grant of grants.list(this.#engine.sql)) {
+    for (const grant of grants) {
       const count = outstanding(grant, now);
       granted += count;
       const group = groups.get(grant.grp) ?? { granted: 0 };
       group.granted += count;
       groups.set(grant.grp, group);
+    }
+    let leased = 0;
+    for (const lease of leases) {
+      if (lease.expires_at > now) {
+        leased += leaseFootprint(lease);
+      }
     }
     await Promise.all(
       [...groups.entries()].map(async ([name, group]) => {
@@ -348,7 +299,22 @@ export class DurabilitySemaphoreServer {
         }
       })
     );
-    return { limit, granted, available: Math.max(0, limit - granted), groups };
+    return {
+      limit,
+      granted,
+      leased,
+      available: this.#grantRoom(limit, granted, leased),
+      groups,
+    };
+  }
+
+  /** Permits grants may still receive, given the provisioning mode. */
+  #grantRoom(limit: number, granted: number, leased: number): number {
+    if (!this.#leases) {
+      return Math.max(0, limit - granted);
+    }
+    const budget = budgets(this.#leases.provisioning, limit);
+    return Math.max(0, budget.grants - granted - (budget.shared ? leased : 0));
   }
 
   // Rounds never overlap: a request arriving mid-round joins the next one,
@@ -394,8 +360,8 @@ export class DurabilitySemaphoreServer {
           )
         )
       );
-      round = await this.#engine.transaction((sql) =>
-        this.#allocate(sql, pending, limit, policies, now)
+      round = await this.#engine.transaction(() =>
+        this.#allocate(pending, limit, policies, now)
       );
     } catch (error) {
       for (const entry of pending) {
@@ -406,9 +372,16 @@ export class DurabilitySemaphoreServer {
 
     const nextRequestAt = now + this.#roundPeriodMs;
     for (const [entry, allocation] of round.allocations) {
-      entry.resolve({ type: 'grant', v: 1, ...allocation, nextRequestAt });
+      const { leases, ...rest } = allocation;
+      entry.resolve({
+        type: 'grant',
+        v: 1,
+        ...rest,
+        nextRequestAt,
+        ...(entry.request.leases === undefined ? {} : { leases }),
+      });
     }
-    for (const event of round.reclaimed) {
+    for (const event of [...round.reclaimed, ...round.leaseEvents]) {
       this.#emit(event);
     }
     this.#emit({
@@ -433,35 +406,62 @@ export class DurabilitySemaphoreServer {
 
   /** One round: apply reports, reclaim, then hand out permits in arrival order. */
   #allocate(
-    sql: SqlStorage,
     pending: Pending[],
     limit: number,
     policies: ReadonlyMap<string, GroupPolicy>,
     now: number
   ): RoundResult {
+    const store = this.#store;
     const allocations = new Map<Pending, Allocation>();
+    let unknownDebt = 0;
+    const drawn = new Map<string, number>();
     for (const entry of pending) {
-      allocations.set(entry, {
-        grants: [],
-        blocked: [],
-        grantResults: this.#applyReports(
-          sql,
-          entry.request.clientId,
-          entry.request.grants,
+      const { clientId } = entry.request;
+      const grantResults = this.#applyReports(
+        store,
+        clientId,
+        entry.request.grants,
+        now
+      );
+      const leases: LeaseGrant[] = [];
+      if (this.#leases && entry.request.leases) {
+        const outcome = applyLeaseReports(
+          store,
+          this.#leases,
+          clientId,
+          entry.request.leases,
           now
-        ),
-      });
+        );
+        leases.push(...outcome.echoes);
+        unknownDebt += outcome.unknownDebt;
+        for (const [leaseId, count] of outcome.drawn) {
+          drawn.set(leaseId, count);
+        }
+      }
+      allocations.set(entry, { grants: [], blocked: [], grantResults, leases });
     }
 
     const used = new Map<string, number>();
     let total = 0;
-    const reclaimed = this.#reclaim(sql, now);
+    const reclaimed = this.#reclaim(store, now);
     for (const grant of reclaimed.grants) {
       const count = outstanding(grant, now);
       total += count;
       used.set(grant.grp, (used.get(grant.grp) ?? 0) + count);
     }
-    let remaining = limit - total;
+    // In strict mode live lease footprint is reserved from the same pool as grants.
+    const budget = this.#leases
+      ? budgets(this.#leases.provisioning, limit)
+      : { grants: limit, leases: 0, shared: false };
+    let leased = 0;
+    if (this.#leases && budget.shared) {
+      for (const lease of store.listLeases()) {
+        if (lease.expires_at > now) {
+          leased += leaseFootprint(lease);
+        }
+      }
+    }
+    let remaining = budget.grants - total - (budget.shared ? leased : 0);
 
     const demands = pending
       .flatMap((entry) =>
@@ -506,7 +506,7 @@ export class DurabilitySemaphoreServer {
           created_at: now,
           expires_at: now + this.#grantTimeoutMs,
         };
-        grants.insert(sql, grant);
+        store.insert(grant);
         allocation.grants.push({
           grantId: grant.grant_id,
           group: demand.group,
@@ -522,6 +522,40 @@ export class DurabilitySemaphoreServer {
           group: demand.group,
           reason: groupRemaining - give <= 0 ? 'group_limit' : 'limit',
         });
+      }
+    }
+    let leaseEvents: LeaseEvent[] = [];
+    if (this.#leases) {
+      const candidates: LeaseCandidate[] = pending.flatMap((entry) =>
+        entry.request.leases === undefined
+          ? []
+          : entry.request.demand.map((demand) => ({
+              clientId: entry.request.clientId,
+              group: demand.group,
+              oldestAt: demand.oldestAt,
+            }))
+      );
+      const leaseBudget = budget.shared
+        ? Math.max(0, remaining)
+        : budget.leases;
+      const outcome = allocateLeases(store, this.#leases, {
+        budget: leaseBudget,
+        unknownDebt,
+        drawn,
+        candidates,
+        policies,
+        groupUsed: used,
+        now,
+      });
+      leased = outcome.footprint;
+      leaseEvents = outcome.events;
+      for (const [entry, allocation] of allocations) {
+        allocation.leases.push(
+          ...(outcome.grants.get(entry.request.clientId) ?? [])
+        );
+      }
+      if (budget.shared) {
+        remaining = limit - total - granted - leased;
       }
     }
 
@@ -541,9 +575,11 @@ export class DurabilitySemaphoreServer {
       requested,
       granted,
       reclaimed: reclaimed.events,
+      leaseEvents,
       usage: {
         limit,
         granted: total + granted,
+        leased,
         available: Math.max(0, remaining),
         groups,
       },
@@ -551,10 +587,35 @@ export class DurabilitySemaphoreServer {
   }
 
   async #sync(message: PermitSync): Promise<PermitSyncResult> {
-    const grantResults = await this.#engine.transaction((sql) =>
-      this.#applyReports(sql, message.clientId, message.grants, Date.now())
-    );
-    return { type: 'synced', v: 1, grantResults };
+    const now = Date.now();
+    const result = await this.#engine.transaction(() => {
+      const store = this.#store;
+      const grantResults = this.#applyReports(
+        store,
+        message.clientId,
+        message.grants,
+        now
+      );
+      const leaseOutcome =
+        this.#leases && message.leases
+          ? applyLeaseReports(
+              store,
+              this.#leases,
+              message.clientId,
+              message.leases,
+              now
+            )
+          : undefined;
+      return { grantResults, leaseEchoes: leaseOutcome?.echoes };
+    });
+    return {
+      type: 'synced',
+      v: 1,
+      grantResults: result.grantResults,
+      ...(result.leaseEchoes === undefined
+        ? {}
+        : { leases: result.leaseEchoes }),
+    };
   }
 
   /**
@@ -562,14 +623,14 @@ export class DurabilitySemaphoreServer {
    * are clamped to what the grant can honor, so replays are harmless.
    */
   #applyReports(
-    sql: SqlStorage,
+    store: HolderStore,
     clientId: string,
     reports: GrantReport[],
     now: number
   ): GrantResult[] {
     const results: GrantResult[] = [];
     for (const report of reports) {
-      const grant = grants.get(sql, report.grantId);
+      const grant = store.get(report.grantId);
       if (!grant || grant.client_id !== clientId) {
         results.push({
           grantId: report.grantId,
@@ -591,9 +652,9 @@ export class DurabilitySemaphoreServer {
       );
       const updated: GrantRow = { ...grant, permits, claimed, released };
       if (released >= permits) {
-        grants.remove(sql, grant.grant_id);
+        store.remove(grant.grant_id);
       } else {
-        grants.update(sql, updated);
+        store.update(updated);
       }
       results.push({
         grantId: grant.grant_id,
@@ -609,12 +670,12 @@ export class DurabilitySemaphoreServer {
    * Events are returned, not emitted: the caller emits them after commit.
    */
   #reclaim(
-    sql: SqlStorage,
+    store: HolderStore,
     now: number
   ): { grants: GrantRow[]; events: DurabilitySemaphoreEvent[] } {
     const kept: GrantRow[] = [];
     const events: DurabilitySemaphoreEvent[] = [];
-    for (const grant of grants.list(sql)) {
+    for (const grant of store.list()) {
       if (now < grant.expires_at || grant.claimed >= grant.permits) {
         kept.push(grant);
         continue;
@@ -622,9 +683,9 @@ export class DurabilitySemaphoreServer {
 
       const updated: GrantRow = { ...grant, permits: grant.claimed };
       if (updated.released >= updated.permits) {
-        grants.remove(sql, grant.grant_id);
+        store.remove(grant.grant_id);
       } else {
-        grants.update(sql, updated);
+        store.update(updated);
         kept.push(updated);
       }
       events.push({
@@ -642,7 +703,7 @@ export class DurabilitySemaphoreServer {
 
   async #reclaimExpired(): Promise<void> {
     const events = await this.#engine.transaction(
-      (sql) => this.#reclaim(sql, Date.now()).events
+      () => this.#reclaim(this.#store, Date.now()).events
     );
     for (const event of events) {
       this.#emit(event);

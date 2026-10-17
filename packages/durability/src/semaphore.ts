@@ -40,6 +40,10 @@ export type {
   DurabilitySemaphoreEvent,
   SemaphoreUsage,
 } from './semaphore-server.js';
+export type {
+  SemaphoreLeaseOptions,
+  SemaphoreProvisioning,
+} from './semaphore-leases.js';
 export {
   DurabilitySemaphoreQueue,
   type AdmittedItem,

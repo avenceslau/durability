@@ -565,7 +565,31 @@ const grant = await limits.with(timeout, 5_000).request(accountId, {
 - **Limits are live.** `limit` and `groupLimit` are resolved once per round. Lowering a limit never evicts running work; it stops new admissions until usage is below the new ceiling.
 - **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`.
 
-`usage()` reports the limit, outstanding permits, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
+`usage()` reports the limit, outstanding permits, lease footprint, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
+
+### Leases
+
+Rounds cost a round trip per batch of admissions. For bursty arrivals, the holder can hand each `(client, group)` with queued demand a **lease**: a block of permits the client may draw locally, one per item, with no round trip. Where that capacity comes from is the `provisioning` mode:
+
+```ts
+new DurabilitySemaphore({
+  scheduler,
+  limit: 100,
+  leases: {
+    provisioning: { mode: 'strict' }, // leases share the limit with grants
+    // provisioning: { mode: 'under', reserve: 20 },   // 20 of the 100 kept for leases; grants get 80
+    // provisioning: { mode: 'over', extra: { ratio: 0.5 } }, // 50 more above the limit, for leases only
+    permitsPerLease: 64,
+    ttlMs: 30 * 60_000,
+  },
+});
+```
+
+- **`strict`** — "always below": grants are allocated first, then leases from whatever is left; a live lease's footprint (permits not yet released) is reserved from the same pool. Total never exceeds the limit.
+- **`under`** — a reserve inside the limit is kept for leases; grants may use at most `limit - reserve`. Still never exceeds the limit, and leases have guaranteed headroom.
+- **`over`** — leases come from a separate budget above the limit (the original gatekeeper behaviour); the effective ceiling is `limit + extra`.
+
+Leases are issued only to clients that report `leases` (the queue always does), to groups without their own limit unless `limitedGroups: 'withinGroupLimit'`, and only to a client that holds no undrawn permits for that group. Each round shares the remaining lease budget equally among candidates, oldest demand first, up to `permitsPerLease`. Reports (`drawn`, `released` high-water marks) heartbeat a lease; one unreported for `ttlMs` is swept, and a report for a lease the holder no longer knows is answered retired and its live footprint charged against that round. On the client, a drawn permit is one-shot: releasing the item returns footprint to the holder but never makes the permit drawable again. Lowering a group's eligibility retires its leases on the next round.
 
 ### Queueing work in a client Durable Object
 
@@ -615,7 +639,7 @@ export class JobShard extends DurableObject<Env> {
 }
 ```
 
-- **States.** An item is `queued` until permits arrive, `claiming` while the holder confirms the claim, and `admitted` once `admit()` has been handed the item. `admit()` runs after the admission commits and is retried under `retries.delay` until it returns, so it must be idempotent on item ID. `release(id)` returns the permit; `cancel(id)` removes an item that is still `queued`.
+- **States.** An item is `queued` until permits arrive, `claiming` while the holder confirms the claim, and `admitted` once `admit()` has been handed the item. Items drawn from a lease skip `claiming` and are admitted at once; `AdmittedItem.via` says which path admitted an item. `admit()` runs after the admission commits and is retried under `retries.delay` until it returns, so it must be idempotent on item ID. `release(id)` returns the permit; `cancel(id)` removes an item that is still `queued`.
 - **Requests.** Each key is asked at most once per `nextRequestAt`, with demand aggregated per group from the oldest queued items. A failed request is retried with backoff. Items whose key already holds unclaimed permits — a grant sized for demand that was cancelled, say — are admitted without a request.
 - **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
 - **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.

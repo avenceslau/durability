@@ -395,8 +395,21 @@ export const durabilitySemaphoreMigrations = [
       );
       CREATE INDEX IF NOT EXISTS durability_semaphore_grants_expires_idx
       ON durability_semaphore_grants (expires_at) WHERE claimed < permits;
+      CREATE TABLE IF NOT EXISTS durability_semaphore_leases (
+        lease_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_leases_expires_idx
+      ON durability_semaphore_leases (expires_at);
     `,
     down: `
+      DROP INDEX IF EXISTS durability_semaphore_leases_expires_idx;
+      DROP TABLE IF EXISTS durability_semaphore_leases;
       DROP INDEX IF EXISTS durability_semaphore_grants_expires_idx;
       DROP TABLE IF EXISTS durability_semaphore_grants;
     `,
@@ -418,6 +431,7 @@ export const durabilitySemaphoreQueueMigrations = [
         payload TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('queued', 'claiming', 'admitted')),
         grant_id TEXT,
+        lease_id TEXT,
         created_at INTEGER NOT NULL,
         admitted_at INTEGER,
         notified INTEGER NOT NULL DEFAULT 0,
@@ -444,6 +458,18 @@ export const durabilitySemaphoreQueueMigrations = [
       );
       CREATE INDEX IF NOT EXISTS durability_semaphore_queue_grants_key_idx
       ON durability_semaphore_queue_grants (key, created_at);
+      CREATE TABLE IF NOT EXISTS durability_semaphore_queue_leases (
+        lease_id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        drawn INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_leases_key_idx
+      ON durability_semaphore_queue_leases (key, created_at);
       CREATE TABLE IF NOT EXISTS durability_semaphore_queue_keys (
         key TEXT PRIMARY KEY,
         next_request_at INTEGER NOT NULL,
@@ -455,6 +481,8 @@ export const durabilitySemaphoreQueueMigrations = [
     down: `
       DROP INDEX IF EXISTS durability_semaphore_queue_keys_due_idx;
       DROP TABLE IF EXISTS durability_semaphore_queue_keys;
+      DROP INDEX IF EXISTS durability_semaphore_queue_leases_key_idx;
+      DROP TABLE IF EXISTS durability_semaphore_queue_leases;
       DROP INDEX IF EXISTS durability_semaphore_queue_grants_key_idx;
       DROP TABLE IF EXISTS durability_semaphore_queue_grants;
       DROP INDEX IF EXISTS durability_semaphore_queue_items_notify_idx;
