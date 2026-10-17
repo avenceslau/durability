@@ -490,6 +490,82 @@ describe('semaphore', () => {
       ]);
     });
 
+    it('strict: existing footprint is netted once when issuing new leases', async () => {
+      const { round } = fixture({
+        limit: 10,
+        leases: { provisioning: { mode: 'strict' }, permitsPerLease: 2 },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'g', permits: 1 }]);
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 2, retired: false },
+      ]);
+      const leaseId = first!.leases![0]!.leaseId;
+
+      // Pool: 10 - 1 grant - 2 footprint = 7 left. A second client's lease
+      // must come out of 7, not 7 - 2 again.
+      const [, second] = await round(
+        leasing('a', [], [{ leaseId, drawn: 0, released: 0 }]),
+        leasing('b', [{ group: 'g', count: 5, oldestAt: 2 }])
+      );
+      expect(given(second!)).toEqual([{ group: 'g', permits: 5 }]);
+      expect(leased(second!)).toEqual([
+        { group: 'g', permits: 2, retired: false },
+      ]);
+    });
+
+    it('retires a held lease when its group becomes limited, even in an unrelated round', async () => {
+      let capped = false;
+      const { round } = fixture({
+        limit: 10,
+        groupLimit: (group) => (capped && group === 'g' ? 1 : undefined),
+        leases: { provisioning: { mode: 'over', extra: 4 } },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
+      );
+      expect(leased(first!)).toHaveLength(1);
+
+      capped = true;
+      const [, holder] = await round(
+        leasing('b', [{ group: 'other', count: 1, oldestAt: 2 }]),
+        leasing('a', [])
+      );
+      expect(leased(holder!)).toEqual([
+        { group: 'g', permits: 4, retired: true },
+      ]);
+    });
+
+    it('shrinks undrawn lease headroom when the limit is lowered', async () => {
+      let limit = 10;
+      const { semaphore, round } = fixture({
+        limit: () => limit,
+        leases: { provisioning: { mode: 'strict' } },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 2, oldestAt: 1 }])
+      );
+      const leaseId = first!.leases![0]!.leaseId;
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 8, retired: false },
+      ]);
+
+      limit = 5;
+      const [second] = await round(
+        leasing('a', [], [{ leaseId, drawn: 3, released: 0 }])
+      );
+      // 2 granted + 8 leased = 10 > 5: the 5 undrawn permits are retired.
+      expect(leased(second!)).toEqual([
+        { group: 'g', permits: 3, retired: true },
+      ]);
+      expect(await semaphore.usage()).toMatchObject({
+        granted: 2,
+        leased: 3,
+      });
+    });
+
     it('excludes limited groups unless leasing within the group limit', async () => {
       const excluded = fixture({
         limit: 10,
@@ -552,5 +628,53 @@ describe('semaphore', () => {
     await expect(
       broken.sync('', { type: 'sync', v: 1, clientId: 'c', grants: [] })
     ).rejects.toThrow(/non-empty/);
+  });
+});
+describe('semaphore schema upgrades', () => {
+  it('adds lease tables on top of an earlier semaphore schema', async () => {
+    const { DurabilitySemaphoreServer: Server } =
+      await import('./semaphore-server');
+    const {
+      durabilitySemaphoreMigrations,
+      durabilitySemaphoreQueueMigrations,
+      migrate,
+    } = await import('./migrations');
+    const storage = new FakeStorage();
+    migrate(
+      storage,
+      'semaphore',
+      durabilitySemaphoreMigrations,
+      'durability_0007_create_semaphore'
+    );
+    migrate(
+      storage,
+      'semaphoreQueue',
+      durabilitySemaphoreQueueMigrations,
+      'durability_0008_create_semaphore_queue'
+    );
+
+    expect(
+      Server.migrate({ storage: storage as unknown as DurableObjectStorage })
+    ).toMatchObject({
+      applied: ['durability_0009_create_semaphore_leases'],
+    });
+    expect(
+      migrate(
+        storage,
+        'semaphoreQueue',
+        durabilitySemaphoreQueueMigrations,
+        undefined
+      )
+    ).toMatchObject({
+      applied: ['durability_0010_add_semaphore_queue_leases'],
+    });
+    expect(
+      storage.sql
+        .exec(
+          "SELECT name FROM pragma_table_info('durability_semaphore_queue_items')"
+        )
+        .toArray()
+        .map((row) => row['name'])
+    ).toContain('lease_id');
   });
 });
