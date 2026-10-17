@@ -1,6 +1,6 @@
 {
   "name": "durability",
-  "version": "3.0.1",
+  "version": "4.0.0",
   "description": "Alarm-backed durable operations and typed WebSocket sync for Cloudflare Durable Objects",
   "type": "module",
   "license": "ISC",
