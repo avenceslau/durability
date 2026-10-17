@@ -1,0 +1,51 @@
+.changeset/durability-tracker.md
+  s_89dff2fd3753ec::t_d3b4574306733a 1-5
+packages/durability/README.md
+  s_89dff2fd3753ec::t_121640629a4bc4 10,418-509
+packages/durability/package.json
+  s_89dff2fd3753ec::t_7f6ee30ee2b220 23,40-43,94
+packages/durability/src/durability-alarms.ts
+  s_89dff2fd3753ec::t_50001f2c019083 34-39,115-146,198,250-289,347-348,453-455
+packages/durability/src/durability.ts
+  s_89dff2fd3753ec::t_160e9595e3aa3c 38-43,114-120,256-290,344,396-419,453,659-661
+packages/durability/src/experimental.ts
+  s_89dff2fd3753ec::t_290e5f5ef0f5d9 1-28
+packages/durability/src/storage.ts
+  s_89dff2fd3753ec::t_a12ea274ff18d0 115-179
+packages/durability/src/tracker.test.ts
+  s_89dff2fd3753ec::t_a31638ea47978e 1-447
+packages/durability/src/tracker.ts
+  s_89dff2fd3753ec::t_7afe23f6bff271 1-331
+packages/durability/tests/named-alarm-worker.ts
+  s_89dff2fd3753ec::t_6a6d45b0f96f6a 11
+packages/durability/tests/socket-worker.ts
+  s_89dff2fd3753ec::t_840d5446fb55fb 8,34-37,42
+packages/durability/tests/socket.worker.test.ts
+  s_89dff2fd3753ec::t_5e212922654b9b 116-138
+packages/durability/tests/tracker-worker.ts
+  s_89dff2fd3753ec::t_7ddd1fe44ca526 1-65
+packages/durability/tests/tracker.worker.test.ts
+  s_89dff2fd3753ec::t_3df97175903350 1-91
+packages/durability/tsconfig.build.json
+  s_89dff2fd3753ec::t_a87a312b21ac40 15
+packages/durability/wrangler.test.jsonc
+  s_89dff2fd3753ec::t_8e89567e973710 16-19,48-51
+pnpm-lock.yaml
+  s_89dff2fd3753ec::t_0df6477201a9f3 88-90,1218-1220,2675-2676
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3ce7ac4af6f83298de6090446048151dc57c1f0f",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
