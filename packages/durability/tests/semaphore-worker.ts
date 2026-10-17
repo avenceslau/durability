@@ -40,7 +40,9 @@ export const limits = DurabilitySemaphore.client({
 
 /** A client shard: queues jobs per account and records admissions. */
 export class JobShard extends DurableObject {
-  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  protected readonly scheduler = new DurabilityScheduler(
+    this.schedulerConfig()
+  );
   private readonly permits = new DurabilitySemaphoreQueue<string>({
     scheduler: this.scheduler,
     clientId: this.ctx.id.toString(),
@@ -73,6 +75,12 @@ export class JobShard extends DurableObject {
 
   usage() {
     return this.permits.usage();
+  }
+
+  protected schedulerConfig(): ConstructorParameters<
+    typeof DurabilityScheduler
+  >[0] {
+    return { context: this.ctx };
   }
 
   override alarm(info?: AlarmInvocationInfo) {

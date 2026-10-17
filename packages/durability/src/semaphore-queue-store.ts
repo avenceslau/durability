@@ -27,6 +27,8 @@ export const queueGrantRowSchema = z.object({
   claimed: z.number().int().nonnegative(),
   /** Claims the holder has confirmed. */
   confirmed: z.number().int().nonnegative(),
+  /** Items handed to `admit()` from this grant; never derived from live rows. */
+  admitted: z.number().int().nonnegative(),
   released: z.number().int().nonnegative(),
   created_at: z.number().int().nonnegative(),
 });
@@ -182,11 +184,12 @@ export class QueueStore {
   updateGrant(row: QueueGrantRow): void {
     this.sql.exec(
       `UPDATE durability_semaphore_queue_grants
-       SET permits = ?, claimed = ?, confirmed = ?, released = ?
+       SET permits = ?, claimed = ?, confirmed = ?, admitted = ?, released = ?
        WHERE grant_id = ?`,
       row.permits,
       row.claimed,
       row.confirmed,
+      row.admitted,
       row.released,
       row.grant_id
     );

@@ -230,10 +230,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         typeof id !== 'string' ||
         id.length === 0 ||
         typeof item.key !== 'string' ||
-        item.key.length === 0
+        item.key.length === 0 ||
+        (item.group !== undefined && typeof item.group !== 'string')
       ) {
         throw new TypeError(
-          'Semaphore items need a non-empty id and semaphore key'
+          'Semaphore items need a non-empty id, a semaphore key, and a string group'
         );
       }
       const now = Date.now();
@@ -444,6 +445,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
             permits: given.permits,
             claimed: 0,
             confirmed: 0,
+            admitted: 0,
             released: 0,
             created_at: Date.now(),
           });
@@ -519,8 +521,10 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   /**
-   * Applies the holder's confirmations: confirmed claims admit items in
-   * arrival order; clamped or forgotten grants return their items to the queue.
+   * Applies the holder's confirmations: newly confirmed claims admit the
+   * oldest claiming items; clamped or forgotten grants return their
+   * unconfirmed items to the queue. Progress is tracked on the grant row, so
+   * released (deleted) items never shift which claims count as confirmed.
    */
   #applyResults(key: string, results: GrantResult[]): void {
     const store = this.#store;
@@ -530,20 +534,18 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       if (!grant || grant.key !== key) {
         continue;
       }
-      const items = store.listItemsByGrant(grant.grant_id);
-      const claiming = items.filter((item) => item.status === 'claiming');
-      const admitted = items.length - claiming.length;
+      const claiming = store
+        .listItemsByGrant(grant.grant_id)
+        .filter((item) => item.status === 'claiming');
 
-      if (result.status === 'not_found') {
-        for (const item of claiming) {
-          store.updateItem({ ...item, status: 'queued', grant_id: null });
-        }
-        store.removeGrant(grant.grant_id);
-        continue;
-      }
-
-      const confirmed = Math.max(grant.confirmed, result.claimed);
-      const admitNow = claiming.slice(0, Math.max(0, confirmed - admitted));
+      const confirmed =
+        result.status === 'not_found'
+          ? grant.admitted
+          : Math.max(grant.confirmed, result.claimed);
+      const admitNow = claiming.slice(
+        0,
+        Math.max(0, confirmed - grant.admitted)
+      );
       for (const item of admitNow) {
         store.updateItem({
           ...item,
@@ -554,13 +556,23 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           next_attempt_at: now,
         });
       }
-      let updated: QueueGrantRow = { ...grant, confirmed };
-      if (result.status === 'expired') {
-        // The holder reclaimed what we had not claimed in time.
+      let updated: QueueGrantRow = {
+        ...grant,
+        confirmed,
+        admitted: grant.admitted + admitNow.length,
+      };
+      if (result.status !== 'ok') {
+        // The holder reclaimed (or forgot) what was not confirmed: those items
+        // queue again, and the grant shrinks to what was actually admitted.
         for (const item of claiming.slice(admitNow.length)) {
           store.updateItem({ ...item, status: 'queued', grant_id: null });
         }
-        updated = { ...updated, permits: confirmed, claimed: confirmed };
+        updated = {
+          ...updated,
+          permits: updated.admitted,
+          claimed: updated.admitted,
+          confirmed: updated.admitted,
+        };
       }
       if (
         updated.released >= updated.permits &&
