@@ -1,0 +1,19 @@
+packages/durability/src/scheduler.ts
+  s_89dff2fd3753ec::t_63b21c213b1aea 171,299-305,312-314,324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "32a23070509c53ee7c824ca1122c91ce13f69bf2",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
