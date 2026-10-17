@@ -3,26 +3,56 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 export class NodeSqlStorage {
   private readonly database = new DatabaseSync(':memory:');
 
+  private depth = 0;
+
+  // Nested transactions use savepoints, as SQLite-backed Durable Objects do.
+  private begin(): string | undefined {
+    this.depth += 1;
+    if (this.depth === 1) {
+      this.database.exec('BEGIN');
+      return undefined;
+    }
+    const savepoint = `nested_${this.depth}`;
+    this.database.exec(`SAVEPOINT ${savepoint}`);
+    return savepoint;
+  }
+
+  private commit(savepoint: string | undefined): void {
+    this.depth -= 1;
+    this.database.exec(
+      savepoint === undefined ? 'COMMIT' : `RELEASE ${savepoint}`
+    );
+  }
+
+  private rollback(savepoint: string | undefined): void {
+    this.depth -= 1;
+    this.database.exec(
+      savepoint === undefined
+        ? 'ROLLBACK'
+        : `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`
+    );
+  }
+
   transaction<T>(closure: () => T): T {
-    this.database.exec('BEGIN');
+    const savepoint = this.begin();
     try {
       const result = closure();
-      this.database.exec('COMMIT');
+      this.commit(savepoint);
       return result;
     } catch (error) {
-      this.database.exec('ROLLBACK');
+      this.rollback(savepoint);
       throw error;
     }
   }
 
   async transactionAsync<T>(closure: () => Promise<T>): Promise<T> {
-    this.database.exec('BEGIN');
+    const savepoint = this.begin();
     try {
       const value = await closure();
-      this.database.exec('COMMIT');
+      this.commit(savepoint);
       return value;
     } catch (error) {
-      this.database.exec('ROLLBACK');
+      this.rollback(savepoint);
       throw error;
     }
   }

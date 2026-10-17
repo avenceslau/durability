@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   DurableRetryPolicyError,
   FanoutEnqueueError,
@@ -30,7 +31,71 @@ import {
   type SchedulerAttachment,
 } from './scheduler.js';
 import { deserialize, serialize } from './serialization.js';
-import type { DeliveryRow, FanoutMessageRow } from './storage.js';
+import {
+  claimAttempt,
+  deleteAttempt,
+  updateAttempt,
+  type AttemptRef,
+  type DurableTable,
+} from './storage.js';
+
+const fanoutMessageRowSchema = z.object({
+  key: z.string(),
+  id: z.string(),
+  payload: z.string(),
+  targets: z.string(),
+  remaining: z.number().int().nonnegative(),
+  seq: z.number().int().nonnegative(),
+  created_at: z.number().int().nonnegative(),
+  generation_id: z.string(),
+});
+
+type FanoutMessageRow = z.infer<typeof fanoutMessageRowSchema>;
+
+const deliveryRowSchema = z.object({
+  id: z.string(),
+  message_key: z.string(),
+  target_id: z.string(),
+  seq: z.number().int().nonnegative(),
+  status: z.literal('pending'),
+  phase: z.enum(['delivery', 'dead_letter']),
+  attempt: z.number().int().nonnegative(),
+  next_attempt_at: z.number().int().nonnegative(),
+  last_error: z.string().nullable(),
+  last_error_name: z.string().nullable(),
+  created_at: z.number().int().nonnegative(),
+  generation_id: z.string(),
+  dead_lettered_at: z.number().int().nonnegative().nullable(),
+  dead_letter_reason: z.enum(['explicit', 'exhausted']).nullable(),
+});
+
+type DeliveryRow = z.infer<typeof deliveryRowSchema>;
+
+const deliveriesTable: DurableTable = {
+  name: 'durability_fanout_deliveries',
+  key: 'id',
+};
+
+const countRowSchema = z.object({ count: z.number().int().nonnegative() });
+const seqRowSchema = z.object({ seq: z.number().int().nonnegative() });
+
+const readManifest = (
+  sql: SqlStorage,
+  key: string
+): FanoutMessageRow | undefined =>
+  fanoutMessageRowSchema
+    .optional()
+    .parse(
+      sql
+        .exec('SELECT * FROM durability_fanout_messages WHERE key = ?', key)
+        .toArray()[0]
+    );
+
+const attemptOf = (row: DeliveryRow): AttemptRef => ({
+  key: row.id,
+  generation: row.generation_id,
+  attempt: row.attempt,
+});
 
 export type FanoutInput<Body = unknown> = {
   id?: string;
@@ -134,6 +199,13 @@ export class DurabilityFanout<Body = unknown> {
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
   readonly #running = new Map<string, Promise<void>>();
+  /**
+   * Cached pending-delivery count. Counting the table on every enqueue costs
+   * O(backlog), which made a shard that fell behind fall further behind. It is
+   * hydrated once and kept exact by inserts and removals; a failed transaction
+   * may leave it wrong, so it is discarded and recounted on the next read.
+   */
+  #pending: number | undefined;
 
   constructor(config: DurabilityFanoutConfig<Body>) {
     this.#maxBatchSize = config.maxBatchSize ?? 10;
@@ -171,7 +243,10 @@ export class DurabilityFanout<Body = unknown> {
     );
     this.#emit = this.#lifecycle.emit;
     this.#engine.migrateSchema('fanout', durabilityFanoutMigrations);
-    this.#engine.register({ kind: 'deliveries', runDue: () => this.#runDue() });
+    this.#engine.register({
+      table: deliveriesTable,
+      runDue: () => this.#runDue(),
+    });
   }
 
   static migrate(
@@ -201,9 +276,7 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   async load(): Promise<LoadSnapshot> {
-    return this.#routing.snapshot(
-      await this.#engine.storage.deliveries.pendingCount()
-    );
+    return this.#routing.snapshot(this.#pendingCount());
   }
 
   /**
@@ -256,14 +329,12 @@ export class DurabilityFanout<Body = unknown> {
       };
     }
 
-    const registered: Claim[] = [];
+    let registered: Claim[];
     try {
-      await this.#engine.transaction(async (transaction) => {
-        registered.length = 0;
-        const store = transaction.deliveries;
+      registered = await this.#transaction((sql) => {
+        const claims: Claim[] = [];
         for (const entry of entries) {
-          // eslint-disable-next-line no-await-in-loop
-          const existing = await store.getMessage(entry.key);
+          const existing = readManifest(sql, entry.key);
           if (existing) {
             if (
               existing.id !== entry.id ||
@@ -276,17 +347,38 @@ export class DurabilityFanout<Body = unknown> {
             }
             continue;
           }
+          const { seq } = seqRowSchema.parse(
+            sql
+              .exec(
+                `UPDATE durability_fanout_seq
+                 SET next_seq = next_seq + 1
+                 WHERE id = 1
+                 RETURNING next_seq - 1 AS seq`
+              )
+              .toArray()[0]
+          );
           const message: FanoutMessageRow = {
             ...entry,
             targets: JSON.stringify(targets),
             remaining: targets.length,
-            // eslint-disable-next-line no-await-in-loop
-            seq: await store.nextSeq(),
+            seq,
             created_at: Date.now(),
             generation_id: crypto.randomUUID(),
           };
-          // eslint-disable-next-line no-await-in-loop
-          await store.insertMessage(message);
+          sql.exec(
+            `INSERT INTO durability_fanout_messages
+               (key, id, payload, targets, remaining, seq, created_at,
+                generation_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            message.key,
+            message.id,
+            message.payload,
+            message.targets,
+            message.remaining,
+            message.seq,
+            message.created_at,
+            message.generation_id
+          );
           for (const target of targets) {
             const row: DeliveryRow = {
               id: JSON.stringify([entry.key, target]),
@@ -304,14 +396,32 @@ export class DurabilityFanout<Body = unknown> {
               dead_lettered_at: null,
               dead_letter_reason: null,
             };
-            // eslint-disable-next-line no-await-in-loop
-            if (!(await store.insert(row))) {
+            const inserted =
+              sql
+                .exec(
+                  `INSERT INTO durability_fanout_deliveries
+                     (id, message_key, target_id, seq, status, phase, attempt,
+                      next_attempt_at, created_at, generation_id)
+                   VALUES (?, ?, ?, ?, 'pending', 'delivery', 0, ?, ?, ?)
+                   ON CONFLICT(id) DO NOTHING
+                   RETURNING id`,
+                  row.id,
+                  row.message_key,
+                  row.target_id,
+                  row.seq,
+                  row.next_attempt_at,
+                  row.created_at,
+                  row.generation_id
+                )
+                .toArray().length > 0;
+            if (!inserted) {
               throw new Error('Fanout manifest and delivery state disagree');
             }
-            registered.push({ row, message });
+            this.#adjustPending(1);
+            claims.push({ row, message });
           }
         }
-        await this.#engine.reconcile(transaction);
+        return claims;
       });
     } catch (error) {
       if (!(error instanceof FanoutEnqueueError)) {
@@ -358,7 +468,18 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   async #runDue(): Promise<void> {
-    const targets = await this.#engine.storage.deliveries.listTargets();
+    const targets = z
+      .object({ target_id: z.string() })
+      .array()
+      .parse(
+        this.#engine.sql
+          .exec(
+            `SELECT DISTINCT target_id FROM durability_fanout_deliveries
+             ORDER BY target_id`
+          )
+          .toArray()
+      )
+      .map((row) => row.target_id);
     // Each target advances independently; a missing or slow target cannot hide
     // another target behind a global LIMIT. Each pass processes one bounded batch.
     await Promise.all(
@@ -379,35 +500,30 @@ export class DurabilityFanout<Body = unknown> {
   async #runTarget(id: string): Promise<void> {
     const release = await this.#engine.acquirePermit();
     try {
-      const due = await this.#engine.storage.deliveries.listDueForTarget(
-        id,
-        Date.now(),
-        this.#maxBatchSize
-      );
+      const due = this.#listDue(id, Date.now());
+      if (due.length === 0) {
+        return;
+      }
+
       const target = this.#targets.get(id);
       const policy = this.#policies.get(id);
       if (!target || !policy) {
-        if (due.length > 0) {
-          reportFailure(
-            'durability.fanout.target_missing',
-            { target: id },
-            new Error(`Target "${id}" is no longer configured; retaining work`)
-          );
-          await this.#postpone(due);
-        }
+        reportFailure(
+          'durability.fanout.target_missing',
+          { target: id },
+          new Error(`Target "${id}" is no longer configured; retaining work`)
+        );
+        await this.#postpone(due);
         return;
       }
-      const terminal: Claim[] = [];
       // One transaction claims the whole batch: per-message transactions made the
       // pass cost O(batch) commits, which capped a shard's throughput.
-      const claims = await this.#engine.transaction(async (transaction) => {
+      const { claims, terminal } = await this.#transaction((sql) => {
         const claimed: Claim[] = [];
+        const exhausted: Claim[] = [];
         const deadline = Date.now() + policy.attemptTimeoutMs;
         for (const row of due) {
-          // eslint-disable-next-line no-await-in-loop
-          const message = await transaction.deliveries.getMessage(
-            row.message_key
-          );
+          const message = readManifest(sql, row.message_key);
           if (!message || message.generation_id !== row.generation_id) {
             throw new Error('Fanout delivery is missing its message manifest');
           }
@@ -415,11 +531,12 @@ export class DurabilityFanout<Body = unknown> {
             row.phase === 'dead_letter' ||
             row.attempt >= policy.maxAttempts
           ) {
-            terminal.push({ row, message });
+            exhausted.push({ row, message });
             continue;
           }
-          // eslint-disable-next-line no-await-in-loop
-          const attempt = await transaction.deliveries.claimAttempt(
+          const attempt = claimAttempt(
+            sql,
+            deliveriesTable,
             row.id,
             row.generation_id,
             policy.maxAttempts
@@ -427,21 +544,17 @@ export class DurabilityFanout<Body = unknown> {
           if (attempt === undefined) {
             continue;
           }
-          // eslint-disable-next-line no-await-in-loop
-          await transaction.deliveries.settle(
-            row.id,
-            row.generation_id,
-            attempt,
-            {
-              next_attempt_at: deadline,
-            }
+          const claim = { row: { ...row, attempt }, message };
+          updateAttempt(
+            sql,
+            deliveriesTable,
+            attemptOf(claim.row),
+            'next_attempt_at = ?',
+            deadline
           );
-          claimed.push({ row: { ...row, attempt }, message });
+          claimed.push(claim);
         }
-        if (claimed.length > 0) {
-          await this.#engine.reconcile(transaction);
-        }
-        return claimed;
+        return { claims: claimed, terminal: exhausted };
       });
       for (const claim of terminal) {
         // eslint-disable-next-line no-await-in-loop
@@ -459,19 +572,16 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   async #postpone(rows: DeliveryRow[]): Promise<void> {
-    await this.#engine.transaction(async (transaction) => {
+    await this.#transaction((sql) => {
       for (const row of rows) {
-        // eslint-disable-next-line no-await-in-loop
-        await transaction.deliveries.settle(
-          row.id,
-          row.generation_id,
-          row.attempt,
-          {
-            next_attempt_at: Date.now() + infrastructureRetryMs,
-          }
+        updateAttempt(
+          sql,
+          deliveriesTable,
+          attemptOf(row),
+          'next_attempt_at = ?',
+          Date.now() + infrastructureRetryMs
         );
       }
-      await this.#engine.reconcile(transaction);
     });
   }
 
@@ -572,10 +682,16 @@ export class DurabilityFanout<Body = unknown> {
         if (!state.finished) {
           continue;
         }
-        // eslint-disable-next-line no-await-in-loop
-        const current = await this.#engine.storage.deliveries.get(
-          state.claim.row.id
-        );
+        const current = deliveryRowSchema
+          .optional()
+          .parse(
+            this.#engine.sql
+              .exec(
+                'SELECT * FROM durability_fanout_deliveries WHERE id = ?',
+                state.claim.row.id
+              )
+              .toArray()[0]
+          );
         if (
           !current ||
           current.generation_id !== state.claim.row.generation_id ||
@@ -604,20 +720,13 @@ export class DurabilityFanout<Body = unknown> {
       return;
     }
 
-    const removed = this.#engine.transaction(async (transaction) => {
+    const removed = this.#transaction((sql) => {
       const ids = new Set<string>();
       for (const { claim } of unsettled) {
-        // eslint-disable-next-line no-await-in-loop
-        const deleted = await transaction.deliveries.remove(
-          claim.row.id,
-          claim.row.generation_id,
-          claim.row.attempt
-        );
-        if (deleted) {
+        if (this.#removeDelivery(sql, claim.row)) {
           ids.add(claim.row.id);
         }
       }
-      await this.#engine.reconcile(transaction);
       return ids;
     });
 
@@ -722,18 +831,32 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   async #remove(row: DeliveryRow): Promise<void> {
-    await this.#engine.transaction(async (transaction) => {
-      if (
-        !(await transaction.deliveries.remove(
-          row.id,
-          row.generation_id,
-          row.attempt
-        ))
-      ) {
+    await this.#transaction((sql) => {
+      if (!this.#removeDelivery(sql, row)) {
         throw new FanoutSettlementError(row.id);
       }
-      await this.#engine.reconcile(transaction);
     });
+  }
+
+  /** Deletes a delivery the attempt still owns and releases its manifest share. */
+  #removeDelivery(sql: SqlStorage, row: DeliveryRow): boolean {
+    if (!deleteAttempt(sql, deliveriesTable, attemptOf(row))) {
+      return false;
+    }
+
+    this.#adjustPending(-1);
+    sql.exec(
+      `UPDATE durability_fanout_messages
+       SET remaining = remaining - 1
+       WHERE key = ?`,
+      row.message_key
+    );
+    sql.exec(
+      `DELETE FROM durability_fanout_messages
+       WHERE key = ? AND remaining = 0`,
+      row.message_key
+    );
+    return true;
   }
 
   async #retry(
@@ -764,21 +887,19 @@ export class DurabilityFanout<Body = unknown> {
       await this.#deadLetter(claim, 'exhausted', serializeError(caught));
       return;
     }
-    await this.#engine.transaction(async (transaction) => {
-      const updated = await transaction.deliveries.settle(
-        row.id,
-        row.generation_id,
-        row.attempt,
-        {
-          next_attempt_at: nextAttemptAt,
-          last_error: error.message,
-          last_error_name: error.name,
-        }
+    await this.#transaction((sql) => {
+      const updated = updateAttempt(
+        sql,
+        deliveriesTable,
+        attemptOf(row),
+        'next_attempt_at = ?, last_error = ?, last_error_name = ?',
+        nextAttemptAt,
+        error.message,
+        error.name
       );
       if (!updated) {
         throw new FanoutSettlementError(row.id);
       }
-      await this.#engine.reconcile(transaction);
     });
     this.#emit({
       ...entity(claim),
@@ -813,24 +934,22 @@ export class DurabilityFanout<Body = unknown> {
     }
     // Persist intent BEFORE external I/O: eviction or timeout must never turn
     // a terminal decision into another consumer delivery.
-    await this.#engine.transaction(async (transaction) => {
-      const updated = await transaction.deliveries.settle(
-        row.id,
-        row.generation_id,
-        row.attempt,
-        {
-          phase: 'dead_letter',
-          dead_lettered_at: timestamp,
-          dead_letter_reason: reason,
-          next_attempt_at: Date.now() + infrastructureRetryMs,
-          last_error: error?.message ?? null,
-          last_error_name: error?.name ?? null,
-        }
+    await this.#transaction((sql) => {
+      const updated = updateAttempt(
+        sql,
+        deliveriesTable,
+        attemptOf(row),
+        `phase = 'dead_letter', dead_lettered_at = ?, dead_letter_reason = ?,
+         next_attempt_at = ?, last_error = ?, last_error_name = ?`,
+        timestamp,
+        reason,
+        Date.now() + infrastructureRetryMs,
+        error?.message ?? null,
+        error?.name ?? null
       );
       if (!updated) {
         throw new FanoutSettlementError(row.id);
       }
-      await this.#engine.reconcile(transaction);
     });
     try {
       const stored: StoredMessage<Body> = {
@@ -871,6 +990,73 @@ export class DurabilityFanout<Body = unknown> {
         message: 'Dead-lettered by consumer',
       },
     });
+  }
+
+  async #transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
+    try {
+      return await this.#engine.transaction(write);
+    } catch (error) {
+      this.#pending = undefined;
+      throw error;
+    }
+  }
+
+  #pendingCount(): number {
+    this.#pending ??= countRowSchema.parse(
+      this.#engine.sql
+        .exec(
+          `SELECT COUNT(*) AS count FROM durability_fanout_deliveries
+           WHERE status = 'pending'`
+        )
+        .toArray()[0]
+    ).count;
+    return this.#pending;
+  }
+
+  #adjustPending(delta: number): void {
+    if (this.#pending !== undefined) {
+      this.#pending += delta;
+    }
+  }
+
+  /**
+   * First deliveries (attempt = 0) in sequence, then retries: two indexed
+   * queries instead of one sort over every pending row.
+   */
+  #listDue(target: string, now: number): DeliveryRow[] {
+    const first = deliveryRowSchema.array().parse(
+      this.#engine.sql
+        .exec(
+          `SELECT * FROM durability_fanout_deliveries
+           WHERE target_id = ? AND phase = 'delivery' AND status = 'pending'
+             AND attempt = 0 AND next_attempt_at <= ?
+           ORDER BY seq ASC
+           LIMIT ?`,
+          target,
+          now,
+          this.#maxBatchSize
+        )
+        .toArray()
+    );
+    if (first.length >= this.#maxBatchSize) {
+      return first;
+    }
+
+    const retries = deliveryRowSchema.array().parse(
+      this.#engine.sql
+        .exec(
+          `SELECT * FROM durability_fanout_deliveries
+           WHERE target_id = ? AND status = 'pending'
+             AND attempt > 0 AND next_attempt_at <= ?
+           ORDER BY seq ASC
+           LIMIT ?`,
+          target,
+          now,
+          this.#maxBatchSize - first.length
+        )
+        .toArray()
+    );
+    return [...first, ...retries];
   }
 
   async #deadline(

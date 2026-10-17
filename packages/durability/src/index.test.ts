@@ -1819,8 +1819,14 @@ describe('DurabilityScheduler', () => {
     });
 
     await durability.work({ id: 'work:1', payload: null });
-    await vi.waitFor(() => expect(storage.alarmAt).toBeGreaterThan(Date.now()));
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('work:1')).resolves.toMatchObject({
+        status: 'pending',
+        lastError: 'retry work',
+      });
+    });
     const operationRetryAt = storage.alarmAt;
+    expect(operationRetryAt).toBeGreaterThan(Date.now() + 30_000);
 
     await alarms.cleanup(Date.now() + 120_000);
     expect(storage.alarmAt).toBe(operationRetryAt);
