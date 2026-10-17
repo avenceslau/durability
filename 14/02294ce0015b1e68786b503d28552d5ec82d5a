@@ -1,0 +1,35 @@
+examples/README.md
+  s_89dff2fd3753ec::t_4356b00da4c91b 5-12
+examples/job-dashboard/client.ts
+  s_89dff2fd3753ec::t_8ff03f07da877b 1-48
+examples/job-dashboard/dashboard.ts
+  s_89dff2fd3753ec::t_81f072850ef19f 1-193
+examples/job-dashboard/pipeline.ts
+  s_89dff2fd3753ec::t_7a5d87cd235293 1-131
+examples/job-dashboard/shared.ts
+  s_89dff2fd3753ec::t_9edac5d709ecca 1-27
+examples/job-dashboard/worker.ts
+  s_89dff2fd3753ec::t_3e8ceaabca1d0f 1-34
+examples/job-dashboard/wrangler.jsonc
+  s_89dff2fd3753ec::t_5fedfff97892d1 1-15
+packages/durability/README.md
+  s_89dff2fd3753ec::t_332829fae59107 482-483
+packages/durability/src/experimental.ts
+  s_89dff2fd3753ec::t_cdce783eaf8799 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1402294ce0015b1e68786b503d28552d5ec82d5a",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
