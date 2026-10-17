@@ -335,13 +335,34 @@ type TransformCallerResult<TResult, TTransform> = TTransform extends {
       ? BetterResult<TResult | undefined, never>
       : TResult;
 
-type ApplyCallerResult<TTarget extends object, TTransform> = {
-  [TKey in Exclude<keyof TTarget, 'with'>]: TTarget[TKey] extends (
-    ...args: infer TArgs
-  ) => Promise<infer TResult>
-    ? (...args: TArgs) => Promise<TransformCallerResult<TResult, TTransform>>
-    : TTarget[TKey];
-};
+// Transformed calls are always asynchronous. Transforms that keep the result
+// type preserve each async method's declared signature, which keeps overloads
+// and pipelined RpcPromise types intact. `setContext` is excluded because
+// context transport never goes through caller transforms.
+type ApplyCallerResult<
+  TTarget extends object,
+  TTransform,
+> = TTransform extends {
+  readonly callerResult: string;
+}
+  ? {
+      [TKey in Exclude<keyof TTarget, 'with'>]: TKey extends 'setContext'
+        ? TTarget[TKey]
+        : TTarget[TKey] extends (...args: infer TArgs) => infer TResult
+          ? (
+              ...args: TArgs
+            ) => Promise<TransformCallerResult<Awaited<TResult>, TTransform>>
+          : TTarget[TKey];
+    }
+  : {
+      [TKey in Exclude<keyof TTarget, 'with'>]: TKey extends 'setContext'
+        ? TTarget[TKey]
+        : TTarget[TKey] extends (...args: never[]) => PromiseLike<unknown>
+          ? TTarget[TKey]
+          : TTarget[TKey] extends (...args: infer TArgs) => infer TResult
+            ? (...args: TArgs) => Promise<Awaited<TResult>>
+            : TTarget[TKey];
+    };
 
 /** Adds the typed `.with(transform, options)` method to an RPC target. */
 export type TransformWith<TTarget extends object> = {
@@ -391,12 +412,77 @@ type ConfiguredCallerTransform = (
   context: RuntimeTransformContext
 ) => Promise<unknown>;
 
+type PipelineNode = {
+  resolve(): Promise<unknown>;
+  call(args: unknown[]): Promise<unknown>;
+};
+
 /**
- * Wraps an RPC target with caller-side transform support.
+ * Emulates RpcPromise pipelining for transformed calls. Transforms must observe
+ * the settled result, so a pipelined member access or call waits for it and then
+ * runs against the resolved value instead of sharing the original round trip.
+ */
+function pipelined(node: PipelineNode): unknown {
+  return new Proxy(() => {}, {
+    get(_target, property) {
+      if (
+        property === 'then' ||
+        property === 'catch' ||
+        property === 'finally'
+      ) {
+        const promise = node.resolve();
+        const method = Reflect.get(promise, property) as (
+          ...args: unknown[]
+        ) => unknown;
+        return method.bind(promise);
+      }
+      if (typeof property === 'symbol') {
+        return undefined;
+      }
+
+      let member: Promise<unknown> | undefined;
+      return pipelined({
+        resolve: () =>
+          (member ??= node
+            .resolve()
+            .then((value) => (value as Record<string, unknown>)[property])),
+        call: (args) =>
+          node.resolve().then((value) => {
+            const target = value as Record<string, unknown>;
+            return Reflect.apply(
+              target[property] as (...args: unknown[]) => unknown,
+              target,
+              args
+            );
+          }),
+      });
+    },
+    apply(_target, _thisArg, args) {
+      return pipelinedPromise(node.call(args));
+    },
+  });
+}
+
+function pipelinedPromise(promise: Promise<unknown>): unknown {
+  return pipelined({
+    resolve: () => promise,
+    call: (args) =>
+      promise.then((value) =>
+        Reflect.apply(value as (...args: unknown[]) => unknown, undefined, args)
+      ),
+  });
+}
+
+/**
+ * Wraps an RPC target or binding with caller-side transform support.
  *
- * The Vite plugin inserts this wrapper automatically for configured Durable
- * Object and service bindings. Call it directly when the plugin is unavailable
- * or when wrapping an RPC-like object in tests.
+ * The Vite plugin inserts this wrapper automatically for configured bindings.
+ * Call it directly when the plugin is unavailable or when wrapping an RPC-like
+ * object in tests.
+ *
+ * Without transforms, calls pass through unchanged, preserving synchronous
+ * methods and RpcPromise pipelining. With transforms, every method call returns
+ * a promise that still supports pipelined member access and calls.
  *
  * @example
  * ```ts
@@ -408,8 +494,15 @@ export function createTransformStub<TTarget extends object>(
   target: TTarget,
   transforms: ConfiguredCallerTransform[] = []
 ): TransformStub<TTarget> {
+  if (
+    (typeof target !== 'object' && typeof target !== 'function') ||
+    target === null
+  ) {
+    return target;
+  }
+
   return new Proxy(target, {
-    get(stub, property, receiver) {
+    get(stub, property) {
       if (property === 'with') {
         return (
           transform: TransformIdentity & {
@@ -436,12 +529,13 @@ export function createTransformStub<TTarget extends object>(
         };
       }
 
-      const value = Reflect.get(stub, property, receiver);
+      // Native bindings expose accessors that reject a Proxy receiver.
+      const value: unknown = Reflect.get(stub, property);
       if (typeof value !== 'function' || typeof property !== 'string') {
         return value;
       }
 
-      return (...initialArgs: unknown[]) => {
+      const callWithTransforms = (initialArgs: unknown[]): Promise<unknown> => {
         const run = (
           index: number,
           context: TransformContext
@@ -503,6 +597,24 @@ export function createTransformStub<TTarget extends object>(
 
         return run(0, {});
       };
+
+      return new Proxy(value, {
+        // RPC properties are callable stubs; awaiting one must call its
+        // native `then` with the stub itself as the receiver.
+        get: (method, key) => {
+          const member: unknown = Reflect.get(method, key);
+          return typeof member === 'function' &&
+            (key === 'then' || key === 'catch' || key === 'finally')
+            ? member.bind(method)
+            : member;
+        },
+        apply: (method, _thisArg, initialArgs: unknown[]) => {
+          if (transforms.length === 0) {
+            return Reflect.apply(method, stub, initialArgs);
+          }
+          return pipelinedPromise(callWithTransforms(initialArgs));
+        },
+      });
     },
   }) as TransformStub<TTarget>;
 }

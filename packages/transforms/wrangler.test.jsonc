@@ -15,18 +15,33 @@
       "entrypoint": "CrossWorkerContextService",
     },
   ],
+  "kv_namespaces": [{ "binding": "KV", "id": "transforms-test-kv" }],
+  "r2_buckets": [
+    { "binding": "BUCKET", "bucket_name": "transforms-test-bucket" },
+  ],
+  "workflows": [
+    {
+      "binding": "WORKFLOW",
+      "name": "transforms-test-workflow",
+      "class_name": "EchoWorkflow",
+    },
+  ],
   "durable_objects": {
     "bindings": [
       {
         "name": "CONTEXT_DO",
         "class_name": "ContextDO",
       },
+      {
+        "name": "PIPELINE_DO",
+        "class_name": "PipelineDO",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["ContextDO"],
+      "new_sqlite_classes": ["ContextDO", "PipelineDO"],
     },
   ],
 }

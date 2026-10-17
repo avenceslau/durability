@@ -18,9 +18,13 @@ declare global {
     CONTEXT_DO: TransformDurableObjectNamespace<
       import("./test-worker").ContextDO
     >;
-    CONTEXT_SERVICE: TransformStub<
-      Service<typeof import("./test-worker").ContextService>
+    PIPELINE_DO: TransformDurableObjectNamespace<
+      import("./test-worker").PipelineDO
     >;
+    WORKFLOW: TransformStub<Workflow<Parameters<import("./test-worker").EchoWorkflow['run']>[0]['payload']>>;
+    KV: TransformStub<KVNamespace>;
+    BUCKET: TransformStub<R2Bucket>;
+    CONTEXT_SERVICE: TransformStub<Service<typeof import("./test-worker").ContextService>>;
   }
 
   namespace Cloudflare {
@@ -28,9 +32,13 @@ declare global {
       CONTEXT_DO: TransformDurableObjectNamespace<
         import("./test-worker").ContextDO
       >;
-      CONTEXT_SERVICE: TransformStub<
-        Service<typeof import("./test-worker").ContextService>
+      PIPELINE_DO: TransformDurableObjectNamespace<
+        import("./test-worker").PipelineDO
       >;
+      WORKFLOW: TransformStub<Workflow<Parameters<import("./test-worker").EchoWorkflow['run']>[0]['payload']>>;
+      KV: TransformStub<KVNamespace>;
+      BUCKET: TransformStub<R2Bucket>;
+      CONTEXT_SERVICE: TransformStub<Service<typeof import("./test-worker").ContextService>>;
     }
   }
 }

@@ -50,7 +50,7 @@ type SyntaxNode = {
   [key: string]: unknown;
 };
 
-type BindingKind = 'env' | 'namespace' | 'other' | 'routing' | 'service';
+type BindingKind = 'env' | 'namespace' | 'other' | 'routing' | 'stub';
 
 type Binding = {
   kind: BindingKind;
@@ -399,12 +399,75 @@ function collectRoutingInjections(
   return injections;
 }
 
+// Bindings whose runtime values are not RPC-capable objects. Proxying module
+// blobs would also break identity checks such as `WebAssembly.instantiate`.
+const unwrappedBindingTypes = new Set([
+  'data_blob',
+  'durable_object_namespace',
+  'json',
+  'plain_text',
+  'secret_text',
+  'text_blob',
+  'wasm_module',
+]);
+
 /**
- * Adds transform support to configured Durable Object and service bindings.
+ * Reads binding types from `wrangler types` output. Types that Wrangler could
+ * not resolve carry a placeholder comment and are skipped so they do not
+ * conflict with hand-written declarations.
+ */
+function wranglerBindingTypes(source: string): Map<string, string> {
+  const ast = parseJavaScript(source, {
+    sourceType: 'script',
+    plugins: [['typescript', { dts: true }]],
+  });
+  const types = new Map<string, string>();
+  const visit = (value: unknown): void => {
+    const node = syntaxNode(value);
+    if (!node) {
+      return;
+    }
+
+    const annotation = syntaxNode(
+      syntaxNode(node['typeAnnotation'])?.['typeAnnotation']
+    );
+    const name = identifierName(syntaxNode(node.key));
+    if (
+      node.type === 'TSPropertySignature' &&
+      name !== undefined &&
+      !types.has(name) &&
+      typeof node.start === 'number' &&
+      typeof node.end === 'number' &&
+      typeof annotation?.start === 'number' &&
+      typeof annotation.end === 'number' &&
+      !source.slice(node.start, node.end).includes('/*')
+    ) {
+      types.set(name, source.slice(annotation.start, annotation.end));
+    }
+
+    for (const child of Object.values(node)) {
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          visit(item);
+        }
+      } else {
+        visit(child);
+      }
+    }
+  };
+
+  visit(ast);
+  return types;
+}
+
+/**
+ * Adds caller transform support to every object binding in the Wrangler config.
  *
- * The plugin reads Wrangler bindings, wraps matching binding access with
+ * The plugin reads Wrangler bindings, wraps Durable Object stubs and all other
+ * object bindings (services, KV, R2, Workflows, queues, and so on) with
  * `createTransformStub`, and generates declarations that add `.with(...)` to
- * their inferred types. It must run before other source transforms.
+ * their Wrangler-inferred types. Plain values such as vars, secrets, and module
+ * blobs are left alone. It must run before other source transforms.
  *
  * @example
  * ```ts
@@ -418,7 +481,7 @@ function collectRoutingInjections(
  */
 export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
   let durableObjectBindingNames = new Set<string>();
-  let serviceBindingNames = new Set<string>();
+  let stubBindingNames = new Set<string>();
   let durableObjectClassNames = new Set<string>();
 
   return {
@@ -429,10 +492,10 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         config.root,
         options.wrangler ?? 'wrangler.jsonc'
       );
+      const wranglerModule = await import('wrangler');
       let wrangler: import('wrangler').Unstable_Config;
       try {
-        const { unstable_readConfig: readConfig } = await import('wrangler');
-        wrangler = readConfig(
+        wrangler = wranglerModule.unstable_readConfig(
           { config: wranglerPath },
           { hideWarnings: true, preserveOriginalMain: true }
         );
@@ -447,12 +510,22 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       }
 
       const durableObjectBindings = wrangler.durable_objects.bindings;
-      const serviceBindings = wrangler.services ?? [];
       durableObjectBindingNames = new Set(
         durableObjectBindings.map((binding) => binding.name)
       );
-      serviceBindingNames = new Set(
-        serviceBindings.map((binding) => binding.binding)
+      const bindings =
+        wranglerModule.unstable_convertConfigBindingsToStartWorkerBindings(
+          wrangler
+        ) ?? {};
+      stubBindingNames = new Set(
+        Object.entries(bindings).flatMap(([name, binding]) => {
+          const type: unknown = Reflect.get(Object(binding), 'type');
+          return typeof type !== 'string' ||
+            unwrappedBindingTypes.has(type) ||
+            type.startsWith('unsafe_')
+            ? []
+            : [name];
+        })
       );
       durableObjectClassNames = new Set([
         ...durableObjectBindings.flatMap((binding) =>
@@ -472,6 +545,11 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       const typesPath = options.types
         ? resolve(config.root, options.types)
         : resolve(dirname(mainPath), 'do-transforms.generated.d.ts');
+      if (!typesPath.endsWith('.d.ts')) {
+        throw new Error(
+          `do-transforms types path must end in .d.ts: ${typesPath}`
+        );
+      }
       let modulePath = relative(dirname(typesPath), mainPath)
         .split('\\')
         .join('/');
@@ -494,21 +572,35 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           localClass,
         };
       });
-      const serviceTypeEntries = serviceBindings.flatMap((binding) => {
-        if (binding.service !== wrangler.name || !binding.entrypoint) {
+      let wranglerEnvTypes: string | null;
+      try {
+        ({ env: wranglerEnvTypes } =
+          await wranglerModule.experimental_generateTypes({
+            config: wranglerPath,
+            includeRuntime: false,
+            path: typesPath,
+          }));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw Object.assign(
+          new Error(
+            `do-transforms could not generate Wrangler binding types for ${wranglerPath}: ${detail}`
+          ),
+          { cause: error }
+        );
+      }
+      const bindingTypes = wranglerBindingTypes(wranglerEnvTypes ?? '');
+      const stubTypeEntries = [...stubBindingNames].flatMap((name) => {
+        const type = bindingTypes.get(name);
+        if (type === undefined) {
           return [];
-        }
-        if (!/^[A-Z_$][\w$]*$/i.test(binding.entrypoint)) {
-          throw new TypeError(
-            `Invalid service entrypoint ${JSON.stringify(binding.entrypoint)}`
-          );
         }
         return [
           {
-            binding: /^[A-Z_$][\w$]*$/i.test(binding.binding)
-              ? binding.binding
-              : JSON.stringify(binding.binding),
-            entrypoint: binding.entrypoint,
+            binding: /^[A-Z_$][\w$]*$/i.test(name)
+              ? name
+              : JSON.stringify(name),
+            type,
           },
         ];
       });
@@ -519,9 +611,9 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
               ? `${indent}${binding}: TransformDurableObjectNamespace<\n${indent}  ${localClass}\n${indent}>;`
               : `${indent}${binding}: TransformDurableObjectNamespace;`
           ),
-          ...serviceTypeEntries.map(
-            ({ binding, entrypoint }) =>
-              `${indent}${binding}: TransformStub<\n${indent}  Service<typeof import(${JSON.stringify(modulePath)}).${entrypoint}>\n${indent}>;`
+          ...stubTypeEntries.map(
+            ({ binding, type }) =>
+              `${indent}${binding}: TransformStub<${type}>;`
           ),
         ].join('\n');
       const durableObjectNamespaceType =
@@ -535,7 +627,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
     transform(code, id) {
       const cleanId = id.split('?')[0] ?? id;
       const mayWrapBindings =
-        durableObjectBindingNames.size > 0 || serviceBindingNames.size > 0;
+        durableObjectBindingNames.size > 0 || stubBindingNames.size > 0;
       const mayInjectRouting = code.includes('DurabilityRouting');
       if (
         cleanId.includes('/node_modules/') ||
@@ -839,7 +931,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             nodeScopes.get(node) ?? scope,
             node.name
           );
-          return binding?.kind === 'namespace' || binding?.kind === 'service'
+          return binding?.kind === 'namespace' || binding?.kind === 'stub'
             ? binding.kind
             : undefined;
         }
@@ -853,7 +945,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         if (name && durableObjectBindingNames.has(name)) {
           return 'namespace';
         }
-        return name && serviceBindingNames.has(name) ? 'service' : undefined;
+        return name && stubBindingNames.has(name) ? 'stub' : undefined;
       };
 
       for (let changed = true; changed; ) {
@@ -900,8 +992,8 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
               const kind = name
                 ? durableObjectBindingNames.has(name)
                   ? 'namespace'
-                  : serviceBindingNames.has(name)
-                    ? 'service'
+                  : stubBindingNames.has(name)
+                    ? 'stub'
                     : undefined
                 : undefined;
               const localName =
@@ -913,7 +1005,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
                 : undefined;
               if (binding && kind && binding.kind !== kind) {
                 binding.kind = kind;
-                binding.wrapReferences = kind === 'service';
+                binding.wrapReferences = kind === 'stub';
                 changed = true;
               }
             }
@@ -1014,7 +1106,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         if (
           memberExpressionTypes.has(node.type) &&
           configuredBindingKind(node, nodeScopes.get(node) ?? rootScope) ===
-            'service' &&
+            'stub' &&
           !isUnsafePosition(node) &&
           typeof node.start === 'number' &&
           typeof node.end === 'number'
@@ -1026,7 +1118,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             ? resolveBinding(nodeScopes.get(node), name)
             : undefined;
           if (
-            binding?.kind === 'service' &&
+            binding?.kind === 'stub' &&
             binding.wrapReferences &&
             typeof node.start === 'number' &&
             typeof node.end === 'number'

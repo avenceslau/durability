@@ -22,6 +22,9 @@ const readConfig = vi.hoisted(() =>
     }
     const migrationOnly = config.endsWith('migrations-only.jsonc');
     return {
+      kv_namespaces: migrationOnly ? [] : [{ binding: 'CACHE', id: 'cache' }],
+      vars: migrationOnly ? {} : { GREETING: 'hello' },
+      wasm_modules: migrationOnly ? {} : { MODULE: 'module.wasm' },
       durable_objects: {
         bindings: migrationOnly
           ? []
@@ -48,7 +51,41 @@ const readConfig = vi.hoisted(() =>
   })
 );
 
-vi.mock('wrangler', () => ({ unstable_readConfig: readConfig }));
+type MockConfig = ReturnType<typeof readConfig>;
+
+const convertBindings = vi.hoisted(() =>
+  vi.fn((config: MockConfig) => ({
+    ...Object.fromEntries(
+      config.services.map((binding) => [binding.binding, { type: 'service' }])
+    ),
+    ...Object.fromEntries(
+      config.durable_objects.bindings.map((binding) => [
+        binding.name,
+        { type: 'durable_object_namespace' },
+      ])
+    ),
+    ...Object.fromEntries(
+      config.kv_namespaces.map((binding) => [
+        binding.binding,
+        { type: 'kv_namespace' },
+      ])
+    ),
+    ...Object.fromEntries(
+      Object.keys(config.vars).map((name) => [name, { type: 'plain_text' }])
+    ),
+    ...Object.fromEntries(
+      Object.keys(config.wasm_modules).map((name) => [
+        name,
+        { type: 'wasm_module' },
+      ])
+    ),
+  }))
+);
+
+vi.mock('wrangler', () => ({
+  unstable_convertConfigBindingsToStartWorkerBindings: convertBindings,
+  unstable_readConfig: readConfig,
+}));
 
 const packageRoot = resolve(import.meta.dirname, '..');
 let plugin: TestPlugin;
@@ -117,6 +154,28 @@ class Entrypoint extends WorkerEntrypoint {
     expect(result).toContain(
       '__doTransformsCreateStub(this.env.CONTEXT_SERVICE).greet()'
     );
+  });
+
+  it('wraps every object binding and leaves plain values alone', async () => {
+    const result = await transform(`
+export default {
+  fetch(request, env) {
+    const { CACHE } = env;
+    env.CACHE.get("key");
+    CACHE.put("key", "value");
+    env.GREETING.toUpperCase();
+    WebAssembly.instantiate(env.MODULE);
+  }
+};
+`);
+
+    expect(result).toContain('__doTransformsCreateStub(env.CACHE).get("key")');
+    expect(result).toContain(
+      '__doTransformsCreateStub(CACHE).put("key", "value")'
+    );
+    expect(result).toContain('env.GREETING.toUpperCase()');
+    expect(result).toContain('WebAssembly.instantiate(env.MODULE)');
+    expect(result?.match(/__doTransformsCreateStub\(/g)).toHaveLength(2);
   });
 
   it('supports constant aliases and destructuring', async () => {
@@ -245,6 +304,17 @@ export default {
     ).rejects.toThrow(
       `do-transforms could not load a valid Wrangler configuration at ${wranglerPath}: Expected services to be an array`
     );
+  });
+
+  it('rejects a types path that is not a declaration file', async () => {
+    const typesPlugin = doTransforms({
+      wrangler: './wrangler.test.jsonc',
+      types: './env.ts',
+    }) as unknown as TestPlugin;
+
+    await expect(
+      typesPlugin.configResolved({ root: packageRoot } as ResolvedConfig)
+    ).rejects.toThrow('do-transforms types path must end in .d.ts');
   });
 });
 
