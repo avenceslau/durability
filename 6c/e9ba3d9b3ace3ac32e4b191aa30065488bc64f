@@ -1,0 +1,37 @@
+packages/durability/src/durability-alarms.ts
+  s_3432a05464884b::t_83b3319b3439a3 32-48,146,175,194-204,225-239,241-245,272,306,308-312
+packages/durability/src/durability.ts
+  s_6276d7440d2ea0::t_8cd5a1b43e5195 1,36-62,255,284,300-313,327,366-385,388-389,391,434,467,500,508-515
+packages/durability/src/fanout.ts
+  s_3432a05464884b::t_81ede86deb08f8 1,32-96,194-200,234-237,257,310,312-313,315,328-337,342,346-359,377-395,398-399,402,449-460,481-485,489-494,499,501,504,512,515-517,525-531,533,535,553,555-560,663-672,701,704,812-813,819-839,868-876,915-926,973-1039
+packages/durability/src/index.test.ts
+  s_6276d7440d2ea0::t_7e47076c0a9425 1822-1827,1829
+packages/durability/src/scheduler.ts
+  s_6276d7440d2ea0::t_a42053f7221396 1,18-21,55-65,67,80,82,96,155,159,174,193-195,226-236,238-239,243-260,262-281,324,335,349-358,456,496-498,538,572-575,579-583,585-593,605-616
+packages/durability/src/test-fakes.ts
+  s_6276d7440d2ea0::t_9db0d5caec9842 6-35,37,40,43,49,52,55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6ce9ba3d9b3ace3ac32e4b191aa30065488bc64f",
+  "prompts": {},
+  "sessions": {
+    "s_3432a05464884b": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a149fb-51b7-7313-a98a-80e3e89ddc18",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_6276d7440d2ea0": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a149e4-3cc9-7617-baca-1649e9e99808",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
