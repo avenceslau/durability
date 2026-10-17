@@ -394,7 +394,7 @@ export const durabilitySemaphoreMigrations = [
         expires_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS durability_semaphore_grants_expires_idx
-      ON durability_semaphore_grants (expires_at);
+      ON durability_semaphore_grants (expires_at) WHERE claimed < permits;
     `,
     down: `
       DROP INDEX IF EXISTS durability_semaphore_grants_expires_idx;

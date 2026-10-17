@@ -164,7 +164,10 @@ export type DurabilitySemaphoreConfig = SchedulerAttachment & {
 
 export type SemaphoreUsage = {
   limit: number;
-  /** Permits granted and not yet released, including unclaimed grants. */
+  /**
+   * Permits granted and not yet released, including unclaimed grants. May
+   * exceed `limit` after it was lowered: running work is never evicted.
+   */
   granted: number;
   available: number;
   groups: ReadonlyMap<string, { granted: number; limit?: number }>;
@@ -189,6 +192,7 @@ type RoundResult = {
   usage: SemaphoreUsage;
   requested: number;
   granted: number;
+  reclaimed: DurabilitySemaphoreEvent[];
 };
 
 // setTimeout overflows past 2^31 - 1 ms.
@@ -244,6 +248,7 @@ export class DurabilitySemaphoreServer {
   readonly #emit: (event: DurabilitySemaphoreEvent) => void;
   #pending: Pending[] = [];
   #roundTimer: ReturnType<typeof setTimeout> | undefined;
+  #round: Promise<void> | undefined;
   #lastRoundAt = -Infinity;
 
   constructor(config: DurabilitySemaphoreConfig) {
@@ -299,7 +304,12 @@ export class DurabilitySemaphoreServer {
     return this.#engine.alarm(info);
   }
 
-  /** The single entry point the application exposes over RPC. */
+  /**
+   * The single entry point the application exposes over RPC. A `request` is
+   * answered when its round runs; the caller must keep awaiting it. Pending
+   * requests live in memory only: if the object is evicted first, the call
+   * fails and the client asks again.
+   */
   handle(message: SemaphoreRequest): Promise<SemaphoreResponse> {
     const parsed = semaphoreRequestSchema.safeParse(message);
     if (!parsed.success) {
@@ -341,8 +351,10 @@ export class DurabilitySemaphoreServer {
     return { limit, granted, available: Math.max(0, limit - granted), groups };
   }
 
+  // Rounds never overlap: a request arriving mid-round joins the next one,
+  // which is scheduled once the current round settles.
   #scheduleRound(): void {
-    if (this.#roundTimer !== undefined) {
+    if (this.#roundTimer !== undefined || this.#round !== undefined) {
       return;
     }
     const earliest = this.#lastRoundAt + this.#roundPeriodMs;
@@ -351,8 +363,15 @@ export class DurabilitySemaphoreServer {
       this.#roundTimer = undefined;
       const onError = (error: unknown) =>
         reportFailure('durability.semaphore.round_failed', {}, error);
-      const round = this.#runRound().catch(onError);
-      this.#engine.waitUntil(round, onError);
+      this.#round = this.#runRound()
+        .catch(onError)
+        .finally(() => {
+          this.#round = undefined;
+          if (this.#pending.length > 0) {
+            this.#scheduleRound();
+          }
+        });
+      this.#engine.waitUntil(this.#round, onError);
     }, delay);
   }
 
@@ -388,6 +407,9 @@ export class DurabilitySemaphoreServer {
     const nextRequestAt = now + this.#roundPeriodMs;
     for (const [entry, allocation] of round.allocations) {
       entry.resolve({ type: 'grant', v: 1, ...allocation, nextRequestAt });
+    }
+    for (const event of round.reclaimed) {
+      this.#emit(event);
     }
     this.#emit({
       entityKind: 'semaphore',
@@ -433,7 +455,8 @@ export class DurabilitySemaphoreServer {
 
     const used = new Map<string, number>();
     let total = 0;
-    for (const grant of this.#reclaim(sql, now)) {
+    const reclaimed = this.#reclaim(sql, now);
+    for (const grant of reclaimed.grants) {
       const count = outstanding(grant, now);
       total += count;
       used.set(grant.grp, (used.get(grant.grp) ?? 0) + count);
@@ -517,6 +540,7 @@ export class DurabilitySemaphoreServer {
       allocations,
       requested,
       granted,
+      reclaimed: reclaimed.events,
       usage: {
         limit,
         granted: total + granted,
@@ -580,16 +604,22 @@ export class DurabilitySemaphoreServer {
     return results;
   }
 
-  /** Returns every grant after reclaiming unclaimed permits past their window. */
-  #reclaim(sql: SqlStorage, now: number): GrantRow[] {
+  /**
+   * Returns every grant after reclaiming unclaimed permits past their window.
+   * Events are returned, not emitted: the caller emits them after commit.
+   */
+  #reclaim(
+    sql: SqlStorage,
+    now: number
+  ): { grants: GrantRow[]; events: DurabilitySemaphoreEvent[] } {
     const kept: GrantRow[] = [];
+    const events: DurabilitySemaphoreEvent[] = [];
     for (const grant of grants.list(sql)) {
       if (now < grant.expires_at || grant.claimed >= grant.permits) {
         kept.push(grant);
         continue;
       }
 
-      const reclaimed = grant.permits - grant.claimed;
       const updated: GrantRow = { ...grant, permits: grant.claimed };
       if (updated.released >= updated.permits) {
         grants.remove(sql, grant.grant_id);
@@ -597,23 +627,26 @@ export class DurabilitySemaphoreServer {
         grants.update(sql, updated);
         kept.push(updated);
       }
-      this.#emit({
+      events.push({
         entityKind: 'semaphore',
         type: 'grant_reclaimed',
         timestamp: now,
         grantId: grant.grant_id,
         clientId: grant.client_id,
         group: grant.grp,
-        permits: reclaimed,
+        permits: grant.permits - grant.claimed,
       });
     }
-    return kept;
+    return { grants: kept, events };
   }
 
   async #reclaimExpired(): Promise<void> {
-    await this.#engine.transaction((sql) => {
-      this.#reclaim(sql, Date.now());
-    });
+    const events = await this.#engine.transaction(
+      (sql) => this.#reclaim(sql, Date.now()).events
+    );
+    for (const event of events) {
+      this.#emit(event);
+    }
   }
 
   async #resolveLimit(): Promise<number> {

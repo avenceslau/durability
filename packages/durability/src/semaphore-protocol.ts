@@ -9,6 +9,10 @@ import { z } from 'zod';
 const nonNegative = z.number().int().nonnegative();
 const nonEmpty = z.string().min(1);
 
+/** Bounds one message's work so a client cannot monopolize the holder. */
+export const maxDemandEntries = 100;
+export const maxGrantReports = 200;
+
 /** Cumulative counts for one grant. Replaying a report can never free capacity twice. */
 export const grantReportSchema = z.object({
   grantId: nonEmpty,
@@ -30,8 +34,9 @@ export const permitRequestSchema = z.object({
       count: z.number().int().positive(),
       oldestAt: nonNegative,
     })
-    .array(),
-  grants: grantReportSchema.array(),
+    .array()
+    .max(maxDemandEntries),
+  grants: grantReportSchema.array().max(maxGrantReports),
 });
 export type PermitRequest = z.infer<typeof permitRequestSchema>;
 
@@ -39,7 +44,7 @@ export const permitSyncSchema = z.object({
   type: z.literal('sync'),
   v: z.literal(1),
   clientId: nonEmpty,
-  grants: grantReportSchema.array(),
+  grants: grantReportSchema.array().max(maxGrantReports),
 });
 export type PermitSync = z.infer<typeof permitSyncSchema>;
 
