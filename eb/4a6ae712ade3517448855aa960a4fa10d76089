@@ -1,0 +1,23 @@
+packages/transforms/src/index.ts
+  s_cc65d1c4e8f94e::t_b03816c38a5aa6 338-341,349-355
+packages/transforms/src/vite.ts
+  s_cc65d1c4e8f94e::t_ee8800b0491011 548-552,575-591
+packages/transforms/tests/any-binding.worker.test.ts
+  s_cc65d1c4e8f94e::t_46313e394eba85 113-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eb4a6ae712ade3517448855aa960a4fa10d76089",
+  "prompts": {},
+  "sessions": {
+    "s_cc65d1c4e8f94e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a149e7-40dd-7313-a98a-80e009602acc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
