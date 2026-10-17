@@ -543,20 +543,24 @@ describe('fanout', () => {
 
   it('drops exhausted and dead-lettered deliveries when no DLQ is configured', async () => {
     const events: string[] = [];
-    const { config } = fixture({
-      one: {
-        deliver: async (messages) => {
-          await Promise.all(
-            messages
-              .filter((m) => m.id === 'rejected')
-              .map((m) => m.deadLetter())
-          );
+    // Built by hand: the fixture would construct a second helper on the same storage.
+    const fanout = new DurabilityFanout<string>({
+      context: {
+        storage: new FakeStorage() as unknown as DurableObjectStorage,
+      },
+      routing: new RoutingLoad(),
+      retries: { maxAttempts: 2, delay: () => 1_000 },
+      targets: {
+        one: {
+          deliver: async (messages) => {
+            await Promise.all(
+              messages
+                .filter((m) => m.id === 'rejected')
+                .map((m) => m.deadLetter())
+            );
+          },
         },
       },
-    });
-    const { dlq: _dlq, ...withoutDlq } = config;
-    const fanout = new DurabilityFanout({
-      ...withoutDlq,
       onLifecycleEvent: (event) => {
         if (event.type === 'terminal') {
           events.push(`${event.id}:${event.reason}`);

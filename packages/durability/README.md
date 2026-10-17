@@ -792,6 +792,10 @@ There is no per-record retry, timeout, or dead letter here: a log tracks positio
 
 There is also no key compaction. `deduplicationKey` is unique per retained record, which is the opposite of a compaction key, and deduplication lasts only while the original record is retained — re-appending a key after its record was flushed or deleted creates a new record.
 
+## When the platform gives up on the alarm
+
+A Durable Object alarm whose handler throws is retried with backoff up to six times and then dropped. Storage errors while a helper reconciles can make `alarm()` throw, and six in a row would leave pending work with nothing armed. An object that wakes, for any request, and finds pending work with no alarm re-arms it before doing anything else, so the work resumes the next time the object is instantiated. An object that nobody touches cannot run anyway; a write reconciles on its own, so the check costs an idle wake one `getAlarm()` and one count per helper, and changes nothing otherwise.
+
 ## Long-running alarm calls
 
 Alarm invocations have a 15-minute wall-time limit. If work is still pending after `alarmHandoffMs` (default 14 minutes), the scheduler retains its promise in memory, arms a fallback after `alarmMinDelayMs`, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again. If the object is evicted during a handoff, the next alarm reconstructs and executes the persisted pending work.

@@ -614,7 +614,9 @@ describe('Durability', () => {
       alarmMinDelayMs: 1_000,
       alarmHandoffMs: 10_000,
     });
-    vi.advanceTimersByTime(1_000);
+    // Waking with a pending row and no alarm re-arms it; the handoff below is asserted on its own.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(storage.alarmAt).not.toBeNull();
     storage.alarmAt = null;
 
     const firstAlarm = durability.alarm({
@@ -803,6 +805,39 @@ describe('Durability', () => {
       'Durable call "mail" for operation "send" was registered with a different payload'
     );
     expect(calls).toHaveLength(1);
+  });
+
+  it('re-arms the alarm on wake when pending work was left with none', async () => {
+    const storage = new FakeStorage();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handlers = {
+      work: async (_call: DurableCall<null>) => {
+        await gate;
+        return 'done';
+      },
+    };
+    const first = new Durability({ context: contextFor(storage), handlers });
+    await first.work({ id: 'stranded', payload: null });
+    // The platform abandoned the alarm after repeated handler failures.
+    storage.alarmAt = null;
+
+    // A fresh instance that finds pending work and no alarm arms one itself.
+    const woken = new Durability({ context: contextFor(storage), handlers });
+    await vi.waitFor(() => expect(storage.alarmAt).not.toBeNull());
+
+    // Once the work completes, an instance that wakes with nothing pending changes nothing.
+    release();
+    await woken.alarm();
+    await expect(woken.work.getResult('stranded')).resolves.toMatchObject({
+      status: 'completed',
+    });
+    storage.alarmAt = null;
+    new Durability({ context: contextFor(storage), handlers });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(storage.alarmAt).toBeNull();
   });
 
   it('rejects handler names that collide with instance members', () => {

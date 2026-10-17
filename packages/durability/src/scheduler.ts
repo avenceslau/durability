@@ -172,6 +172,8 @@ export class Engine {
   private availablePermits: number;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
+  private wakeReconcile: Promise<void> | undefined;
+  private written = false;
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
     | undefined;
@@ -206,6 +208,45 @@ export class Engine {
       throw new Error(`A ${name} helper is already attached to this scheduler`);
     }
     this.participants.push(participant);
+    this.reconcileOnWake();
+  }
+
+  /**
+   * The platform abandons an alarm whose handler failed six times in a row, for
+   * example through storage errors while reconciling. Pending work would then
+   * wait with nothing armed until some request happened to write. Once the
+   * constructing request has registered every helper, an object that finds
+   * pending work and no alarm re-arms itself, so it recovers the next time it
+   * is instantiated for any reason. Anything else is left exactly as it was.
+   */
+  private reconcileOnWake(): void {
+    if (this.wakeReconcile) {
+      return;
+    }
+    this.wakeReconcile = Promise.resolve()
+      .then(async () => {
+        // Any write reconciles the alarm itself; only an object that woke idle needs this.
+        if (this.written || (await this.context.storage.getAlarm()) !== null) {
+          return;
+        }
+        const pending = this.participants.some(
+          ({ table }) =>
+            countRowSchema.parse(
+              this.sql
+                .exec(
+                  `SELECT COUNT(*) AS count FROM ${table.name} WHERE status = 'pending'`
+                )
+                .toArray()[0]
+            ).count > 0
+        );
+        // A write that began meanwhile reconciles on its own; two reconciliations would race.
+        if (pending && !this.written) {
+          await this.scheduleNextAlarm();
+        }
+      })
+      .catch((error: unknown) =>
+        reportFailure('durability.wake_reconcile.failed', {}, error)
+      );
   }
 
   waitUntil(
@@ -244,6 +285,7 @@ export class Engine {
    * transaction, then publishes the in-memory timer only after commit.
    */
   async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
+    this.written = true;
     let nextPendingAt: number | undefined;
     const result = await this.context.storage.transaction(
       async (transaction) => {
