@@ -1,5 +1,12 @@
 # @durability/transforms
 
+## 0.4.0
+
+### Minor Changes
+
+- 04943a3: Add the `restoreBrokenStubs` Vite plugin option and `createRestorableStubFactory`, which replace a Durable Object stub after a call through it throws so later calls and `retry` attempts use a fresh stub.
+- 24d0f4a: Wrap every object binding in the Vite plugin, including KV, R2, Workflows, and queues, so caller transforms apply to any binding call. Stubs without transforms now pass calls through unchanged, preserving synchronous methods and RPC promise pipelining, and transformed calls support pipelined member access. Transforms that keep the result type preserve overloaded method signatures.
+
 ## 0.3.0
 
 ### Minor Changes

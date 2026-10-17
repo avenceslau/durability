@@ -1,5 +1,78 @@
 # durability
 
+## 4.0.0
+
+### Major Changes
+
+- 30cffc9: Drop support for KV-backed Durable Objects. Durability now requires a SQLite-backed class (`new_sqlite_classes`). The `storageBackend` scheduler option and the `DurabilityStorageBackend` type are removed. Records written by the KV backend are not migrated; drain or copy them before upgrading.
+
+### Minor Changes
+
+- 56a2019: Add the experimental `DurabilityTracker` under `durability/experimental`. It lists work from operations, named alarms, and custom `TrackedSource` implementations, either as handles with `get()` and non-polling `wait({ timeoutMs })` that work over Workers RPC and Cap'n Web, or as plain records for JSON transports such as `DurabilitySocket`. Nothing is added to the root entry point or to the public types of `Durability` and `DurabilityAlarms`.
+- c9e3f59: Add `ackOnReturn` to fanout deliver targets, which acknowledges every message a consumer leaves unsettled in one transaction when `deliver` returns, and `batchDelayMs` to fanout, which holds first deliveries so messages enqueued together share one batch.
+- 41d2dca: Drop terminal fanout deliveries when no `dlq` is configured instead of retaining them with a 60-second retry, which kept the Durable Object awake indefinitely. The `terminal` lifecycle event still reports each dropped delivery.
+- 9b31346: Add opt-in consumption leases to `DurabilityLog`, so several workers can
+  consume one log in parallel without two of them receiving the same offsets.
+
+  `read` plus `commit` is enough for a single worker per consumer, but two
+  pollers sharing a consumer name both read the same page and both process it.
+  `lease` records a claimed range durably before returning its records, so a
+  concurrent caller gets nothing instead of the same offsets, and a range is held
+  until it is acked, nacked, or its lease expires.
+
+  Redelivery issues a fresh batch id, which fences the previous holder: a stale
+  or repeated settlement throws `LogLeaseError` rather than committing a range
+  another worker now owns. `maxParallelism` allows several ranges in flight per
+  consumer, and acking commits only over an unbroken run of settled ranges, so
+  parallel consumption never skips offsets that someone is still working on.
+  Leases are durable, so eviction mid-flight releases nothing early, and a range
+  flushed to cold storage while held is rehydrated on redelivery.
+
+  `maxAttempts` bounds endless redelivery of a failing range, but only alongside
+  `onPoison`: without somewhere to send the records, blocking the consumer beats
+  silently dropping them. An exhausted range is marked skipped durably before the
+  callback runs, and the commit then advances over it. Leases add a `logLeases`
+  migration capability, applied only when the option is set.
+
+- 1e36a24: Add `DurabilityLog`, a composable capability for a retained, offset-addressed
+  record log on an application-owned Durable Object.
+
+  Where fanout deletes a record once every target settles it, a log retains
+  records so consumers can rewind, start from the beginning, or read the same
+  history independently at different speeds. `append` commits a batch atomically
+  and returns each record's offset; supplying a key makes a repeated append
+  return the original offset instead of duplicating the record. Consumers pull
+  with `read` and own their position through monotonic per-consumer cursors that
+  a late commit cannot rewind, and `load` reports the furthest-behind cursor so
+  routing can weigh partitions by consumer lag.
+
+  `trim` enforces `maxAgeMs`, `maxRecords`, and `maxBytes` retention, the last
+  capped at `maxLogBytes` (1 GiB) because an object holds a hot window rather
+  than an unbounded log. Retention has two destinations: without cold storage
+  expiring records are deleted, and with it they are flushed and stay readable.
+  A `cold.write` returns a locator recorded in a durable segment index before the
+  records are deleted, so a crash leaves a readable segment rather than records
+  pointing nowhere, and a failed write retains them in the object. `cold.read`
+  makes a flush rehydratable, so a consumer reading a flushed offset is served
+  from external storage transparently; `forgetColdBefore` mirrors an external
+  lifecycle rule, and a segment the index outlived surfaces as truncation.
+
+  Retention still ignores cursors, so a consumer slower than everything readable
+  reads a `LogTruncatedError` naming the oldest readable offset rather than
+  silently skipping records. Records persist through a new `log` migration
+  capability.
+
+- 83278bf: `conn.on.resync` now receives `{ names }`: the outbound events whose subscribers start without history. It fires for newly subscribed names on a live connection as well as for every name when replay fails, so a collection added later can seed itself without a connection-wide reload.
+- 86bd0a9: Add `DurabilitySocket` (`durability/socket`) and `DurabilitySocketClient` (`durability/client`): typed WebSocket RPC and event push between browsers and a Durable Object over hibernatable WebSockets. Inbound handlers are validated with any Standard Schema validator, outbound events become typed methods on the socket, every event is persisted to SQLite with a sequence number so reconnecting clients replay what they missed or are told to resync, and `on.lifecycle` can stream `Durability` progress to browsers. Each helper now also exposes `lifecycle(hook)` to attach additional lifecycle hooks after construction, and operation `completed` events carry the handler's typed `result`.
+
+### Patch Changes
+
+- 9222234: Claim a whole fanout delivery batch in one storage transaction instead of one per message. A delivery pass previously cost O(batch) commits (each reconciling the alarm), which capped a shard's throughput well below what its enqueue path could take.
+- fe89294: Keep the SQLite fanout pending-delivery count in memory (hydrated once per object lifetime, kept exact by inserts and removes, recounted after a failed transaction or purge) instead of counting the table on every enqueue, and fetch due deliveries with two indexed queries instead of one sorted scan. Both previously cost O(backlog) per call, so a shard that fell behind fell further behind.
+- Updated dependencies [04943a3]
+- Updated dependencies [24d0f4a]
+  - @durability/transforms@0.4.0
+
 ## 3.0.1
 
 ### Patch Changes
