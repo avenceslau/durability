@@ -1,0 +1,25 @@
+packages/durability/src/migrations.ts
+  s_f53e9c1eeeed43::t_b753577dff7caf 294
+packages/durability/src/semaphore-protocol.ts
+  s_f53e9c1eeeed43::t_2899f3655dd9aa 12-15,37-39,47
+packages/durability/src/semaphore-server.ts
+  s_f53e9c1eeeed43::t_c7d37e4417db09 84-87,112,168,223-228,273-274,276,285-293,330-332,379-380,466,540-547,549-550,565,572,575,579-580,582,584-586
+packages/durability/src/semaphore.test.ts
+  s_f53e9c1eeeed43::t_a7b93920b4743a 248-315,326-337
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c5ee02713c632bb82000281c37b1411177462ac2",
+  "prompts": {},
+  "sessions": {
+    "s_f53e9c1eeeed43": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13c4e-5038-746a-9ef6-8989b8468b05",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
