@@ -23,6 +23,25 @@ export const grantReportSchema = z.object({
 });
 export type GrantReport = z.infer<typeof grantReportSchema>;
 
+/** Cumulative counts for one lease the client holds. */
+export const leaseReportSchema = z.object({
+  leaseId: nonEmpty,
+  /** Permits drawn locally so far, as a high-water mark. */
+  drawn: nonNegative,
+  /** Drawn permits returned, as a high-water mark. */
+  released: nonNegative,
+});
+export type LeaseReport = z.infer<typeof leaseReportSchema>;
+
+export const leaseGrantSchema = z.object({
+  leaseId: nonEmpty,
+  group: z.string(),
+  permits: nonNegative,
+  /** `expiresAt <= now` retires the lease: stop drawing immediately. */
+  expiresAt: nonNegative,
+});
+export type LeaseGrant = z.infer<typeof leaseGrantSchema>;
+
 export const permitRequestSchema = z.object({
   type: z.literal('request'),
   v: z.literal(1),
@@ -37,6 +56,7 @@ export const permitRequestSchema = z.object({
     .array()
     .max(maxDemandEntries),
   grants: grantReportSchema.array().max(maxGrantReports),
+  leases: leaseReportSchema.array().max(maxGrantReports).optional(),
 });
 export type PermitRequest = z.infer<typeof permitRequestSchema>;
 
@@ -45,6 +65,7 @@ export const permitSyncSchema = z.object({
   v: z.literal(1),
   clientId: nonEmpty,
   grants: grantReportSchema.array().max(maxGrantReports),
+  leases: leaseReportSchema.array().max(maxGrantReports).optional(),
 });
 export type PermitSync = z.infer<typeof permitSyncSchema>;
 
@@ -88,6 +109,7 @@ export const permitGrantSchema = z.object({
   /** The client must not send another request before this. */
   nextRequestAt: nonNegative,
   grantResults: grantResultSchema.array(),
+  leases: leaseGrantSchema.array().optional(),
 });
 export type PermitGrant = z.infer<typeof permitGrantSchema>;
 
@@ -95,6 +117,7 @@ export const permitSyncResultSchema = z.object({
   type: z.literal('synced'),
   v: z.literal(1),
   grantResults: grantResultSchema.array(),
+  leases: leaseGrantSchema.array().optional(),
 });
 export type PermitSyncResult = z.infer<typeof permitSyncResultSchema>;
 

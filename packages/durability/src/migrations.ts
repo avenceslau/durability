@@ -401,6 +401,27 @@ export const durabilitySemaphoreMigrations = [
       DROP TABLE IF EXISTS durability_semaphore_grants;
     `,
   },
+  {
+    name: 'durability_0009_create_semaphore_leases',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_semaphore_leases (
+        lease_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        retired INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_leases_expires_idx
+      ON durability_semaphore_leases (expires_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_semaphore_leases_expires_idx;
+      DROP TABLE IF EXISTS durability_semaphore_leases;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**
@@ -461,6 +482,29 @@ export const durabilitySemaphoreQueueMigrations = [
       DROP INDEX IF EXISTS durability_semaphore_queue_items_grant_idx;
       DROP INDEX IF EXISTS durability_semaphore_queue_items_key_idx;
       DROP TABLE IF EXISTS durability_semaphore_queue_items;
+    `,
+  },
+  {
+    name: 'durability_0010_add_semaphore_queue_leases',
+    up: `
+      ALTER TABLE durability_semaphore_queue_items ADD COLUMN lease_id TEXT;
+      CREATE TABLE IF NOT EXISTS durability_semaphore_queue_leases (
+        lease_id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        drawn INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_leases_key_idx
+      ON durability_semaphore_queue_leases (key, created_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_semaphore_queue_leases_key_idx;
+      DROP TABLE IF EXISTS durability_semaphore_queue_leases;
+      ALTER TABLE durability_semaphore_queue_items DROP COLUMN lease_id;
     `,
   },
 ] satisfies DurableMigrations;

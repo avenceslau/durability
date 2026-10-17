@@ -28,6 +28,27 @@ const request = (
   grants: PermitRequest['grants'] = []
 ): PermitRequest => ({ type: 'request', v: 1, clientId, demand, grants });
 
+/** A request from a client that accepts leases. */
+const leasing = (
+  clientId: string,
+  demand: PermitRequest['demand'],
+  leases: NonNullable<PermitRequest['leases']> = []
+): PermitRequest => ({
+  type: 'request',
+  v: 1,
+  clientId,
+  demand,
+  grants: [],
+  leases,
+});
+
+const leased = (grant: PermitGrant) =>
+  (grant.leases ?? []).map(({ group, permits, expiresAt }) => ({
+    group,
+    permits,
+    retired: expiresAt <= Date.now(),
+  }));
+
 const given = (grant: PermitGrant) =>
   grant.grants.map(({ group, permits }) => ({ group, permits }));
 
@@ -341,6 +362,240 @@ describe('semaphore', () => {
     ).rejects.toThrow('limit unavailable');
   });
 
+  describe('leases', () => {
+    it('over: leases come from a budget above the limit', async () => {
+      const { semaphore, round } = fixture({
+        limit: 2,
+        leases: { provisioning: { mode: 'over', extra: 4 } },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 5, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'g', permits: 2 }]);
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 4, retired: false },
+      ]);
+      expect(await semaphore.usage()).toMatchObject({
+        granted: 2,
+        leased: 4,
+        available: 0,
+      });
+
+      // Budget exhausted on both sides; a client without lease support gets nothing extra.
+      const [second] = await round(
+        request('b', [{ group: 'g', count: 1, oldestAt: 2 }])
+      );
+      expect(given(second!)).toEqual([]);
+      expect(second!.leases).toBeUndefined();
+    });
+
+    it('under: a reserve inside the limit is kept for leases', async () => {
+      const { semaphore, round } = fixture({
+        limit: 10,
+        leases: { provisioning: { mode: 'under', reserve: 4 } },
+      });
+      const [grant] = await round(
+        leasing('a', [{ group: 'g', count: 10, oldestAt: 1 }])
+      );
+      expect(given(grant!)).toEqual([{ group: 'g', permits: 6 }]);
+      expect(leased(grant!)).toEqual([
+        { group: 'g', permits: 4, retired: false },
+      ]);
+      expect(await semaphore.usage()).toMatchObject({
+        limit: 10,
+        granted: 6,
+        leased: 4,
+        available: 0,
+      });
+    });
+
+    it('strict: grants and lease footprint share the limit, grants first', async () => {
+      const { semaphore, round } = fixture({
+        limit: 10,
+        leases: { provisioning: { mode: 'strict' } },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 7, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'g', permits: 7 }]);
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 3, retired: false },
+      ]);
+      const leaseId = first!.leases![0]!.leaseId;
+
+      // The lease's footprint is reserved: nothing left for another client.
+      const [second] = await round(
+        leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }])
+      );
+      expect(given(second!)).toEqual([]);
+      expect(second!.blocked).toEqual([{ group: 'g', reason: 'limit' }]);
+
+      // Fully releasing the lease frees its footprint in the same round: b
+      // gets its grant, and a lease from what is left.
+      const [third, fourth] = await round(
+        leasing('a', [], [{ leaseId, drawn: 3, released: 3 }]),
+        leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }])
+      );
+      expect(leased(third!)).toEqual([
+        { group: 'g', permits: 3, retired: true },
+      ]);
+      expect(given(fourth!)).toEqual([{ group: 'g', permits: 1 }]);
+      expect(leased(fourth!)).toEqual([
+        { group: 'g', permits: 2, retired: false },
+      ]);
+      expect(await semaphore.usage()).toMatchObject({
+        granted: 8,
+        leased: 2,
+        available: 0,
+      });
+    });
+
+    it('heartbeats, sweeps, and charges leases the holder no longer knows', async () => {
+      const { semaphore, round } = fixture({
+        limit: 1,
+        leases: { provisioning: { mode: 'over', extra: 4 }, ttlMs: 5_000 },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 3, oldestAt: 1 }])
+      );
+      const leaseId = first!.leases![0]!.leaseId;
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 4, retired: false },
+      ]);
+
+      // A report within the TTL refreshes it (the lease was issued 1s ago).
+      vi.setSystemTime(Date.now() + 3_000);
+      const refreshed = (await semaphore.handle({
+        type: 'sync',
+        v: 1,
+        clientId: 'a',
+        grants: [],
+        leases: [{ leaseId, drawn: 2, released: 0 }],
+      })) as { leases?: { expiresAt: number }[] };
+      expect(refreshed.leases![0]!.expiresAt).toBe(Date.now() + 5_000);
+
+      // Silence past the TTL sweeps it; a stale report is retired and its
+      // live footprint is charged against this round's budget.
+      vi.setSystemTime(Date.now() + 6_000);
+      const [stale, fresh] = await round(
+        leasing('a', [], [{ leaseId, drawn: 2, released: 0 }]),
+        leasing('b', [{ group: 'g', count: 1, oldestAt: 3 }])
+      );
+      expect(leased(stale!)).toEqual([
+        { group: 'g', permits: 4, retired: true },
+      ]);
+      // Budget 4 minus unknown debt 2 leaves a lease of 2.
+      expect(leased(fresh!)).toEqual([
+        { group: 'g', permits: 2, retired: false },
+      ]);
+    });
+
+    it('strict: existing footprint is netted once when issuing new leases', async () => {
+      const { round } = fixture({
+        limit: 10,
+        leases: { provisioning: { mode: 'strict' }, permitsPerLease: 2 },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'g', permits: 1 }]);
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 2, retired: false },
+      ]);
+      const leaseId = first!.leases![0]!.leaseId;
+
+      // Pool: 10 - 1 grant - 2 footprint = 7 left. A second client's lease
+      // must come out of 7, not 7 - 2 again.
+      const [, second] = await round(
+        leasing('a', [], [{ leaseId, drawn: 0, released: 0 }]),
+        leasing('b', [{ group: 'g', count: 5, oldestAt: 2 }])
+      );
+      expect(given(second!)).toEqual([{ group: 'g', permits: 5 }]);
+      expect(leased(second!)).toEqual([
+        { group: 'g', permits: 2, retired: false },
+      ]);
+    });
+
+    it('retires a held lease when its group becomes limited, even in an unrelated round', async () => {
+      let capped = false;
+      const { round } = fixture({
+        limit: 10,
+        groupLimit: (group) => (capped && group === 'g' ? 1 : undefined),
+        leases: { provisioning: { mode: 'over', extra: 4 } },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
+      );
+      expect(leased(first!)).toHaveLength(1);
+
+      capped = true;
+      const [, holder] = await round(
+        leasing('b', [{ group: 'other', count: 1, oldestAt: 2 }]),
+        leasing('a', [])
+      );
+      expect(leased(holder!)).toEqual([
+        { group: 'g', permits: 4, retired: true },
+      ]);
+    });
+
+    it('shrinks undrawn lease headroom when the limit is lowered', async () => {
+      let limit = 10;
+      const { semaphore, round } = fixture({
+        limit: () => limit,
+        leases: { provisioning: { mode: 'strict' } },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 2, oldestAt: 1 }])
+      );
+      const leaseId = first!.leases![0]!.leaseId;
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 8, retired: false },
+      ]);
+
+      limit = 5;
+      const [second] = await round(
+        leasing('a', [], [{ leaseId, drawn: 3, released: 0 }])
+      );
+      // 2 granted + 8 leased = 10 > 5: the 5 undrawn permits are retired.
+      expect(leased(second!)).toEqual([
+        { group: 'g', permits: 3, retired: true },
+      ]);
+      expect(await semaphore.usage()).toMatchObject({
+        granted: 2,
+        leased: 3,
+      });
+    });
+
+    it('excludes limited groups unless leasing within the group limit', async () => {
+      const excluded = fixture({
+        limit: 10,
+        groupLimit: (group) => (group === 'capped' ? 3 : undefined),
+        leases: { provisioning: { mode: 'over', extra: 10 } },
+      });
+      const [first] = await excluded.round(
+        leasing('a', [{ group: 'capped', count: 5, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'capped', permits: 3 }]);
+      expect(leased(first!)).toEqual([]);
+
+      const within = fixture({
+        limit: 10,
+        groupLimit: (group) => (group === 'capped' ? 3 : undefined),
+        leases: {
+          provisioning: { mode: 'over', extra: 10 },
+          limitedGroups: 'withinGroupLimit',
+        },
+      });
+      const [second] = await within.round(
+        leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
+      );
+      expect(given(second!)).toEqual([{ group: 'capped', permits: 2 }]);
+      expect(leased(second!)).toEqual([
+        { group: 'capped', permits: 1, retired: false },
+      ]);
+    });
+  });
+
   it('drives the holder through SemaphoreClient', async () => {
     const { semaphore } = fixture();
     const invoked: string[] = [];
@@ -373,5 +628,53 @@ describe('semaphore', () => {
     await expect(
       broken.sync('', { type: 'sync', v: 1, clientId: 'c', grants: [] })
     ).rejects.toThrow(/non-empty/);
+  });
+});
+describe('semaphore schema upgrades', () => {
+  it('adds lease tables on top of an earlier semaphore schema', async () => {
+    const { DurabilitySemaphoreServer: Server } =
+      await import('./semaphore-server');
+    const {
+      durabilitySemaphoreMigrations,
+      durabilitySemaphoreQueueMigrations,
+      migrate,
+    } = await import('./migrations');
+    const storage = new FakeStorage();
+    migrate(
+      storage,
+      'semaphore',
+      durabilitySemaphoreMigrations,
+      'durability_0007_create_semaphore'
+    );
+    migrate(
+      storage,
+      'semaphoreQueue',
+      durabilitySemaphoreQueueMigrations,
+      'durability_0008_create_semaphore_queue'
+    );
+
+    expect(
+      Server.migrate({ storage: storage as unknown as DurableObjectStorage })
+    ).toMatchObject({
+      applied: ['durability_0009_create_semaphore_leases'],
+    });
+    expect(
+      migrate(
+        storage,
+        'semaphoreQueue',
+        durabilitySemaphoreQueueMigrations,
+        undefined
+      )
+    ).toMatchObject({
+      applied: ['durability_0010_add_semaphore_queue_leases'],
+    });
+    expect(
+      storage.sql
+        .exec(
+          "SELECT name FROM pragma_table_info('durability_semaphore_queue_items')"
+        )
+        .toArray()
+        .map((row) => row['name'])
+    ).toContain('lease_id');
   });
 });
