@@ -41,5 +41,9 @@
       "tag": "v3",
       "new_sqlite_classes": ["SocketTestObject"],
     },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["LogTestObject"],
+    },
   ],
 }

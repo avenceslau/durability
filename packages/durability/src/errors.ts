@@ -127,6 +127,43 @@ export class FanoutEnqueueError extends Error {
   }
 }
 
+/** A definite rejection before records were durably appended. */
+export class LogAppendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LogAppendError';
+  }
+}
+
+/**
+ * Thrown when a read starts below the retained window, so a consumer that
+ * falls further behind than retention learns it lost records instead of
+ * silently skipping them.
+ */
+export class LogTruncatedError extends Error {
+  constructor(
+    readonly requestedOffset: number,
+    readonly oldestOffset: number
+  ) {
+    super(
+      `Log offset ${requestedOffset} was trimmed; the oldest retained offset is ${oldestOffset}`
+    );
+    this.name = 'LogTruncatedError';
+  }
+}
+
+/**
+ * Thrown when settling a lease that no longer exists, was already settled, or
+ * was reclaimed by another worker. A stale ack must fail loudly rather than
+ * advance a range someone else now owns.
+ */
+export class LogLeaseError extends Error {
+  constructor(batchId: string) {
+    super(`Log lease "${batchId}" is not held`);
+    this.name = 'LogLeaseError';
+  }
+}
+
 /** Error thrown when a sharding function returns an invalid shard key. */
 export class RoutingError extends Error {
   constructor(message: string) {
