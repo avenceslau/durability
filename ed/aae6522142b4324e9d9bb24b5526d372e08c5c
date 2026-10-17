@@ -1,0 +1,49 @@
+.changeset/durability-outbox.md
+  s_f53e9c1eeeed43::t_69db9279ca39ef 1-5
+packages/durability/README.md
+  s_f53e9c1eeeed43::t_152ebb98e765f6 8,261,273-275,283,291,302-304,345,347-348,363-364,380-381,383,514
+packages/durability/src/errors.ts
+  s_f53e9c1eeeed43::t_faaa1eb5c59419 132-139
+packages/durability/src/index.ts
+  s_f53e9c1eeeed43::t_f6baa63c4ae470 47-52,82,92
+packages/durability/src/lifecycle.ts
+  s_f53e9c1eeeed43::t_2b7d3550671aad 24-32,36-37,48-52
+packages/durability/src/migrations.ts
+  s_f53e9c1eeeed43::t_2f02603aa6846b 334-377,386-389,393
+packages/durability/src/outbox.test.ts
+  s_f53e9c1eeeed43::t_175348dd5656f8 1-7,9-23,59-60,64,67,82-83,114-115,148,152-153,175-176,199-200,241,243,255,264,272-273,305,307
+packages/durability/src/outbox.ts
+  s_f53e9c1eeeed43::t_e4154f31c7fee8 1-27,34,96-168,178,181-196,199,206-207,208-287,290-306,321-338,340-374,378-384,388-395,403-404,405-471,473,479,481-487,496-500,501-564
+packages/durability/src/storage.ts
+  s_c38883cbb1b412::t_a984d56b59408f 50,53
+packages/durability/tests/outbox-worker.ts
+  s_f53e9c1eeeed43::t_9d1955c01f2029 1-68
+packages/durability/tests/outbox.worker.test.ts
+  s_f53e9c1eeeed43::t_e84491380898c7 1-3,5-8,9-21,22
+packages/durability/wrangler.test.jsonc
+  s_f53e9c1eeeed43::t_ffc2c280471348 16,19-20,23,52-53,55-57,63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "edaae6522142b4324e9d9bb24b5526d372e08c5c",
+  "prompts": {},
+  "sessions": {
+    "s_c38883cbb1b412": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a145aa-9163-720a-a5c8-66a69a1cbda8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f53e9c1eeeed43": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13c4e-5038-746a-9ef6-8989b8468b05",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}

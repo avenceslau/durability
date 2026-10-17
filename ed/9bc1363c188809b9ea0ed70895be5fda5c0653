@@ -1,0 +1,21 @@
+packages/durability/src/outbox.ts
+  s_f53e9c1eeeed43::t_2affc76a56bd87 127-130
+packages/durability/src/outbox.test.ts
+  s_f53e9c1eeeed43::t_8be7e8886043c9 193,195,197,203-204,227,231-232
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ed9bc1363c188809b9ea0ed70895be5fda5c0653",
+  "prompts": {},
+  "sessions": {
+    "s_f53e9c1eeeed43": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13c4e-5038-746a-9ef6-8989b8468b05",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
