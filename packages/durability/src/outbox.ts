@@ -144,6 +144,18 @@ export type DurabilityOutboxEvent = Extract<
 
 type Channels = Map<string, () => Promise<void>>;
 
+/**
+ * Package-internal: stages inside a transaction another helper already holds,
+ * so its reports commit atomically with that helper's own rows. Assigned by
+ * the class's static block.
+ */
+export let stageWithin: <Value>(
+  outbox: DurabilityOutbox<Value>,
+  sql: SqlStorage,
+  key: string,
+  value: Value
+) => number;
+
 const infrastructureRetryMs = 60_000;
 // setTimeout overflows past 2^31 - 1 ms, and it keeps every derived timestamp
 // far inside the safe-integer range the storage indexes accept.
@@ -283,54 +295,68 @@ export class DurabilityOutbox<Value = unknown> {
    * atomically with the application's own writes in that transaction.
    */
   async stage(key: string, value: Value): Promise<number> {
+    const row = await this.#engine.transaction((sql) =>
+      this.#stageIn(sql, key, value)
+    );
+    this.#emitRegistered(row);
+    return row.version;
+  }
+
+  #stageIn(sql: SqlStorage, key: string, value: Value): OutboxRow {
     if (typeof key !== 'string' || key.length === 0) {
       throw new TypeError('Outbox keys must be non-empty strings');
     }
     const payload = serialize(value);
+    const version = nextVersion(sql);
+    const createdAt = Date.now();
+    const staged: OutboxRow = {
+      id: rowId(this.#channel, key),
+      channel: this.#channel,
+      entry_key: key,
+      version,
+      payload,
+      status: 'pending',
+      attempt: 0,
+      next_attempt_at: this.#firstAttemptAt(createdAt),
+      last_error: null,
+      last_error_name: null,
+      created_at: createdAt,
+      generation_id: String(version),
+    };
+    // Replacing the generation fences any in-flight publication of an older
+    // version: its acknowledgement can no longer delete this row.
+    sql.exec(
+      `INSERT OR REPLACE INTO durability_outbox
+       (id, channel, entry_key, version, payload, status, attempt,
+        next_attempt_at, last_error, last_error_name, created_at, generation_id)
+       VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, ?, ?)`,
+      staged.id,
+      staged.channel,
+      staged.entry_key,
+      staged.version,
+      staged.payload,
+      staged.next_attempt_at,
+      staged.created_at,
+      staged.generation_id
+    );
+    return staged;
+  }
 
-    const row = await this.#engine.transaction((sql) => {
-      const version = nextVersion(sql);
-      const createdAt = Date.now();
-      const staged: OutboxRow = {
-        id: rowId(this.#channel, key),
-        channel: this.#channel,
-        entry_key: key,
-        version,
-        payload,
-        status: 'pending',
-        attempt: 0,
-        next_attempt_at: this.#firstAttemptAt(createdAt),
-        last_error: null,
-        last_error_name: null,
-        created_at: createdAt,
-        generation_id: String(version),
-      };
-      // Replacing the generation fences any in-flight publication of an older
-      // version: its acknowledgement can no longer delete this row.
-      sql.exec(
-        `INSERT OR REPLACE INTO durability_outbox
-         (id, channel, entry_key, version, payload, status, attempt,
-          next_attempt_at, last_error, last_error_name, created_at, generation_id)
-         VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, ?, ?)`,
-        staged.id,
-        staged.channel,
-        staged.entry_key,
-        staged.version,
-        staged.payload,
-        staged.next_attempt_at,
-        staged.created_at,
-        staged.generation_id
-      );
-      return staged;
-    });
-
+  #emitRegistered(row: OutboxRow): void {
     this.#emit({
       ...entity(row),
       type: 'registered',
       timestamp: row.created_at,
       attempt: 0,
     });
-    return row.version;
+  }
+
+  static {
+    stageWithin = (outbox, sql, key, value) => {
+      const row = outbox.#stageIn(sql, key, value);
+      outbox.#emitRegistered(row);
+      return row.version;
+    };
   }
 
   #attach(): void {

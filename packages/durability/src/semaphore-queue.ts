@@ -1,0 +1,784 @@
+import { reportFailure, serializeError } from './errors.js';
+import {
+  durabilitySemaphoreQueueMigrations,
+  migrate,
+  type DurabilityMigrationResult,
+} from './migrations.js';
+import { DurabilityOutbox, stageWithin, type OutboxEntry } from './outbox.js';
+import {
+  assertPositiveInteger,
+  type DurabilityRetryOptions,
+} from './policy.js';
+import {
+  DurabilityScheduler,
+  engineFor,
+  type Engine,
+  type SchedulerAttachment,
+} from './scheduler.js';
+import type {
+  GrantReport,
+  GrantResult,
+  PermitGrant,
+  PermitRequest,
+  PermitSync,
+  PermitSyncResult,
+  SemaphoreBlockedReason,
+} from './semaphore-protocol.js';
+import { deserialize, serialize } from './serialization.js';
+import {
+  QueueStore,
+  type QueueGrantRow,
+  type QueueItemRow,
+} from './semaphore-queue-store.js';
+import type { DurableTable } from './storage.js';
+import { exponential, jitter } from './utils.js';
+
+const queueItemsTable: DurableTable = {
+  name: 'durability_semaphore_queue_items',
+  key: 'id',
+};
+
+export type SemaphoreInput<Body> = {
+  /** Stable item ID; enqueueing a known ID again is a no-op. Defaults to random. */
+  id?: string;
+  /** Semaphore key: the name of the holder Durable Object, e.g. an account ID. */
+  key: string;
+  /** Optional sub-partition with its own ceiling at the holder. Defaults to ''. */
+  group?: string;
+  body: Body;
+};
+
+export type AdmittedItem<Body> = {
+  id: string;
+  key: string;
+  group: string;
+  body: Body;
+  enqueuedAt: number;
+  admittedAt: number;
+};
+
+export type SemaphoreItemStatus =
+  | { state: 'queued'; enqueuedAt: number; blocked?: SemaphoreBlockedReason }
+  | { state: 'claiming'; enqueuedAt: number }
+  | { state: 'admitted'; enqueuedAt: number; admittedAt: number };
+
+/** What the queue needs from `DurabilitySemaphore.client()`. */
+export type SemaphoreHolder = {
+  request(key: string, message: PermitRequest): Promise<PermitGrant>;
+  sync(key: string, message: PermitSync): Promise<PermitSyncResult>;
+};
+
+export type DurabilitySemaphoreQueueConfig<Body> = SchedulerAttachment & {
+  /** The holder, from `DurabilitySemaphore.client()`; caller transforms apply. */
+  server: SemaphoreHolder;
+  /** Stable identity of this client Durable Object, e.g. `ctx.id.toString()`. */
+  clientId: string;
+  /**
+   * Receives items once the holder has confirmed their permits, after the
+   * admission commits. Retried until it returns; must be idempotent on item ID.
+   */
+  admit(items: AdmittedItem<Body>[]): unknown | Promise<unknown>;
+  /** Items per `admit()` call. Defaults to 100. */
+  maxAdmitBatch?: number;
+  /** Maximum duration of one `admit()` call. Defaults to 60 seconds. */
+  attemptTimeoutMs?: number;
+  /** Backoff for failed `admit()` calls and holder requests. */
+  retries?: Pick<DurabilityRetryOptions, 'delay'>;
+  onLifecycleEvent?: (
+    event: DurabilitySemaphoreQueueEvent
+  ) => void | Promise<void>;
+};
+
+export type DurabilitySemaphoreQueueEvent =
+  | {
+      entityKind: 'semaphore_item';
+      type: 'queued' | 'released' | 'cancelled';
+      timestamp: number;
+      id: string;
+      key: string;
+      group: string;
+    }
+  | {
+      entityKind: 'semaphore_item';
+      type: 'admitted';
+      timestamp: number;
+      id: string;
+      key: string;
+      group: string;
+      waitMs: number;
+    }
+  | {
+      entityKind: 'semaphore_item';
+      type: 'blocked';
+      timestamp: number;
+      key: string;
+      group: string;
+      reason: SemaphoreBlockedReason;
+      count: number;
+    };
+
+type Report = { claimed: number; released: number };
+
+const outboxChannel = 'durability.semaphore-queue';
+/** Queued items read per key when building a request's demand. */
+const demandScanLimit = 200;
+const maxDelayMs = 2 ** 31 - 1;
+
+const pairKey = (key: string, second: string): string =>
+  JSON.stringify([key, second]);
+const parsePairKey = (value: string): [string, string] =>
+  JSON.parse(value) as [string, string];
+
+const grantReport = (grant: QueueGrantRow): GrantReport => ({
+  grantId: grant.grant_id,
+  claimed: grant.claimed,
+  released: grant.released,
+});
+
+/**
+ * A composable DO capability for the client side of {@link DurabilitySemaphore}:
+ * queues items per semaphore key in arrival order, asks the holder for
+ * permits, and hands admitted items to the application. Claims and releases
+ * are published to the holder through an internal outbox channel as
+ * cumulative counts, so nothing is lost or double-counted across retries.
+ */
+export class DurabilitySemaphoreQueue<Body = unknown> {
+  readonly #engine: Engine;
+  readonly #store: QueueStore;
+  readonly #server: SemaphoreHolder;
+  readonly #clientId: string;
+  readonly #admit: DurabilitySemaphoreQueueConfig<Body>['admit'];
+  readonly #maxAdmitBatch: number;
+  readonly #attemptTimeoutMs: number;
+  readonly #delay: (attempt: number) => number;
+  readonly #emit: (event: DurabilitySemaphoreQueueEvent) => void;
+  readonly #outbox: DurabilityOutbox<Report>;
+  readonly #requesting = new Set<string>();
+  readonly #blocked = new Map<string, SemaphoreBlockedReason>();
+  #notifying: Promise<void> | undefined;
+
+  constructor(config: DurabilitySemaphoreQueueConfig<Body>) {
+    if (typeof config.clientId !== 'string' || config.clientId.length === 0) {
+      throw new TypeError('clientId must be a non-empty string');
+    }
+    if (typeof config.admit !== 'function') {
+      throw new TypeError('Semaphore queue requires an admit function');
+    }
+    this.#server = config.server;
+    this.#clientId = config.clientId;
+    this.#admit = config.admit;
+    this.#maxAdmitBatch = config.maxAdmitBatch ?? 100;
+    assertPositiveInteger('maxAdmitBatch', this.#maxAdmitBatch);
+    this.#attemptTimeoutMs = config.attemptTimeoutMs ?? 60_000;
+    assertPositiveInteger('attemptTimeoutMs', this.#attemptTimeoutMs);
+    if (this.#attemptTimeoutMs > maxDelayMs) {
+      throw new RangeError(`attemptTimeoutMs must be at most ${maxDelayMs}`);
+    }
+    this.#delay =
+      config.retries?.delay ?? ((attempt) => jitter(exponential(attempt)));
+
+    // The internal outbox must share this helper's engine, so a private
+    // scheduler is created explicitly instead of letting each attach its own.
+    const scheduler = config.scheduler ?? new DurabilityScheduler(config);
+    this.#engine = engineFor({ scheduler });
+    this.#store = new QueueStore(this.#engine.sql);
+    this.#emit = this.#engine.emitter<DurabilitySemaphoreQueueEvent>(
+      config.onLifecycleEvent
+    );
+    this.#engine.migrateSchema(
+      'semaphoreQueue',
+      durabilitySemaphoreQueueMigrations
+    );
+    this.#outbox = new DurabilityOutbox<Report>({
+      scheduler,
+      channel: outboxChannel,
+      publish: (entries) => this.#publishReports(entries),
+    });
+    this.#engine.register({
+      table: queueItemsTable,
+      runDue: (now) => this.#runDue(now),
+      nextPendingAt: () => this.#store.nextPendingAt(),
+    });
+  }
+
+  static migrate(
+    context: Pick<DurableObjectState, 'storage'>,
+    target?: string | null
+  ): DurabilityMigrationResult {
+    return migrate(
+      context.storage,
+      'semaphoreQueue',
+      durabilitySemaphoreQueueMigrations,
+      target
+    );
+  }
+
+  alarm(info?: AlarmInvocationInfo): Promise<void> {
+    return this.#engine.alarm(info);
+  }
+
+  /**
+   * Durably accepts items. Each is admitted once the holder confirms a
+   * permit; items whose key already holds unclaimed permits skip the request.
+   */
+  async enqueue(
+    items: readonly SemaphoreInput<Body>[]
+  ): Promise<{ queued: string[]; duplicates: string[] }> {
+    const rows = items.map((item): QueueItemRow => {
+      const id = item.id ?? crypto.randomUUID();
+      if (
+        typeof id !== 'string' ||
+        id.length === 0 ||
+        typeof item.key !== 'string' ||
+        item.key.length === 0
+      ) {
+        throw new TypeError(
+          'Semaphore items need a non-empty id and semaphore key'
+        );
+      }
+      const now = Date.now();
+      return {
+        id,
+        key: item.key,
+        grp: item.group ?? '',
+        payload: serialize(item.body),
+        status: 'queued',
+        grant_id: null,
+        created_at: now,
+        admitted_at: null,
+        notified: 0,
+        attempt: 0,
+        next_attempt_at: now,
+      };
+    });
+
+    const { queued, duplicates } = await this.#engine.transaction(() => {
+      const store = this.#store;
+      const inserted: QueueItemRow[] = [];
+      const existing: string[] = [];
+      for (const row of rows) {
+        if (store.insertItem(row)) {
+          inserted.push(row);
+        } else {
+          existing.push(row.id);
+        }
+      }
+      for (const key of new Set(inserted.map((row) => row.key))) {
+        this.#claimLocally(key);
+        this.#refreshKey(key);
+      }
+      return { queued: inserted, duplicates: existing };
+    });
+
+    for (const row of queued) {
+      this.#emit({
+        entityKind: 'semaphore_item',
+        type: 'queued',
+        timestamp: row.created_at,
+        id: row.id,
+        key: row.key,
+        group: row.grp,
+      });
+    }
+    return { queued: queued.map((row) => row.id), duplicates };
+  }
+
+  /** The item finished: its permit returns to the holder. Idempotent. */
+  async release(id: string): Promise<boolean> {
+    const released = await this.#engine.transaction(() => {
+      const store = this.#store;
+      const item = store.getItem(id);
+      if (!item || item.status !== 'admitted' || item.grant_id === null) {
+        return undefined;
+      }
+      const grant = store.getGrant(item.grant_id);
+      store.removeItem(id);
+      if (grant) {
+        const updated = { ...grant, released: grant.released + 1 };
+        store.updateGrant(updated);
+        this.#stageReport(updated);
+      }
+      return item;
+    });
+    if (!released) {
+      return false;
+    }
+
+    this.#emit({
+      entityKind: 'semaphore_item',
+      type: 'released',
+      timestamp: Date.now(),
+      id,
+      key: released.key,
+      group: released.grp,
+    });
+    return true;
+  }
+
+  /** Removes a still-queued item. False once it counts against a grant. */
+  async cancel(id: string): Promise<boolean> {
+    const cancelled = await this.#engine.transaction(() => {
+      const store = this.#store;
+      const item = store.getItem(id);
+      if (!item || item.status !== 'queued') {
+        return undefined;
+      }
+      store.removeItem(id);
+      this.#refreshKey(item.key);
+      return item;
+    });
+    if (!cancelled) {
+      return false;
+    }
+
+    this.#emit({
+      entityKind: 'semaphore_item',
+      type: 'cancelled',
+      timestamp: Date.now(),
+      id,
+      key: cancelled.key,
+      group: cancelled.grp,
+    });
+    return true;
+  }
+
+  async status(id: string): Promise<SemaphoreItemStatus | undefined> {
+    const item = this.#store.getItem(id);
+    if (!item) {
+      return undefined;
+    }
+    if (item.status === 'admitted') {
+      return {
+        state: 'admitted',
+        enqueuedAt: item.created_at,
+        admittedAt: item.admitted_at ?? item.created_at,
+      };
+    }
+    if (item.status === 'claiming') {
+      return { state: 'claiming', enqueuedAt: item.created_at };
+    }
+    const blocked = this.#blocked.get(pairKey(item.key, item.grp));
+    return blocked === undefined
+      ? { state: 'queued', enqueuedAt: item.created_at }
+      : { state: 'queued', enqueuedAt: item.created_at, blocked };
+  }
+
+  async usage(): Promise<Record<QueueItemRow['status'], number>> {
+    return this.#store.countItems();
+  }
+
+  async #runDue(now: number): Promise<void> {
+    const store = this.#store;
+    const [, keys] = await Promise.all([
+      this.#notify(),
+      store.listDueKeys(now),
+    ]);
+    await Promise.all(
+      keys
+        .filter(({ key }) => !this.#requesting.has(key))
+        .map(({ key }) => this.#request(key))
+    );
+  }
+
+  /** Asks the holder for permits covering this key's queued items. */
+  async #request(key: string): Promise<void> {
+    this.#requesting.add(key);
+    try {
+      const store = this.#store;
+      const [queued, grants] = await Promise.all([
+        store.listItems(key, 'queued', demandScanLimit),
+        store.listGrants(key),
+      ]);
+      if (queued.length === 0) {
+        await this.#engine.transaction(() => {
+          this.#refreshKey(key);
+        });
+        return;
+      }
+
+      const demand = new Map<string, { count: number; oldestAt: number }>();
+      for (const item of queued) {
+        const entry = demand.get(item.grp) ?? {
+          count: 0,
+          oldestAt: item.created_at,
+        };
+        entry.count += 1;
+        entry.oldestAt = Math.min(entry.oldestAt, item.created_at);
+        demand.set(item.grp, entry);
+      }
+      const message: PermitRequest = {
+        type: 'request',
+        v: 1,
+        clientId: this.#clientId,
+        demand: [...demand].map(([group, entry]) => ({ group, ...entry })),
+        grants: grants.map(grantReport),
+      };
+
+      let grant: PermitGrant;
+      try {
+        grant = await this.#server.request(key, message);
+      } catch (error) {
+        reportFailure(
+          'durability.semaphore_queue.request_failed',
+          { key },
+          error
+        );
+        await this.#engine.transaction(() => {
+          const current = this.#store.getKey(key);
+          this.#store.upsertKey({
+            key,
+            queued: current?.queued ?? queued.length,
+            next_request_at: Date.now() + this.#retryDelay(1),
+          });
+        });
+        return;
+      }
+
+      await this.#engine.transaction(() => {
+        const txStore = this.#store;
+        for (const given of grant.grants) {
+          txStore.insertGrant({
+            grant_id: given.grantId,
+            key,
+            grp: given.group,
+            permits: given.permits,
+            claimed: 0,
+            confirmed: 0,
+            released: 0,
+            created_at: Date.now(),
+          });
+        }
+        this.#claimLocally(key);
+        this.#applyResults(key, grant.grantResults);
+        const remaining = this.#refreshKey(key, grant.nextRequestAt);
+        for (const group of new Set(remaining.map((item) => item.grp))) {
+          this.#blocked.delete(pairKey(key, group));
+        }
+        for (const { group, reason } of grant.blocked) {
+          this.#blocked.set(pairKey(key, group), reason);
+        }
+      });
+
+      const counts = new Map<string, number>();
+      for (const item of store.listItems(key, 'queued', demandScanLimit)) {
+        counts.set(item.grp, (counts.get(item.grp) ?? 0) + 1);
+      }
+      for (const { group, reason } of grant.blocked) {
+        const count = counts.get(group) ?? 0;
+        if (count > 0) {
+          this.#emit({
+            entityKind: 'semaphore_item',
+            type: 'blocked',
+            timestamp: Date.now(),
+            key,
+            group,
+            reason,
+            count,
+          });
+        }
+      }
+    } finally {
+      this.#requesting.delete(key);
+    }
+  }
+
+  /**
+   * Counts queued items against grants with unclaimed permits, oldest first,
+   * and stages the new claim counts for the holder.
+   */
+  #claimLocally(key: string): void {
+    const store = this.#store;
+    const grants = store
+      .listGrants(key)
+      .filter((grant) => grant.claimed < grant.permits);
+    if (grants.length === 0) {
+      return;
+    }
+    const queued = store.listItems(key, 'queued', demandScanLimit);
+    const touched = new Map<string, QueueGrantRow>();
+    for (const item of queued) {
+      const grant = grants.find(
+        (candidate) =>
+          candidate.grp === item.grp && candidate.claimed < candidate.permits
+      );
+      if (!grant) {
+        continue;
+      }
+      grant.claimed += 1;
+      touched.set(grant.grant_id, grant);
+      store.updateItem({
+        ...item,
+        status: 'claiming',
+        grant_id: grant.grant_id,
+      });
+    }
+    for (const grant of touched.values()) {
+      store.updateGrant(grant);
+      this.#stageReport(grant);
+    }
+  }
+
+  /**
+   * Applies the holder's confirmations: confirmed claims admit items in
+   * arrival order; clamped or forgotten grants return their items to the queue.
+   */
+  #applyResults(key: string, results: GrantResult[]): void {
+    const store = this.#store;
+    const now = Date.now();
+    for (const result of results) {
+      const grant = store.getGrant(result.grantId);
+      if (!grant || grant.key !== key) {
+        continue;
+      }
+      const items = store.listItemsByGrant(grant.grant_id);
+      const claiming = items.filter((item) => item.status === 'claiming');
+      const admitted = items.length - claiming.length;
+
+      if (result.status === 'not_found') {
+        for (const item of claiming) {
+          store.updateItem({ ...item, status: 'queued', grant_id: null });
+        }
+        store.removeGrant(grant.grant_id);
+        continue;
+      }
+
+      const confirmed = Math.max(grant.confirmed, result.claimed);
+      const admitNow = claiming.slice(0, Math.max(0, confirmed - admitted));
+      for (const item of admitNow) {
+        store.updateItem({
+          ...item,
+          status: 'admitted',
+          admitted_at: now,
+          notified: 0,
+          attempt: 0,
+          next_attempt_at: now,
+        });
+      }
+      let updated: QueueGrantRow = { ...grant, confirmed };
+      if (result.status === 'expired') {
+        // The holder reclaimed what we had not claimed in time.
+        for (const item of claiming.slice(admitNow.length)) {
+          store.updateItem({ ...item, status: 'queued', grant_id: null });
+        }
+        updated = { ...updated, permits: confirmed, claimed: confirmed };
+      }
+      if (
+        updated.released >= updated.permits &&
+        updated.confirmed >= updated.permits
+      ) {
+        store.removeGrant(grant.grant_id);
+      } else {
+        store.updateGrant(updated);
+      }
+    }
+  }
+
+  /**
+   * Recomputes the key's queued count and remembers the holder's pacing even
+   * while nothing is queued, so requeued items wait for `nextRequestAt`.
+   */
+  #refreshKey(key: string, nextRequestAt?: number): QueueItemRow[] {
+    const store = this.#store;
+    const queued = store.listItems(key, 'queued', demandScanLimit);
+    const current = store.getKey(key);
+    if (queued.length === 0 && !current && nextRequestAt === undefined) {
+      return queued;
+    }
+    store.upsertKey({
+      key,
+      queued: queued.length,
+      next_request_at: nextRequestAt ?? current?.next_request_at ?? Date.now(),
+    });
+    return queued;
+  }
+
+  #stageReport(grant: QueueGrantRow): void {
+    stageWithin(
+      this.#outbox,
+      this.#engine.sql,
+      pairKey(grant.key, grant.grant_id),
+      {
+        claimed: grant.claimed,
+        released: grant.released,
+      }
+    );
+  }
+
+  /** Outbox sink: one `sync` per key; a failed key keeps its entries pending. */
+  async #publishReports(entries: OutboxEntry<Report>[]): Promise<void> {
+    const byKey = new Map<string, OutboxEntry<Report>[]>();
+    for (const entry of entries) {
+      const [key] = parsePairKey(entry.key);
+      byKey.set(key, [...(byKey.get(key) ?? []), entry]);
+    }
+    await Promise.all(
+      [...byKey].map(async ([key, keyEntries]) => {
+        let synced: PermitSyncResult;
+        try {
+          synced = await this.#server.sync(key, {
+            type: 'sync',
+            v: 1,
+            clientId: this.#clientId,
+            grants: keyEntries.map((entry) => ({
+              grantId: parsePairKey(entry.key)[1],
+              ...entry.value,
+            })),
+          });
+        } catch (error) {
+          reportFailure(
+            'durability.semaphore_queue.sync_failed',
+            { key },
+            error
+          );
+          for (const entry of keyEntries) {
+            entry.retry();
+          }
+          return;
+        }
+        await this.#engine.transaction(() => {
+          this.#applyResults(key, synced.grantResults);
+          this.#refreshKey(key);
+        });
+      })
+    );
+    const onError = (error: unknown) =>
+      reportFailure('durability.semaphore_queue.notify_failed', {}, error);
+    this.#engine.waitUntil(this.#notify().catch(onError), onError);
+  }
+
+  /** Hands admitted, unnotified items to `admit()`, one batch at a time. */
+  #notify(): Promise<void> {
+    this.#notifying ??= this.#notifyBatch().finally(() => {
+      this.#notifying = undefined;
+    });
+    return this.#notifying;
+  }
+
+  async #notifyBatch(): Promise<void> {
+    const store = this.#store;
+    const due = store.listUnnotified(Date.now(), this.#maxAdmitBatch);
+    if (due.length === 0) {
+      return;
+    }
+    const release = await this.#engine.acquirePermit();
+    try {
+      const deadline = Date.now() + this.#attemptTimeoutMs;
+      // Claim the batch so a concurrent alarm cannot notify the same items.
+      const claimed = await this.#engine.transaction(() => {
+        const rows: QueueItemRow[] = [];
+        for (const item of due) {
+          const current = this.#store.getItem(item.id);
+          if (!current || current.status !== 'admitted' || current.notified) {
+            continue;
+          }
+          const row = {
+            ...current,
+            attempt: current.attempt + 1,
+            next_attempt_at: deadline,
+          };
+          this.#store.updateItem(row);
+          rows.push(row);
+        }
+        return rows;
+      });
+      if (claimed.length === 0) {
+        return;
+      }
+
+      const admitted = claimed.map(
+        (row): AdmittedItem<Body> => ({
+          id: row.id,
+          key: row.key,
+          group: row.grp,
+          body: deserialize(row.payload) as Body,
+          enqueuedAt: row.created_at,
+          admittedAt: row.admitted_at ?? row.created_at,
+        })
+      );
+      let failure: unknown;
+      try {
+        await this.#deadline(() => this.#admit(admitted));
+      } catch (error) {
+        failure = error;
+      }
+
+      await this.#engine.transaction(() => {
+        for (const row of claimed) {
+          const current = this.#store.getItem(row.id);
+          if (!current || current.attempt !== row.attempt) {
+            continue;
+          }
+          this.#store.updateItem(
+            failure === undefined
+              ? { ...current, notified: 1 }
+              : {
+                  ...current,
+                  next_attempt_at: Date.now() + this.#retryDelay(row.attempt),
+                }
+          );
+        }
+      });
+      if (failure !== undefined) {
+        reportFailure(
+          'durability.semaphore_queue.admit_failed',
+          { count: claimed.length, error: serializeError(failure).message },
+          failure
+        );
+        return;
+      }
+      for (const item of admitted) {
+        this.#emit({
+          entityKind: 'semaphore_item',
+          type: 'admitted',
+          timestamp: item.admittedAt,
+          id: item.id,
+          key: item.key,
+          group: item.group,
+          waitMs: Math.max(0, item.admittedAt - item.enqueuedAt),
+        });
+      }
+    } finally {
+      release();
+    }
+  }
+
+  #retryDelay(attempt: number): number {
+    try {
+      const delay = Math.round(this.#delay(attempt));
+      if (Number.isSafeInteger(delay) && delay >= 0 && delay <= maxDelayMs) {
+        return delay;
+      }
+    } catch (error) {
+      reportFailure(
+        'durability.semaphore_queue.retry_policy_failed',
+        {},
+        error
+      );
+    }
+    return 60_000;
+  }
+
+  async #deadline(run: () => unknown): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve().then(run),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Semaphore admit timed out after ${this.#attemptTimeoutMs}ms`
+                )
+              ),
+            this.#attemptTimeoutMs
+          );
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+}
