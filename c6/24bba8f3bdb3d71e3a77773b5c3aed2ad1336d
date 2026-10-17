@@ -1,0 +1,21 @@
+.changeset/config.json
+  s_8d02a638233671::t_b3e513a15e9ed0 10-13
+packages/tanstack-db/package.json
+  s_8d02a638233671::t_b2e27cc8d95450 52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c624bba8f3bdb3d71e3a77773b5c3aed2ad1336d",
+  "prompts": {},
+  "sessions": {
+    "s_8d02a638233671": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a46-40d3-7313-a98a-80e451467795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
