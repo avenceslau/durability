@@ -31,7 +31,12 @@ import {
   type Engine,
   type SchedulerAttachment,
 } from './scheduler.js';
-import { deleteAttempt, type DurableTable } from './storage.js';
+import { deleteAttempt, listCreated, type DurableTable } from './storage.js';
+import {
+  registerTrackedSource,
+  type UntypedRecord,
+  type UntypedSource,
+} from './tracked-source.js';
 
 const alarmRowSchema = z.object({
   name: z.string(),
@@ -107,6 +112,38 @@ export type DurabilityAlarmEvent =
 /** Schedules (or replaces) the named alarm's pending occurrence. */
 export type DurableNamedAlarm = (scheduledTime: number) => Promise<void>;
 
+const readAlarm = (sql: SqlStorage, name: string): AlarmRow | undefined =>
+  alarmRowSchema
+    .optional()
+    .parse(
+      sql
+        .exec('SELECT * FROM durability_alarms WHERE name = ?', name)
+        .toArray()[0]
+    );
+
+const alarmRecord = (row: AlarmRow): UntypedRecord => ({
+  id: row.name,
+  name: row.name,
+  generation: row.generation_id,
+  createdAt: row.created_at,
+  state:
+    row.status === 'pending'
+      ? {
+          status: 'pending',
+          attempt: row.attempt,
+          nextAttemptAt: row.next_attempt_at,
+          lastError: row.last_error,
+        }
+      : {
+          status: 'failed',
+          attempt: row.attempt,
+          error: {
+            name: row.last_error_name ?? 'Error',
+            message: row.last_error ?? 'Durable alarm failed',
+          },
+        },
+});
+
 const alarmEntity = (row: AlarmRow): AlarmLifecycleEntity => ({
   entityKind: 'named_alarm',
   alarm: row.name,
@@ -158,6 +195,7 @@ class DurabilityAlarmsCore<Names extends string> {
       table: alarmsTable,
       runDue: (now, info) => this.#runDue(now, info),
     });
+    registerTrackedSource(this, this.#trackedSource());
   }
 
   /** Applies or reverts the `durability_alarms` schema; see {@link migrate}. */
@@ -207,6 +245,46 @@ class DurabilityAlarmsCore<Names extends string> {
       count,
     });
     return count;
+  }
+
+  /** Success deletes an occurrence, so only pending and failed ones are listed. */
+  #trackedSource(): UntypedSource {
+    const sql = this.#engine.sql;
+    return {
+      get: async (name) => {
+        const row = readAlarm(sql, name);
+        return row && alarmRecord(row);
+      },
+      list: async ({ limit, cursor, status, name }) => {
+        const page = listCreated(sql, alarmsTable, 'name', {
+          limit,
+          after: cursor,
+          status,
+          name,
+        });
+        const records = alarmRowSchema
+          .array()
+          .parse(page.rows)
+          .map(alarmRecord);
+        return page.next === undefined
+          ? { records }
+          : { records, cursor: page.next };
+      },
+      watch: (name, listener) =>
+        this.#engine.watch(alarmsTable, name, (completed) => {
+          if (!completed) {
+            listener();
+            return;
+          }
+          listener({
+            id: name,
+            name,
+            generation: completed.generation_id,
+            createdAt: completed.created_at,
+            state: { status: 'completed', result: undefined },
+          });
+        }),
+    };
   }
 
   async #runDue(
@@ -266,6 +344,8 @@ class DurabilityAlarmsCore<Names extends string> {
         createdAt
       );
     });
+    // A waiter on the replaced occurrence resolves now instead of at its timeout.
+    this.#engine.notify(alarmsTable, name);
     this.#emit({
       type: 'scheduled',
       entityKind: 'named_alarm',
@@ -369,6 +449,9 @@ class DurabilityAlarmsCore<Names extends string> {
  */
 export type DurabilityAlarms<Names extends string> =
   DurabilityAlarmsCore<Names> & Record<Names, DurableNamedAlarm>;
+
+/** Any `DurabilityAlarms` instance, without the index signature of `DurabilityAlarms<string>`. */
+export type AnyDurabilityAlarms = DurabilityAlarmsCore<string>;
 
 export interface DurabilityAlarmsConstructor {
   new <const Names extends string>(

@@ -20,6 +20,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
+    "./experimental": "./src/experimental.ts",
     "./routing": "./src/routing.ts",
     "./socket": "./src/socket.ts",
     "./utils": "./src/utils.ts"
@@ -35,6 +36,10 @@
       "./client": {
         "types": "./dist/client.d.ts",
         "import": "./dist/client.js"
+      },
+      "./experimental": {
+        "types": "./dist/experimental.d.ts",
+        "import": "./dist/experimental.js"
       },
       "./routing": {
         "types": "./dist/routing.d.ts",
@@ -86,6 +91,7 @@
     "@cloudflare/workers-types": "^4.20260702.1",
     "@durability/typescript-config": "workspace:*",
     "@types/node": "^24.12.0",
+    "capnweb": "^0.12.0",
     "typescript": "6.0.3",
     "vite": "^8.0.0",
     "vitest": "^4.1.5"

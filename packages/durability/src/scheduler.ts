@@ -68,6 +68,13 @@ export type Participant = {
   runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
 };
 
+/**
+ * Called after a record may have settled. Successful completions pass the
+ * executed row because some tables delete it on success; other changes pass
+ * nothing and listeners re-read storage.
+ */
+export type SettlementListener = (completed?: ExecutionSpec['row']) => void;
+
 export type ActiveExecution = {
   generation: string;
   createdAt: number;
@@ -168,6 +175,10 @@ export class Engine {
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
     | undefined;
+  private readonly watchers = new Map<
+    string,
+    Map<string, Set<SettlementListener>>
+  >();
 
   constructor(context: DurabilityContext, options: DurabilitySchedulerOptions) {
     this.context = context;
@@ -351,7 +362,7 @@ export class Engine {
       }
     }
 
-    return this.transaction((sql) => {
+    const removed = await this.transaction((sql) => {
       const { count } = countRowSchema.parse(
         sql
           .exec(
@@ -363,6 +374,46 @@ export class Engine {
       sql.exec(`DELETE FROM ${table.name} WHERE created_at < ?`, before);
       return count;
     });
+
+    if (removed > 0) {
+      for (const key of this.watchers.get(table.name)?.keys() ?? []) {
+        this.notify(table, key);
+      }
+    }
+    return removed;
+  }
+
+  /** In-memory only: listeners never survive eviction. */
+  watch(
+    table: DurableTable,
+    key: string,
+    listener: SettlementListener
+  ): () => void {
+    const byKey =
+      this.watchers.get(table.name) ??
+      new Map<string, Set<SettlementListener>>();
+    this.watchers.set(table.name, byKey);
+    const listeners = byKey.get(key) ?? new Set<SettlementListener>();
+    byKey.set(key, listeners);
+    listeners.add(listener);
+
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0 && byKey.get(key) === listeners) {
+        byKey.delete(key);
+      }
+    };
+  }
+
+  /** Call only after the change has committed. */
+  notify(
+    table: DurableTable,
+    key: string,
+    completed?: ExecutionSpec['row']
+  ): void {
+    for (const listener of this.watchers.get(table.name)?.get(key) ?? []) {
+      listener(completed);
+    }
   }
 
   tryAcquirePermit(): (() => void) | undefined {
@@ -542,6 +593,7 @@ export class Engine {
 
         const timestamp = spec.complete(result, attempt);
         if (timestamp !== undefined) {
+          this.notify(spec.table, key, row);
           spec.emit({
             ...spec.entity,
             type: 'attempt_settled',
@@ -589,6 +641,7 @@ export class Engine {
       return;
     }
 
+    this.notify(spec.table, key);
     spec.emit({
       ...spec.entity,
       type: 'terminal',
@@ -622,6 +675,9 @@ export class Engine {
     );
     if (!updated) {
       return;
+    }
+    if (decision.terminal) {
+      this.notify(spec.table, key);
     }
 
     const settled = {

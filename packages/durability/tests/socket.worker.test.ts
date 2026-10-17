@@ -113,6 +113,29 @@ describe('DurabilitySocket in workerd', () => {
     conn.close();
   });
 
+  it('serves tracked work as plain records', async () => {
+    const conn = client.connect('list-tracker');
+    const created: Todo[] = [];
+    conn.on.created((todo) => created.push(todo));
+    const todo = { id: 't1', title: 'track it', done: false };
+    await conn.rpc.create({ id: 'op-1', payload: todo });
+    await waitFor(() => expect(created).toHaveLength(1));
+
+    await expect(conn.rpc.work()).resolves.toEqual({
+      records: [
+        {
+          source: 'todos',
+          id: 'op-1',
+          name: 'create',
+          generation: expect.any(String),
+          createdAt: expect.any(Number),
+          state: { status: 'completed', result: todo },
+        },
+      ],
+    });
+    conn.close();
+  });
+
   it('replays missed events to a reconnecting subscriber and resyncs on gaps', async () => {
     TestWebSocket.instances = [];
     const subscriber = client.connect('list-b');

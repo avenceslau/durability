@@ -35,7 +35,12 @@ import {
   type SchedulerAttachment,
 } from './scheduler.js';
 import { deserialize, serialize } from './serialization.js';
-import { updateAttempt, type DurableTable } from './storage.js';
+import { listCreated, updateAttempt, type DurableTable } from './storage.js';
+import {
+  registerTrackedSource,
+  type UntypedRecord,
+  type UntypedSource,
+} from './tracked-source.js';
 
 const callRowSchema = z.object({
   id: z.string(),
@@ -105,6 +110,13 @@ type HandlerPayload<Handler> = Handler extends (
 type HandlerResult<Handler> = Handler extends (...args: never[]) => infer Result
   ? Awaited<Result>
   : never;
+
+/** Result types of every operation, keyed by handler name. */
+export type OperationResults<Handlers extends HandlerMap> = {
+  [Operation in Extract<keyof Handlers, string>]: HandlerResult<
+    Handlers[Operation]
+  >;
+};
 
 type DurableOperationInput<Handler> = {
   /** Stable idempotency key used to deduplicate the operation. */
@@ -241,6 +253,41 @@ const assertOperation = (
   }
 };
 
+const callState = (
+  call: CallRow
+): Exclude<DurableOperationResult<unknown>, { status: 'not_found' }> => {
+  if (call.status === 'pending') {
+    return {
+      status: 'pending',
+      attempt: call.attempt,
+      nextAttemptAt: call.next_attempt_at,
+      lastError: call.last_error,
+    };
+  }
+  if (call.status === 'failed') {
+    return {
+      status: 'failed',
+      attempt: call.attempt,
+      error: {
+        name: call.last_error_name ?? 'Error',
+        message: call.last_error ?? 'Durable operation failed',
+      },
+    };
+  }
+  if (call.result === null) {
+    throw new Error(`Completed durable call "${call.id}" has no result`);
+  }
+  return { status: 'completed', result: deserialize(call.result) };
+};
+
+const callRecord = (call: CallRow): UntypedRecord => ({
+  id: call.id,
+  name: call.operation,
+  generation: call.generation_id,
+  createdAt: call.created_at,
+  state: callState(call),
+});
+
 const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
   entityKind: 'operation',
   operation: call.operation,
@@ -294,6 +341,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       table: callsTable,
       runDue: (now) => this.#runDue(now),
     });
+    registerTrackedSource(this, this.#trackedSource());
   }
 
   /** Applies or reverts the `durability_calls` schema; see {@link migrate}. */
@@ -345,6 +393,30 @@ class DurabilityCore<Handlers extends HandlerMap> {
     return count;
   }
 
+  #trackedSource(): UntypedSource {
+    const sql = this.#engine.sql;
+    return {
+      get: async (id) => {
+        const call = readCall(sql, id);
+        return call && callRecord(call);
+      },
+      list: async ({ limit, cursor, status, name }) => {
+        const page = listCreated(sql, callsTable, 'operation', {
+          limit,
+          after: cursor,
+          status,
+          name,
+        });
+        const records = callRowSchema.array().parse(page.rows).map(callRecord);
+        return page.next === undefined
+          ? { records }
+          : { records, cursor: page.next };
+      },
+      watch: (id, listener) =>
+        this.#engine.watch(callsTable, id, () => listener()),
+    };
+  }
+
   async #runDue(now: number): Promise<void> {
     const due = z
       .object({ id: z.string() })
@@ -378,30 +450,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       return { status: 'not_found' };
     }
     assertOperation(idempotencyKey, call.operation, operation);
-    if (call.status === 'pending') {
-      return {
-        status: 'pending',
-        attempt: call.attempt,
-        nextAttemptAt: call.next_attempt_at,
-        lastError: call.last_error,
-      };
-    }
-    if (call.status === 'failed') {
-      return {
-        status: 'failed',
-        attempt: call.attempt,
-        error: {
-          name: call.last_error_name ?? 'Error',
-          message: call.last_error ?? 'Durable operation failed',
-        },
-      };
-    }
-    if (call.result === null) {
-      throw new Error(
-        `Completed durable call "${idempotencyKey}" has no result`
-      );
-    }
-    return { status: 'completed', result: deserialize(call.result) };
+    return callState(call);
   }
 
   async #run(input: {
@@ -606,6 +655,9 @@ type OperationMethods<Handlers extends HandlerMap> = {
  */
 export type Durability<Handlers extends HandlerMap> = DurabilityCore<Handlers> &
   OperationMethods<Handlers>;
+
+/** Any `Durability` instance, without the index signature of `Durability<HandlerMap>`. */
+export type AnyDurability = DurabilityCore<HandlerMap>;
 
 export interface DurabilityConstructor {
   new <Handlers extends HandlerMap>(

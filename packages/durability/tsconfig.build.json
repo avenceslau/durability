@@ -12,6 +12,7 @@
   "include": [
     "src/index.ts",
     "src/client.ts",
+    "src/experimental.ts",
     "src/routing.ts",
     "src/socket.ts",
     "src/utils.ts"
