@@ -6,7 +6,7 @@ import {
   DurabilitySemaphoreQueue,
   type AdmittedItem,
   type SemaphoreRequest,
-} from 'durability/semaphore';
+} from 'durability/experimental/semaphore';
 
 type Env = {
   JOB_SHARDS: DurableObjectNamespace<JobShard>;
@@ -69,7 +69,8 @@ export const limits = DurabilitySemaphore.client({
 /**
  * Many shards, each queueing jobs for many accounts. Admitted jobs run as
  * durable operations; the permit returns when the operation reaches a
- * terminal state, success or failure.
+ * terminal state, success or failure, through the lifecycle hook or, if that
+ * is lost, the queue's `finished` check.
  */
 export class JobShard extends DurableObject<Env> {
   private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
@@ -108,6 +109,13 @@ export class JobShard extends DurableObject<Env> {
       Promise.all(
         items.map((item) => this.jobs.run({ id: item.id, payload: item.body }))
       ).then(() => undefined),
+    // The lifecycle hook above is best-effort; this returns any permit it missed.
+    finished: async (ids) => {
+      const results = await Promise.all(
+        ids.map((id) => this.jobs.run.getResult(id))
+      );
+      return ids.filter((_, index) => results[index]?.status !== 'pending');
+    },
   });
 
   submit(jobs: Job[]) {
