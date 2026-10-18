@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { traceFunction, traceMethods } from './dev.js';
 import {
   DurableAlarmTimeoutError,
   DurableAttemptsExhaustedError,
@@ -185,7 +186,10 @@ class DurabilityAlarmsCore<Names extends string> {
         throw new Error(`"${name}" is reserved by DurabilityAlarms`);
       }
       Object.defineProperty(this, name, {
-        value: (scheduledTime: number) => this.#schedule(name, scheduledTime),
+        value: traceFunction(
+          `DurabilityAlarms.${name}`,
+          (scheduledTime: number) => this.#schedule(name, scheduledTime)
+        ),
         enumerable: true,
       });
     }
@@ -459,6 +463,8 @@ export interface DurabilityAlarmsConstructor {
   ): DurabilityAlarms<Names>;
   migrate: typeof DurabilityAlarmsCore.migrate;
 }
+
+traceMethods(DurabilityAlarmsCore.prototype, 'DurabilityAlarms');
 
 // See Durability: members derived from the handler names cannot be declared on
 // the class, so the constructor is typed separately.

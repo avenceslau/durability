@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { traceMethods } from './dev.js';
 import {
   LogAppendError,
   LogLeaseError,
@@ -1114,6 +1115,8 @@ export class DurabilityLog<Body = unknown> {
     );
   }
 }
+
+traceMethods(DurabilityLog.prototype, 'DurabilityLog');
 
 const assertConsumer = (consumer: string): void => {
   if (typeof consumer !== 'string' || consumer.length === 0) {

@@ -1,3 +1,4 @@
+import { traceLifecycle } from './dev.js';
 import { reportFailure, type SerializedError } from './errors.js';
 
 export type OperationLifecycleEntity = {
@@ -122,11 +123,11 @@ export const createLifecycleHooks = (
     add(initial);
   }
   return {
-    emit: (event) => {
+    emit: traceLifecycle((event) => {
       for (const emit of emits) {
         emit(event);
       }
-    },
+    }),
     add,
   };
 };

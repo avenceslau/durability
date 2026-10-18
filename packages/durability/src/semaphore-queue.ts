@@ -1,3 +1,4 @@
+import { traceLifecycle, traceMethods } from './dev.js';
 import { reportFailure, serializeError } from './errors.js';
 import {
   durabilitySemaphoreQueueMigrations,
@@ -248,8 +249,10 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     const scheduler = config.scheduler ?? new DurabilityScheduler(config);
     this.#engine = engineFor({ scheduler });
     this.#store = new QueueStore(this.#engine.sql);
-    this.#emit = this.#engine.emitter<DurabilitySemaphoreQueueEvent>(
-      config.onLifecycleEvent
+    this.#emit = traceLifecycle(
+      this.#engine.emitter<DurabilitySemaphoreQueueEvent>(
+        config.onLifecycleEvent
+      )
     );
     this.#engine.migrateSchema(
       'semaphoreQueue',
@@ -1153,3 +1156,5 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     }
   }
 }
+
+traceMethods(DurabilitySemaphoreQueue.prototype, 'DurabilitySemaphoreQueue');
