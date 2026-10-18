@@ -128,6 +128,18 @@ export class QueueStore {
     );
   }
 
+  /** Notified items whose `finished` check is due; `next_attempt_at` holds the check time. */
+  listCheckDue(now: number, limit: number): QueueItemRow[] {
+    return this.items(
+      `SELECT * FROM durability_semaphore_queue_items
+       WHERE status = 'admitted' AND notified = 1 AND next_attempt_at <= ?
+       ORDER BY next_attempt_at ASC
+       LIMIT ?`,
+      now,
+      limit
+    );
+  }
+
   listUnnotified(now: number, limit: number): QueueItemRow[] {
     return this.items(
       `SELECT * FROM durability_semaphore_queue_items
@@ -259,7 +271,7 @@ export class QueueStore {
     );
   }
 
-  nextPendingAt(): number | undefined {
+  nextPendingAt(checksFinished: boolean): number | undefined {
     const candidates = [
       this.sql
         .exec(
@@ -270,8 +282,9 @@ export class QueueStore {
       this.sql
         .exec(
           `SELECT next_attempt_at AS at FROM durability_semaphore_queue_items
-           WHERE status = 'admitted' AND notified = 0
-           ORDER BY next_attempt_at ASC LIMIT 1`
+           WHERE status = 'admitted' AND (notified = 0 OR ?)
+           ORDER BY next_attempt_at ASC LIMIT 1`,
+          checksFinished ? 1 : 0
         )
         .toArray()[0]?.['at'],
     ].filter((value): value is number => typeof value === 'number');

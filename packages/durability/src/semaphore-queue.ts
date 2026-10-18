@@ -78,7 +78,16 @@ export type DurabilitySemaphoreQueueConfig<Body> = SchedulerAttachment & {
    * admission commits. Retried until it returns; must be idempotent on item ID.
    */
   admit(items: AdmittedItem<Body>[]): unknown | Promise<unknown>;
-  /** Items per `admit()` call. Defaults to 100. */
+  /**
+   * Returns which of these admitted items are done. The queue asks on its own
+   * alarm and releases them, so a permit whose `release()` was lost (a
+   * best-effort lifecycle hook, a crash) still comes back. Without it,
+   * `release()` is the only way a permit returns.
+   */
+  finished?(ids: string[]): string[] | Promise<string[]>;
+  /** How long an admitted item runs before `finished` is asked, and between asks. Defaults to 60 seconds. */
+  finishedCheckMs?: number;
+  /** Items per `admit()` and `finished()` call. Defaults to 100. */
   maxAdmitBatch?: number;
   /** Maximum duration of one `admit()` call. Defaults to 60 seconds. */
   attemptTimeoutMs?: number;
@@ -148,6 +157,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   readonly #server: SemaphoreHolder;
   readonly #clientId: string;
   readonly #admit: DurabilitySemaphoreQueueConfig<Body>['admit'];
+  readonly #finished: DurabilitySemaphoreQueueConfig<Body>['finished'];
+  readonly #finishedCheckMs: number;
   readonly #maxAdmitBatch: number;
   readonly #attemptTimeoutMs: number;
   readonly #delay: (attempt: number) => number;
@@ -156,6 +167,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   readonly #requesting = new Set<string>();
   readonly #blocked = new Map<string, SemaphoreBlockedReason>();
   #notifying: Promise<void> | undefined;
+  #checking: Promise<void> | undefined;
 
   constructor(config: DurabilitySemaphoreQueueConfig<Body>) {
     if (typeof config.clientId !== 'string' || config.clientId.length === 0) {
@@ -167,6 +179,18 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     this.#server = config.server;
     this.#clientId = config.clientId;
     this.#admit = config.admit;
+    if (
+      config.finished !== undefined &&
+      typeof config.finished !== 'function'
+    ) {
+      throw new TypeError('finished must be a function');
+    }
+    this.#finished = config.finished;
+    this.#finishedCheckMs = config.finishedCheckMs ?? 60_000;
+    assertPositiveInteger('finishedCheckMs', this.#finishedCheckMs);
+    if (this.#finishedCheckMs > maxDelayMs) {
+      throw new RangeError(`finishedCheckMs must be at most ${maxDelayMs}`);
+    }
     this.#maxAdmitBatch = config.maxAdmitBatch ?? 100;
     assertPositiveInteger('maxAdmitBatch', this.#maxAdmitBatch);
     this.#attemptTimeoutMs = config.attemptTimeoutMs ?? 60_000;
@@ -197,7 +221,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     this.#engine.register({
       table: queueItemsTable,
       runDue: (now) => this.#runDue(now),
-      nextPendingAt: () => this.#store.nextPendingAt(),
+      nextPendingAt: () =>
+        this.#store.nextPendingAt(this.#finished !== undefined),
     });
   }
 
@@ -370,8 +395,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
 
   async #runDue(now: number): Promise<void> {
     const store = this.#store;
-    const [, keys] = await Promise.all([
+    const [, , keys] = await Promise.all([
       this.#notify(),
+      this.#releaseFinished(now),
       store.listDueKeys(now),
     ]);
     await Promise.all(
@@ -671,6 +697,53 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     this.#engine.waitUntil(this.#notify().catch(onError), onError);
   }
 
+  /** Releases admitted items `finished` reports done, one check at a time. */
+  #releaseFinished(now: number): Promise<void> {
+    this.#checking ??= this.#checkFinished(now).finally(() => {
+      this.#checking = undefined;
+    });
+    return this.#checking;
+  }
+
+  async #checkFinished(now: number): Promise<void> {
+    const finished = this.#finished;
+    if (!finished) {
+      return;
+    }
+    // Schedule the next check before asking, as admit() claims its batch: rows
+    // left due while finished() runs would re-arm the alarm at once.
+    const later = now + this.#finishedCheckMs;
+    const due = await this.#engine.transaction(() => {
+      const rows = this.#store.listCheckDue(now, this.#maxAdmitBatch);
+      for (const row of rows) {
+        this.#store.updateItem({ ...row, next_attempt_at: later });
+      }
+      return rows;
+    });
+    if (due.length === 0) {
+      return;
+    }
+    let done: string[] = [];
+    try {
+      done = await this.#deadline('finished', () =>
+        finished(due.map((row) => row.id))
+      );
+    } catch (error) {
+      reportFailure(
+        'durability.semaphore_queue.finished_failed',
+        { count: due.length },
+        error
+      );
+    }
+    const asked = new Set(due.map((row) => row.id));
+    for (const id of new Set(done)) {
+      if (asked.has(id)) {
+        // eslint-disable-next-line no-await-in-loop
+        await this.release(id);
+      }
+    }
+  }
+
   /** Hands admitted, unnotified items to `admit()`, one batch at a time. */
   #notify(): Promise<void> {
     this.#notifying ??= this.#notifyBatch().finally(() => {
@@ -735,7 +808,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           }
           this.#store.updateItem(
             failure === undefined
-              ? { ...current, notified: 1 }
+              ? {
+                  ...current,
+                  notified: 1,
+                  next_attempt_at: Date.now() + this.#finishedCheckMs,
+                }
               : {
                   ...current,
                   next_attempt_at: Date.now() + this.#retryDelay(row.attempt),

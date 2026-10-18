@@ -193,6 +193,40 @@ describe('semaphore queue', () => {
     grantResults: [],
   });
 
+  it('releases admitted items that finished reports done, without release()', async () => {
+    const done = new Set<string>();
+    const asked: string[][] = [];
+    const { queue, holderFor, admitted } = fixture(
+      { limit: 1 },
+      {
+        finished: (ids) => {
+          asked.push(ids);
+          return ids.filter((id) => done.has(id));
+        },
+        finishedCheckMs: 10_000,
+      }
+    );
+    await queue.enqueue([
+      { id: 'a', key: 'acct', body: 'A' },
+      { id: 'b', key: 'acct', body: 'B' },
+    ]);
+    await settle(3_000);
+    expect(admitted.map((item) => item.id)).toEqual(['a']);
+
+    // Still running at the first check: nothing is released.
+    await settle(10_000);
+    expect(asked).toContainEqual(['a']);
+    expect(await queue.status('a')).toMatchObject({ state: 'admitted' });
+
+    // 'a' finished, but nobody called release(): the next check returns its permit.
+    done.add('a');
+    await settle(10_000);
+    expect(await queue.status('a')).toBeUndefined();
+    await settle(5_000);
+    expect(admitted.map((item) => item.id)).toEqual(['a', 'b']);
+    expect(await holderFor('acct').usage()).toMatchObject({ granted: 1 });
+  });
+
   it('stays idle while the holder keeps a request for its round', async () => {
     const storage = storageFor();
     let answer!: (grant: PermitGrant) => void;

@@ -585,7 +585,7 @@ export class JobShard extends DurableObject<Env> {
   private readonly jobs = new Durability({
     scheduler: this.scheduler,
     handlers: { run: (job: Job) => runJob(this.env, job) },
-    // Return the permit when the operation reaches a terminal state.
+    // Return the permit as soon as the operation reaches a terminal state.
     onLifecycleEvent: (event) => {
       if (
         event.type === 'terminal' ||
@@ -603,6 +603,13 @@ export class JobShard extends DurableObject<Env> {
       Promise.all(
         items.map((item) => this.jobs.run({ id: item.id, payload: item.body }))
       ),
+    // The hook above is best-effort; this check returns any permit it missed.
+    finished: async (ids) => {
+      const results = await Promise.all(
+        ids.map((id) => this.jobs.run.getResult(id))
+      );
+      return ids.filter((_, index) => results[index]!.status !== 'pending');
+    },
   });
 
   submit(job: Job) {
@@ -618,6 +625,7 @@ export class JobShard extends DurableObject<Env> {
 ```
 
 - **States.** An item is `queued` until permits arrive, `claiming` while the holder confirms the claim, and `admitted` once `admit()` has been handed the item. `admit()` runs after the admission commits and is retried under `retries.delay` until it returns, so it must be idempotent on item ID. `release(id)` returns the permit; `cancel(id)` removes an item that is still `queued`.
+- **Releasing.** Call `release(id)` when the work ends, and pass `finished(ids)` so a release that never happens — a lifecycle hook is best-effort, a crash can come between the work ending and the call — does not hold the permit forever. The queue asks `finished` about each admitted item `finishedCheckMs` (default 60 seconds) after `admit()` returned, and again at that interval, releasing the ones it reports done. Without `finished`, a lost `release()` leaks the permit until the item is released by hand.
 - **Requests.** Each key is asked at most once per `nextRequestAt`, with demand aggregated per group from the oldest queued items. A failed request, or one unanswered after `attemptTimeoutMs`, is retried with backoff. Items whose key already holds unclaimed permits — a grant sized for demand that was cancelled, say — are admitted without a request.
 - **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
 - **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
