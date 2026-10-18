@@ -1,0 +1,31 @@
+.changeset/durability-semaphore.md
+  s_89dff2fd3753ec::t_24677611f27c9d 5
+.changeset/transforms-client-factories.md
+  s_89dff2fd3753ec::t_6cc61d304dfe2e 5
+packages/durability/README.md
+  s_89dff2fd3753ec::t_25680ebe89e99e 9,516-518,529
+packages/durability/package.json
+  s_89dff2fd3753ec::t_16b0ff58444fc0 26,53
+packages/durability/src/semaphore.ts
+  s_89dff2fd3753ec::t_6a3b7912f4d166 1-6,28-30
+packages/transforms/src/vite.ts
+  s_89dff2fd3753ec::t_74595084f216dd 79
+packages/transforms/tests/vite.test.ts
+  s_89dff2fd3753ec::t_ceb65fa9749bf6 414,416
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cfc03ff14ef92b68b673df3c77a5bc385106a523",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
