@@ -7,6 +7,7 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
 - **`DurabilityOutbox`** _(experimental, `durability/experimental`)_ — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
 - **`DurabilitySemaphore`** _(experimental, `durability/experimental/semaphore`)_ — one concurrency limit shared by many client Durable Objects, allocated in arrival-ordered rounds with cumulative claim/release accounting.
+- **`DurabilityTopology`** _(experimental, `durability/experimental`)_ — membership of shard groups held by one coordinator, published to a read store and pushed to every member as the latest value of each state channel, with a read-only cached client.
 - **`DurabilityRouting`** — a DO-side load observer and client-side shard selector (`durability/routing`), supporting location hints and caller transforms.
 - **`DurabilitySocket`** — typed WebSocket RPC and replayable event push from a Durable Object to browsers (`durability/socket`), with a dependency-free browser client (`durability/client`).
 - **`DurabilityTracker`** _(experimental, `durability/experimental`)_ — lists work across capabilities and custom sources, as RPC handles that can be waited on or as plain records.
@@ -875,6 +876,132 @@ export class Account extends DurableObject<Env> {
 - **Batching.** `maxBatchSize` (default 50) bounds one `publish` call. `batchDelayMs` rounds first publication up to the next multiple of the delay, so stages within one window coalesce into a batch; a stage landing exactly on a boundary is due immediately.
 
 `DurabilityOutbox.migrate(this.ctx, null)` removes the outbox schema.
+
+## Shard topology (experimental)
+
+`DurabilityTopology` is for work spread over several Durable Objects (shards) whose membership changes over time, where something else needs to reach them: a router picking a shard for a write, a reader querying every shard, or a coordinator pushing configuration to all of them. It lives in `durability/experimental`, so pin an exact version.
+
+One coordinator Durable Object holds each group. It is the only thing that can change or publish that group. Readers never call it: they read the snapshot it published.
+
+```ts
+import {
+  DurabilityTopology,
+  type TopologyStateUpdate,
+} from 'durability/experimental';
+
+export class Coordinator extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly topology = new DurabilityTopology({
+    scheduler: this.scheduler,
+    publish: {
+      write: (snapshot, encoded) =>
+        this.env.TOPOLOGY.put(`topology/${snapshot.group}`, encoded),
+      delete: (group) => this.env.TOPOLOGY.delete(`topology/${group}`),
+    },
+    states: {
+      limits: {
+        deliver: (member, update: TopologyStateUpdate<Limits>) =>
+          this.env.SHARDS.getByName(member.id).applyLimits(update),
+      },
+    },
+  });
+
+  createTenant(tenant: string, limits: Limits) {
+    return this.topology.update(tenant, () => ({
+      members: [0, 1, 2].map((n) => ({
+        id: `${tenant}-${n}`,
+        state: 'active' as const,
+      })),
+      states: { limits },
+    }));
+  }
+
+  retireShard(tenant: string, shard: string) {
+    return this.topology.update(tenant, ({ members }) => ({
+      members: [
+        ...members.map((m) =>
+          m.id === shard ? { ...m, state: 'draining' as const } : m
+        ),
+        { id: `${tenant}-${members.length}`, state: 'active' },
+      ],
+    }));
+  }
+
+  deleteTenant(tenant: string) {
+    return this.topology.delete(tenant);
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+```
+
+The coordinator has three methods:
+
+- `update(group, next)` runs `next(current)` inside one storage transaction and commits its draft, staging publication and deliveries in the same transaction. `current` holds the members and the current state values. The draft can set `members`, `states`, or both, and `next` must return synchronously, so nothing interleaves between reading and writing. Membership changes bump the group's `version`; unchanged drafts do not. After the commit, one publish is attempted: `published: false` means the snapshot is not yet final in the store, because the write failed or an older write may still land over it. The change is committed either way, and the outbox keeps going until it is. An empty member list is rejected; use `delete`.
+- `delete(group)` drops the members and state values, cancels pending syncs, and asks the publisher to delete the snapshot. Versions keep counting, so a recreated group is newer than anything a reader cached.
+- `snapshot(group)` reads the group inside the coordinator. It is not a lookup path for other Workers.
+
+An `active` member is in the write set and the read set. A `draining` member is only in the read set: it receives no new work but still holds data, so queries must still reach it. Members leave the read set only when a draft omits them.
+
+### Publishing
+
+`publish.write` receives the snapshot and an `encoded` string. Store `encoded` as is; it is the only format the client reads, and no encoder is exported, so only the coordinator can produce one. It carries the coordinator's Durable Object ID, so a client configured with `holder` rejects a value written by anyone else. Publication runs on a `DurabilityOutbox` channel (`durability.topology`) keyed by group, so it shares the outbox's guarantees: only the newest snapshot of a group is pending, publish calls for the channel run one at a time, and attempts never stop (`retries.delay` controls backoff). The outbox expects sinks to keep the highest version, which a plain `KV.put` cannot, so the topology closes that gap itself, durably:
+
+- Every write is recorded in storage before it starts and forgotten once it settles.
+- A record that outlives its write, because the write timed out or the object was evicted mid-write, means an older snapshot may still land. A newer write is then not acknowledged until that record's landing deadline has passed, and is written again at that point.
+- An abandoned write that settles while the object is still running restages the latest snapshot immediately.
+
+The landing deadline is the write's start plus `attemptTimeoutMs` plus five minutes. A write that lands later than that can still overwrite a newer snapshot until the next change; only a sink that keeps the highest version avoids that bound. `attemptTimeoutMs` bounds one write.
+
+### State channels
+
+Each entry in `states` is a channel whose latest value every member converges to. `members: 'write'` (the default) reaches active members; `'read'` reaches draining members too. Setting a value delivers it to every member in the role. A member that enters the role receives the current value in the same transaction that added it, so a new shard never starts with an old value. A member that leaves the role has its pending delivery discarded; one already in flight may still arrive. Each channel is its own outbox channel (`durability.topology.<name>`) keyed by group and member, so every member is retried independently; `attemptTimeoutMs` bounds one delivery, and a member that hangs holds up the rest of its batch only until then. Setting a channel to the value it already has delivers nothing.
+
+Only the latest value is delivered, and a timed-out delivery may still arrive after a newer one. `version` is the outbox version, which only increases. Apply an update only when it is newer than the last one applied, in the same transaction:
+
+```ts
+applyLimits(update: TopologyStateUpdate<Limits>) {
+  this.ctx.storage.transactionSync(() => {
+    const applied = this.ctx.storage.kv.get<number>('limits:version') ?? 0;
+    if (update.version <= applied) {
+      return;
+    }
+    this.ctx.storage.kv.put('limits', update.value);
+    this.ctx.storage.kv.put('limits:version', update.version);
+  });
+}
+```
+
+`onLifecycleEvent` receives the outbox events of those channels: `channel` names the publication or state channel, and `id` is the group, or `[group, member]` as JSON for a delivery.
+
+### Reading
+
+Stateless Workers read through a client. It has one method:
+
+```ts
+const topology = DurabilityTopology.client({
+  read: (tenant) => env.TOPOLOGY.get(`topology/${tenant}`),
+  holder: (tenant) => env.COORDINATORS.idFromName(tenant),
+});
+
+const { members } = await topology.get(tenant);
+const writable = members.filter((member) => member.state === 'active');
+const shard = writable[Math.floor(Math.random() * writable.length)];
+```
+
+Routing, querying every member, and resolving stubs are ordinary code over `members`.
+
+The client caches each group in the isolate for `ttlMs` (default 30 seconds, jittered by ±20%), shares one read between concurrent callers, and never replaces a snapshot with an older version from the same holder. A missing or failed read is remembered for `negativeTtlMs` (default 5 seconds). Reads time out after `readTimeoutMs` (default 1 second).
+
+When the published copy is missing, invalid, slow, or the read throws, `get` throws `TopologyUnavailableError` with a `reason`. Every fallback is opt-in, and they run in this order:
+
+1. `staleIfErrorMs` serves this isolate's last good snapshot for that long after it expired. It never applies to a missing group.
+2. `seed(group)` derives members locally, without I/O.
+3. `fallback(group, reason)` is application code and is not cached.
+
+The client never contacts the coordinator. Wiring `fallback` to it moves every reader onto one Durable Object at the moment the read store is struggling, so prefer failing or serving stale. `onFallback` reports each fallback and its source.
 
 ## Retained log
 
