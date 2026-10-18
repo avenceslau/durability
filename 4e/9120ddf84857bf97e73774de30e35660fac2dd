@@ -1,0 +1,47 @@
+.changeset/durability-topology.md
+  s_32ebdca782132f::t_a8c3cb77e06fd6 1-5
+packages/durability/README.md
+  s_32ebdca782132f::t_024181f1149367 514-633
+packages/durability/src/errors.ts
+  s_32ebdca782132f::t_f2057c741909fc 269-301
+packages/durability/src/experimental.ts
+  s_32ebdca782132f::t_e358e789be0d8f 30-58
+packages/durability/src/migrations.ts
+  s_32ebdca782132f::t_6160a18c692ce0 334-397,414-416,490,528,560
+packages/durability/src/scheduler.ts
+  s_32ebdca782132f::t_d9cb7284d0134b 15,225-233,240
+packages/durability/src/topology-client.test.ts
+  s_32ebdca782132f::t_f5870693ac20e9 1-215
+packages/durability/src/topology-client.ts
+  s_32ebdca782132f::t_3e07b5cbd30d74 1-257
+packages/durability/src/topology-snapshot.ts
+  s_32ebdca782132f::t_0b0a6927a72072 1-90
+packages/durability/src/topology.test.ts
+  s_32ebdca782132f::t_105bb0f0b2c23f 1-468
+packages/durability/src/topology.ts
+  s_32ebdca782132f::t_49f05ca0da8ff3 1-1110
+packages/durability/tests/named-alarm-worker.ts
+  s_32ebdca782132f::t_04884c675539d1 13
+packages/durability/tests/topology-worker.ts
+  s_32ebdca782132f::t_e76ca8f78549c4 1-87
+packages/durability/tests/topology.worker.test.ts
+  s_32ebdca782132f::t_0609bee1d461b6 1-118
+packages/durability/wrangler.test.jsonc
+  s_32ebdca782132f::t_59f764f8d3e85f 29-34,62-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4e9120ddf84857bf97e73774de30e35660fac2dd",
+  "prompts": {},
+  "sessions": {
+    "s_32ebdca782132f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14f3b-4a41-70c6-a9c1-e8fe8e85185b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
