@@ -538,7 +538,7 @@ describe('semaphore', () => {
       ]);
     });
 
-    it('shrinks undrawn lease headroom when the limit is lowered', async () => {
+    it('retires undrawn lease headroom when the limit is lowered, freeing it once the client confirms', async () => {
       let limit = 10;
       const { semaphore, round } = fixture({
         limit: () => limit,
@@ -556,14 +556,22 @@ describe('semaphore', () => {
       const [second] = await round(
         leasing('a', [], [{ leaseId, drawn: 3, released: 0 }])
       );
-      // 2 granted + 8 leased = 10 > 5: the 5 undrawn permits are retired.
+      // 2 granted + 8 leased = 10 > 5: the lease stops drawing, but the client
+      // may have drawn since its report, so all 8 stay counted.
       expect(leased(second!)).toEqual([
-        { group: 'g', permits: 3, retired: true },
+        { group: 'g', permits: 8, retired: true },
       ]);
-      expect(await semaphore.usage()).toMatchObject({
-        granted: 2,
-        leased: 3,
+      expect(await semaphore.usage()).toMatchObject({ granted: 2, leased: 8 });
+
+      // It had drawn one more by the time it stopped; that is what stays held.
+      await semaphore.handle({
+        type: 'sync',
+        v: 1,
+        clientId: 'a',
+        grants: [],
+        leases: [{ leaseId, drawn: 4, released: 0, retired: true }],
       });
+      expect(await semaphore.usage()).toMatchObject({ granted: 2, leased: 4 });
     });
 
     it('under: a reserve at or above the limit still leaves one permit for grants', async () => {

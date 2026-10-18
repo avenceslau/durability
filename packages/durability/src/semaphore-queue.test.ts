@@ -322,6 +322,45 @@ describe('semaphore queue', () => {
     expect(await queue.status('a')).toMatchObject({ state: 'claiming' });
   });
 
+  it('confirms a lease the holder retired with what it actually drew', async () => {
+    const syncs: PermitSync[] = [];
+    let requests = 0;
+    const { queue, admitted } = scripted({
+      request: async () => {
+        requests += 1;
+        return {
+          ...grantOf(`unused-${requests}`, 0),
+          grants: [],
+          leases: [
+            {
+              leaseId: 'L',
+              group: '',
+              permits: 3,
+              // The second reply retires the lease.
+              expiresAt: requests === 1 ? Date.now() + 120_000 : Date.now(),
+            },
+          ],
+        };
+      },
+      sync: async (_key, message) => {
+        syncs.push(message);
+        return { type: 'synced', v: 1, grantResults: [] };
+      },
+    });
+
+    await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+    await settle();
+    await queue.enqueue([{ id: 'b', key: 'k', group: 'other', body: 'B' }]);
+    await settle(2_000);
+    expect(admitted.map((item) => item.id)).toEqual(['a']);
+    expect(syncs.flatMap((sync) => sync.leases ?? [])).toContainEqual({
+      leaseId: 'L',
+      drawn: 1,
+      released: 0,
+      retired: true,
+    });
+  });
+
   it('returns idle lease headroom when the holder is contended, and stops drawing from it', async () => {
     const syncs: PermitSync[] = [];
     let requests = 0;

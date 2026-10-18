@@ -350,7 +350,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         const lease = store.getLease(item.lease_id);
         if (lease) {
           const returned = lease.released + 1;
-          // A spent lease is retired, not deleted, until the holder echoes it.
+          // A spent lease is retired; its row is dropped later, in #runDue.
           const updated = {
             ...lease,
             released: returned,
@@ -440,6 +440,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   async #runDue(now: number): Promise<void> {
+    // A spent lease row is kept as long as a late reply could still refer to
+    // it; deleted sooner, an older echo of the live lease would insert it again.
+    this.#engine.transactionSync(() => {
+      this.#store.removeSpentLeases(now - this.#attemptTimeoutMs);
+    });
     const keys = this.#store.listDueKeys(now);
     await Promise.all([this.#notify(), this.#releaseFinished(now)]);
     await Promise.all(
@@ -668,8 +673,6 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       ) {
         continue;
       }
-      // The row stays until the holder echoes the retirement; deleting it now
-      // would let an older echo of the live lease insert it again, undrawn.
       const returned = { ...lease, permits: lease.drawn, expires_at: now };
       store.updateLease(returned);
       this.#stageLeaseReport(returned);
@@ -687,15 +690,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     for (const grant of grants) {
       const lease = store.getLease(grant.leaseId);
       if (grant.expiresAt <= now) {
-        if (!lease) {
+        if (!lease || retiredLocally(lease, now)) {
           continue;
         }
+        // The holder keeps counting the whole lease until this report says
+        // how much was drawn by the time drawing stopped.
         const retired = { ...lease, permits: lease.drawn, expires_at: now };
-        if (retired.released >= retired.permits) {
-          store.removeLease(lease.lease_id);
-        } else {
-          store.updateLease(retired);
-        }
+        store.updateLease(retired);
+        this.#stageLeaseReport(retired);
         continue;
       }
       if (lease) {
@@ -857,13 +859,15 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         }
         let synced: PermitSyncResult;
         try {
-          synced = await this.#server.sync(key, {
-            type: 'sync',
-            v: 1,
-            clientId: this.#clientId,
-            grants,
-            leases,
-          });
+          synced = await this.#deadline('sync', () =>
+            this.#server.sync(key, {
+              type: 'sync',
+              v: 1,
+              clientId: this.#clientId,
+              grants,
+              leases,
+            })
+          );
         } catch (error) {
           reportFailure(
             'durability.semaphore_queue.sync_failed',

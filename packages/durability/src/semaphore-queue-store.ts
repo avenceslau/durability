@@ -283,10 +283,12 @@ export class QueueStore {
     );
   }
 
-  removeLease(leaseId: string): void {
+  /** Drops leases that stopped drawing before `before` and have every drawn permit back. */
+  removeSpentLeases(before: number): void {
     this.sql.exec(
-      'DELETE FROM durability_semaphore_queue_leases WHERE lease_id = ?',
-      leaseId
+      `DELETE FROM durability_semaphore_queue_leases
+       WHERE expires_at < ? AND released >= drawn`,
+      before
     );
   }
 

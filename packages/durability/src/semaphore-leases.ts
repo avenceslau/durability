@@ -185,9 +185,11 @@ export const applyLeaseReports = (
       lease.released,
       Math.min(Math.max(0, report.released), drawn)
     );
-    // A retired lease shrinks to what the client has drawn; nothing more is coming.
+    // Only the client's own retired report shrinks a lease to what it drew:
+    // until then it may still be drawing, whoever asked it to stop.
     const retired = lease.retired === 1 || report.retired === true;
-    const permits = retired ? Math.max(released, drawn) : lease.permits;
+    const permits =
+      report.retired === true ? Math.max(released, drawn) : lease.permits;
     if (released >= permits) {
       store.removeLease(lease.lease_id);
       outcome.echoes.push({ ...toLeaseGrant(lease, now), expiresAt: now });
@@ -258,14 +260,8 @@ export const allocateLeases = (
     const group = input.policies.get(lease.grp) ?? {};
     let current = lease;
     if (!lease.retired && !leaseEligible(policy, group)) {
-      // Stop draws now; footprint stays until the client reports and releases.
-      const drawn = input.drawn.get(lease.lease_id);
-      current = {
-        ...lease,
-        retired: 1,
-        permits:
-          drawn === undefined ? lease.permits : Math.max(lease.released, drawn),
-      };
+      // Stop draws now; the full footprint stays until the client confirms.
+      current = { ...lease, retired: 1 };
       store.updateLease(current);
       echo(lease.client_id, toLeaseGrant(current, now));
       events.push({
@@ -275,7 +271,8 @@ export const allocateLeases = (
         leaseId: lease.lease_id,
         clientId: lease.client_id,
         group: lease.grp,
-        permits: lease.permits - current.permits,
+        permits:
+          lease.permits - (input.drawn.get(lease.lease_id) ?? lease.permits),
       });
     }
 
@@ -323,8 +320,9 @@ export const allocateLeases = (
     .slice(0, policy.maxGroups)
     .flatMap(({ clients }) => clients);
 
-  // A lowered budget retires undrawn headroom: leases whose client reported
-  // fewer drawn permits than granted shrink to what was drawn, newest first.
+  // A lowered budget retires leases with undrawn headroom, newest first, until
+  // the headroom their clients reported covers the excess. Their footprint
+  // stays until each client confirms what it actually drew.
   let excess = footprint + input.unknownDebt - input.budget;
   if (excess > 0) {
     const live = store
@@ -339,23 +337,9 @@ export const allocateLeases = (
       if (drawn === undefined || drawn >= lease.permits) {
         continue;
       }
-      const shrunk = Math.min(lease.permits - drawn, excess);
-      const retired: LeaseRow = {
-        ...lease,
-        permits: lease.permits - shrunk,
-        retired: 1,
-      };
-      if (retired.released >= retired.permits) {
-        store.removeLease(lease.lease_id);
-      } else {
-        store.updateLease(retired);
-      }
-      footprint -= shrunk;
-      excess -= shrunk;
-      groupFootprint.set(
-        lease.grp,
-        (groupFootprint.get(lease.grp) ?? 0) - shrunk
-      );
+      const retired: LeaseRow = { ...lease, retired: 1 };
+      store.updateLease(retired);
+      excess -= lease.permits - drawn;
       echo(lease.client_id, toLeaseGrant(retired, now));
       events.push({
         entityKind: 'semaphore',
@@ -364,7 +348,7 @@ export const allocateLeases = (
         leaseId: lease.lease_id,
         clientId: lease.client_id,
         group: lease.grp,
-        permits: shrunk,
+        permits: lease.permits - drawn,
       });
     }
   }
