@@ -1,0 +1,21 @@
+packages/durability/src/outbox.test.ts
+  s_32ebdca782132f::t_a3307ad016cb70 335-338
+packages/durability/src/outbox.ts
+  s_32ebdca782132f::t_b805792033245b 175-178,484,488
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8e3d9330e9e6d2c035e1d2ce04c21bba11ada87c",
+  "prompts": {},
+  "sessions": {
+    "s_32ebdca782132f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14f3b-4a41-70c6-a9c1-e8fe8e85185b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
