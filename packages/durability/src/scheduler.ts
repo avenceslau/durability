@@ -227,6 +227,15 @@ export class Engine {
     }
   }
 
+  /**
+   * The owning Durable Object's ID. The public context type omits it, but the
+   * `DurableObjectState` applications pass at runtime carries it.
+   */
+  objectId(): string | undefined {
+    const id: unknown = Reflect.get(this.context, 'id');
+    return id === undefined || id === null ? undefined : String(id);
+  }
+
   emitter<
     Event extends { entityKind: string; type: string } =
       DurabilityLifecycleEvent,

@@ -282,3 +282,36 @@ export const reportFailure = (
     return;
   }
 };
+
+/** A definite rejection of a topology change or configuration. */
+export class TopologyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TopologyError';
+  }
+}
+
+/** Why a topology client could not use the published snapshot. */
+export type TopologyFallbackReason =
+  | 'missing'
+  | 'invalid'
+  | 'timeout'
+  | 'error';
+
+/**
+ * Thrown by a topology client when the published snapshot is unusable and no
+ * configured fallback produced one. The client never asks the coordinator.
+ */
+export class TopologyUnavailableError extends Error {
+  constructor(
+    readonly group: string,
+    readonly reason: TopologyFallbackReason,
+    options?: { cause?: unknown }
+  ) {
+    super(`Topology for group "${group}" is unavailable: ${reason}`);
+    this.name = 'TopologyUnavailableError';
+    if (options?.cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: options.cause });
+    }
+  }
+}

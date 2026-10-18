@@ -523,6 +523,45 @@ export const durabilitySemaphoreQueueMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Ordered SQLite migrations for the experimental topology coordinator.
+ * Publication and sync ride on outbox channels. Applied automatically on
+ * construction.
+ */
+export const durabilityTopologyMigrations = [
+  {
+    name: 'durability_0011_create_topology',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_topology_groups (
+        group_id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        members TEXT NOT NULL,
+        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS durability_topology_states (
+        group_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (group_id, channel)
+      );
+      CREATE TABLE IF NOT EXISTS durability_topology_writes (
+        id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        land_by INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_topology_writes_group_idx
+      ON durability_topology_writes (group_id, land_by);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_topology_writes_group_idx;
+      DROP TABLE IF EXISTS durability_topology_writes;
+      DROP TABLE IF EXISTS durability_topology_states;
+      DROP TABLE IF EXISTS durability_topology_groups;
+    `,
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -540,7 +579,8 @@ export type MigrationCapability =
   | 'logLeases'
   | 'outbox'
   | 'semaphore'
-  | 'semaphoreQueue';
+  | 'semaphoreQueue'
+  | 'topology';
 
 /**
  * Newer library versions may leave migrations this one does not know about.

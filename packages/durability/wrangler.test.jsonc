@@ -38,6 +38,12 @@
       "entrypoint": "FanoutConsumer",
     },
   ],
+  "kv_namespaces": [
+    {
+      "binding": "TOPOLOGY",
+      "id": "topology-test",
+    },
+  ],
   "r2_buckets": [
     {
       "binding": "DEAD_LETTERS",
@@ -76,6 +82,10 @@
     {
       "tag": "v8",
       "new_sqlite_classes": ["JobShard"],
+    },
+    {
+      "tag": "v9",
+      "new_sqlite_classes": ["TopologyCoordinator", "TopologyShard"],
     },
   ],
 }

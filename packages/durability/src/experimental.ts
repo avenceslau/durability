@@ -35,3 +35,33 @@ export {
 } from './outbox.js';
 export { OutboxTimeoutError } from './errors.js';
 export { durabilityOutboxMigrations } from './migrations.js';
+export {
+  DurabilityTopology,
+  type DurabilityTopologyConfig,
+  type DurabilityTopologyEvent,
+  type TopologyChannel,
+  type TopologyCurrent,
+  type TopologyDraft,
+  type TopologyPublisher,
+  type TopologyRetryOptions,
+  type TopologyRole,
+  type TopologyStateUpdate,
+} from './topology.js';
+export type {
+  TopologyClient,
+  TopologyClientConfig,
+  TopologySource,
+  TopologyView,
+} from './topology-client.js';
+export type {
+  TopologyMember,
+  TopologyMemberInput,
+  TopologyMemberState,
+  TopologySnapshot,
+} from './topology-snapshot.js';
+export {
+  TopologyError,
+  TopologyUnavailableError,
+  type TopologyFallbackReason,
+} from './errors.js';
+export { durabilityTopologyMigrations } from './migrations.js';
