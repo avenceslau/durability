@@ -1,0 +1,21 @@
+packages/durability/src/semaphore-queue.test.ts
+  s_89dff2fd3753ec::t_0ec338d19510bf 230-247
+packages/durability/src/semaphore-queue.ts
+  s_89dff2fd3753ec::t_e2ac0bf2fdc4b2 710-711
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5553d987db8f6ef9ce17a926ad0e9b2a49389649",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
