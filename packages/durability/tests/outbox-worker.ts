@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
-import { DurabilityOutbox, DurabilityScheduler } from '../src';
+import { DurabilityScheduler } from '../src';
+import { DurabilityOutbox } from '../src/experimental';
 
 export class OutboxObject extends DurableObject {
   private readonly scheduler = new DurabilityScheduler({ context: this.ctx });

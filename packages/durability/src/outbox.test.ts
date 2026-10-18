@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  DurabilityOutbox,
-  DurabilityScheduler,
-  type DurabilityLifecycleEvent,
-  type OutboxEntry,
-} from './index';
+import { DurabilityScheduler, type DurabilityLifecycleEvent } from './index';
+import { DurabilityOutbox, type OutboxEntry } from './experimental';
 import { FakeStorage } from './test-fakes';
 
 type Published = Pick<OutboxEntry<string>, 'key' | 'version' | 'value'>;

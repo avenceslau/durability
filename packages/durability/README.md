@@ -5,7 +5,7 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 - **`Durability`** — effectively-once operations with retries, idempotency, and result lookup.
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
-- **`DurabilityOutbox`** — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
+- **`DurabilityOutbox`** _(experimental, `durability/experimental`)_ — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
 - **`DurabilityRouting`** — a DO-side load observer and client-side shard selector (`durability/routing`), supporting location hints and caller transforms.
 - **`DurabilitySocket`** — typed WebSocket RPC and replayable event push from a Durable Object to browsers (`durability/socket`), with a dependency-free browser client (`durability/client`).
 - **`DurabilityTracker`** _(experimental, `durability/experimental`)_ — lists work across capabilities and custom sources, as RPC handles that can be waited on or as plain records.
@@ -673,13 +673,16 @@ Routing uses the actual `@durability/transforms` runtime. For example, `routing.
 
 Loopback namespaces need the application DO declared in Wrangler migrations (or the platform's supported class configuration), but no redundant DO binding block is needed. Consumer transport is explicitly wired by the application, such as a service binding or loopback entrypoint. See the typechecked [email queue composition](../../examples/email-queue).
 
-## Outbox
+## Outbox (experimental)
+
+`DurabilityOutbox` is exported from `durability/experimental` and may change in a minor release; pin an exact version when depending on it.
 
 `DurabilityOutbox` publishes the newest state of a key to something outside the object — a KV namespace, another Durable Object, an API — and keeps retrying until the sink accepts it. Use it when consumers need the latest value, not every change: restaging a key before it is published replaces the pending version, so superseded versions may never be sent. For message delivery where every message matters, use `DurabilityFanout`.
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
-import { DurabilityOutbox, DurabilityScheduler } from 'durability';
+import { DurabilityScheduler } from 'durability';
+import { DurabilityOutbox } from 'durability/experimental';
 
 type Topology = { workflowId: string; steps: string[] };
 
