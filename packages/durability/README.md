@@ -945,6 +945,22 @@ The coordinator has three methods:
 
 An `active` member is in the write set and the read set. A `draining` member is only in the read set: it receives no new work but still holds data, so queries must still reach it. Members leave the read set only when a draft omits them.
 
+### When to use it
+
+Topology is for when something needs the list of shards. A shard that only does work when a caller reaches it, and only talks to a coordinator whose name it can derive, does not need one: create it on demand.
+
+| Need                                                                                                                               | Use                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| A shard does work when a caller sends it something                                                                                 | Nothing: address it by name, for example with `DurabilityRouting`                        |
+| A shard asks a central object for something it needs, such as permits or capacity                                                  | `DurabilitySemaphore`: shards pull, and the holder learns about them from their requests |
+| A caller must pick among a group's current shards                                                                                  | Topology membership                                                                      |
+| A reader must reach every shard that may hold data                                                                                 | Topology membership, including `draining` members                                        |
+| Every shard must hold the same data before any caller reaches it, such as schedules it runs by itself or configuration it enforces | A topology state channel                                                                 |
+
+A state channel sends one value to every member in its role. Values that differ per shard, or that must be accounted for in both directions (granted, used, returned), do not fit it; that is the semaphore's model.
+
+A shard created on demand can still join its group, so readers can find it later: its first request can call the coordinator, which adds it with one `update`. Only do this when a reader needs it.
+
 ### Publishing
 
 `publish.write` receives the snapshot and an `encoded` string. Store `encoded` as is; it is the only format the client reads, and no encoder is exported, so only the coordinator can produce one. It carries the coordinator's Durable Object ID, because versions only compare within one coordinator: if a group moves to another coordinator, its versions start over, and readers accept the new snapshot. Publication runs on a `DurabilityOutbox` channel (`durability.topology`) keyed by group, so it shares the outbox's guarantees: only the newest snapshot of a group is pending, publish calls for the channel run one at a time, and attempts never stop (`retries.delay` controls backoff). The outbox expects sinks to keep the highest version, which a plain `KV.put` cannot, so the topology closes that gap itself, durably:
