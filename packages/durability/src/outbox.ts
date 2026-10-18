@@ -373,6 +373,14 @@ export class DurabilityOutbox<Value = unknown> {
   }
 
   async #runBatch(): Promise<void> {
+    // Every transaction reconciles the alarm; one per idle run keeps re-arming
+    // it while anything else on the scheduler is due, such as a running operation.
+    if (
+      listDueForChannel(this.#engine.sql, this.#channel, Date.now(), 1)
+        .length === 0
+    ) {
+      return;
+    }
     const release = await this.#engine.acquirePermit();
     try {
       const claims = await this.#engine.transaction((sql) => {

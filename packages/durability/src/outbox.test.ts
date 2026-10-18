@@ -26,6 +26,18 @@ describe('outbox', () => {
     return { storage, scheduler };
   };
 
+  it('writes nothing on an alarm run with nothing due', async () => {
+    const { storage, scheduler } = fixture();
+    const outbox = new DurabilityOutbox<string>({
+      scheduler,
+      publish: () => undefined,
+    });
+    const transactions = vi.spyOn(storage, 'transaction');
+    await outbox.alarm();
+    // Only the engine's own reconciliation after the run.
+    expect(transactions).toHaveBeenCalledTimes(1);
+  });
+
   it('publishes only the newest staged version of each key', async () => {
     const { scheduler } = fixture();
     const publish = vi.fn(async (_entries: OutboxEntry<string>[]) => {});
