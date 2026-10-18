@@ -507,6 +507,19 @@ export const durabilitySemaphoreQueueMigrations = [
       ALTER TABLE durability_semaphore_queue_items DROP COLUMN lease_id;
     `,
   },
+  {
+    name: 'durability_0011_renew_semaphore_queue_leases',
+    up: `
+      ALTER TABLE durability_semaphore_queue_leases ADD COLUMN renew_at INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE durability_semaphore_queue_leases ADD COLUMN renew_ms INTEGER NOT NULL DEFAULT 30000;
+      ALTER TABLE durability_semaphore_queue_leases ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0;
+    `,
+    down: `
+      ALTER TABLE durability_semaphore_queue_leases DROP COLUMN confirmed;
+      ALTER TABLE durability_semaphore_queue_leases DROP COLUMN renew_ms;
+      ALTER TABLE durability_semaphore_queue_leases DROP COLUMN renew_at;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**

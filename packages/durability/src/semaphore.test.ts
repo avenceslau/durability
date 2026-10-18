@@ -450,7 +450,7 @@ describe('semaphore', () => {
       });
     });
 
-    it('heartbeats, sweeps, and charges leases the holder no longer knows', async () => {
+    it('heartbeats leases, retires silent ones without forgetting them, and charges unknown ones', async () => {
       const { semaphore, round } = fixture({
         limit: 1,
         leases: { provisioning: { mode: 'over', extra: 4 }, ttlMs: 5_000 },
@@ -474,20 +474,45 @@ describe('semaphore', () => {
       })) as { leases?: { expiresAt: number }[] };
       expect(refreshed.leases![0]!.expiresAt).toBe(Date.now() + 5_000);
 
-      // Silence past the TTL sweeps it; a stale report is retired and its
-      // live footprint is charged against this round's budget.
+      // Silence past the TTL retires it, but its client may be cut off with
+      // work running: the whole lease stays counted and nothing is re-leased.
       vi.setSystemTime(Date.now() + 6_000);
-      const [stale, fresh] = await round(
+      const [stale, waiting] = await round(
         leasing('a', [], [{ leaseId, drawn: 2, released: 0 }]),
         leasing('b', [{ group: 'g', count: 1, oldestAt: 3 }])
       );
       expect(leased(stale!)).toEqual([
         { group: 'g', permits: 4, retired: true },
       ]);
-      // Budget 4 minus unknown debt 2 leaves a lease of 2.
-      expect(leased(fresh!)).toEqual([
+      expect(leased(waiting!)).toEqual([]);
+      expect(await semaphore.usage()).toMatchObject({ leased: 4 });
+
+      // Once the client confirms it drew two, the other two are free again.
+      await semaphore.handle({
+        type: 'sync',
+        v: 1,
+        clientId: 'a',
+        grants: [],
+        leases: [{ leaseId, drawn: 2, released: 0, retired: true }],
+      });
+      const [, served] = await round(
+        leasing('a', []),
+        leasing('b', [{ group: 'g', count: 1, oldestAt: 3 }])
+      );
+      expect(leased(served!)).toEqual([
         { group: 'g', permits: 2, retired: false },
       ]);
+
+      // A lease the holder never knew is answered retired and its live
+      // footprint charged against that round's budget.
+      const [unknown, charged] = await round(
+        leasing('c', [], [{ leaseId: 'forgotten', drawn: 2, released: 0 }]),
+        leasing('d', [{ group: 'g', count: 1, oldestAt: 4 }])
+      );
+      expect(leased(unknown!)).toEqual([
+        { group: '', permits: 0, retired: true },
+      ]);
+      expect(leased(charged!)).toEqual([]);
     });
 
     it('strict: existing footprint is netted once when issuing new leases', async () => {
@@ -746,7 +771,10 @@ describe('semaphore schema upgrades', () => {
         undefined
       )
     ).toMatchObject({
-      applied: ['durability_0010_add_semaphore_queue_leases'],
+      applied: [
+        'durability_0010_add_semaphore_queue_leases',
+        'durability_0011_renew_semaphore_queue_leases',
+      ],
     });
     expect(
       storage.sql
