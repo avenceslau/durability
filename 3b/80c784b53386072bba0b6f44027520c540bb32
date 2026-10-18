@@ -1,0 +1,204 @@
+packages/durability/README.md
+  s_89dff2fd3753ec::t_54706860b3f9e1 612,630-636,652
+  s_f0260092910adf::t_37cc5c9d3725fd 604
+  s_f53e9c1eeeed43::t_152ebb98e765f6 262,274-276,284,292,303-305,346,533,535,542-547,562-563,569,595,620-621,638,643-650,656,658
+  s_f53e9c1eeeed43::t_0b88cf64fd10b7 519-528,530-567,569,571,595,658
+  s_f53e9c1eeeed43::t_641d37d77060dc 619
+  s_f53e9c1eeeed43::t_a2e4030d9a770c 568,596-603,605-611,613-629,637-650,654-656,658
+  s_89dff2fd3753ec::t_4fab25f052666f 653
+  s_f53e9c1eeeed43::t_4e5adea5f26aaa 570-590,592-593,651
+  s_89dff2fd3753ec::t_a7a4d796837de0 591
+  s_89dff2fd3753ec::t_31f9c0611f9ec6 594
+  s_f53e9c1eeeed43::t_2023971f3c9609 657
+packages/durability/src/semaphore-queue-store.ts
+  s_89dff2fd3753ec::t_02215f1e002a40 148-159,352,363-365
+  s_89dff2fd3753ec::t_4b48403ed17a64 286-287,289-291
+packages/durability/src/semaphore-queue.test.ts
+  s_89dff2fd3753ec::t_5dfc1a856083d4 244-277
+  s_f53e9c1eeeed43::t_f75fb2cd696dcd 1-12,15-37,44,74,78,96,98,111,118,125,132,147,155,167,188,190,197,209,215,234,243,421-422,434-435,435,442,459,466,499,507,510,520,522,530,535,556,576
+  s_f53e9c1eeeed43::t_398db622d754a6 434-435,442,459,466
+  s_89dff2fd3753ec::t_5526b093acfd77 278-306
+  s_f53e9c1eeeed43::t_aeff8f842d3dd4 155,167,172,190
+  s_89dff2fd3753ec::t_de802b192d86d6 346-396
+  s_89dff2fd3753ec::t_70d303cfc37e3a 305-306
+  s_89dff2fd3753ec::t_4d75165526970c 307-345
+packages/durability/src/semaphore-queue.ts
+  s_89dff2fd3753ec::t_2d267d48cea33b 86-95,187-188,209-220,251-252,906-909,920-922,924,927-934,938,940-941,942-943,1009-1013
+  s_f53e9c1eeeed43::t_bfbafcabaf53c4 1-20,23-29,37-38,44-60,63-85,96-133,137-153,174-182,184-186,189-196,198-208,221-234,236-248,250,253-284,287-288,290-299,301-308,318,319,326-341,346-347,372,373-391,395-397,400-417,419-437,440-442,450-460,465,468-487,490-491,503-504,508-513,517-520,521-524,527,529-534,536-539,547-552,553-555,557-581,587,589-590,592-602,604-609,612,614-616,620,623,637-638,656,695,701-702,708-709,722,735-736,740,749,751-758,767,769,776-780,782,784-791,796-798,800-806,809,827-838,860-861,871-881,889-896,944-952,955-961,963-964,966-973,975-976,977-990,992-995,997-1000,1002,1004-1006,1008,1014-1019,1020-1060,1062-1063,1065-1070,1072-1084
+  s_f53e9c1eeeed43::t_ee2769a8dcbdf3 285-286,289,535,724-727,741-748,759-766,770-775
+  s_89dff2fd3753ec::t_f9fe3a4c936011 492-502,505-507,996,1061,1064,1071
+  s_f53e9c1eeeed43::t_dba25de87227c2 21-22,61-62,134-135,158-161,163-164,171,173,300,345,349,351,364-365,367-368,371,488-489,614-620,623,627-629,631-640,642-651,654-656,682-686,689-690,692,694-695,698,701-703,708-709,711-720,811-815,818,820,839-855,857-859,991
+  s_f53e9c1eeeed43::t_030c3d3b14c7bf 165-170,172
+  s_89dff2fd3753ec::t_93f102674bdaa9 136,154-157,162,352,354-362,543-545,657-675,676-681,704-707,821-826,856,885-887
+  s_89dff2fd3753ec::t_e84ee78b55fe07 353,443-447,693,696-697,699-700,862-870
+.changeset/durability-semaphore-queue.md
+  s_f0260092910adf::t_59851569f51e56 5
+  s_f53e9c1eeeed43::t_4726b1a948cfe0 1-4
+packages/durability/src/semaphore.ts
+  s_f0260092910adf::t_7d0e6d5034661e 29-32
+  s_f53e9c1eeeed43::t_68bd03e9d204f3 7-27,34-54,68-140
+  s_f53e9c1eeeed43::t_55c2da42819f37 59-67
+  s_f53e9c1eeeed43::t_9c131a4a7a16c8 55-58
+.changeset/durability-outbox.md
+  s_f53e9c1eeeed43::t_69db9279ca39ef 1-4
+packages/durability/src/errors.ts
+  s_f53e9c1eeeed43::t_faaa1eb5c59419 132-139
+  s_f53e9c1eeeed43::t_abf60050757252 185-192
+packages/durability/src/lifecycle.ts
+  s_f53e9c1eeeed43::t_2b7d3550671aad 24-32,36-37,48-52
+  s_f53e9c1eeeed43::t_e6fe7bd1ce6036 138-141,143
+packages/durability/src/migrations.ts
+  s_f53e9c1eeeed43::t_2f02603aa6846b 334-377,520-523
+  s_f53e9c1eeeed43::t_f629b14c26e0df 378-396,398-403,419-420,423-426,425-426,510-511,527
+  s_f53e9c1eeeed43::t_b753577dff7caf 397
+  s_f53e9c1eeeed43::t_3ab04f7f2bd70a 427-441,427-448,442-448,450,452-461,463-467,463-486,468-478,479-486,510-511,528-529
+  s_f53e9c1eeeed43::t_17baa7c2522ed5 449,451,462
+  s_f53e9c1eeeed43::t_dc264ae8c29ee0 407-413,416-418,421-422
+  s_f53e9c1eeeed43::t_93e2f504865315 398-406,414-415,487-509
+packages/durability/src/outbox.test.ts
+  s_f53e9c1eeeed43::t_175348dd5656f8 1,5-19,25,49,56,60,78-79,153-154,157-158,192-193,199-200,223,250-251,274-275,304,307,316,318,330,339,347,357
+  s_f53e9c1eeeed43::t_8be7e8886043c9 189,191,193,199-200,223,227-228
+packages/durability/src/outbox.ts
+  s_f53e9c1eeeed43::t_e4154f31c7fee8 1-27,34,96-126,131-146,159-183,193,196-211,214,221-222,223-297,306-309,344,346-351,360-367,369-403,407-413,417-424,432-433,434-500,502,508,510-516,525-529,530-593
+  s_f53e9c1eeeed43::t_2affc76a56bd87 127-130
+  s_f53e9c1eeeed43::t_f8b888beaf06b0 147-148,151-153,155-156,165,301-303,306-309,311-327,342-345,352-354,357-359
+packages/durability/src/storage.ts
+  s_c38883cbb1b412::t_a984d56b59408f 50,53
+  s_f53e9c1eeeed43::t_79dc0de5958576 128-129
+  s_f53e9c1eeeed43::t_fad7ad93f62045 20,21-22
+packages/durability/tests/outbox-worker.ts
+  s_f53e9c1eeeed43::t_9d1955c01f2029 1,4-69
+packages/durability/tests/outbox.worker.test.ts
+  s_f53e9c1eeeed43::t_e84491380898c7 1-3,5-8,9-21,22
+packages/durability/wrangler.test.jsonc
+  s_f53e9c1eeeed43::t_ffc2c280471348 20-24,27,31,60-61,63-65,75,79
+  s_f53e9c1eeeed43::t_34fb3b507a67ef 24-27,68-69,74-75
+  s_f53e9c1eeeed43::t_f4bfad96fcef81 28-31,72-73,78-79
+  s_f53e9c1eeeed43::t_050bdd4c3fe01e 76-77,79
+.changeset/durability-semaphore.md
+  s_f53e9c1eeeed43::t_5e38a821e04647 1-4
+.changeset/transforms-client-factories.md
+  s_f53e9c1eeeed43::t_e9fa679740fde7 1-4
+packages/durability/package.json
+  s_f53e9c1eeeed43::t_2b33c0d55e044c 54-56
+packages/durability/src/durable-object-target.ts
+  s_f53e9c1eeeed43::t_52d1a996dd1fe3 1-38
+packages/durability/src/routing.ts
+  s_f53e9c1eeeed43::t_6e4b52a48ddc1b 6-9,33,59-62
+packages/durability/src/scheduler.ts
+  s_f53e9c1eeeed43::t_0ba14c4e89e5b5 11,227-235
+packages/durability/src/semaphore-client.ts
+  s_23da8a6c174207::t_818c27aae0fa0e 1-83
+packages/durability/src/semaphore-protocol.ts
+  s_ec3d3a36104468::t_35e0a67919d222 1-11,16-25,47-57,62-68,71-113,117-123,126-133
+  s_f53e9c1eeeed43::t_2899f3655dd9aa 12-15,58-60,69
+  s_f53e9c1eeeed43::t_fc020a33322f0b 26-32,35-46,61,70,114,124
+  s_89dff2fd3753ec::t_d003d88d02a68e 33-34,115-116,125
+packages/durability/src/semaphore-server.ts
+  s_f53e9c1eeeed43::t_0ce68e61806374 1-7,19-27,29-36,44-63,45-63,65-93,96-100,105,109-124,126-132,137-182,184-189,191-193,195,198-212,214-229,231,233,235-253,260-279,283-284,283-291,286-291,298-305,313-314,322-323,326,328-335,345-356,366-372,375-383,385,396,399-420,400-420,422-425,428,431,442,446,455-458,461-464,478-521,523-539,588-603,607-609,611-617,623-624,626,638,650-655,658-660,662-663,665-685,687,689-698,707,710-714,715-716,718,720-721,723-728,730-731,733-735,742-777
+  s_f53e9c1eeeed43::t_c7d37e4417db09 101-104,133,194,254-259,324-325,327,336-344,398-399,460,604,699-702,705,708,722,729,732,739-741
+  s_f53e9c1eeeed43::t_3e284944a70f25 8-18,28,64,94-95,106-108,125,134,190,213,292-297,306-321,386-391,395,397,429-430,432,434-440,443-445,447-454,465-470,472-477,540,542-551,553,555,557-566,574,581,583-587,605,610,618,622,625,627-628,630-636,637,639-644,649
+  s_f53e9c1eeeed43::t_7997a6216c13e8 357-359,361-365,552,554,575-580,582
+  s_89dff2fd3753ec::t_33f5d0488eb6e0 135-136,196-197,384,392-394,541,567-573,606,645-648
+packages/durability/src/semaphore.test.ts
+  s_f53e9c1eeeed43::t_61c0fff2b74788 1-13,15-30,52-54,79,84,92,102,108,110,120,130,142,155,156,167,176,201-202,206-208,213,215,222,235,240,252,265,275,290,322-323,328,333,339,356,364,370,382,390-391,396-397,399,404,409-411,409,416,417,419,425,427,429,441,450-452,451-452,457,458,460,465,476,483,490-492,491-492,497,500,506,512,517-518,525,539-540,573,576,654,657,660,667,668,671,688-689,688,689,701,704,711,759
+  s_f53e9c1eeeed43::t_a7b93920b4743a 265,275,290,305,329,333,353,457,460,483,491-492,497,500,512,525,528,530,535,539-540,657,660
+  s_f53e9c1eeeed43::t_d2e739645078e4 31-51,530,540,546,554,573,576,654,660,668,676,678,688-689
+  s_f53e9c1eeeed43::t_069812ca9f02cf 525,530,540,546,554,678,713-760
+  s_89dff2fd3753ec::t_5913221a408bd9 599,601-605,609-648
+  s_89dff2fd3753ec::t_ca20755c254030 577-598,600,606-608
+  s_89dff2fd3753ec::t_2174bfbf343413 541,559-560,562,564-572,574
+packages/durability/tests/semaphore-worker.ts
+  s_f53e9c1eeeed43::t_c5eb35d8934b7d 1,3,9-39
+  s_f53e9c1eeeed43::t_b1f4005f799eb6 2,4-8,40-42,46-79,86-89
+  s_f53e9c1eeeed43::t_f24424c19dc89d 43-45,80-85
+packages/durability/tests/semaphore.worker.test.ts
+  s_f53e9c1eeeed43::t_4d4990ead704b6 1-4,6-9,13-64,105
+  s_f53e9c1eeeed43::t_03d9c08a885e1b 5,10-12,65-104
+packages/durability/tsconfig.build.json
+  s_f53e9c1eeeed43::t_7154eaa145e496 12-13,16-17,19-20
+packages/transforms/README.md
+  s_f53e9c1eeeed43::t_6cfa3fe5800db1 25
+packages/transforms/src/vite.ts
+  s_f53e9c1eeeed43::t_5688cd77fe050e 75-78,80,281,339,346,351,357,382,388,391,394,418,429,432,712-714,927,931-933,935-936
+packages/transforms/tests/vite.test.ts
+  s_f53e9c1eeeed43::t_c8452970a911c4 415,417-436
+packages/durability/tests/named-alarm-worker.ts
+  s_f53e9c1eeeed43::t_efb05c23831f9c 14
+.changeset/durability-semaphore-leases.md
+  s_f53e9c1eeeed43::t_95670f455dfdb0 1-5
+packages/durability/src/semaphore-leases.ts
+  s_f53e9c1eeeed43::t_ea4ade5fac9ef1 1-6,8-14,17-110,117-124,127-129,131-154,157-160,162-167,169-187,196-199,201,203-204,207-221,224-230,233-243,245-254,256,258-260,267-273,276,277-278,280-282,287-322,354,363-364,366,367,369,373-379,381-383,386-393,395,397-401,403-412,414
+  s_f53e9c1eeeed43::t_7a1c5003cc016d 125-126,130,193,195,200,206,261-262,266,279,283-286,326-327,330-339,343-350,352-355,394,402
+  s_89dff2fd3753ec::t_cf1bc6d7c2937a 190,202,222-223,356-362,365,368,370-372,380,384-385,413
+  s_89dff2fd3753ec::t_0d082b47e94e06 15-16,111-116
+  s_89dff2fd3753ec::t_68751f657eced2 188-189,191-192,263-264,274-275,323-325,340-342,351
+examples/README.md
+  s_f53e9c1eeeed43::t_9fa26766d3b0e6 18
+examples/account-concurrency/worker.ts
+  s_f53e9c1eeeed43::t_a4f05ec5a730e9 1-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3b80c784b53386072bba0b6f44027520c540bb32",
+  "prompts": {},
+  "sessions": {
+    "s_23da8a6c174207": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1459b-87b4-720a-a5c8-66989eafcede",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_c38883cbb1b412": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a145aa-9163-720a-a5c8-66a69a1cbda8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_c415e4c4ea316e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1498a-2b3d-720a-a5c8-66b9c7d4fdcf",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_ec3d3a36104468": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a145aa-914f-720a-a5c8-66a53a843a9b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f0260092910adf": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14f95-a006-720a-a5c8-66dd1f78e3b9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f53e9c1eeeed43": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13c4e-5038-746a-9ef6-8989b8468b05",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+examples/README.md
+  s_89dff2fd3753ec::t_0bdcf6beb271d7 5-14
+examples/account-concurrency/worker.ts
+  s_89dff2fd3753ec::t_4444d3c4dfee80 9,72-73,112-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "125d440f2832f60b78d63c21f145a87655eb0f7d",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
