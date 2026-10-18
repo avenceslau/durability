@@ -925,6 +925,11 @@ export class DurabilityLog<Body = unknown> {
       now + this.#leaseMs
     );
     if (reclaimed) {
+      const { oldestOffset } = readBounds(sql);
+      if (reclaimed.first_offset < oldestOffset) {
+        this.#dropTrimmed(consumer, reclaimed, oldestOffset);
+        throw new LogTruncatedError(reclaimed.first_offset, oldestOffset);
+      }
       const poisoned =
         leases.maxAttempts !== undefined &&
         leases.onPoison !== undefined &&
@@ -1049,10 +1054,44 @@ export class DurabilityLog<Body = unknown> {
     throw new LogLeaseError(batchId);
   }
 
+  /**
+   * Retention trimmed some or all of a range before it was redelivered. Those
+   * offsets are gone for every consumer, so they leave the range: a range
+   * wholly below the window is deleted, one straddling it keeps its retained
+   * tail and is pending again. The failed claim is not counted as a
+   * delivery attempt.
+   */
+  #dropTrimmed(
+    consumer: string,
+    lease: LogLeaseRow,
+    oldestOffset: number
+  ): void {
+    this.#engine.transactionSync((sql) => {
+      if (lease.last_offset < oldestOffset) {
+        deleteLeases(sql, [lease.batch_id]);
+      } else {
+        sql.exec(
+          `UPDATE durability_log_leases
+           SET first_offset = ?, state = 'pending', attempt = attempt - 1,
+               expires_at = 0
+           WHERE batch_id = ?`,
+          oldestOffset,
+          lease.batch_id
+        );
+      }
+      this.#advance(consumer);
+    });
+  }
+
   /** Commits the unbroken run of settled ranges starting at the cursor. */
   #advance(consumer: string): void {
     const sql = this.#engine.sql;
-    const from = readCursor(sql, consumer) ?? 0;
+    // Offsets below the retained window are gone for everyone; a cursor
+    // stranded there could never meet the ranges leased after them.
+    const from = Math.max(
+      readCursor(sql, consumer) ?? 0,
+      readBounds(sql).oldestOffset
+    );
     const candidates = leasesFrom(sql, consumer, from, this.#maxBatchSize);
     let cursor = from;
     const settled: string[] = [];
