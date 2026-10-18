@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { traceFunction, traceMethods } from './dev.js';
 import {
   DurableRetryPolicyError,
   FanoutEnqueueError,
@@ -762,6 +763,10 @@ export class DurabilityFanout<Body = unknown> {
     startedAt: number
   ): DurabilityFanoutMessage<Body> {
     const { row, message } = state.claim;
+    const identity = {
+      deliveryId: deliveryIdentity(row),
+      target: row.target_id,
+    };
     const settle = (
       outcome: NonNullable<Settlement['outcome']>,
       action: () => Promise<void>
@@ -785,48 +790,59 @@ export class DurabilityFanout<Body = unknown> {
     };
     return {
       id: message.id,
-      deliveryId: deliveryIdentity(row),
-      target: row.target_id,
+      ...identity,
       body: deserialize(message.payload) as Body,
       enqueuedAt: message.created_at,
       attempt: row.attempt,
-      ack: () =>
-        settle('ack', async () => {
-          await this.#remove(row);
-          this.#emit({
-            ...entity(state.claim),
-            type: 'attempt_settled',
-            timestamp: Date.now(),
-            attempt: row.attempt,
-            durationMs: Math.max(0, Date.now() - startedAt),
-            outcome: 'completed',
-          });
-        }),
-      retry: (delayMs) => {
-        if (
-          delayMs !== undefined &&
-          (!Number.isSafeInteger(delayMs) ||
-            delayMs < 0 ||
-            !Number.isSafeInteger(Date.now() + delayMs))
-        ) {
-          return Promise.reject(
-            new RangeError(
-              'delayMs must produce a non-negative safe-integer timestamp'
+      ack: traceFunction(
+        'DurabilityFanoutMessage.ack',
+        () =>
+          settle('ack', async () => {
+            await this.#remove(row);
+            this.#emit({
+              ...entity(state.claim),
+              type: 'attempt_settled',
+              timestamp: Date.now(),
+              attempt: row.attempt,
+              durationMs: Math.max(0, Date.now() - startedAt),
+              outcome: 'completed',
+            });
+          }),
+        identity
+      ),
+      retry: traceFunction(
+        'DurabilityFanoutMessage.retry',
+        (delayMs?: number) => {
+          if (
+            delayMs !== undefined &&
+            (!Number.isSafeInteger(delayMs) ||
+              delayMs < 0 ||
+              !Number.isSafeInteger(Date.now() + delayMs))
+          ) {
+            return Promise.reject(
+              new RangeError(
+                'delayMs must produce a non-negative safe-integer timestamp'
+              )
+            );
+          }
+          return settle('retry', () =>
+            this.#retry(
+              state.claim,
+              policy,
+              delayMs,
+              { name: 'Retry', message: 'Retried by consumer' },
+              startedAt
             )
           );
-        }
-        return settle('retry', () =>
-          this.#retry(
-            state.claim,
-            policy,
-            delayMs,
-            { name: 'Retry', message: 'Retried by consumer' },
-            startedAt
-          )
-        );
-      },
-      deadLetter: () =>
-        settle('deadLetter', () => this.#deadLetter(state.claim, 'explicit')),
+        },
+        identity
+      ),
+      deadLetter: traceFunction(
+        'DurabilityFanoutMessage.deadLetter',
+        () =>
+          settle('deadLetter', () => this.#deadLetter(state.claim, 'explicit')),
+        identity
+      ),
     };
   }
 
@@ -1081,3 +1097,5 @@ export class DurabilityFanout<Body = unknown> {
     }
   }
 }
+
+traceMethods(DurabilityFanout.prototype, 'DurabilityFanout');

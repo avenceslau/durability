@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { traceFunction, traceMethods } from './dev.js';
 import {
   DuplicateDurableCallError,
   DuplicateDurablePayloadError,
@@ -327,10 +328,20 @@ class DurabilityCore<Handlers extends HandlerMap> {
       if (reserved.has(operation)) {
         throw new Error(`"${operation}" is reserved by Durability`);
       }
-      const method = (input: { id: string; payload: unknown }) =>
-        this.#run({ ...input, operation });
-      method.getResult = (idempotencyKey: string) =>
-        this.#getResult(operation, idempotencyKey);
+      const method = Object.assign(
+        traceFunction(
+          `Durability.${operation}`,
+          (input: { id: string; payload: unknown }) =>
+            this.#run({ ...input, operation })
+        ),
+        {
+          getResult: traceFunction(
+            `Durability.${operation}.getResult`,
+            (idempotencyKey: string) =>
+              this.#getResult(operation, idempotencyKey)
+          ),
+        }
+      );
       Object.defineProperty(this, operation, {
         value: method,
         enumerable: true,
@@ -671,6 +682,8 @@ export interface DurabilityConstructor {
   ): Durability<Handlers>;
   migrate: typeof DurabilityCore.migrate;
 }
+
+traceMethods(DurabilityCore.prototype, 'Durability');
 
 // TypeScript cannot declare class members derived from a generic handler map,
 // so the constructor is typed separately; the constructor installs and reserves

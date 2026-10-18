@@ -1,3 +1,4 @@
+import { traceLifecycle, traceMethods } from './dev.js';
 import { SemaphoreProtocolError, reportFailure } from './errors.js';
 import {
   durabilitySemaphoreMigrations,
@@ -223,8 +224,8 @@ export class DurabilitySemaphoreServer {
     }
 
     this.#engine = engineFor(config);
-    this.#emit = this.#engine.emitter<DurabilitySemaphoreEvent>(
-      config.onLifecycleEvent
+    this.#emit = traceLifecycle(
+      this.#engine.emitter<DurabilitySemaphoreEvent>(config.onLifecycleEvent)
     );
     this.#engine.migrateSchema('semaphore', durabilitySemaphoreMigrations);
     this.#store = new HolderStore(this.#engine.sql);
@@ -775,3 +776,5 @@ export class DurabilitySemaphoreServer {
     }
   }
 }
+
+traceMethods(DurabilitySemaphoreServer.prototype, 'DurabilitySemaphore');

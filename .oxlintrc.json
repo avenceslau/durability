@@ -22,6 +22,7 @@
     "no-console": "off",
     "curly": "warn",
     "no-debugger": "warn",
+    "no-underscore-dangle": ["warn", { "allow": ["__DURABILITY_DEV__"] }],
     "no-unreachable": "warn",
     "@typescript-eslint/no-explicit-any": "warn",
     "vitest/require-mock-type-parameters": "off"

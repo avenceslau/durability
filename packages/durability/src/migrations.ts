@@ -1,5 +1,6 @@
 import type { DurableMigrations } from '@durability/storage';
 import { z } from 'zod';
+import { traceStorage } from './dev.js';
 
 export const migrationTableName = 'durability_migrations';
 
@@ -675,6 +676,7 @@ export const migrate = (
   migrations: DurableMigrations,
   target: string | null | undefined
 ): DurabilityMigrationResult => {
+  storage = traceStorage(storage);
   const resolvedTarget =
     target === undefined
       ? (migrations[migrations.length - 1]?.name ?? null)
