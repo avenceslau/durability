@@ -137,6 +137,8 @@ type Report =
   | { kind: 'lease'; drawn: number; released: number; retired?: boolean };
 
 const outboxChannel = 'durability.semaphore-queue';
+/** Half the holder's default grantTimeoutMs. */
+const maxReportRetryMs = 5_000;
 /** Queued items read per key when building a request's demand. */
 const demandScanLimit = 200;
 const maxDelayMs = 2 ** 31 - 1;
@@ -168,6 +170,19 @@ const leaseReport = (lease: QueueLeaseRow): LeaseReport => ({
  * draws this long before it bounds the window a skewed clock could open.
  */
 const leaseDrawMarginMs = 30_000;
+
+/**
+ * Renews at half the lifetime the holder last gave the lease. The holder
+ * sweeps a lease nobody reports, and a lease with permits in use must not be
+ * swept while its work runs: the holder would lease those permits again.
+ */
+const renewal = (
+  now: number,
+  expiresAt: number
+): Pick<QueueLeaseRow, 'renew_at' | 'renew_ms'> => {
+  const renewMs = Math.max(1_000, Math.floor((expiresAt - now) / 2));
+  return { renew_at: now + renewMs, renew_ms: renewMs };
+};
 
 const drawable = (lease: QueueLeaseRow, now: number): boolean =>
   lease.drawn < lease.permits && lease.expires_at - leaseDrawMarginMs > now;
@@ -247,6 +262,12 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       scheduler,
       channel: outboxChannel,
       publish: (entries) => this.#publishReports(entries),
+      // A claim the holder has not heard about within its grant window is
+      // reclaimed, so reports retry well inside it instead of backing off for minutes.
+      retries: {
+        delay: (attempt) =>
+          Math.min(this.#retryDelay(attempt), maxReportRetryMs),
+      },
     });
     this.#engine.register({
       table: queueItemsTable,
@@ -449,12 +470,30 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       this.#store.removeSpentLeases(now - this.#attemptTimeoutMs);
     });
     const keys = this.#store.listDueKeys(now);
-    await Promise.all([this.#notify(), this.#releaseFinished(now)]);
+    await Promise.all([
+      this.#notify(),
+      this.#releaseFinished(now),
+      this.#renewLeases(now),
+    ]);
     await Promise.all(
       keys
         .filter(({ key }) => !this.#requesting.has(key))
         .map(({ key }) => this.#request(key))
     );
+  }
+
+  /** Best effort: if this write fails too, the request deadline still applies. */
+  async #retrySoon(key: string, queued: number): Promise<void> {
+    await this.#engine
+      .transaction(() => {
+        const current = this.#store.getKey(key);
+        this.#store.upsertKey({
+          key,
+          queued: current?.queued ?? queued,
+          next_request_at: Date.now() + this.#retryDelay(1),
+        });
+      })
+      .catch(() => undefined);
   }
 
   /** Asks the holder for permits covering this key's queued items. */
@@ -514,46 +553,46 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           { key },
           error
         );
-        await this.#engine.transaction(() => {
-          const current = this.#store.getKey(key);
-          this.#store.upsertKey({
-            key,
-            queued: current?.queued ?? queued.length,
-            next_request_at: Date.now() + this.#retryDelay(1),
-          });
-        });
+        await this.#retrySoon(key, queued.length);
         return;
       }
 
-      await this.#engine.transaction(() => {
-        const txStore = this.#store;
-        for (const given of grant.grants) {
-          txStore.insertGrant({
-            grant_id: given.grantId,
-            key,
-            grp: given.group,
-            permits: given.permits,
-            claimed: 0,
-            confirmed: 0,
-            admitted: 0,
-            released: 0,
-            created_at: Date.now(),
-          });
-        }
-        this.#applyLeaseGrants(key, grant.leases ?? []);
-        this.#claimLocally(key);
-        this.#applyResults(key, grant.grantResults);
-        if (grant.contended) {
-          this.#returnIdleLeases(key);
-        }
-        const remaining = this.#refreshKey(key, grant.nextRequestAt);
-        for (const group of new Set(remaining.map((item) => item.grp))) {
-          this.#blocked.delete(pairKey(key, group));
-        }
-        for (const { group, reason } of grant.blocked) {
-          this.#blocked.set(pairKey(key, group), reason);
-        }
-      });
+      try {
+        await this.#engine.transaction(() => {
+          const txStore = this.#store;
+          for (const given of grant.grants) {
+            txStore.insertGrant({
+              grant_id: given.grantId,
+              key,
+              grp: given.group,
+              permits: given.permits,
+              claimed: 0,
+              confirmed: 0,
+              admitted: 0,
+              released: 0,
+              created_at: Date.now(),
+            });
+          }
+          this.#applyLeaseGrants(key, grant.leases ?? []);
+          this.#claimLocally(key);
+          this.#applyResults(key, grant.grantResults);
+          if (grant.contended) {
+            this.#returnIdleLeases(key);
+          }
+          const remaining = this.#refreshKey(key, grant.nextRequestAt);
+          for (const group of new Set(remaining.map((item) => item.grp))) {
+            this.#blocked.delete(pairKey(key, group));
+          }
+          for (const { group, reason } of grant.blocked) {
+            this.#blocked.set(pairKey(key, group), reason);
+          }
+        });
+      } catch (error) {
+        // The grant is lost with the transaction; ask again soon rather than
+        // at the request deadline, which only covers a crash.
+        await this.#retrySoon(key, queued.length);
+        throw error;
+      }
 
       const counts = new Map<string, number>();
       for (const item of store.listItems(key, 'queued', demandScanLimit)) {
@@ -693,7 +732,15 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     for (const grant of grants) {
       const lease = store.getLease(grant.leaseId);
       if (grant.expiresAt <= now) {
-        if (!lease || retiredLocally(lease, now)) {
+        if (!lease) {
+          continue;
+        }
+        if (retiredLocally(lease, now)) {
+          // The holder settles a stopped lease by echoing it with nothing left
+          // counted; until then this client keeps reporting it.
+          if (grant.permits <= lease.released && !lease.confirmed) {
+            store.updateLease({ ...lease, confirmed: 1 });
+          }
           continue;
         }
         // The holder keeps counting the whole lease until this report says
@@ -706,7 +753,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       if (lease) {
         // A refresh sent before this client retired the lease must not revive it.
         if (!retiredLocally(lease, now)) {
-          store.updateLease({ ...lease, expires_at: grant.expiresAt });
+          store.updateLease({
+            ...lease,
+            expires_at: grant.expiresAt,
+            ...renewal(now, grant.expiresAt),
+          });
         }
         continue;
       }
@@ -719,8 +770,27 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         released: 0,
         created_at: now,
         expires_at: grant.expiresAt,
+        ...renewal(now, grant.expiresAt),
+        confirmed: 0,
       });
     }
+  }
+
+  /**
+   * Reports leases with permits in use before the holder retires them, and
+   * stopped leases until the holder settles them.
+   */
+  async #renewLeases(now: number): Promise<void> {
+    // An idle run must not write: every transaction reconciles the alarm.
+    if (this.#store.listRenewalsDue(now, 1).length === 0) {
+      return;
+    }
+    await this.#engine.transaction(() => {
+      for (const lease of this.#store.listRenewalsDue(now, 100)) {
+        this.#store.updateLease({ ...lease, renew_at: now + lease.renew_ms });
+        this.#stageLeaseReport(lease);
+      }
+    });
   }
 
   /**

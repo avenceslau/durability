@@ -292,9 +292,7 @@ export class DurabilitySemaphoreServer {
     }
     let leased = 0;
     for (const lease of leases) {
-      if (lease.expires_at > now) {
-        leased += leaseFootprint(lease);
-      }
+      leased += leaseFootprint(lease);
     }
     await Promise.all(
       [...groups.entries()].map(async ([name, group]) => {
@@ -470,9 +468,7 @@ export class DurabilitySemaphoreServer {
     let leased = 0;
     if (this.#leases && budget.shared) {
       for (const lease of store.listLeases()) {
-        if (lease.expires_at > now) {
-          leased += leaseFootprint(lease);
-        }
+        leased += leaseFootprint(lease);
       }
     }
     let remaining = budget.grants - total - (budget.shared ? leased : 0);

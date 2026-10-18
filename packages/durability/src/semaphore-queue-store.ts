@@ -55,6 +55,12 @@ export const queueLeaseRowSchema = z.object({
   released: z.number().int().nonnegative(),
   created_at: z.number().int().nonnegative(),
   expires_at: z.number().int().nonnegative(),
+  /** When to report the lease again while it has permits in use, so the holder keeps it. */
+  renew_at: z.number().int().nonnegative(),
+  /** Half the lease's lifetime at the holder, from its last refresh. */
+  renew_ms: z.number().int().positive(),
+  /** 1 once the holder has settled the stopped lease; until then it is reported again. */
+  confirmed: z.number().int().min(0).max(1),
 });
 
 export type QueueLeaseRow = z.infer<typeof queueLeaseRowSchema>;
@@ -70,7 +76,8 @@ const statusCountSchema = z.object({
 /**
  * A semaphore client's queue: items, the grants it holds per key, and per-key
  * request pacing. Due work is a key whose request time has passed with items
- * queued, or an admitted item whose `admit()` notification is outstanding.
+ * queued, an admitted item whose `admit()` notification is outstanding, or a
+ * lease the holder must hear about again.
  */
 export class QueueStore {
   constructor(private readonly sql: SqlStorage) {}
@@ -273,21 +280,46 @@ export class QueueStore {
   updateLease(row: QueueLeaseRow): void {
     this.sql.exec(
       `UPDATE durability_semaphore_queue_leases
-       SET permits = ?, drawn = ?, released = ?, expires_at = ?
+       SET permits = ?, drawn = ?, released = ?, expires_at = ?,
+         renew_at = ?, renew_ms = ?, confirmed = ?
        WHERE lease_id = ?`,
       row.permits,
       row.drawn,
       row.released,
       row.expires_at,
+      row.renew_at,
+      row.renew_ms,
+      row.confirmed,
       row.lease_id
     );
   }
 
-  /** Drops leases that stopped drawing before `before` and have every drawn permit back. */
+  /**
+   * Leases the holder must hear about again: those with permits in use, and
+   * stopped ones it has not settled. Both stay counted at the holder until
+   * reported, so a lost report must be repeated.
+   */
+  listRenewalsDue(now: number, limit: number): QueueLeaseRow[] {
+    return queueLeaseRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_leases
+           WHERE confirmed = 0 AND renew_at <= ?
+             AND (released < drawn OR expires_at <= ?)
+           ORDER BY renew_at ASC LIMIT ?`,
+          now,
+          now,
+          limit
+        )
+        .toArray()
+    );
+  }
+
+  /** Drops settled leases that stopped drawing before `before`. */
   removeSpentLeases(before: number): void {
     this.sql.exec(
       `DELETE FROM durability_semaphore_queue_leases
-       WHERE expires_at < ? AND released >= drawn`,
+       WHERE confirmed = 1 AND expires_at < ? AND released >= drawn`,
       before
     );
   }
@@ -363,6 +395,14 @@ export class QueueStore {
            WHERE status = 'admitted' AND (notified = 0 OR ?)
            ORDER BY next_attempt_at ASC LIMIT 1`,
           checksFinished ? 1 : 0
+        )
+        .toArray()[0]?.['at'],
+      // An idle lease is due when it stops at its expiry, not before.
+      this.sql
+        .exec(
+          `SELECT MIN(CASE WHEN released < drawn THEN renew_at
+                          ELSE MAX(renew_at, expires_at) END) AS at
+           FROM durability_semaphore_queue_leases WHERE confirmed = 0`
         )
         .toArray()[0]?.['at'],
     ].filter((value): value is number => typeof value === 'number');
