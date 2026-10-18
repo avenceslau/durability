@@ -1,0 +1,19 @@
+packages/durability/README.md
+  s_32ebdca782132f::t_3cbc1cf1192fd1 948-963
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9535c6453c4ee1471222b1f64d4616aebf803f2a",
+  "prompts": {},
+  "sessions": {
+    "s_32ebdca782132f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14f3b-4a41-70c6-a9c1-e8fe8e85185b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
