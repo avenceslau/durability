@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DurabilityScheduler, type DurabilityLifecycleEvent } from './index';
+import {
+  Durability,
+  DurabilityScheduler,
+  type DurabilityLifecycleEvent,
+} from './index';
 import { DurabilityOutbox, type OutboxEntry } from './experimental';
+import { discardWithin, publishNow, stageWithin } from './outbox';
 import { FakeStorage } from './test-fakes';
 
 type Published = Pick<OutboxEntry<string>, 'key' | 'version' | 'value'>;
@@ -268,6 +273,69 @@ describe('outbox', () => {
     await outbox.alarm();
 
     expect(calls).toBe(2);
+  });
+
+  it('discards a pending key inside a held transaction', async () => {
+    const { storage, scheduler } = fixture();
+    const publish = vi.fn(async (_entries: OutboxEntry<string>[]) => {});
+    const outbox = new DurabilityOutbox<string>({ scheduler, publish });
+
+    await outbox.stage('a', 'one');
+    await outbox.stage('b', 'two');
+    storage.transactionSync(() => discardWithin(outbox, storage.sql, 'a'));
+    await outbox.alarm();
+
+    expect(published(publish.mock.calls[0]![0])).toEqual([
+      expect.objectContaining({ key: 'b' }),
+    ]);
+  });
+
+  it('publishes one key now without a permit and reports what is left pending', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({
+      context: { storage: storage as unknown as DurableObjectStorage },
+      alarmConcurrency: 1,
+    });
+    const keys: string[][] = [];
+    let fail = false;
+    const outbox = new DurabilityOutbox<string>({
+      scheduler,
+      retries: { delay: () => 1_000 },
+      publish: (entries) => {
+        keys.push(entries.map(({ key }) => key));
+        if (fail) {
+          throw new Error('sink down');
+        }
+      },
+    });
+    const operations = new Durability({
+      scheduler,
+      handlers: {
+        // Holds the scheduler's only permit while it publishes.
+        stageAndPublish: async () => {
+          storage.transactionSync(() =>
+            stageWithin(outbox, storage.sql, 'a', 'one')
+          );
+          results.push(await publishNow(outbox, 'a'));
+        },
+      },
+    });
+    const results: boolean[] = [];
+    await outbox.stage('other', 'x');
+
+    await operations.stageAndPublish({ id: 'one', payload: undefined });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(results).toEqual([true]);
+    expect(keys[0]).toEqual(['a']);
+
+    fail = true;
+    storage.transactionSync(() => stageWithin(outbox, storage.sql, 'b', 'two'));
+    expect(await publishNow(outbox, 'b')).toBe(false);
+    expect(await publishNow(outbox, 'missing')).toBe(true);
+
+    // A key waiting out its retry delay is published now, not after the delay.
+    fail = false;
+    expect(await publishNow(outbox, 'b')).toBe(true);
   });
 
   it('partitions channels that share one scheduler', async () => {

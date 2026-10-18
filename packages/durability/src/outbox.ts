@@ -60,17 +60,21 @@ const listDueForChannel = (
   sql: SqlStorage,
   channel: string,
   now: number,
-  limit: number
+  limit: number,
+  key?: string
 ): OutboxRow[] =>
   outboxRowSchema.array().parse(
     sql
       .exec(
         `SELECT * FROM durability_outbox
          WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?
+           AND (? IS NULL OR entry_key = ?)
          ORDER BY next_attempt_at ASC, version ASC
          LIMIT ?`,
         channel,
         now,
+        key ?? null,
+        key ?? null,
         limit
       )
       .toArray()
@@ -156,6 +160,28 @@ export let stageWithin: <Value>(
   value: Value
 ) => number;
 
+/**
+ * Package-internal: drops a key's pending version inside a held transaction.
+ * An in-flight publication of it still completes, but its acknowledgement and
+ * retry both miss.
+ */
+export let discardWithin: (
+  outbox: DurabilityOutbox<never>,
+  sql: SqlStorage,
+  key: string
+) => void;
+
+/**
+ * Package-internal: publishes a key's pending version now, even one waiting
+ * out a retry delay or batch window, serialized with the channel's other
+ * publish runs, and reports whether nothing is left pending for it. Takes no
+ * scheduler permit, so a caller holding the last one cannot deadlock.
+ */
+export let publishNow: (
+  outbox: DurabilityOutbox<never>,
+  key: string
+) => Promise<boolean>;
+
 const infrastructureRetryMs = 60_000;
 // setTimeout overflows past 2^31 - 1 ms, and it keeps every derived timestamp
 // far inside the safe-integer range the storage indexes accept.
@@ -239,6 +265,7 @@ export class DurabilityOutbox<Value = unknown> {
   readonly #attemptTimeoutMs: number;
   readonly #delay: (attempt: number) => number;
   readonly #emit: Emit;
+  /** The channel's one publish run, never one still waiting for a permit. */
   #running: Promise<void> | undefined;
 
   constructor(config: DurabilityOutboxConfig<Value>) {
@@ -357,6 +384,13 @@ export class DurabilityOutbox<Value = unknown> {
       outbox.#emitRegistered(row);
       return row.version;
     };
+    discardWithin = (outbox, sql, key) => {
+      sql.exec(
+        'DELETE FROM durability_outbox WHERE id = ?',
+        rowId(outbox.#channel, key)
+      );
+    };
+    publishNow = (outbox, key) => outbox.#publishNow(key);
   }
 
   #attach(): void {
@@ -391,62 +425,98 @@ export class DurabilityOutbox<Value = unknown> {
     return Math.ceil(createdAt / this.#batchDelayMs) * this.#batchDelayMs;
   }
 
-  #runDue(): Promise<void> {
-    this.#running ??= this.#runBatch().finally(() => {
-      this.#running = undefined;
-    });
-    return this.#running;
-  }
-
-  async #runBatch(): Promise<void> {
+  async #runDue(): Promise<void> {
+    if (this.#running) {
+      return this.#running;
+    }
     // Every transaction reconciles the alarm; one per idle run keeps re-arming
     // it while anything else on the scheduler is due, such as a running operation.
     if (
       listDueForChannel(this.#engine.sql, this.#channel, Date.now(), 1)
         .length === 0
     ) {
-      return;
+      return undefined;
     }
+    // The permit is taken before claiming the channel, so nothing that holds
+    // the channel ever waits for a permit.
     const release = await this.#engine.acquirePermit();
     try {
-      const claims = await this.#engine.transaction((sql) => {
-        const due = listDueForChannel(
-          sql,
-          this.#channel,
-          Date.now(),
-          this.#maxBatchSize
-        );
-        const deadline = Date.now() + this.#attemptTimeoutMs;
-        const claimed: OutboxRow[] = [];
-        for (const row of due) {
-          const attempt = claimAttempt(
-            sql,
-            outboxTable,
-            row.id,
-            row.generation_id,
-            Number.MAX_SAFE_INTEGER
-          );
-          if (attempt === undefined) {
-            continue;
-          }
-          // A crash mid-publication leaves the claim due again at the deadline.
-          updateAttempt(
-            sql,
-            outboxTable,
-            { key: row.id, generation: row.generation_id, attempt },
-            'next_attempt_at = ?',
-            deadline
-          );
-          claimed.push({ ...row, attempt });
-        }
-        return claimed;
-      });
-
-      if (claims.length > 0) {
-        await this.#publishBatch(claims);
+      if (this.#running) {
+        return await this.#running;
       }
+      return await this.#exclusive(() => this.#runBatch());
     } finally {
       release();
+    }
+  }
+
+  async #publishNow(key: string): Promise<boolean> {
+    const pending = () =>
+      this.#engine.sql
+        .exec(
+          'SELECT 1 FROM durability_outbox WHERE id = ?',
+          rowId(this.#channel, key)
+        )
+        .toArray().length > 0;
+    while (this.#running) {
+      // eslint-disable-next-line no-await-in-loop
+      await this.#running.catch(() => undefined);
+    }
+    if (!pending()) {
+      return true;
+    }
+    await this.#exclusive(() => this.#runBatch(key));
+    return !pending();
+  }
+
+  #exclusive(run: () => Promise<void>): Promise<void> {
+    const running = run().finally(() => {
+      if (this.#running === running) {
+        this.#running = undefined;
+      }
+    });
+    this.#running = running;
+    return running;
+  }
+
+  async #runBatch(key?: string): Promise<void> {
+    const claims = await this.#engine.transaction((sql) => {
+      // No run is in flight here, so a key's future attempt time is only a delay to skip.
+      const due = listDueForChannel(
+        sql,
+        this.#channel,
+        key === undefined ? Date.now() : Number.MAX_SAFE_INTEGER,
+        this.#maxBatchSize,
+        key
+      );
+      const deadline = Date.now() + this.#attemptTimeoutMs;
+      const claimed: OutboxRow[] = [];
+      for (const row of due) {
+        const attempt = claimAttempt(
+          sql,
+          outboxTable,
+          row.id,
+          row.generation_id,
+          Number.MAX_SAFE_INTEGER
+        );
+        if (attempt === undefined) {
+          continue;
+        }
+        // A crash mid-publication leaves the claim due again at the deadline.
+        updateAttempt(
+          sql,
+          outboxTable,
+          { key: row.id, generation: row.generation_id, attempt },
+          'next_attempt_at = ?',
+          deadline
+        );
+        claimed.push({ ...row, attempt });
+      }
+      return claimed;
+    });
+
+    if (claims.length > 0) {
+      await this.#publishBatch(claims);
     }
   }
 
