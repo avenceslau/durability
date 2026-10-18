@@ -26,7 +26,10 @@ import {
 import { DurabilitySemaphoreServer } from './semaphore-server.js';
 
 export { SemaphoreProtocolError } from './errors.js';
-export { durabilitySemaphoreMigrations } from './migrations.js';
+export {
+  durabilitySemaphoreMigrations,
+  durabilitySemaphoreQueueMigrations,
+} from './migrations.js';
 
 export type {
   GrantReport,

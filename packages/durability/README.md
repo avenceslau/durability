@@ -577,7 +577,7 @@ const grant = await limits.with(timeout, 5_000).request(accountId, {
 import { DurableObject } from 'cloudflare:workers';
 import { timeout } from '@durability/transforms';
 import { Durability, DurabilityScheduler } from 'durability';
-import { DurabilitySemaphoreQueue } from 'durability/semaphore';
+import { DurabilitySemaphoreQueue } from 'durability/experimental/semaphore';
 
 /** Many shards, each queueing jobs for many accounts. */
 export class JobShard extends DurableObject<Env> {
