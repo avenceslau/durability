@@ -1,0 +1,55 @@
+packages/durability/src/outbox.test.ts
+  s_32ebdca782132f::t_d81abbdcfa3b69 2-6,8,278-334,339-340
+  s_32ebdca782132f::t_a3307ad016cb70 335-338
+packages/durability/src/outbox.ts
+  s_32ebdca782132f::t_17062dec3e46d2 63-64,71,76-77,163-174,179-184,268,387-393,428-431,438,440-441,444-483,485-487,489-495,497-500,502-503,505-513,515-519
+  s_32ebdca782132f::t_b805792033245b 175-178,484,488
+.changeset/durability-topology.md
+  s_32ebdca782132f::t_1d827e9c50fe3c 1-5
+packages/durability/README.md
+  s_32ebdca782132f::t_1a1b48583e79f3 10,880-953,955-999
+  s_32ebdca782132f::t_0c2629e8675b9b 954
+packages/durability/src/errors.ts
+  s_32ebdca782132f::t_455cedae2905a9 285-317
+packages/durability/src/experimental.ts
+  s_32ebdca782132f::t_d5fa1658371d1f 38-67
+packages/durability/src/migrations.ts
+  s_32ebdca782132f::t_945d782c725892 512-541,559-560
+packages/durability/src/scheduler.ts
+  s_32ebdca782132f::t_9e56a427fffa97 227-235
+packages/durability/src/topology-client.test.ts
+  s_32ebdca782132f::t_3d2ce582ba3e56 1-215
+packages/durability/src/topology-client.ts
+  s_32ebdca782132f::t_1fbe9297829759 1-257
+packages/durability/src/topology-snapshot.ts
+  s_32ebdca782132f::t_5dae45e0c519c4 1-90
+packages/durability/src/topology.test.ts
+  s_32ebdca782132f::t_fb7740cab84636 1-465
+packages/durability/src/topology.ts
+  s_32ebdca782132f::t_af64f3bd0dad93 1-159,163-169,173-186,188-507,524-736
+  s_32ebdca782132f::t_06eb683b473b5e 160-162,170-172,187,508-523
+packages/durability/tests/named-alarm-worker.ts
+  s_32ebdca782132f::t_62d461fb511790 15
+packages/durability/tests/topology-worker.ts
+  s_32ebdca782132f::t_89c0b2535edcd3 1-87
+packages/durability/tests/topology.worker.test.ts
+  s_32ebdca782132f::t_372dbc96994cbe 1-118
+packages/durability/wrangler.test.jsonc
+  s_32ebdca782132f::t_f0dc48627574bf 41-46,86-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "90b7ce96834b850894e2671abcbb25680632ea11",
+  "prompts": {},
+  "sessions": {
+    "s_32ebdca782132f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14f3b-4a41-70c6-a9c1-e8fe8e85185b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
