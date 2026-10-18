@@ -1,0 +1,13 @@
+{
+  "name": "account-concurrency-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-07",
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AccountLimit", "JobShard"] },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "JOB_SHARDS", "class_name": "JobShard" }],
+  },
+  "services": [{ "binding": "JOB_API", "service": "job-api" }],
+  "vars": { "ACCOUNT_CONCURRENCY": "100" },
+}

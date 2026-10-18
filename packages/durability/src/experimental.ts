@@ -27,3 +27,11 @@ export type {
   TrackedState,
   TrackedStatus,
 } from './tracked-source.js';
+export {
+  DurabilityOutbox,
+  type DurabilityOutboxConfig,
+  type DurabilityOutboxEvent,
+  type OutboxEntry,
+} from './outbox.js';
+export { OutboxTimeoutError } from './errors.js';
+export { durabilityOutboxMigrations } from './migrations.js';

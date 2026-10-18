@@ -10,6 +10,8 @@ import socketWorker, { SocketTestObject } from './socket-worker';
 export { SocketTestObject };
 export { LogTestObject } from './log-worker';
 export { TrackerTestObject } from './tracker-worker';
+export { OutboxObject } from './outbox-worker';
+export { JobShard, LimitObject } from './semaphore-worker';
 
 export type RecordedAlarm = {
   attempt: number;

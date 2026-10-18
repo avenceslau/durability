@@ -5,6 +5,8 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 - **`Durability`** — effectively-once operations with retries, idempotency, and result lookup.
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
+- **`DurabilityOutbox`** _(experimental, `durability/experimental`)_ — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
+- **`DurabilitySemaphore`** _(experimental, `durability/experimental/semaphore`)_ — one concurrency limit shared by many client Durable Objects, allocated in arrival-ordered rounds with cumulative claim/release accounting.
 - **`DurabilityRouting`** — a DO-side load observer and client-side shard selector (`durability/routing`), supporting location hints and caller transforms.
 - **`DurabilitySocket`** — typed WebSocket RPC and replayable event push from a Durable Object to browsers (`durability/socket`), with a dependency-free browser client (`durability/client`).
 - **`DurabilityTracker`** _(experimental, `durability/experimental`)_ — lists work across capabilities and custom sources, as RPC handles that can be waited on or as plain records.
@@ -511,6 +513,149 @@ new DurabilityTracker({ sources: { jobs: this.durability, approvals } });
 
 New members of `TrackedSource` are always optional, so a custom source keeps compiling across releases.
 
+## Semaphore (experimental)
+
+Everything under `durability/experimental/semaphore` may change or be removed in a minor release; pin an exact version when depending on it. It is a separate entry point from `durability/experimental` because its client resolves Durable Object namespaces through `cloudflare:workers`.
+
+`DurabilitySemaphore` holds one concurrency limit — say, an account's maximum running jobs — inside an application-owned Durable Object, and hands permits to many client Durable Objects that queue work. Requests arriving within a round are allocated together in arrival order, so the oldest queued work across all clients is admitted first. Groups (a workflow, a tenant) may carry their own ceiling under the shared limit.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { timeout } from '@durability/transforms';
+import { DurabilityScheduler } from 'durability';
+import {
+  DurabilitySemaphore,
+  type SemaphoreRequest,
+} from 'durability/experimental/semaphore';
+
+/** One instance per account; the account id is the semaphore key. */
+export class AccountLimit extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly semaphore = new DurabilitySemaphore({
+    scheduler: this.scheduler,
+    limit: () => this.env.ACCOUNT_CONCURRENCY,
+    groupLimit: (workflowId) => this.workflowLimits.get(workflowId),
+  });
+
+  permits(message: SemaphoreRequest) {
+    return this.semaphore.handle(message);
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+
+export const limits = DurabilitySemaphore.client({
+  target: AccountLimit, // Vite injects exportName
+  invoke: (stub, message) => stub.permits(message),
+});
+
+// From a client Durable Object:
+const grant = await limits.with(timeout, 5_000).request(accountId, {
+  type: 'request',
+  v: 1,
+  clientId: this.ctx.id.toString(),
+  demand: [{ group: workflowId, count: queued, oldestAt: oldestEnqueuedAt }],
+  grants: [{ grantId, claimed: 3, released: 1 }], // cumulative reports
+});
+```
+
+- **Rounds.** `handle()` holds a request for up to `roundWaitMs` (default 1 second) so concurrent requests are allocated together, and runs rounds no closer than `roundPeriodMs` (default 2 seconds). The response's `nextRequestAt` tells the client when it may ask again.
+- **Grants and reports.** Each `(client, group)` that receives permits gets a grant. Clients report `claimed` (permits actually used) and `released` (claimed permits returned) per grant as cumulative high-water marks, piggybacked on requests or sent with a `sync` message. Counts only move forward and are clamped to the grant, so lost, repeated, or reordered reports can never free capacity twice. Permits a client never claims within `grantTimeoutMs` (default 10 seconds) are reclaimed; a later claim is answered with the clamped count and `status: 'expired'`.
+- **Blocked attribution.** Demand that stays queued is explained per group: `group_limit`, `limit`, `not_permitted` (`canGrant` returned false), or `limit_resolution_error` (`groupLimit` threw; the group fails closed).
+- **Limits are live.** `limit` and `groupLimit` are resolved once per round. Lowering a limit never evicts running work; it stops new admissions until usage is below the new ceiling.
+- **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`.
+
+`usage()` reports the limit, outstanding permits, lease footprint, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
+
+### Leases
+
+Rounds cost a round trip per batch of admissions. For bursty arrivals, the holder can hand each `(client, group)` with queued demand a **lease**: a block of permits the client may draw locally, one per item, with no round trip. Where that capacity comes from is the `provisioning` mode:
+
+```ts
+new DurabilitySemaphore({
+  scheduler,
+  limit: 100,
+  leases: {
+    provisioning: { mode: 'strict' }, // leases share the limit with grants
+    // provisioning: { mode: 'under', reserve: 20 },   // 20 of the 100 kept for leases; grants get 80
+    // provisioning: { mode: 'over', extra: { ratio: 0.5 } }, // 50 more above the limit, for leases only
+    permitsPerLease: 64,
+    ttlMs: 30 * 60_000,
+  },
+});
+```
+
+- **`strict`** — "always below": grants are allocated first, then leases from whatever is left; a live lease's footprint (permits not yet released) is reserved from the same pool. Total never exceeds the limit.
+- **`under`** — a reserve inside the limit is kept for leases; grants may use at most `limit - reserve`. Still never exceeds the limit, and leases have guaranteed headroom. The reserve never takes the last permit: with a reserve at or above the limit (including after lowering the limit), grants keep one, so groups excluded from leases and clients without lease support still make progress.
+- **`over`** — leases come from a separate budget above the limit (the original gatekeeper behaviour); the effective ceiling is `limit + extra`.
+
+Leases are issued only to clients that report `leases` (the queue always does), to groups without their own limit unless `limitedGroups: 'withinGroupLimit'`, and only to a client that holds no undrawn permits for that group. Each round shares the remaining lease budget equally among candidates, oldest demand first, up to `permitsPerLease`; with fewer permits left than candidates, the oldest get one each. When a round leaves demand unserved, the holder marks its replies `contended`, and each client returns the undrawn permits of leases in groups where it has nothing queued, so an idle lease cannot keep other clients waiting. A client that stops talking to the holder keeps its lease until `ttlMs`. Reports (`drawn`, `released` high-water marks) heartbeat a lease; one unreported for `ttlMs` is swept, and a report for a lease the holder no longer knows is answered retired and its live footprint charged against that round. On the client, a drawn permit is one-shot: releasing the item returns footprint to the holder but never makes the permit drawable again. Lowering a group's eligibility, or the limit, retires leases on the next round. A retired lease stops drawing at once but stays counted in full until its client confirms how much it drew, since it may have drawn after its last report.
+
+### Queueing work in a client Durable Object
+
+`DurabilitySemaphoreQueue` is the client half: it queues items per semaphore key in arrival order, drives the protocol above against the holder, and hands items to the application once a permit is confirmed. Claims and releases are published through an internal `DurabilityOutbox` channel as cumulative counts, so a crash or lost response never loses or double-counts a permit.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { timeout } from '@durability/transforms';
+import { Durability, DurabilityScheduler } from 'durability';
+import { DurabilitySemaphoreQueue } from 'durability/experimental/semaphore';
+
+/** Many shards, each queueing jobs for many accounts. */
+export class JobShard extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly jobs = new Durability({
+    scheduler: this.scheduler,
+    handlers: { run: (job: Job) => runJob(this.env, job) },
+    // Return the permit as soon as the operation reaches a terminal state.
+    onLifecycleEvent: (event) => {
+      if (
+        event.type === 'terminal' ||
+        (event.type === 'attempt_settled' && event.outcome === 'completed')
+      ) {
+        return this.permits.release(event.id).then(() => undefined);
+      }
+    },
+  });
+  private readonly permits = new DurabilitySemaphoreQueue<Job>({
+    scheduler: this.scheduler,
+    clientId: this.ctx.id.toString(),
+    server: limits.with(timeout, 5_000),
+    admit: (items) =>
+      Promise.all(
+        items.map((item) => this.jobs.run({ id: item.id, payload: item.body }))
+      ),
+    // The hook above is best-effort; this check returns any permit it missed.
+    finished: async (ids) => {
+      const results = await Promise.all(
+        ids.map((id) => this.jobs.run.getResult(id))
+      );
+      return ids.filter((_, index) => results[index]!.status !== 'pending');
+    },
+  });
+
+  submit(job: Job) {
+    return this.permits.enqueue([
+      { id: job.id, key: job.accountId, group: job.workflowId, body: job },
+    ]);
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+```
+
+- **States.** An item is `queued` until permits arrive, `claiming` while the holder confirms the claim, and `admitted` once `admit()` has been handed the item. Items drawn from a lease skip `claiming` and are admitted at once; `AdmittedItem.via` says which path admitted an item. `admit()` runs after the admission commits and is retried under `retries.delay` until it returns, so it must be idempotent on item ID. `release(id)` returns the permit; `cancel(id)` removes an item that is still `queued`.
+- **Releasing.** Call `release(id)` when the work ends, and pass `finished(ids)` so a release that never happens — a lifecycle hook is best-effort, a crash can come between the work ending and the call — does not hold the permit forever. The queue asks `finished` about each admitted item `finishedCheckMs` (default 60 seconds) after `admit()` returned, and again at that interval, releasing the ones it reports done. Without `finished`, a lost `release()` leaks the permit until the item is released by hand.
+- **Requests.** Each key is asked at most once per `nextRequestAt`, with demand aggregated per group from the oldest queued items. A failed request, or one unanswered after `attemptTimeoutMs`, is retried with backoff. Items whose key already holds unclaimed permits — a grant sized for demand that was cancelled, say — are admitted without a request.
+- **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
+- **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
+
+`DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema. See the typechecked [account concurrency composition](../../examples/account-concurrency).
+
 ## Routing and fanout
 
 A queue is a composition, not another exported abstraction. An application owns its DO class and attaches the capabilities it needs:
@@ -671,6 +816,65 @@ Routing uses the actual `@durability/transforms` runtime. For example, `routing.
 `doTransforms` from `@durability/transforms/vite` maps `DurabilityRouting.client({ target: Mailbox, ... })` to its same-module exported class name and validates it against Wrangler. It injects `exportName`, not a generated DO or a magic application method. Without the plugin, set `exportName: 'Mailbox'` explicitly; `namespace: () => env.MAILBOXES` is an escape hatch for explicit or remote bindings.
 
 Loopback namespaces need the application DO declared in Wrangler migrations (or the platform's supported class configuration), but no redundant DO binding block is needed. Consumer transport is explicitly wired by the application, such as a service binding or loopback entrypoint. See the typechecked [email queue composition](../../examples/email-queue).
+
+## Outbox (experimental)
+
+`DurabilityOutbox` is exported from `durability/experimental` and may change in a minor release; pin an exact version when depending on it.
+
+`DurabilityOutbox` publishes the newest state of a key to something outside the object — a KV namespace, another Durable Object, an API — and keeps retrying until the sink accepts it. Use it when consumers need the latest value, not every change: restaging a key before it is published replaces the pending version, so superseded versions may never be sent. For message delivery where every message matters, use `DurabilityFanout`.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityScheduler } from 'durability';
+import { DurabilityOutbox } from 'durability/experimental';
+
+type Topology = { workflowId: string; steps: string[] };
+
+export class Account extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly topology = new DurabilityOutbox<Topology>({
+    scheduler: this.scheduler,
+    channel: 'topology',
+    // The sink keeps the highest version it has seen per key, so a slow
+    // publication of an older version can never overwrite a newer one.
+    publish: async (entries) => {
+      const results = await this.env.TOPOLOGY_INDEX.replace(
+        entries.map(({ key, version, value }) => ({ key, version, value }))
+      );
+      // Returning acknowledges every entry not marked for retry.
+      for (const [index, result] of results.entries()) {
+        if (!result.ok) {
+          entries[index]!.retry();
+        }
+      }
+    },
+  });
+
+  async saveTopology(topology: Topology) {
+    await this.ctx.storage.transaction(async () => {
+      this.ctx.storage.sql.exec(
+        'INSERT OR REPLACE INTO topologies (id, body) VALUES (?, ?)',
+        topology.workflowId,
+        JSON.stringify(topology)
+      );
+      await this.topology.stage(topology.workflowId, topology);
+    });
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+```
+
+- **Atomic with application state.** `stage()` inside `ctx.storage.transaction()` commits or rolls back with the application's writes.
+- **Versions.** Every `stage()` returns a version that is monotonic across the whole object, including after acknowledged entries are deleted. Sinks must be idempotent on `(key, version)` and keep the highest version they have seen: a slow publication of an older version can land after a newer one. A plain `KV.put` cannot do this; compare versions in a Durable Object, a transactional store, or a conditional write.
+- **Acknowledgement.** `publish` returning acknowledges every entry not marked with `entry.retry(delayMs?)`; throwing or exceeding `attemptTimeoutMs` (default 60 seconds) retries the whole batch. Acknowledging a version deletes the entry only if it is still the newest, so an in-flight publication can never discard a later stage.
+- **Retries never give up.** Dropping the newest state would leave the sink stale forever, so there is no attempt limit or dead-letter queue; `retries.delay(attempt)` controls backoff (default: jittered exponential capped at 5 minutes).
+- **Channels.** Several outboxes share one scheduler and one set of tables, partitioned by `channel` (default `default`); each owns its own `publish`, and the same key in different channels is independent. Attaching two outboxes with the same channel to one scheduler throws. Entries of a channel no outbox attaches are retained and postponed, as fanout does for a removed target.
+- **Batching.** `maxBatchSize` (default 50) bounds one `publish` call. `batchDelayMs` rounds first publication up to the next multiple of the delay, so stages within one window coalesce into a batch; a stage landing exactly on a boundary is due immediately.
+
+`DurabilityOutbox.migrate(this.ctx, null)` removes the outbox schema.
 
 ## Retained log
 

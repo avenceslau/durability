@@ -411,6 +411,29 @@ const router = DurabilityRouting.client({
     expect(result).toContain('...defaults,\n exportName: "Mailbox"');
   });
 
+  it('injects for DurabilitySemaphore.client from durability/experimental/semaphore', async () => {
+    const result = await transform(`
+import { DurabilitySemaphore } from 'durability/experimental/semaphore';
+export class Mailbox extends DurableObject {}
+const limits = DurabilitySemaphore.client({
+  target: Mailbox,
+  invoke: (stub, message) => stub.permits(message),
+});
+`);
+
+    expect(result).toContain('exportName: "Mailbox"');
+  });
+
+  it('ignores a client factory imported from an unrelated module', async () => {
+    const result = await transform(`
+import { DurabilitySemaphore } from 'somewhere-else';
+export class Mailbox extends DurableObject {}
+DurabilitySemaphore.client({ target: Mailbox });
+`);
+
+    expect(result).toBeNull();
+  });
+
   it('supports aliased routing imports and exported class aliases', async () => {
     const result = await transform(`
 import { DurabilityRouting as Routing } from 'durability/routing';

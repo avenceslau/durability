@@ -17,6 +17,18 @@
         "name": "TRACKER_TEST",
         "class_name": "TrackerTestObject",
       },
+      {
+        "name": "OUTBOX_TEST",
+        "class_name": "OutboxObject",
+      },
+      {
+        "name": "LIMIT_TEST",
+        "class_name": "LimitObject",
+      },
+      {
+        "name": "SHARD_TEST",
+        "class_name": "JobShard",
+      },
     ],
   },
   "services": [
@@ -52,6 +64,18 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["TrackerTestObject"],
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["OutboxObject"],
+    },
+    {
+      "tag": "v7",
+      "new_sqlite_classes": ["LimitObject"],
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["JobShard"],
     },
   ],
 }

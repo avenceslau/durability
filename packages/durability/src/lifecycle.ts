@@ -21,10 +21,20 @@ export type FanoutLifecycleEntity = {
   generation: string;
 };
 
+export type OutboxLifecycleEntity = {
+  entityKind: 'outbox_entry';
+  channel: string;
+  /** The staged key. */
+  id: string;
+  /** The staged version, as a string. */
+  generation: string;
+};
+
 export type LifecycleEntity =
   | OperationLifecycleEntity
   | AlarmLifecycleEntity
-  | FanoutLifecycleEntity;
+  | FanoutLifecycleEntity
+  | OutboxLifecycleEntity;
 
 type AttemptSettled = {
   type: 'attempt_settled';
@@ -35,7 +45,11 @@ type AttemptSettled = {
 
 /** Best-effort metrics signal for queue lifecycle changes. */
 export type DurabilityLifecycleEvent =
-  | ((OperationLifecycleEntity | FanoutLifecycleEntity) & {
+  | ((
+      | OperationLifecycleEntity
+      | FanoutLifecycleEntity
+      | OutboxLifecycleEntity
+    ) & {
       type: 'registered';
       timestamp: number;
       attempt: 0;
@@ -121,10 +135,12 @@ export const createLifecycleHooks = (
  * Wraps a consumer hook so it can never affect queue state: synchronous throws
  * and rejections are logged, and promises ride on `waitUntil` when available.
  */
-export const createEmitter = (
-  hook: LifecycleHook | undefined,
+export const createEmitter = <
+  Event extends { entityKind: string; type: string } = DurabilityLifecycleEvent,
+>(
+  hook: ((event: Event) => void | Promise<void>) | undefined,
   waitUntil: ((promise: Promise<unknown>) => void) | undefined
-): Emit => {
+): ((event: Event) => void) => {
   if (!hook) {
     return () => undefined;
   }

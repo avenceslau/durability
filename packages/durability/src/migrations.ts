@@ -331,6 +331,184 @@ export const durabilityLogLeaseMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Ordered SQLite migrations for outbox channels. Applied automatically on
+ * construction.
+ */
+export const durabilityOutboxMigrations = [
+  {
+    name: 'durability_0006_create_outbox',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_outbox (
+        id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL,
+        entry_key TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending')),
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        created_at INTEGER NOT NULL,
+        generation_id TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_outbox_due_idx
+      ON durability_outbox (channel, status, next_attempt_at, version);
+      CREATE INDEX IF NOT EXISTS durability_outbox_pending_idx
+      ON durability_outbox (status, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS durability_outbox_created_idx
+      ON durability_outbox (created_at);
+      CREATE TABLE IF NOT EXISTS durability_outbox_seq (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_version INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO durability_outbox_seq (id, next_version) VALUES (1, 1);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_outbox_due_idx;
+      DROP INDEX IF EXISTS durability_outbox_pending_idx;
+      DROP INDEX IF EXISTS durability_outbox_created_idx;
+      DROP TABLE IF EXISTS durability_outbox;
+      DROP TABLE IF EXISTS durability_outbox_seq;
+    `,
+  },
+] satisfies DurableMigrations;
+
+/**
+ * Ordered SQLite migrations for semaphore grants. Applied automatically on
+ * construction.
+ */
+export const durabilitySemaphoreMigrations = [
+  {
+    name: 'durability_0007_create_semaphore',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_semaphore_grants (
+        grant_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_grants_expires_idx
+      ON durability_semaphore_grants (expires_at) WHERE claimed < permits;
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_semaphore_grants_expires_idx;
+      DROP TABLE IF EXISTS durability_semaphore_grants;
+    `,
+  },
+  {
+    name: 'durability_0009_create_semaphore_leases',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_semaphore_leases (
+        lease_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        retired INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_leases_expires_idx
+      ON durability_semaphore_leases (expires_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_semaphore_leases_expires_idx;
+      DROP TABLE IF EXISTS durability_semaphore_leases;
+    `,
+  },
+] satisfies DurableMigrations;
+
+/**
+ * Ordered SQLite migrations for a semaphore client's queue. Applied
+ * automatically on construction.
+ */
+export const durabilitySemaphoreQueueMigrations = [
+  {
+    name: 'durability_0008_create_semaphore_queue',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_semaphore_queue_items (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'claiming', 'admitted')),
+        grant_id TEXT,
+        created_at INTEGER NOT NULL,
+        admitted_at INTEGER,
+        notified INTEGER NOT NULL DEFAULT 0,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_items_key_idx
+      ON durability_semaphore_queue_items (key, status, created_at, id);
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_items_grant_idx
+      ON durability_semaphore_queue_items (grant_id, created_at, id);
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_items_notify_idx
+      ON durability_semaphore_queue_items (next_attempt_at)
+      WHERE status = 'admitted' AND notified = 0;
+      CREATE TABLE IF NOT EXISTS durability_semaphore_queue_grants (
+        grant_id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        admitted INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_grants_key_idx
+      ON durability_semaphore_queue_grants (key, created_at);
+      CREATE TABLE IF NOT EXISTS durability_semaphore_queue_keys (
+        key TEXT PRIMARY KEY,
+        next_request_at INTEGER NOT NULL,
+        queued INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_keys_due_idx
+      ON durability_semaphore_queue_keys (next_request_at) WHERE queued > 0;
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_semaphore_queue_keys_due_idx;
+      DROP TABLE IF EXISTS durability_semaphore_queue_keys;
+      DROP INDEX IF EXISTS durability_semaphore_queue_grants_key_idx;
+      DROP TABLE IF EXISTS durability_semaphore_queue_grants;
+      DROP INDEX IF EXISTS durability_semaphore_queue_items_notify_idx;
+      DROP INDEX IF EXISTS durability_semaphore_queue_items_grant_idx;
+      DROP INDEX IF EXISTS durability_semaphore_queue_items_key_idx;
+      DROP TABLE IF EXISTS durability_semaphore_queue_items;
+    `,
+  },
+  {
+    name: 'durability_0010_add_semaphore_queue_leases',
+    up: `
+      ALTER TABLE durability_semaphore_queue_items ADD COLUMN lease_id TEXT;
+      CREATE TABLE IF NOT EXISTS durability_semaphore_queue_leases (
+        lease_id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        drawn INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_semaphore_queue_leases_key_idx
+      ON durability_semaphore_queue_leases (key, created_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_semaphore_queue_leases_key_idx;
+      DROP TABLE IF EXISTS durability_semaphore_queue_leases;
+      ALTER TABLE durability_semaphore_queue_items DROP COLUMN lease_id;
+    `,
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -345,7 +523,10 @@ export type MigrationCapability =
   | 'fanout'
   | 'socket'
   | 'log'
-  | 'logLeases';
+  | 'logLeases'
+  | 'outbox'
+  | 'semaphore'
+  | 'semaphoreQueue';
 
 /**
  * Newer library versions may leave migrations this one does not know about.

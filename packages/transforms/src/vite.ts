@@ -71,7 +71,13 @@ type SyntaxNode = {
   [key: string]: unknown;
 };
 
-type BindingKind = 'env' | 'namespace' | 'other' | 'routing' | 'stub';
+type BindingKind = 'client' | 'env' | 'namespace' | 'other' | 'stub';
+
+/** Durability helpers whose `.client({ target })` receives an injected `exportName`. */
+const clientFactories: ReadonlyMap<string, string> = new Map([
+  ['durability/routing', 'DurabilityRouting'],
+  ['durability/experimental/semaphore', 'DurabilitySemaphore'],
+]);
 
 type Binding = {
   kind: BindingKind;
@@ -272,7 +278,7 @@ const objectHasProperty = (object: SyntaxNode, name: string): boolean => {
   });
 };
 
-function routingExportName(
+function clientExportName(
   program: SyntaxNode,
   targetName: string,
   durableObjectClassNames: ReadonlySet<string>
@@ -330,25 +336,25 @@ function routingExportName(
 
   if (!localClasses.has(targetName)) {
     throw new Error(
-      `DurabilityRouting target "${targetName}" is not a declared local class export; set \`exportName\` explicitly`
+      `Durability client target "${targetName}" is not a declared local class export; set \`exportName\` explicitly`
     );
   }
 
   const exportNames = [...(exportsByLocal.get(targetName) ?? [])];
   if (exportNames.length === 0) {
     throw new Error(
-      `DurabilityRouting target "${targetName}" is not a declared local class export; set \`exportName\` explicitly`
+      `Durability client target "${targetName}" is not a declared local class export; set \`exportName\` explicitly`
     );
   }
   if (exportNames.length > 1) {
     throw new Error(
-      `DurabilityRouting target "${targetName}" has ambiguous class aliases (${exportNames.join(', ')}); set \`exportName\` explicitly`
+      `Durability client target "${targetName}" has ambiguous class aliases (${exportNames.join(', ')}); set \`exportName\` explicitly`
     );
   }
   const exportName = exportNames[0];
   if (exportName === undefined || !durableObjectClassNames.has(exportName)) {
     throw new Error(
-      `DurabilityRouting target export "${exportName}" is not declared as a local Durable Object class in the Wrangler configuration`
+      `Durability client target export "${exportName}" is not declared as a local Durable Object class in the Wrangler configuration`
     );
   }
   return exportName;
@@ -373,19 +379,19 @@ function collectRoutingInjections(
       node.type === 'OptionalCallExpression'
     ) {
       const callee = unwrapExpression(node.callee);
-      const routingName =
+      const factoryName =
         callee &&
         memberExpressionTypes.has(callee.type) &&
         propertyName(callee) === 'client'
           ? identifierName(unwrapExpression(callee.object))
           : undefined;
-      const routingBinding = routingName
+      const factoryBinding = factoryName
         ? resolveBinding(
             nodeScopes.get(syntaxNode(callee?.object) ?? node) ?? rootScope,
-            routingName
+            factoryName
           )
         : undefined;
-      if (routingBinding?.kind === 'routing') {
+      if (factoryBinding?.kind === 'client') {
         const argumentsList = Array.isArray(node.arguments)
           ? node.arguments
           : [];
@@ -409,7 +415,7 @@ function collectRoutingInjections(
               );
               if (target?.type !== 'Identifier') {
                 throw new Error(
-                  'DurabilityRouting client target must be an Identifier; set `exportName` explicitly for dynamic targets'
+                  'Durability client target must be an Identifier; set `exportName` explicitly for dynamic targets'
                 );
               }
               const targetName = identifierName(target)!;
@@ -420,10 +426,10 @@ function collectRoutingInjections(
                 ) !== rootScope.bindings.get(targetName)
               ) {
                 throw new Error(
-                  `DurabilityRouting target "${targetName}" is shadowed; set \`exportName\` explicitly`
+                  `Durability client target "${targetName}" is shadowed; set \`exportName\` explicitly`
                 );
               }
-              const exportName = routingExportName(
+              const exportName = clientExportName(
                 program,
                 targetName,
                 durableObjectClassNames
@@ -703,7 +709,9 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       const cleanId = id.split('?')[0] ?? id;
       const mayWrapBindings =
         durableObjectBindingNames.size > 0 || stubBindingNames.size > 0;
-      const mayInjectRouting = code.includes('DurabilityRouting');
+      const mayInjectRouting = [...clientFactories.values()].some((name) =>
+        code.includes(name)
+      );
       if (
         cleanId.includes('/node_modules/') ||
         !/\.[cm]?[jt]sx?$/.test(cleanId) ||
@@ -916,15 +924,16 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             const importedName = identifierName(syntaxNode(node.imported));
             const isTypeOnlyImport =
               parent?.importKind === 'type' || node.importKind === 'type';
-            const isRoutingImport =
+            const isClientFactoryImport =
               !isTypeOnlyImport &&
               node.type === 'ImportSpecifier' &&
-              importedName === 'DurabilityRouting' &&
               importSource?.type === 'StringLiteral' &&
-              importSource.value === 'durability/routing';
+              typeof importSource.value === 'string' &&
+              importedName !== undefined &&
+              clientFactories.get(importSource.value) === importedName;
             scope.bindings.set(localName, {
-              kind: isRoutingImport
-                ? 'routing'
+              kind: isClientFactoryImport
+                ? 'client'
                 : node.type === 'ImportSpecifier' &&
                     importedName === 'env' &&
                     importSource?.type === 'StringLiteral' &&

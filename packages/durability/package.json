@@ -23,6 +23,7 @@
     "./experimental": "./src/experimental.ts",
     "./routing": "./src/routing.ts",
     "./socket": "./src/socket.ts",
+    "./experimental/semaphore": "./src/semaphore.ts",
     "./utils": "./src/utils.ts"
   },
   "publishConfig": {
@@ -48,6 +49,10 @@
       "./socket": {
         "types": "./dist/socket.d.ts",
         "import": "./dist/socket.js"
+      },
+      "./experimental/semaphore": {
+        "types": "./dist/semaphore.d.ts",
+        "import": "./dist/semaphore.js"
       },
       "./utils": {
         "types": "./dist/utils.d.ts",

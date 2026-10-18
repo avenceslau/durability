@@ -129,6 +129,14 @@ export class FanoutTimeoutError extends Error {
   }
 }
 
+/** Error recorded when an outbox `publish` call exceeds its configured timeout. */
+export class OutboxTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Outbox publication timed out after ${timeoutMs}ms`);
+    this.name = 'OutboxTimeoutError';
+  }
+}
+
 /** A definite rejection before the batch was durably accepted. */
 export class FanoutEnqueueError extends Error {
   constructor(message: string) {
@@ -171,6 +179,14 @@ export class LogLeaseError extends Error {
   constructor(batchId: string) {
     super(`Log lease "${batchId}" is not held`);
     this.name = 'LogLeaseError';
+  }
+}
+
+/** A malformed or unexpected semaphore message. */
+export class SemaphoreProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SemaphoreProtocolError';
   }
 }
 
