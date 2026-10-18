@@ -1,0 +1,35 @@
+.changeset/semaphore-lease-renewal.md
+  s_89dff2fd3753ec::t_8ffc25f47b995d 6-7
+packages/durability/README.md
+  s_89dff2fd3753ec::t_d06fcdea66c55a 594
+packages/durability/src/migrations.ts
+  s_89dff2fd3753ec::t_37cfe5aedf5d0f 515,518
+packages/durability/src/semaphore-leases.ts
+  s_89dff2fd3753ec::t_88bf38c9a50491 169,188,191-192,197-202,210,265-271
+packages/durability/src/semaphore-queue-store.ts
+  s_89dff2fd3753ec::t_70977026e91a5c 62-63,80,284,292,297-301,307-308,311,318,322,400,403-405
+packages/durability/src/semaphore-queue.test.ts
+  s_89dff2fd3753ec::t_62dc490ca2195f 260-298
+packages/durability/src/semaphore-queue.ts
+  s_89dff2fd3753ec::t_e80afefe1e7b55 710-718,749,754-757
+packages/durability/src/semaphore-server.ts
+  s_89dff2fd3753ec::t_155bc766e953b5 294,470
+packages/durability/src/semaphore.test.ts
+  s_89dff2fd3753ec::t_7db42797343bcc 453,477-478,480,487-502,505-515
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0497b75e57c7cf35ffb4a19f4e93e741e9efee57",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
