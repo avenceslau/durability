@@ -1,3 +1,9 @@
+/**
+ * Experimental: this entry point may change or be removed in a minor
+ * release. Pin an exact version of `durability` when depending on it.
+ *
+ * @packageDocumentation
+ */
 import {
   createTransformStub,
   type TransformContext,
@@ -18,6 +24,9 @@ import {
   type SemaphoreResponse,
 } from './semaphore-protocol.js';
 import { DurabilitySemaphoreServer } from './semaphore-server.js';
+
+export { SemaphoreProtocolError } from './errors.js';
+export { durabilitySemaphoreMigrations } from './migrations.js';
 
 export type {
   GrantReport,

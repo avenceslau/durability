@@ -76,7 +76,7 @@ type BindingKind = 'client' | 'env' | 'namespace' | 'other' | 'stub';
 /** Durability helpers whose `.client({ target })` receives an injected `exportName`. */
 const clientFactories: ReadonlyMap<string, string> = new Map([
   ['durability/routing', 'DurabilityRouting'],
-  ['durability/semaphore', 'DurabilitySemaphore'],
+  ['durability/experimental/semaphore', 'DurabilitySemaphore'],
 ]);
 
 type Binding = {

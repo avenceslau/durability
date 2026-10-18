@@ -6,7 +6,7 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
 - **`DurabilityOutbox`** _(experimental, `durability/experimental`)_ — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
-- **`DurabilitySemaphore`** — one concurrency limit shared by many client Durable Objects (`durability/semaphore`), allocated in arrival-ordered rounds with cumulative claim/release accounting.
+- **`DurabilitySemaphore`** _(experimental, `durability/experimental/semaphore`)_ — one concurrency limit shared by many client Durable Objects, allocated in arrival-ordered rounds with cumulative claim/release accounting.
 - **`DurabilityRouting`** — a DO-side load observer and client-side shard selector (`durability/routing`), supporting location hints and caller transforms.
 - **`DurabilitySocket`** — typed WebSocket RPC and replayable event push from a Durable Object to browsers (`durability/socket`), with a dependency-free browser client (`durability/client`).
 - **`DurabilityTracker`** _(experimental, `durability/experimental`)_ — lists work across capabilities and custom sources, as RPC handles that can be waited on or as plain records.
@@ -513,7 +513,9 @@ new DurabilityTracker({ sources: { jobs: this.durability, approvals } });
 
 New members of `TrackedSource` are always optional, so a custom source keeps compiling across releases.
 
-## Semaphore
+## Semaphore (experimental)
+
+Everything under `durability/experimental/semaphore` may change or be removed in a minor release; pin an exact version when depending on it. It is a separate entry point from `durability/experimental` because its client resolves Durable Object namespaces through `cloudflare:workers`.
 
 `DurabilitySemaphore` holds one concurrency limit — say, an account's maximum running jobs — inside an application-owned Durable Object, and hands permits to many client Durable Objects that queue work. Requests arriving within a round are allocated together in arrival order, so the oldest queued work across all clients is admitted first. Groups (a workflow, a tenant) may carry their own ceiling under the shared limit.
 
@@ -524,7 +526,7 @@ import { DurabilityScheduler } from 'durability';
 import {
   DurabilitySemaphore,
   type SemaphoreRequest,
-} from 'durability/semaphore';
+} from 'durability/experimental/semaphore';
 
 /** One instance per account; the account id is the semaphore key. */
 export class AccountLimit extends DurableObject<Env> {

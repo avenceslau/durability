@@ -411,9 +411,9 @@ const router = DurabilityRouting.client({
     expect(result).toContain('...defaults,\n exportName: "Mailbox"');
   });
 
-  it('injects for DurabilitySemaphore.client from durability/semaphore', async () => {
+  it('injects for DurabilitySemaphore.client from durability/experimental/semaphore', async () => {
     const result = await transform(`
-import { DurabilitySemaphore } from 'durability/semaphore';
+import { DurabilitySemaphore } from 'durability/experimental/semaphore';
 export class Mailbox extends DurableObject {}
 const limits = DurabilitySemaphore.client({
   target: Mailbox,
