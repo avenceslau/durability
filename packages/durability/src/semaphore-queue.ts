@@ -415,9 +415,22 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         grants: grants.map(grantReport),
       };
 
+      // While the holder holds the request for its round, the key must not
+      // look due: the alarm would find it skipped and re-arm at once, spinning
+      // for the whole wait. A crash mid-request leaves it due at the deadline.
+      await this.#engine.transaction(() => {
+        this.#store.upsertKey({
+          key,
+          queued: queued.length,
+          next_request_at: Date.now() + this.#attemptTimeoutMs,
+        });
+      });
+
       let grant: PermitGrant;
       try {
-        grant = await this.#server.request(key, message);
+        grant = await this.#deadline('request', () =>
+          this.#server.request(key, message)
+        );
       } catch (error) {
         reportFailure(
           'durability.semaphore_queue.request_failed',
@@ -709,7 +722,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       );
       let failure: unknown;
       try {
-        await this.#deadline(() => this.#admit(admitted));
+        await this.#deadline('admit', () => this.#admit(admitted));
       } catch (error) {
         failure = error;
       }
@@ -770,17 +783,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     return 60_000;
   }
 
-  async #deadline(run: () => unknown): Promise<void> {
+  async #deadline<T>(what: string, run: () => T | Promise<T>): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
+      return await Promise.race([
         Promise.resolve().then(run),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
             () =>
               reject(
                 new Error(
-                  `Semaphore admit timed out after ${this.#attemptTimeoutMs}ms`
+                  `Semaphore ${what} timed out after ${this.#attemptTimeoutMs}ms`
                 )
               ),
             this.#attemptTimeoutMs

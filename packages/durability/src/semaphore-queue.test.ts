@@ -10,6 +10,7 @@ import {
   DurabilitySemaphoreServer,
   type DurabilitySemaphoreConfig,
 } from './semaphore-server';
+import type { PermitGrant } from './semaphore-protocol';
 import { FakeStorage } from './test-fakes';
 
 beforeEach(() => {
@@ -190,6 +191,35 @@ describe('semaphore queue', () => {
     blocked: [],
     nextRequestAt: Date.now() + 2_000,
     grantResults: [],
+  });
+
+  it('stays idle while the holder keeps a request for its round', async () => {
+    const storage = storageFor();
+    let answer!: (grant: PermitGrant) => void;
+    const queue = new DurabilitySemaphoreQueue<string>({
+      scheduler: schedulerFor(storage),
+      clientId: 'shard-3',
+      server: {
+        request: () =>
+          new Promise<PermitGrant>((resolve) => {
+            answer = resolve;
+          }),
+        sync: async () => ({ type: 'synced', v: 1, grantResults: [] }),
+      },
+      admit: () => undefined,
+    });
+    await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+    await vi.advanceTimersByTimeAsync(5);
+    expect(answer).toBeDefined();
+
+    // The key was due when the request left; it must not look due while waiting.
+    const transactions = vi.spyOn(storage, 'transaction');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(transactions.mock.calls.length).toBeLessThan(5);
+
+    answer(grantOf('g1', 1));
+    await settle();
+    expect(await queue.status('a')).toMatchObject({ state: 'claiming' });
   });
 
   it('returns items to the queue when the holder forgot or clamped a grant', async () => {
