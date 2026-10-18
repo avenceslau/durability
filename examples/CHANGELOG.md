@@ -1,5 +1,17 @@
 # durability-examples
 
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies [edaae65]
+- Updated dependencies [de341a2]
+- Updated dependencies [154b54d]
+- Updated dependencies [5df85e6]
+- Updated dependencies [5df85e6]
+  - durability@4.2.0
+  - @durability/transforms@0.5.0
+
 ## 0.0.2
 
 ### Patch Changes
