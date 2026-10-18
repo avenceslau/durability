@@ -1,0 +1,25 @@
+packages/durability/README.md
+  s_89dff2fd3753ec::t_69dd37db6dc9e7 1140
+.changeset/log-lease-truncation.md
+  s_89dff2fd3753ec::t_c66c672bbf132f 1-5
+packages/durability/src/log.test.ts
+  s_89dff2fd3753ec::t_917d34462a3ceb 443-496
+packages/durability/src/log.ts
+  s_89dff2fd3753ec::t_9a8c91f2488a23 928-932,1057-1085,1089-1094
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "abacf874fd4d181a57889b62c4faf7057de15a30",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
