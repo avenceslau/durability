@@ -1,3 +1,4 @@
+import { traceLifecycle, traceMethods } from './dev.js';
 import {
   OutboxTimeoutError,
   reportFailure,
@@ -268,7 +269,7 @@ export class DurabilityOutbox<Value = unknown> {
     this.#publish = config.publish;
 
     this.#engine = engineFor(config);
-    this.#emit = this.#engine.emitter(config.onLifecycleEvent);
+    this.#emit = traceLifecycle(this.#engine.emitter(config.onLifecycleEvent));
     this.#engine.migrateSchema('outbox', durabilityOutboxMigrations);
     this.#attach();
   }
@@ -599,3 +600,5 @@ export class DurabilityOutbox<Value = unknown> {
     }
   }
 }
+
+traceMethods(DurabilityOutbox.prototype, 'DurabilityOutbox');

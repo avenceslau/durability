@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import { trace, traceFunction, traceMethods, traceStorage } from './dev.js';
 import { reportFailure, serializeError } from './errors.js';
 import {
   durabilitySocketMigrations,
@@ -83,6 +84,7 @@ declare const WebSocketRequestResponsePair: {
 const reservedOutboundNames = new Set(['status', 'resync']);
 
 const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
+  trace('socket.send', { frame });
   let text = JSON.stringify(frame);
   if (text.length > socketMaxFrameLength) {
     if (frame.type === 'event') {
@@ -132,6 +134,7 @@ class DurabilitySocketCore<
   declare readonly [socketShape]: SocketShape<Inbound, Outbound>;
 
   readonly #context: DurabilitySocketContext;
+  readonly #storage: DurableObjectStorage;
   readonly #inbound: Map<string, SocketInboundHandler<never>>;
   readonly #outboundNames: Set<string>;
   readonly #metadata: DurabilitySocketConfig<
@@ -148,6 +151,7 @@ class DurabilitySocketCore<
     }
 
     this.#context = config.context;
+    this.#storage = traceStorage(config.context.storage);
     // Only own keys are callable; nothing on the prototype chain is reachable.
     this.#inbound = new Map(Object.entries(config.inbound));
     this.#metadata = config.metadata;
@@ -163,17 +167,14 @@ class DurabilitySocketCore<
         throw new Error(`"${name}" is reserved by DurabilitySocket`);
       }
       Object.defineProperty(this, name, {
-        value: (payload: unknown) => this.#publish(name, payload),
+        value: traceFunction(`DurabilitySocket.${name}`, (payload: unknown) =>
+          this.#publish(name, payload)
+        ),
         enumerable: true,
       });
     }
 
-    migrate(
-      this.#context.storage,
-      'socket',
-      durabilitySocketMigrations,
-      undefined
-    );
+    migrate(this.#storage, 'socket', durabilitySocketMigrations, undefined);
     // Keep-alive pings are answered by the runtime without waking a hibernated object.
     this.#context.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair(
@@ -224,6 +225,10 @@ class DurabilitySocketCore<
       typeof message === 'string' ? message : new TextDecoder().decode(message);
     const frame = parseClientFrame(text);
     if (!frame) {
+      trace('socket.close', {
+        code: socketProtocolErrorCode,
+        reason: 'Invalid frame',
+      });
       ws.close(socketProtocolErrorCode, 'Invalid frame');
       return;
     }
@@ -354,7 +359,7 @@ class DurabilitySocketCore<
     if (since === head) {
       return true;
     }
-    const oldest = this.#context.storage.sql
+    const oldest = this.#storage.sql
       .exec<{ seq: number }>(
         'SELECT MIN(seq) AS seq FROM durability_socket_events'
       )
@@ -363,7 +368,7 @@ class DurabilitySocketCore<
       return false;
     }
 
-    const rows = this.#context.storage.sql
+    const rows = this.#storage.sql
       .exec<EventRow>(
         'SELECT seq, name, payload FROM durability_socket_events WHERE seq > ? ORDER BY seq',
         since
@@ -386,7 +391,7 @@ class DurabilitySocketCore<
   }
 
   #headSeq(): number {
-    const row = this.#context.storage.sql
+    const row = this.#storage.sql
       .exec<{ seq: number | null }>(
         'SELECT MAX(seq) AS seq FROM durability_socket_events'
       )
@@ -396,7 +401,7 @@ class DurabilitySocketCore<
 
   #publish(name: string, payload: unknown): void {
     const serialized = serialize(payload);
-    const sql = this.#context.storage.sql;
+    const sql = this.#storage.sql;
     const { seq } = sql
       .exec<{ seq: number }>(
         'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?) RETURNING seq',
@@ -494,6 +499,8 @@ export interface DurabilitySocketConstructor {
   ): DurabilitySocket<Inbound, Outbound, Metadata>;
   migrate: typeof DurabilitySocketCore.migrate;
 }
+
+traceMethods(DurabilitySocketCore.prototype, 'DurabilitySocket');
 
 // TypeScript cannot declare class members derived from a generic event map,
 // so the constructor is typed separately; the constructor installs and

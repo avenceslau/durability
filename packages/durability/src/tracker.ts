@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { traceMethods } from './dev.js';
 import type {
   AnyDurabilityAlarms,
   DurabilityAlarms,
@@ -329,3 +330,5 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     });
   }
 }
+
+traceMethods(DurabilityTracker.prototype, 'DurabilityTracker');

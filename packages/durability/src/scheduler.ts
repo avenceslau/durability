@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { trace, traceMethods, traceStorage } from './dev.js';
 import {
   DurableRetryPolicyError,
   isErrorInstance,
@@ -167,6 +168,7 @@ const decideRetry = (
 export class Engine {
   readonly sql: SqlStorage;
   private readonly context: DurabilityContext;
+  private readonly storage: DurableObjectStorage;
   private readonly alarmConcurrency: number;
   private readonly alarmMinDelayMs: number;
   private readonly alarmHandoffMs: number;
@@ -184,7 +186,8 @@ export class Engine {
 
   constructor(context: DurabilityContext, options: DurabilitySchedulerOptions) {
     this.context = context;
-    this.sql = context.storage.sql;
+    this.storage = traceStorage(context.storage);
+    this.sql = this.storage.sql;
     this.alarmConcurrency = options.alarmConcurrency ?? 10;
     this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
     this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
@@ -240,12 +243,12 @@ export class Engine {
     capability: MigrationCapability,
     migrations: DurableMigrations
   ): void {
-    migrate(this.context.storage, capability, migrations, undefined);
+    migrate(this.storage, capability, migrations, undefined);
   }
 
   /** Runs synchronous writes atomically without touching the physical alarm. */
   transactionSync<T>(write: (sql: SqlStorage) => T): T {
-    return this.context.storage.transactionSync(() => write(this.sql));
+    return this.storage.transactionSync(() => write(this.sql));
   }
 
   /**
@@ -254,13 +257,11 @@ export class Engine {
    */
   async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
     let nextPendingAt: number | undefined;
-    const result = await this.context.storage.transaction(
-      async (transaction) => {
-        const value = write(this.sql);
-        nextPendingAt = await this.reconcile(transaction);
-        return value;
-      }
-    );
+    const result = await this.storage.transaction(async (transaction) => {
+      const value = write(this.sql);
+      nextPendingAt = await this.reconcile(transaction);
+      return value;
+    });
     this.scheduleEarlyAlarm(nextPendingAt);
     return result;
   }
@@ -331,6 +332,7 @@ export class Engine {
           return;
         }
         this.earlyAlarm = undefined;
+        trace('scheduler.early_alarm', { scheduledTime: timestamp });
         const onError = (error: unknown) =>
           reportFailure(
             'durability.background_execution.failed',
@@ -547,7 +549,7 @@ export class Engine {
   /** Arms the physical alarm directly, outside any transaction; the next run reconciles properly. */
   private async armFallbackAlarm(): Promise<boolean> {
     try {
-      await this.context.storage.setAlarm(Date.now() + this.alarmMinDelayMs);
+      await this.storage.setAlarm(Date.now() + this.alarmMinDelayMs);
       return true;
     } catch {
       return false;
@@ -555,7 +557,7 @@ export class Engine {
   }
 
   private armForHandoff(timestamp: number): Promise<void> {
-    return this.context.storage.transaction(async (physicalAlarm) => {
+    return this.storage.transaction(async (physicalAlarm) => {
       const currentAlarm = await physicalAlarm.getAlarm();
       const target = Math.max(timestamp, Date.now() + this.alarmMinDelayMs);
       if (currentAlarm === null || currentAlarm > target) {
@@ -786,6 +788,8 @@ export class DurabilityScheduler {
     return engineFor({ scheduler: this }).alarm(info);
   }
 }
+
+traceMethods(DurabilityScheduler.prototype, 'DurabilityScheduler');
 
 /**
  * Resolves the engine a helper should attach to: the shared one behind a
