@@ -1,0 +1,31 @@
+packages/durability/README.md
+  s_89dff2fd3753ec::t_4be4c8c391299b 589,592
+packages/durability/src/semaphore-leases.ts
+  s_89dff2fd3753ec::t_cf1bc6d7c2937a 184-185,195,215-216,367-373,376,379,381-383,391,395-396,424
+packages/durability/src/semaphore-protocol.ts
+  s_89dff2fd3753ec::t_d003d88d02a68e 33-34,115-116,125
+packages/durability/src/semaphore-queue.test.ts
+  s_89dff2fd3753ec::t_de802b192d86d6 13,244-294
+packages/durability/src/semaphore-queue.ts
+  s_89dff2fd3753ec::t_93f102674bdaa9 127,145-148,153,327-337,500-502,614-640,664-667,781-786,816,843-845
+packages/durability/src/semaphore-server.ts
+  s_89dff2fd3753ec::t_33f5d0488eb6e0 135-136,196-197,384,392-394,541,567-573,606,645-648
+packages/durability/src/semaphore.test.ts
+  s_89dff2fd3753ec::t_5913221a408bd9 569-617
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "01d5a2235fb416d8da0498ab24677ac153009211",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
