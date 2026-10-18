@@ -43,6 +43,20 @@ describe('outbox', () => {
     expect(transactions).toHaveBeenCalledTimes(1);
   });
 
+  it('checks the outbox schema once per scheduler, however many channels attach', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({
+      context: { storage: storage as unknown as DurableObjectStorage },
+    });
+    const statements = vi.spyOn(storage.sql, 'exec');
+    new DurabilityOutbox({ scheduler, channel: 'a', publish: () => undefined });
+    const first = statements.mock.calls.length;
+    new DurabilityOutbox({ scheduler, channel: 'b', publish: () => undefined });
+    new DurabilityOutbox({ scheduler, channel: 'c', publish: () => undefined });
+    expect(first).toBeGreaterThan(0);
+    expect(statements.mock.calls.length).toBe(first);
+  });
+
   it('publishes only the newest staged version of each key', async () => {
     const { scheduler } = fixture();
     const publish = vi.fn(async (_entries: OutboxEntry<string>[]) => {});
