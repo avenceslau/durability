@@ -1,0 +1,49 @@
+.changeset/dev-mode-tracing.md
+  s_d21399ef20e5bb::t_3c232205660a63 1-5
+.oxlintrc.json
+  s_d21399ef20e5bb::t_3f2d4ed9d8ff0f 25
+packages/durability/README.md
+  s_d21399ef20e5bb::t_2345aa0cecd3ec 271-303
+packages/durability/src/dev.test.ts
+  s_d21399ef20e5bb::t_1f87b778e0fa88 1-97
+packages/durability/src/dev.ts
+  s_d21399ef20e5bb::t_2d0a3eec9dc347 1-185
+packages/durability/src/durability-alarms.ts
+  s_d21399ef20e5bb::t_91d408c93d7d35 2,189-192,467-468
+packages/durability/src/durability.ts
+  s_d21399ef20e5bb::t_aaa823b6d459ae 2,331-344,686-687
+packages/durability/src/fanout.ts
+  s_d21399ef20e5bb::t_0f78f75d9761c8 2,766-769,793,797-834,837-845,1100-1101
+packages/durability/src/lifecycle.ts
+  s_d21399ef20e5bb::t_1851b57785abe6 1,127
+packages/durability/src/log.ts
+  s_d21399ef20e5bb::t_452433482e2c07 2,1119-1120
+packages/durability/src/migrations.ts
+  s_d21399ef20e5bb::t_f0e02f36dc9546 3,679
+packages/durability/src/scheduler.ts
+  s_d21399ef20e5bb::t_af892eb8e88ba9 2,171,189-190,246,251,260-264,335,552,560,792-793
+packages/durability/src/socket.ts
+  s_d21399ef20e5bb::t_1fd1807e2e27c4 2,87,137,154,170-172,177,228-231,362,371,394,404,503-504
+packages/durability/src/tracker.ts
+  s_d21399ef20e5bb::t_56e150b98b727a 2,333-334
+packages/durability/vitest.config.ts
+  s_d21399ef20e5bb::t_e1a038de7592d7 3,5-6
+packages/durability/vitest.workers.config.ts
+  s_d21399ef20e5bb::t_81ccc8eb2d9a1a 4,6-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b1ffad44c17f16ee155c07098bb8ff0c796800c4",
+  "prompts": {},
+  "sessions": {
+    "s_d21399ef20e5bb": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14fab-9ea6-73ea-bba4-f9076fefdb0a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
