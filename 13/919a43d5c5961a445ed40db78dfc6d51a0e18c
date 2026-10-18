@@ -1,0 +1,35 @@
+packages/durability/README.md
+  s_89dff2fd3753ec::t_4be4c8c391299b 594
+  s_89dff2fd3753ec::t_a7a4d796837de0 591
+packages/durability/src/semaphore-leases.ts
+  s_89dff2fd3753ec::t_cf1bc6d7c2937a 189-190,200,220-221,372-378,381,384,386-388,396,400-401,429
+  s_89dff2fd3753ec::t_0d082b47e94e06 15-16,111-116
+packages/durability/src/semaphore-protocol.ts
+  s_89dff2fd3753ec::t_d003d88d02a68e 33-34,115-116,125
+packages/durability/src/semaphore-queue.test.ts
+  s_89dff2fd3753ec::t_de802b192d86d6 307-357
+  s_89dff2fd3753ec::t_70d303cfc37e3a 305-306
+packages/durability/src/semaphore-queue.ts
+  s_89dff2fd3753ec::t_93f102674bdaa9 136,154-157,162,351-361,537-539,651-677,701-704,818-823,853,880-882
+packages/durability/src/semaphore-server.ts
+  s_89dff2fd3753ec::t_33f5d0488eb6e0 135-136,196-197,384,392-394,541,567-573,606,645-648
+packages/durability/src/semaphore.test.ts
+  s_89dff2fd3753ec::t_5913221a408bd9 591,593-597,601-640
+  s_89dff2fd3753ec::t_ca20755c254030 569-590,592,598-600
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "13919a43d5c5961a445ed40db78dfc6d51a0e18c",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
