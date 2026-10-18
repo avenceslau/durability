@@ -302,8 +302,9 @@ describe('semaphore queue', () => {
     options: Partial<DurabilitySemaphoreQueueConfig<string>> = {}
   ) => {
     const admitted: AdmittedItem<string>[] = [];
+    const storage = storageFor();
     const queue = new DurabilitySemaphoreQueue<string>({
-      scheduler: schedulerFor(storageFor()),
+      scheduler: schedulerFor(storage),
       clientId: 'shard-2',
       server,
       admit: (items) => {
@@ -312,7 +313,7 @@ describe('semaphore queue', () => {
       retries: { delay: () => 3_000 },
       ...options,
     } as DurabilitySemaphoreQueueConfig<string>);
-    return { queue, admitted };
+    return { queue, admitted, storage };
   };
 
   const grantOf = (grantId: string, permits: number) => ({
@@ -493,6 +494,62 @@ describe('semaphore queue', () => {
     await settle(3_000);
     expect(requests).toBeGreaterThanOrEqual(3);
     expect(await queue.status('c')).toMatchObject({ state: 'queued' });
+  });
+
+  it('asks again soon when the reply to a request cannot be applied', async () => {
+    let requests = 0;
+    let failNext = false;
+    const { queue, storage } = scripted({
+      request: async () => {
+        requests += 1;
+        failNext = requests === 1;
+        return grantOf(`g${requests}`, 1);
+      },
+      sync: async () => ({ type: 'synced', v: 1, grantResults: [] }),
+    });
+    const transaction = storage.transaction.bind(storage);
+    vi.spyOn(storage, 'transaction').mockImplementation((closure) => {
+      if (failNext) {
+        failNext = false;
+        return Promise.reject(new Error('storage unavailable'));
+      }
+      return transaction(closure);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+    await settle();
+    expect(requests).toBe(1);
+    // The grant was lost with the failed write; the retry delay (3 s), not the
+    // 60 s request deadline, decides when the queue asks again.
+    await settle(4_000);
+    expect(requests).toBe(2);
+    expect(await queue.status('a')).toMatchObject({ state: 'claiming' });
+  });
+
+  it('retries claim reports well inside the holder grant window', async () => {
+    const syncs: number[] = [];
+    const { queue } = scripted(
+      {
+        request: async () => grantOf('g1', 1),
+        sync: async () => {
+          syncs.push(Date.now());
+          throw new Error('holder unavailable');
+        },
+      },
+      { retries: { delay: (attempt) => 1_000 * 2 ** (attempt - 1) } }
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+    for (let i = 0; i < 40; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await settle(1_000);
+    }
+    // Exponential backoff would wait 8 s, 16 s, 32 s; capped at 5 s it keeps trying.
+    const gaps = syncs.slice(1).map((at, index) => at - syncs[index]!);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(5_100);
+    expect(syncs.length).toBeGreaterThanOrEqual(8);
   });
 
   it('returns items to the queue when the holder forgot or clamped a grant', async () => {

@@ -136,6 +136,8 @@ type Report =
   | { kind: 'lease'; drawn: number; released: number; retired?: boolean };
 
 const outboxChannel = 'durability.semaphore-queue';
+/** Half the holder's default grantTimeoutMs. */
+const maxReportRetryMs = 5_000;
 /** Queued items read per key when building a request's demand. */
 const demandScanLimit = 200;
 const maxDelayMs = 2 ** 31 - 1;
@@ -257,6 +259,12 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       scheduler,
       channel: outboxChannel,
       publish: (entries) => this.#publishReports(entries),
+      // A claim the holder has not heard about within its grant window is
+      // reclaimed, so reports retry well inside it instead of backing off for minutes.
+      retries: {
+        delay: (attempt) =>
+          Math.min(this.#retryDelay(attempt), maxReportRetryMs),
+      },
     });
     this.#engine.register({
       table: queueItemsTable,
@@ -471,6 +479,20 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     );
   }
 
+  /** Best effort: if this write fails too, the request deadline still applies. */
+  async #retrySoon(key: string, queued: number): Promise<void> {
+    await this.#engine
+      .transaction(() => {
+        const current = this.#store.getKey(key);
+        this.#store.upsertKey({
+          key,
+          queued: current?.queued ?? queued,
+          next_request_at: Date.now() + this.#retryDelay(1),
+        });
+      })
+      .catch(() => undefined);
+  }
+
   /** Asks the holder for permits covering this key's queued items. */
   async #request(key: string): Promise<void> {
     this.#requesting.add(key);
@@ -528,46 +550,46 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           { key },
           error
         );
-        await this.#engine.transaction(() => {
-          const current = this.#store.getKey(key);
-          this.#store.upsertKey({
-            key,
-            queued: current?.queued ?? queued.length,
-            next_request_at: Date.now() + this.#retryDelay(1),
-          });
-        });
+        await this.#retrySoon(key, queued.length);
         return;
       }
 
-      await this.#engine.transaction(() => {
-        const txStore = this.#store;
-        for (const given of grant.grants) {
-          txStore.insertGrant({
-            grant_id: given.grantId,
-            key,
-            grp: given.group,
-            permits: given.permits,
-            claimed: 0,
-            confirmed: 0,
-            admitted: 0,
-            released: 0,
-            created_at: Date.now(),
-          });
-        }
-        this.#applyLeaseGrants(key, grant.leases ?? []);
-        this.#claimLocally(key);
-        this.#applyResults(key, grant.grantResults);
-        if (grant.contended) {
-          this.#returnIdleLeases(key);
-        }
-        const remaining = this.#refreshKey(key, grant.nextRequestAt);
-        for (const group of new Set(remaining.map((item) => item.grp))) {
-          this.#blocked.delete(pairKey(key, group));
-        }
-        for (const { group, reason } of grant.blocked) {
-          this.#blocked.set(pairKey(key, group), reason);
-        }
-      });
+      try {
+        await this.#engine.transaction(() => {
+          const txStore = this.#store;
+          for (const given of grant.grants) {
+            txStore.insertGrant({
+              grant_id: given.grantId,
+              key,
+              grp: given.group,
+              permits: given.permits,
+              claimed: 0,
+              confirmed: 0,
+              admitted: 0,
+              released: 0,
+              created_at: Date.now(),
+            });
+          }
+          this.#applyLeaseGrants(key, grant.leases ?? []);
+          this.#claimLocally(key);
+          this.#applyResults(key, grant.grantResults);
+          if (grant.contended) {
+            this.#returnIdleLeases(key);
+          }
+          const remaining = this.#refreshKey(key, grant.nextRequestAt);
+          for (const group of new Set(remaining.map((item) => item.grp))) {
+            this.#blocked.delete(pairKey(key, group));
+          }
+          for (const { group, reason } of grant.blocked) {
+            this.#blocked.set(pairKey(key, group), reason);
+          }
+        });
+      } catch (error) {
+        // The grant is lost with the transaction; ask again soon rather than
+        // at the request deadline, which only covers a crash.
+        await this.#retrySoon(key, queued.length);
+        throw error;
+      }
 
       const counts = new Map<string, number>();
       for (const item of store.listItems(key, 'queued', demandScanLimit)) {
