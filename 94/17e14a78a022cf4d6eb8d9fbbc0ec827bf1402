@@ -1,0 +1,29 @@
+packages/durability/README.md
+  s_89dff2fd3753ec::t_31f9c0611f9ec6 594
+packages/durability/src/semaphore-leases.ts
+  s_89dff2fd3753ec::t_68751f657eced2 188-189,191-192,263-264,274-275,323-325,340-342,351
+packages/durability/src/semaphore-queue-store.ts
+  s_89dff2fd3753ec::t_4b48403ed17a64 286-287,289-291
+packages/durability/src/semaphore-queue.test.ts
+  s_89dff2fd3753ec::t_4d75165526970c 307-345
+packages/durability/src/semaphore-queue.ts
+  s_89dff2fd3753ec::t_e84ee78b55fe07 352,442-446,692,695-696,698-699,861-869
+packages/durability/src/semaphore.test.ts
+  s_89dff2fd3753ec::t_2174bfbf343413 541,559-560,562,564-572,574
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9417e14a78a022cf4d6eb8d9fbbc0ec827bf1402",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
