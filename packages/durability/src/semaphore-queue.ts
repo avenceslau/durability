@@ -707,7 +707,15 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     for (const grant of grants) {
       const lease = store.getLease(grant.leaseId);
       if (grant.expiresAt <= now) {
-        if (!lease || retiredLocally(lease, now)) {
+        if (!lease) {
+          continue;
+        }
+        if (retiredLocally(lease, now)) {
+          // The holder settles a stopped lease by echoing it with nothing left
+          // counted; until then this client keeps reporting it.
+          if (grant.permits <= lease.released && !lease.confirmed) {
+            store.updateLease({ ...lease, confirmed: 1 });
+          }
           continue;
         }
         // The holder keeps counting the whole lease until this report says
@@ -738,11 +746,15 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         created_at: now,
         expires_at: grant.expiresAt,
         ...renewal(now, grant.expiresAt),
+        confirmed: 0,
       });
     }
   }
 
-  /** Reports leases with permits in use before the holder would sweep them. */
+  /**
+   * Reports leases with permits in use before the holder retires them, and
+   * stopped leases until the holder settles them.
+   */
   async #renewLeases(now: number): Promise<void> {
     // An idle run must not write: every transaction reconciles the alarm.
     if (this.#store.listRenewalsDue(now, 1).length === 0) {

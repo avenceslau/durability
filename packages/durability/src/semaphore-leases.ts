@@ -166,7 +166,7 @@ export const applyLeaseReports = (
   };
   for (const report of reports) {
     const lease = store.getLease(report.leaseId);
-    if (!lease || lease.client_id !== clientId || lease.expires_at <= now) {
+    if (!lease || lease.client_id !== clientId) {
       outcome.echoes.push({
         leaseId: report.leaseId,
         group: lease?.grp ?? '',
@@ -185,14 +185,21 @@ export const applyLeaseReports = (
       lease.released,
       Math.min(Math.max(0, report.released), drawn)
     );
+    // An expired lease is retired, not forgotten: its permits may be running.
     // Only the client's own retired report shrinks a lease to what it drew:
     // until then it may still be drawing, whoever asked it to stop.
-    const retired = lease.retired === 1 || report.retired === true;
+    const retired =
+      lease.retired === 1 || report.retired === true || lease.expires_at <= now;
     const permits =
       report.retired === true ? Math.max(released, drawn) : lease.permits;
     if (released >= permits) {
       store.removeLease(lease.lease_id);
-      outcome.echoes.push({ ...toLeaseGrant(lease, now), expiresAt: now });
+      // Echoed as settled (permits = released) so the client can drop the lease.
+      outcome.echoes.push({
+        ...toLeaseGrant(lease, now),
+        permits: released,
+        expiresAt: now,
+      });
       continue;
     }
     const refreshed: LeaseRow = {
@@ -200,7 +207,7 @@ export const applyLeaseReports = (
       permits,
       released,
       retired: retired ? 1 : 0,
-      expires_at: now + policy.ttlMs,
+      expires_at: retired ? lease.expires_at : now + policy.ttlMs,
     };
     store.updateLease(refreshed);
     outcome.echoes.push(toLeaseGrant(refreshed, now));
@@ -253,13 +260,15 @@ export const allocateLeases = (
   const groupFootprint = new Map<string, number>();
   const usable = new Set<string>();
   for (const lease of store.listLeases()) {
-    if (lease.expires_at <= now) {
-      store.removeLease(lease.lease_id);
-      continue;
-    }
     const group = input.policies.get(lease.grp) ?? {};
     let current = lease;
-    if (!lease.retired && !leaseEligible(policy, group)) {
+    // An unreported lease is retired, not swept: its client may be cut off
+    // with work still running, so its footprint stays until it reports, as a
+    // claimed grant permit stays until it is released.
+    if (
+      !lease.retired &&
+      (lease.expires_at <= now || !leaseEligible(policy, group))
+    ) {
       // Stop draws now; the full footprint stays until the client confirms.
       current = { ...lease, retired: 1 };
       store.updateLease(current);

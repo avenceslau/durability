@@ -257,6 +257,45 @@ describe('semaphore queue', () => {
     expect(await holderFor('acct').usage()).toMatchObject({ leased: 0 });
   });
 
+  it('settles an idle lease after it expires, so its permits are not held forever', async () => {
+    const { queue, holderFor, admitted, storage } = fixture({
+      limit: 1,
+      leases: {
+        provisioning: { mode: 'over', extra: 2 },
+        permitsPerLease: 2,
+        ttlMs: 60_000,
+      },
+    });
+    const tick = async (ms: number) => {
+      await settle(ms);
+      if (storage.alarmAt !== null && storage.alarmAt <= Date.now()) {
+        await queue.alarm();
+        await settle(10);
+      }
+    };
+    await queue.enqueue(
+      ['a', 'b'].map((id) => ({ id, key: 'acct', body: id }))
+    );
+    await settle();
+    expect(admitted.map((item) => `${item.id}:${item.via}`).sort()).toEqual([
+      'a:grant',
+      'b:lease',
+    ]);
+    await queue.release('a');
+    await queue.release('b');
+    // One permit of the lease was never drawn. Nothing reports the lease, so
+    // the holder retires it at its expiry and keeps it counted until this
+    // client says it is done with it.
+    for (let i = 0; i < 18; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await tick(10_000);
+    }
+    expect(await holderFor('acct').usage()).toMatchObject({
+      granted: 0,
+      leased: 0,
+    });
+  });
+
   /** A queue against a scripted holder, for protocol edge cases. */
   const scripted = (
     server: DurabilitySemaphoreQueueConfig<string>['server'],
