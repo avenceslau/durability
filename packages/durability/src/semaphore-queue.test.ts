@@ -213,6 +213,50 @@ describe('semaphore queue', () => {
     });
   });
 
+  it('keeps a lease alive at the holder while its permits are in use', async () => {
+    const { queue, holderFor, admitted, storage } = fixture({
+      limit: 1,
+      leases: {
+        provisioning: { mode: 'over', extra: 1 },
+        permitsPerLease: 1,
+        ttlMs: 60_000,
+      },
+    });
+    // Renewal is due further out than the in-memory timer reaches; deliver the
+    // physical alarm as the platform would.
+    const tick = async (ms: number) => {
+      await settle(ms);
+      if (storage.alarmAt !== null && storage.alarmAt <= Date.now()) {
+        await queue.alarm();
+        await settle(10);
+      }
+    };
+    await queue.enqueue(
+      ['a', 'b'].map((id) => ({ id, key: 'acct', body: id }))
+    );
+    await settle();
+    expect(admitted.map((item) => `${item.id}:${item.via}`).sort()).toEqual([
+      'a:grant',
+      'b:lease',
+    ]);
+
+    // 'b' runs for three lease lifetimes with nothing else queued: no request
+    // carries a report, so only renewal keeps the holder counting its permit.
+    for (let i = 0; i < 18; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await tick(10_000);
+    }
+    expect(await holderFor('acct').usage()).toMatchObject({
+      granted: 1,
+      leased: 1,
+    });
+
+    // Once released, renewal stops and the lease can go.
+    await queue.release('b');
+    await tick(5_000);
+    expect(await holderFor('acct').usage()).toMatchObject({ leased: 0 });
+  });
+
   /** A queue against a scripted holder, for protocol edge cases. */
   const scripted = (
     server: DurabilitySemaphoreQueueConfig<string>['server'],

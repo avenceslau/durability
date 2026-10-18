@@ -746,7 +746,10 @@ describe('semaphore schema upgrades', () => {
         undefined
       )
     ).toMatchObject({
-      applied: ['durability_0010_add_semaphore_queue_leases'],
+      applied: [
+        'durability_0010_add_semaphore_queue_leases',
+        'durability_0011_renew_semaphore_queue_leases',
+      ],
     });
     expect(
       storage.sql

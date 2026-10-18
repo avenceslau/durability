@@ -55,6 +55,10 @@ export const queueLeaseRowSchema = z.object({
   released: z.number().int().nonnegative(),
   created_at: z.number().int().nonnegative(),
   expires_at: z.number().int().nonnegative(),
+  /** When to report the lease again while it has permits in use, so the holder keeps it. */
+  renew_at: z.number().int().nonnegative(),
+  /** Half the lease's lifetime at the holder, from its last refresh. */
+  renew_ms: z.number().int().positive(),
 });
 
 export type QueueLeaseRow = z.infer<typeof queueLeaseRowSchema>;
@@ -70,7 +74,8 @@ const statusCountSchema = z.object({
 /**
  * A semaphore client's queue: items, the grants it holds per key, and per-key
  * request pacing. Due work is a key whose request time has passed with items
- * queued, or an admitted item whose `admit()` notification is outstanding.
+ * queued, an admitted item whose `admit()` notification is outstanding, or a
+ * lease with permits in use whose renewal is due.
  */
 export class QueueStore {
   constructor(private readonly sql: SqlStorage) {}
@@ -273,13 +278,31 @@ export class QueueStore {
   updateLease(row: QueueLeaseRow): void {
     this.sql.exec(
       `UPDATE durability_semaphore_queue_leases
-       SET permits = ?, drawn = ?, released = ?, expires_at = ?
+       SET permits = ?, drawn = ?, released = ?, expires_at = ?,
+         renew_at = ?, renew_ms = ?
        WHERE lease_id = ?`,
       row.permits,
       row.drawn,
       row.released,
       row.expires_at,
+      row.renew_at,
+      row.renew_ms,
       row.lease_id
+    );
+  }
+
+  /** Leases with permits in use whose report to the holder is due. */
+  listRenewalsDue(now: number, limit: number): QueueLeaseRow[] {
+    return queueLeaseRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_leases
+           WHERE released < drawn AND renew_at <= ?
+           ORDER BY renew_at ASC LIMIT ?`,
+          now,
+          limit
+        )
+        .toArray()
     );
   }
 
@@ -363,6 +386,12 @@ export class QueueStore {
            WHERE status = 'admitted' AND (notified = 0 OR ?)
            ORDER BY next_attempt_at ASC LIMIT 1`,
           checksFinished ? 1 : 0
+        )
+        .toArray()[0]?.['at'],
+      this.sql
+        .exec(
+          `SELECT renew_at AS at FROM durability_semaphore_queue_leases
+           WHERE released < drawn ORDER BY renew_at ASC LIMIT 1`
         )
         .toArray()[0]?.['at'],
     ].filter((value): value is number => typeof value === 'number');

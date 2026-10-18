@@ -168,6 +168,19 @@ const leaseReport = (lease: QueueLeaseRow): LeaseReport => ({
  */
 const leaseDrawMarginMs = 30_000;
 
+/**
+ * Renews at half the lifetime the holder last gave the lease. The holder
+ * sweeps a lease nobody reports, and a lease with permits in use must not be
+ * swept while its work runs: the holder would lease those permits again.
+ */
+const renewal = (
+  now: number,
+  expiresAt: number
+): Pick<QueueLeaseRow, 'renew_at' | 'renew_ms'> => {
+  const renewMs = Math.max(1_000, Math.floor((expiresAt - now) / 2));
+  return { renew_at: now + renewMs, renew_ms: renewMs };
+};
+
 const drawable = (lease: QueueLeaseRow, now: number): boolean =>
   lease.drawn < lease.permits && lease.expires_at - leaseDrawMarginMs > now;
 
@@ -446,7 +459,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       this.#store.removeSpentLeases(now - this.#attemptTimeoutMs);
     });
     const keys = this.#store.listDueKeys(now);
-    await Promise.all([this.#notify(), this.#releaseFinished(now)]);
+    await Promise.all([
+      this.#notify(),
+      this.#releaseFinished(now),
+      this.#renewLeases(now),
+    ]);
     await Promise.all(
       keys
         .filter(({ key }) => !this.#requesting.has(key))
@@ -703,7 +720,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       if (lease) {
         // A refresh sent before this client retired the lease must not revive it.
         if (!retiredLocally(lease, now)) {
-          store.updateLease({ ...lease, expires_at: grant.expiresAt });
+          store.updateLease({
+            ...lease,
+            expires_at: grant.expiresAt,
+            ...renewal(now, grant.expiresAt),
+          });
         }
         continue;
       }
@@ -716,8 +737,23 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         released: 0,
         created_at: now,
         expires_at: grant.expiresAt,
+        ...renewal(now, grant.expiresAt),
       });
     }
+  }
+
+  /** Reports leases with permits in use before the holder would sweep them. */
+  async #renewLeases(now: number): Promise<void> {
+    // An idle run must not write: every transaction reconciles the alarm.
+    if (this.#store.listRenewalsDue(now, 1).length === 0) {
+      return;
+    }
+    await this.#engine.transaction(() => {
+      for (const lease of this.#store.listRenewalsDue(now, 100)) {
+        this.#store.updateLease({ ...lease, renew_at: now + lease.renew_ms });
+        this.#stageLeaseReport(lease);
+      }
+    });
   }
 
   /**
