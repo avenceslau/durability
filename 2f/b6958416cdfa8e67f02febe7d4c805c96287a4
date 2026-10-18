@@ -1,0 +1,39 @@
+packages/durability/README.md
+  s_89dff2fd3753ec::t_54706860b3f9e1 588,606-612,628
+  s_f0260092910adf::t_37cc5c9d3725fd 580
+packages/durability/src/semaphore-queue-store.ts
+  s_89dff2fd3753ec::t_02215f1e002a40 131-142,274,285-287
+packages/durability/src/semaphore-queue.test.ts
+  s_89dff2fd3753ec::t_5dfc1a856083d4 196-229
+packages/durability/src/semaphore-queue.ts
+  s_89dff2fd3753ec::t_2d267d48cea33b 81-90,160-161,182-193,224-225,398,400,709-712,723-725,727,730-737,741,743-744,745-746,811-815
+  s_89dff2fd3753ec::t_b35fb8d791d1be 170,700-708,713-722,726,728-729,738-740,742
+packages/durability/src/semaphore.ts
+  s_f0260092910adf::t_7d0e6d5034661e 29-32
+.changeset/durability-semaphore-queue.md
+  s_f0260092910adf::t_59851569f51e56 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2fb6958416cdfa8e67f02febe7d4c805c96287a4",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f0260092910adf": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14f95-a006-720a-a5c8-66dd1f78e3b9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
