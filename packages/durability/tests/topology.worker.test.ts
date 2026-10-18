@@ -1,9 +1,6 @@
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import {
-  DurabilityTopology,
-  TopologyUnavailableError,
-} from '../src/experimental';
+import { DurabilityTopology } from '../src/experimental';
 import {
   topologyKey,
   type TopologyCoordinator,
@@ -42,19 +39,18 @@ const waitFor = async (
 const clientFor = () =>
   DurabilityTopology.client({
     read: (group) => env.TOPOLOGY.get(topologyKey(group)),
-    holder: (group) => coordinators.idFromName(group),
     ttlMs: 1,
     negativeTtlMs: 1,
   });
 
 describe('topology in workerd', () => {
-  it('publishes to KV, checks the holder, and syncs state to members', async () => {
+  it('publishes to KV, records the coordinator, and syncs state to members', async () => {
     const group = crypto.randomUUID();
     const coordinator = coordinators.getByName(group);
 
     const created = await coordinator.create(group, 2, { max: 5 });
     expect(created.published).toBe(true);
-    expect(created.snapshot.holder).toBe(
+    expect(created.snapshot.coordinator).toBe(
       coordinators.idFromName(group).toString()
     );
 
@@ -86,25 +82,6 @@ describe('topology in workerd', () => {
       expect(await shards.getByName(`${group}-2`).limits()).toEqual({ max: 9 });
     });
     expect(await shards.getByName(`${group}-0`).limits()).toEqual({ max: 5 });
-  });
-
-  it('rejects a snapshot another coordinator published under the same key', async () => {
-    const group = crypto.randomUUID();
-    const impostor = crypto.randomUUID();
-    await coordinators.getByName(impostor).create(impostor, 1, { max: 1 });
-    await env.TOPOLOGY.put(
-      topologyKey(group),
-      (await env.TOPOLOGY.get(topologyKey(impostor)))!.replace(
-        `"group":"${impostor}"`,
-        `"group":"${group}"`
-      )
-    );
-
-    const error = await clientFor()
-      .get(group)
-      .catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(TopologyUnavailableError);
-    expect((error as TopologyUnavailableError).reason).toBe('invalid');
   });
 
   it('deletes the published key', async () => {

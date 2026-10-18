@@ -947,7 +947,7 @@ An `active` member is in the write set and the read set. A `draining` member is 
 
 ### Publishing
 
-`publish.write` receives the snapshot and an `encoded` string. Store `encoded` as is; it is the only format the client reads, and no encoder is exported, so only the coordinator can produce one. It carries the coordinator's Durable Object ID, so a client configured with `holder` rejects a value written by anyone else. Publication runs on a `DurabilityOutbox` channel (`durability.topology`) keyed by group, so it shares the outbox's guarantees: only the newest snapshot of a group is pending, publish calls for the channel run one at a time, and attempts never stop (`retries.delay` controls backoff). The outbox expects sinks to keep the highest version, which a plain `KV.put` cannot, so the topology closes that gap itself, durably:
+`publish.write` receives the snapshot and an `encoded` string. Store `encoded` as is; it is the only format the client reads, and no encoder is exported, so only the coordinator can produce one. It carries the coordinator's Durable Object ID, because versions only compare within one coordinator: if a group moves to another coordinator, its versions start over, and readers accept the new snapshot. Publication runs on a `DurabilityOutbox` channel (`durability.topology`) keyed by group, so it shares the outbox's guarantees: only the newest snapshot of a group is pending, publish calls for the channel run one at a time, and attempts never stop (`retries.delay` controls backoff). The outbox expects sinks to keep the highest version, which a plain `KV.put` cannot, so the topology closes that gap itself, durably:
 
 - Every write is recorded in storage before it starts and forgotten once it settles.
 - A record that outlives its write, because the write timed out or the object was evicted mid-write, means an older snapshot may still land. A newer write is then not acknowledged until that record's landing deadline has passed, and is written again at that point.
@@ -983,7 +983,6 @@ Stateless Workers read through a client. It has one method:
 ```ts
 const topology = DurabilityTopology.client({
   read: (tenant) => env.TOPOLOGY.get(`topology/${tenant}`),
-  holder: (tenant) => env.COORDINATORS.idFromName(tenant),
 });
 
 const { members } = await topology.get(tenant);
@@ -993,7 +992,7 @@ const shard = writable[Math.floor(Math.random() * writable.length)];
 
 Routing, querying every member, and resolving stubs are ordinary code over `members`.
 
-The client caches each group in the isolate for `ttlMs` (default 30 seconds, jittered by ±20%), shares one read between concurrent callers, and never replaces a snapshot with an older version from the same holder. A missing or failed read is remembered for `negativeTtlMs` (default 5 seconds). Reads time out after `readTimeoutMs` (default 1 second).
+The client caches each group in the isolate for `ttlMs` (default 30 seconds, jittered by ±20%), shares one read between concurrent callers, and never replaces a snapshot with an older version from the same coordinator. A missing or failed read is remembered for `negativeTtlMs` (default 5 seconds). Reads time out after `readTimeoutMs` (default 1 second).
 
 When the published copy is missing, invalid, slow, or the read throws, `get` throws `TopologyUnavailableError` with a `reason`. Every fallback is opt-in, and they run in this order:
 

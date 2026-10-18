@@ -10,7 +10,7 @@ const snapshot = (
 ): TopologySnapshot => ({
   group: 'acme',
   version,
-  holder: 'coordinator-1',
+  coordinator: 'coordinator-1',
   members: [{ id: 'acme-0', state: 'active', joinedAt: 1 }],
   ...overrides,
 });
@@ -111,19 +111,7 @@ describe('topology client', () => {
     expect(await pending).toBe('timeout');
   });
 
-  it('rejects snapshots from another holder or for another group', async () => {
-    const wrongHolder = clientFor(async () => encodeSnapshot(snapshot(1)), {
-      holder: () => 'coordinator-2',
-    });
-    expect(await reasonOf(wrongHolder.client.get('acme'))).toBe('invalid');
-
-    const rightHolder = clientFor(async () => encodeSnapshot(snapshot(1)), {
-      holder: () => 'coordinator-1',
-    });
-    await expect(rightHolder.client.get('acme')).resolves.toMatchObject({
-      version: 1,
-    });
-
+  it('rejects a snapshot stored under the wrong group', async () => {
     const otherGroup = clientFor(async () =>
       encodeSnapshot(snapshot(1, { group: 'other' }))
     );
@@ -140,13 +128,25 @@ describe('topology client', () => {
     expect(reads).toHaveBeenCalledTimes(2);
   });
 
-  it('never replaces a newer snapshot with an older one from the same holder', async () => {
+  it('never replaces a newer snapshot with an older one from the same coordinator', async () => {
     let version = 2;
     const { client } = clientFor(async () => encodeSnapshot(snapshot(version)));
     await client.get('acme');
     version = 1;
     vi.advanceTimersByTime(10_000);
     expect(await client.get('acme')).toMatchObject({ version: 2 });
+  });
+
+  it('accepts a lower version from a coordinator the group moved to', async () => {
+    let current = snapshot(40);
+    const { client } = clientFor(async () => encodeSnapshot(current));
+    await client.get('acme');
+    current = snapshot(1, { coordinator: 'coordinator-2' });
+    vi.advanceTimersByTime(10_000);
+    expect(await client.get('acme')).toMatchObject({
+      version: 1,
+      coordinator: 'coordinator-2',
+    });
   });
 
   it('serves stale only when opted in, only after errors, and only within the window', async () => {

@@ -25,8 +25,6 @@ export type TopologyClientConfig<Meta = undefined> = {
   ttlMs?: number;
   /** How long a missing or failed read is remembered before reading again. Defaults to 5 seconds. */
   negativeTtlMs?: number;
-  /** Expected holder for a group, computed locally. Snapshots from any other holder are `invalid`. */
-  holder?(group: string): string | DurableObjectId;
   /** Opt-in: serve this isolate's last good snapshot for this long after it expires when a read fails. */
   staleIfErrorMs?: number;
   /** Opt-in: members derived locally, without I/O. */
@@ -124,9 +122,10 @@ export class TopologyClient<Meta = undefined> {
     if ('snapshot' in result) {
       const { snapshot } = result;
       // The store is eventually consistent; a lagging replica must not move readers backwards.
+      // Versions only compare within one coordinator: a group moved to another starts over.
       const keep =
         previous?.view !== undefined &&
-        previous.view.holder === snapshot.holder &&
+        previous.view.coordinator === snapshot.coordinator &&
         previous.view.version > snapshot.version;
       const view = keep
         ? previous.view!
@@ -190,12 +189,6 @@ export class TopologyClient<Meta = undefined> {
       if (snapshot.group !== group) {
         throw new Error(`Snapshot belongs to group "${snapshot.group}"`);
       }
-      const holder = this.#config.holder?.(group);
-      if (holder !== undefined && String(holder) !== snapshot.holder) {
-        throw new Error(
-          `Snapshot was published by holder "${snapshot.holder}"`
-        );
-      }
       return { snapshot };
     } catch (cause) {
       return { failure: { reason: 'invalid', cause } };
@@ -225,7 +218,7 @@ export class TopologyClient<Meta = undefined> {
       return {
         group,
         version: 0,
-        holder: '',
+        coordinator: '',
         members: seeded
           .map((member) => ({ ...member, joinedAt: 0 }))
           .sort((a, b) => (a.id < b.id ? -1 : 1)),

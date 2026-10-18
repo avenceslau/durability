@@ -16,7 +16,7 @@ import { FakeStorage } from './test-fakes';
 type Limits = { max: number };
 type States = { limits: Limits; config: string };
 
-const holder = 'coordinator-1';
+const coordinatorId = 'coordinator-1';
 
 class Store {
   readonly values = new Map<string, string>();
@@ -84,7 +84,7 @@ const fixture = () => {
   const events: DurabilityTopologyEvent[] = [];
   const context = {
     storage: storage as unknown as DurableObjectStorage,
-    id: { toString: () => holder },
+    id: { toString: () => coordinatorId },
   };
   const config: DurabilityTopologyConfig<undefined, States> = {
     context,
@@ -108,7 +108,7 @@ const active = (id: string) => ({ id, state: 'active' as const });
 const slowPublishConfig = (store: Store) => ({
   context: {
     storage: new FakeStorage() as unknown as DurableObjectStorage,
-    id: holder,
+    id: coordinatorId,
   } as never,
   publish: { ...store.publisher, attemptTimeoutMs: 100 },
   retries: { delay: () => 60_000 },
@@ -136,7 +136,7 @@ describe('DurabilityTopology', () => {
     expect(result.snapshot).toMatchObject({
       group: 'acme',
       version: 1,
-      holder,
+      coordinator: coordinatorId,
       members: [
         { id: 'acme-0', state: 'active', joinedAt: 1_800_000_000_000 },
         { id: 'acme-1', state: 'active' },
@@ -415,7 +415,7 @@ describe('DurabilityTopology', () => {
     const topology = new DurabilityTopology<undefined, States>({
       context: {
         storage: new FakeStorage() as unknown as DurableObjectStorage,
-        id: holder,
+        id: coordinatorId,
       } as never,
       alarmConcurrency: 1,
       publish: store.publisher,
@@ -458,7 +458,7 @@ describe('DurabilityTopology', () => {
     const config = {
       context: {
         storage: storage as unknown as DurableObjectStorage,
-        id: holder,
+        id: coordinatorId,
       } as never,
       retries: { delay: () => 60_000 },
       publish: {
@@ -512,7 +512,7 @@ describe('DurabilityTopology', () => {
       ...withoutPublisher,
       context: {
         storage: new FakeStorage() as unknown as DurableObjectStorage,
-        id: holder,
+        id: coordinatorId,
       } as never,
     });
     const result = await topology.update('acme', () => ({

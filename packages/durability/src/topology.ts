@@ -277,7 +277,7 @@ export class DurabilityTopology<
   States extends Record<string, unknown> = Record<string, never>,
 > {
   readonly #engine: Engine;
-  readonly #holder: string;
+  readonly #coordinator: string;
   readonly #publication: DurabilityOutbox<Publication<Meta>> | undefined;
   readonly #channels = new Map<string, Channel<Meta>>();
 
@@ -286,13 +286,13 @@ export class DurabilityTopology<
     // created explicitly instead of letting each attach its own.
     const scheduler = config.scheduler ?? new DurabilityScheduler(config);
     this.#engine = engineFor({ scheduler });
-    const holder = this.#engine.objectId();
-    if (holder === undefined) {
+    const coordinator = this.#engine.objectId();
+    if (coordinator === undefined) {
       throw new TopologyError(
         'DurabilityTopology needs the Durable Object context, which carries its ID'
       );
     }
-    this.#holder = holder;
+    this.#coordinator = coordinator;
     this.#engine.migrateSchema('topology', durabilityTopologyMigrations);
 
     // The outbox only emits outbox events, which is all this hook accepts.
@@ -414,7 +414,7 @@ export class DurabilityTopology<
       const current: TopologySnapshot<Meta> = {
         group,
         version,
-        holder: this.#holder,
+        coordinator: this.#coordinator,
         members: after,
       };
       if (changed) {
@@ -496,7 +496,7 @@ export class DurabilityTopology<
     return {
       group,
       version: row.version,
-      holder: this.#holder,
+      coordinator: this.#coordinator,
       members: parseMembers<Meta>(row),
     };
   }
@@ -627,7 +627,7 @@ export class DurabilityTopology<
             snapshot: {
               group,
               version: row.version,
-              holder: this.#holder,
+              coordinator: this.#coordinator,
               members: parseMembers<Meta>(row),
             },
           }

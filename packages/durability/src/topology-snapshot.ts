@@ -23,8 +23,8 @@ export type TopologySnapshot<Meta = undefined> = {
   group: string;
   /** Increases on every membership change, and keeps increasing across deletes. */
   version: number;
-  /** ID of the Durable Object whose topology published this snapshot. */
-  holder: string;
+  /** ID of the coordinator Durable Object that published this snapshot. */
+  coordinator: string;
   /** Sorted by ID. */
   members: readonly TopologyMember<Meta>[];
 };
@@ -71,7 +71,7 @@ const encodedSchema = z.object({
   format: z.literal(1),
   group: z.string().min(1),
   version: z.number().int().positive(),
-  holder: z.string().min(1),
+  coordinator: z.string().min(1),
   members: membersSchema.min(1),
 });
 
