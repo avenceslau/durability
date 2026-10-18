@@ -1,5 +1,19 @@
 # durability
 
+## 4.2.0
+
+### Minor Changes
+
+- edaae65: Add experimental `DurabilityOutbox` (`durability/experimental`), keyed latest-state publication for application-owned Durable Objects. Stage the newest value for a key in the same transaction as the state it describes; the outbox coalesces superseded versions and republishes the newest one until `publish` acknowledges it. Several named channels share one scheduler and one set of tables.
+- de341a2: `DurabilitySemaphore` can hand clients leases — blocks of permits drawn locally with no round trip — with three provisioning modes: `strict` (leases share the limit with grants, grants first), `under` (a reserve inside the limit is kept for leases), and `over` (a separate budget above the limit). `DurabilitySemaphoreQueue` draws from leases for queued items, treats drawn permits as one-shot, and reports `drawn`/`released` high-water marks through its outbox channel; `AdmittedItem.via` reports whether an item was admitted through a grant or a lease.
+- 154b54d: Add experimental `DurabilitySemaphoreQueue` (`durability/experimental/semaphore`): the client half of `DurabilitySemaphore`. It queues items per semaphore key in arrival order, requests permits from the holder, admits items once their claims are confirmed, and publishes claims and releases through an internal `DurabilityOutbox` channel as cumulative counts. `DurabilityOutbox` gains a package-internal in-transaction staging path so helpers built on it commit their reports atomically with their own rows.
+- 5df85e6: Add experimental `DurabilitySemaphore` (`durability/experimental/semaphore`): one concurrency limit held in an application-owned Durable Object and shared by many client Durable Objects. Requests are allocated in arrival-ordered rounds, groups may carry their own ceiling, and clients report claimed and released permits as cumulative counts so replays never free capacity twice. `DurabilitySemaphore.client()` mirrors `DurabilityRouting.client()`.
+
+### Patch Changes
+
+- Updated dependencies [5df85e6]
+  - @durability/transforms@0.5.0
+
 ## 4.1.2
 
 ### Patch Changes

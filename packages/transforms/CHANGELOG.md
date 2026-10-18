@@ -1,5 +1,11 @@
 # @durability/transforms
 
+## 0.5.0
+
+### Minor Changes
+
+- 5df85e6: The Vite plugin injects `exportName` for `DurabilitySemaphore.client({ target })` from `durability/experimental/semaphore`, alongside `DurabilityRouting.client()`.
+
 ## 0.4.0
 
 ### Minor Changes
