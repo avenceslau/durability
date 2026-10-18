@@ -227,6 +227,24 @@ describe('semaphore queue', () => {
     expect(await holderFor('acct').usage()).toMatchObject({ granted: 1 });
   });
 
+  it('writes nothing on an alarm run with nothing due', async () => {
+    const storage = storageFor();
+    const queue = new DurabilitySemaphoreQueue<string>({
+      scheduler: schedulerFor(storage),
+      clientId: 'shard-4',
+      server: {
+        request: async () => grantOf('unused', 1),
+        sync: async () => ({ type: 'synced', v: 1, grantResults: [] }),
+      },
+      admit: () => undefined,
+      finished: (ids) => ids,
+    });
+    const transactions = vi.spyOn(storage, 'transaction');
+    await queue.alarm();
+    // Only the engine's own reconciliation after the run.
+    expect(transactions).toHaveBeenCalledTimes(1);
+  });
+
   it('stays idle while the holder keeps a request for its round', async () => {
     const storage = storageFor();
     let answer!: (grant: PermitGrant) => void;

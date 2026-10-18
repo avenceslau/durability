@@ -707,7 +707,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
 
   async #checkFinished(now: number): Promise<void> {
     const finished = this.#finished;
-    if (!finished) {
+    // An idle run must not write: every transaction reconciles the alarm.
+    if (!finished || this.#store.listCheckDue(now, 1).length === 0) {
       return;
     }
     // Schedule the next check before asking, as admit() claims its batch: rows
