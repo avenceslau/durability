@@ -1,0 +1,27 @@
+packages/durability/src/migrations.ts
+  s_f53e9c1eeeed43::t_93e2f504865315 398-406,414-415,487-509
+packages/durability/src/semaphore-leases.ts
+  s_f53e9c1eeeed43::t_7a1c5003cc016d 120-121,125,183-185,187,192,197,250-259,261,269,273,277-280,317-320,323-338,344-362,395,403
+packages/durability/src/semaphore-queue.ts
+  s_f53e9c1eeeed43::t_030c3d3b14c7bf 160-165,167
+packages/durability/src/semaphore-server.ts
+  s_f53e9c1eeeed43::t_7997a6216c13e8 353-355,357-361,544,546,560-565,567
+packages/durability/src/semaphore.test.ts
+  s_f53e9c1eeeed43::t_069812ca9f02cf 525,530,540,546,554,598,633-680
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b63d382b712d5e248666ed09fd3131a5dad9e839",
+  "prompts": {},
+  "sessions": {
+    "s_f53e9c1eeeed43": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13c4e-5038-746a-9ef6-8989b8468b05",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
