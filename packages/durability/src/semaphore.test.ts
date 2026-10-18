@@ -566,15 +566,38 @@ describe('semaphore', () => {
       });
     });
 
-    it('under: keeps admitting when the reserve is the whole limit and idle leases are returned', async () => {
+    it('under: a reserve at or above the limit still leaves one permit for grants', async () => {
+      let limit = 3;
+      const { round } = fixture({
+        limit: () => limit,
+        groupLimit: (group) => (group === 'capped' ? 1 : undefined),
+        leases: { provisioning: { mode: 'under', reserve: 3 } },
+      });
+      // 'capped' is excluded from leases, so only grants can admit it.
+      const [first] = await round(
+        leasing('a', [{ group: 'capped', count: 1, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'capped', permits: 1 }]);
+
+      limit = 1;
+      const [second] = await round(
+        request('b', [{ group: 'other', count: 1, oldestAt: 2 }])
+      );
+      expect(given(second!)).toEqual([]);
+      expect(second!.blocked).toEqual([{ group: 'other', reason: 'limit' }]);
+    });
+
+    it('under: shares the last lease permits with the oldest demand and takes back idle leases', async () => {
       const { semaphore, round } = fixture({
-        limit: 3,
+        limit: 4,
         leases: {
           provisioning: { mode: 'under', reserve: 3 },
           permitsPerLease: 3,
         },
       });
-      const [first] = await round(
+      // 'z' takes the one grant permit; the reserve of 3 goes to a lease for 'a'.
+      const [, first] = await round(
+        request('z', [{ group: 'g', count: 1, oldestAt: 0 }]),
         leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
       );
       const leaseId = first!.leases![0]!.leaseId;

@@ -12,8 +12,8 @@ import type { HolderStore, LeaseRow } from './semaphore-store.js';
  * - `over`: leases draw from a separate budget above the limit, so the
  *   ceiling is `limit + extra` (the original gatekeeper behaviour).
  * - `under`: a slice of the limit is reserved for leases; grants may use at
- *   most `limit - reserve`. Nothing ever exceeds the limit and leases have
- *   guaranteed headroom.
+ *   most `limit - reserve`, and always at least one permit. Nothing ever
+ *   exceeds the limit and leases have guaranteed headroom.
  * - `strict`: grants and live lease footprint share the limit, grants first.
  */
 export type SemaphoreProvisioning =
@@ -108,7 +108,12 @@ export const budgets = (
     };
   }
   if (provisioning.mode === 'under') {
-    const reserve = Math.min(limit, scaled(provisioning.reserve, limit));
+    // The reserve never takes the last permit: groups excluded from leases and
+    // clients without lease support would otherwise never be admitted.
+    const reserve = Math.min(
+      Math.max(0, limit - 1),
+      scaled(provisioning.reserve, limit)
+    );
     return { grants: limit - reserve, leases: reserve, shared: false };
   }
   return { grants: limit, leases: limit, shared: true };
