@@ -133,7 +133,7 @@ export type DurabilitySemaphoreQueueEvent =
 
 type Report =
   | { kind: 'grant'; claimed: number; released: number }
-  | { kind: 'lease'; drawn: number; released: number };
+  | { kind: 'lease'; drawn: number; released: number; retired?: boolean };
 
 const outboxChannel = 'durability.semaphore-queue';
 /** Queued items read per key when building a request's demand. */
@@ -151,10 +151,15 @@ const grantReport = (grant: QueueGrantRow): GrantReport => ({
   released: grant.released,
 });
 
+// A lease stops drawing by moving its expiry to now, whoever retired it.
+const retiredLocally = (lease: QueueLeaseRow, now: number): boolean =>
+  lease.expires_at <= now;
+
 const leaseReport = (lease: QueueLeaseRow): LeaseReport => ({
   leaseId: lease.lease_id,
   drawn: lease.drawn,
   released: lease.released,
+  ...(retiredLocally(lease, Date.now()) ? { retired: true } : {}),
 });
 
 /**
@@ -344,12 +349,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       if (item.lease_id !== null) {
         const lease = store.getLease(item.lease_id);
         if (lease) {
-          const updated = { ...lease, released: lease.released + 1 };
-          if (updated.released >= updated.permits) {
-            store.removeLease(lease.lease_id);
-          } else {
-            store.updateLease(updated);
-          }
+          const returned = lease.released + 1;
+          // A spent lease is retired, not deleted, until the holder echoes it.
+          const updated = {
+            ...lease,
+            released: returned,
+            expires_at:
+              returned >= lease.permits
+                ? Math.min(lease.expires_at, Date.now())
+                : lease.expires_at,
+          };
+          store.updateLease(updated);
           this.#stageLeaseReport(updated);
         }
       } else if (item.grant_id !== null) {
@@ -525,6 +535,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         this.#applyLeaseGrants(key, grant.leases ?? []);
         this.#claimLocally(key);
         this.#applyResults(key, grant.grantResults);
+        if (grant.contended) {
+          this.#returnIdleLeases(key);
+        }
         const remaining = this.#refreshKey(key, grant.nextRequestAt);
         for (const group of new Set(remaining.map((item) => item.grp))) {
           this.#blocked.delete(pairKey(key, group));
@@ -637,6 +650,33 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   /**
+   * Returns the undrawn permits of leases in groups with nothing queued, so a
+   * contended holder can lease them to waiting clients. Draws stop before the
+   * report is staged, so the holder never frees a permit this client can use.
+   */
+  #returnIdleLeases(key: string): void {
+    const store = this.#store;
+    const now = Date.now();
+    const waiting = new Set(
+      store.listItems(key, 'queued', demandScanLimit).map((item) => item.grp)
+    );
+    for (const lease of store.listLeases(key)) {
+      if (
+        retiredLocally(lease, now) ||
+        lease.drawn >= lease.permits ||
+        waiting.has(lease.grp)
+      ) {
+        continue;
+      }
+      // The row stays until the holder echoes the retirement; deleting it now
+      // would let an older echo of the live lease insert it again, undrawn.
+      const returned = { ...lease, permits: lease.drawn, expires_at: now };
+      store.updateLease(returned);
+      this.#stageLeaseReport(returned);
+    }
+  }
+
+  /**
    * Records leases the holder granted or refreshed; `expiresAt <= now`
    * retires a lease, so it shrinks to what was drawn and is dropped once
    * those items release.
@@ -659,7 +699,10 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         continue;
       }
       if (lease) {
-        store.updateLease({ ...lease, expires_at: grant.expiresAt });
+        // A refresh sent before this client retired the lease must not revive it.
+        if (!retiredLocally(lease, now)) {
+          store.updateLease({ ...lease, expires_at: grant.expiresAt });
+        }
         continue;
       }
       store.insertLease({
@@ -773,7 +816,12 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       this.#outbox,
       this.#engine.sql,
       pairKey(lease.key, `lease:${lease.lease_id}`),
-      { kind: 'lease', drawn: lease.drawn, released: lease.released }
+      {
+        kind: 'lease',
+        drawn: lease.drawn,
+        released: lease.released,
+        ...(retiredLocally(lease, Date.now()) ? { retired: true } : {}),
+      }
     );
   }
 
@@ -803,6 +851,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
               leaseId: id,
               drawn: entry.value.drawn,
               released: entry.value.released,
+              ...(entry.value.retired ? { retired: true } : {}),
             });
           }
         }
@@ -829,6 +878,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         await this.#engine.transaction(() => {
           this.#applyResults(key, synced.grantResults);
           this.#applyLeaseGrants(key, synced.leases ?? []);
+          if (synced.contended) {
+            this.#returnIdleLeases(key);
+          }
           this.#refreshKey(key);
         });
       })

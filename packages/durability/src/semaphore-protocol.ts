@@ -30,6 +30,8 @@ export const leaseReportSchema = z.object({
   drawn: nonNegative,
   /** Drawn permits returned, as a high-water mark. */
   released: nonNegative,
+  /** The client stopped drawing: the lease's undrawn permits are returned. */
+  retired: z.boolean().optional(),
 });
 export type LeaseReport = z.infer<typeof leaseReportSchema>;
 
@@ -110,6 +112,8 @@ export const permitGrantSchema = z.object({
   nextRequestAt: nonNegative,
   grantResults: grantResultSchema.array(),
   leases: leaseGrantSchema.array().optional(),
+  /** Demand went unserved: return undrawn lease permits in groups with nothing queued. */
+  contended: z.boolean().optional(),
 });
 export type PermitGrant = z.infer<typeof permitGrantSchema>;
 
@@ -118,6 +122,7 @@ export const permitSyncResultSchema = z.object({
   v: z.literal(1),
   grantResults: grantResultSchema.array(),
   leases: leaseGrantSchema.array().optional(),
+  contended: z.boolean().optional(),
 });
 export type PermitSyncResult = z.infer<typeof permitSyncResultSchema>;
 

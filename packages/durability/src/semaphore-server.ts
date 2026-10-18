@@ -132,6 +132,8 @@ type RoundResult = {
   granted: number;
   reclaimed: DurabilitySemaphoreEvent[];
   leaseEvents: LeaseEvent[];
+  /** Lease demand went unserved, or grants were blocked by lease footprint. */
+  contended: boolean;
 };
 
 // setTimeout overflows past 2^31 - 1 ms.
@@ -191,6 +193,8 @@ export class DurabilitySemaphoreServer {
   #roundTimer: ReturnType<typeof setTimeout> | undefined;
   #round: Promise<void> | undefined;
   #lastRoundAt = -Infinity;
+  // From the last round; tells clients in later syncs to return idle lease headroom.
+  #contended = false;
 
   constructor(config: DurabilitySemaphoreConfig) {
     const limit = config.limit;
@@ -377,6 +381,7 @@ export class DurabilitySemaphoreServer {
     }
 
     const nextRequestAt = now + this.#roundPeriodMs;
+    this.#contended = round.contended;
     for (const [entry, allocation] of round.allocations) {
       const { leases, ...rest } = allocation;
       entry.resolve({
@@ -384,7 +389,9 @@ export class DurabilitySemaphoreServer {
         v: 1,
         ...rest,
         nextRequestAt,
-        ...(entry.request.leases === undefined ? {} : { leases }),
+        ...(entry.request.leases === undefined
+          ? {}
+          : { leases, ...(round.contended ? { contended: true } : {}) }),
       });
     }
     for (const event of [...round.reclaimed, ...round.leaseEvents]) {
@@ -531,6 +538,7 @@ export class DurabilitySemaphoreServer {
       }
     }
     let leaseEvents: LeaseEvent[] = [];
+    let contended = false;
     if (this.#leases) {
       const candidates: LeaseCandidate[] = pending.flatMap((entry) =>
         entry.request.leases === undefined
@@ -556,6 +564,13 @@ export class DurabilitySemaphoreServer {
       });
       leased = outcome.footprint;
       leaseEvents = outcome.events;
+      // Returned headroom helps grants only when they share the limit with leases.
+      contended =
+        outcome.unserved ||
+        (budget.shared &&
+          [...allocations.values()].some((allocation) =>
+            allocation.blocked.some(({ reason }) => reason === 'limit')
+          ));
       for (const [entry, allocation] of allocations) {
         // One echo per lease; the allocator's view (e.g. retired) supersedes the report's.
         const byLease = new Map(
@@ -588,6 +603,7 @@ export class DurabilitySemaphoreServer {
       granted,
       reclaimed: reclaimed.events,
       leaseEvents,
+      contended,
       usage: {
         limit,
         granted: total + granted,
@@ -626,7 +642,10 @@ export class DurabilitySemaphoreServer {
       grantResults: result.grantResults,
       ...(result.leaseEchoes === undefined
         ? {}
-        : { leases: result.leaseEchoes }),
+        : {
+            leases: result.leaseEchoes,
+            ...(this.#contended ? { contended: true } : {}),
+          }),
     };
   }
 

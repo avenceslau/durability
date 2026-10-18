@@ -10,7 +10,7 @@ import {
   DurabilitySemaphoreServer,
   type DurabilitySemaphoreConfig,
 } from './semaphore-server';
-import type { PermitGrant } from './semaphore-protocol';
+import type { PermitGrant, PermitSync } from './semaphore-protocol';
 import { FakeStorage } from './test-fakes';
 
 beforeEach(() => {
@@ -320,6 +320,57 @@ describe('semaphore queue', () => {
     answer(grantOf('g1', 1));
     await settle();
     expect(await queue.status('a')).toMatchObject({ state: 'claiming' });
+  });
+
+  it('returns idle lease headroom when the holder is contended, and stops drawing from it', async () => {
+    const syncs: PermitSync[] = [];
+    let requests = 0;
+    const { queue, admitted } = scripted({
+      request: async () => {
+        requests += 1;
+        return {
+          ...grantOf(`unused-${requests}`, 0),
+          grants: [],
+          leases: [
+            {
+              leaseId: 'L',
+              group: '',
+              permits: 3,
+              expiresAt: Date.now() + 120_000,
+            },
+          ],
+          ...(requests > 1 ? { contended: true } : {}),
+        };
+      },
+      sync: async (_key, message) => {
+        syncs.push(message);
+        return { type: 'synced', v: 1, grantResults: [] };
+      },
+    });
+
+    await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+    await settle();
+    expect(admitted.map((item) => `${item.id}:${item.via}`)).toEqual([
+      'a:lease',
+    ]);
+
+    // Demand in another group makes a request; the contended reply has the
+    // queue return the two undrawn permits of the idle group's lease.
+    await queue.enqueue([{ id: 'b', key: 'k', group: 'other', body: 'B' }]);
+    await settle(2_000);
+    expect(requests).toBe(2);
+    expect(syncs.flatMap((sync) => sync.leases ?? [])).toContainEqual({
+      leaseId: 'L',
+      drawn: 1,
+      released: 0,
+      retired: true,
+    });
+
+    // The returned lease is not drawn from again, even after a refresh echo.
+    await queue.enqueue([{ id: 'c', key: 'k', body: 'C' }]);
+    await settle(3_000);
+    expect(requests).toBeGreaterThanOrEqual(3);
+    expect(await queue.status('c')).toMatchObject({ state: 'queued' });
   });
 
   it('returns items to the queue when the holder forgot or clamped a grant', async () => {

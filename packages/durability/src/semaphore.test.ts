@@ -566,6 +566,55 @@ describe('semaphore', () => {
       });
     });
 
+    it('under: keeps admitting when the reserve is the whole limit and idle leases are returned', async () => {
+      const { semaphore, round } = fixture({
+        limit: 3,
+        leases: {
+          provisioning: { mode: 'under', reserve: 3 },
+          permitsPerLease: 3,
+        },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
+      );
+      const leaseId = first!.leases![0]!.leaseId;
+      expect(given(first!)).toEqual([]);
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 3, retired: false },
+      ]);
+
+      // 'a' drew one and released it: two undrawn permits stay with its lease,
+      // one is left for two waiting clients. The oldest gets it.
+      const [, b, c] = await round(
+        leasing('a', [], [{ leaseId, drawn: 1, released: 1 }]),
+        leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }]),
+        leasing('c', [{ group: 'g', count: 1, oldestAt: 3 }])
+      );
+      expect(leased(b!)).toEqual([{ group: 'g', permits: 1, retired: false }]);
+      expect(leased(c!)).toEqual([]);
+      expect(c!.contended).toBe(true);
+
+      // Told the holder is contended, 'a' returns its idle headroom.
+      await expect(
+        semaphore.handle({
+          type: 'sync',
+          v: 1,
+          clientId: 'a',
+          grants: [],
+          leases: [{ leaseId, drawn: 1, released: 1, retired: true }],
+        })
+      ).resolves.toMatchObject({ contended: true });
+      expect(await semaphore.usage()).toMatchObject({ leased: 1 });
+
+      const [later] = await round(
+        leasing('c', [{ group: 'g', count: 1, oldestAt: 3 }])
+      );
+      expect(leased(later!)).toEqual([
+        { group: 'g', permits: 2, retired: false },
+      ]);
+      expect(later!.contended).toBeUndefined();
+    });
+
     it('excludes limited groups unless leasing within the group limit', async () => {
       const excluded = fixture({
         limit: 10,

@@ -181,7 +181,8 @@ export const applyLeaseReports = (
       Math.min(Math.max(0, report.released), drawn)
     );
     // A retired lease shrinks to what the client has drawn; nothing more is coming.
-    const permits = lease.retired ? Math.max(released, drawn) : lease.permits;
+    const retired = lease.retired === 1 || report.retired === true;
+    const permits = retired ? Math.max(released, drawn) : lease.permits;
     if (released >= permits) {
       store.removeLease(lease.lease_id);
       outcome.echoes.push({ ...toLeaseGrant(lease, now), expiresAt: now });
@@ -191,6 +192,7 @@ export const applyLeaseReports = (
       ...lease,
       permits,
       released,
+      retired: retired ? 1 : 0,
       expires_at: now + policy.ttlMs,
     };
     store.updateLease(refreshed);
@@ -210,6 +212,8 @@ export type LeaseAllocation = {
   grants: Map<string, LeaseGrant[]>;
   footprint: number;
   events: LeaseEvent[];
+  /** Some eligible candidate received no lease this round. */
+  unserved: boolean;
 };
 
 /**
@@ -360,19 +364,23 @@ export const allocateLeases = (
     }
   }
 
-  const remaining = Math.max(0, input.budget - footprint - input.unknownDebt);
-  if (chosen.length === 0 || remaining === 0) {
-    return { grants, footprint, events };
-  }
+  const eligible = [...byGroup.values()].reduce(
+    (n, clients) => n + clients.length,
+    0
+  );
+  let remaining = Math.max(0, input.budget - footprint - input.unknownDebt);
+  // With fewer permits than candidates, the oldest demand gets one each
+  // rather than everyone getting a rounded-down share of nothing.
   const share = Math.min(
     policy.permitsPerLease,
-    Math.floor(remaining / chosen.length)
+    Math.max(1, Math.floor(remaining / Math.max(1, chosen.length)))
   );
-  if (share <= 0) {
-    return { grants, footprint, events };
-  }
 
+  let issued = 0;
   for (const candidate of chosen) {
+    if (remaining <= 0) {
+      break;
+    }
     const group = input.policies.get(candidate.group) ?? {};
     const groupRoom =
       group.limit === undefined
@@ -380,10 +388,12 @@ export const allocateLeases = (
         : group.limit -
           (input.groupUsed.get(candidate.group) ?? 0) -
           (groupFootprint.get(candidate.group) ?? 0);
-    const permits = Math.min(share, groupRoom);
+    const permits = Math.min(share, groupRoom, remaining);
     if (permits <= 0) {
       continue;
     }
+    remaining -= permits;
+    issued += 1;
     const lease: LeaseRow = {
       lease_id: crypto.randomUUID(),
       client_id: candidate.clientId,
@@ -411,5 +421,5 @@ export const allocateLeases = (
       permits,
     });
   }
-  return { grants, footprint, events };
+  return { grants, footprint, events, unserved: issued < eligible };
 };
