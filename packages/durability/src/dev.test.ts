@@ -68,8 +68,15 @@ describe('dev mode', () => {
     );
     expect(entries[0]).toMatchObject({
       event: 'durability.dev.sql',
-      query: expect.stringContaining('CREATE TABLE IF NOT EXISTS'),
+      query:
+        'SELECT name, down FROM durability_migrations WHERE capability = ?',
     });
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        event: 'durability.dev.sql',
+        query: expect.stringContaining('CREATE TABLE IF NOT EXISTS'),
+      })
+    );
     expect(entries).toContainEqual(
       expect.objectContaining({
         event: 'durability.dev.call',

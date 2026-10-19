@@ -749,6 +749,47 @@ const revertFutureMigrations = (
   return future.map(({ name }) => name);
 };
 
+const currentRowSchema = z.object({
+  name: z.string(),
+  down: z.string().nullable(),
+});
+
+/**
+ * Whether a capability's history already lists exactly these migrations with
+ * these `down` scripts, so construction can skip {@link migrateCapability}. Every Durable
+ * Object wake constructs its helpers, and each statement there is one more way
+ * for the wake to fail, so the common case costs one read.
+ */
+export const isSchemaCurrent = (
+  sql: SqlStorage,
+  capability: MigrationCapability,
+  migrations: DurableMigrations
+): boolean => {
+  let rows: z.infer<typeof currentRowSchema>[];
+  try {
+    rows = currentRowSchema
+      .array()
+      .parse(
+        sql
+          .exec(
+            `SELECT name, down FROM ${migrationTableName} WHERE capability = ?`,
+            capability
+          )
+          .toArray()
+      );
+  } catch {
+    // A first construction has no history table, and an older one lacks the
+    // capability column; migrateCapability() creates both, and retries any other failure.
+    return false;
+  }
+
+  const known = new Map(migrations.map(({ name, down }) => [name, down]));
+  return (
+    rows.length === known.size &&
+    rows.every((row) => known.get(row.name) === row.down)
+  );
+};
+
 const migrateScope = (
   storage: MigrationStorage,
   scope: HistoryScope,

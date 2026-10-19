@@ -13,7 +13,11 @@ import {
   type Emit,
   type LifecycleEntity,
 } from './lifecycle.js';
-import { migrateCapability, type MigrationCapability } from './migrations.js';
+import {
+  isSchemaCurrent,
+  migrateCapability,
+  type MigrationCapability,
+} from './migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
 import { deleteMemos, deleteStaleMemos } from './memoize.js';
 import {
@@ -259,7 +263,9 @@ export class Engine {
     if (this.migrated.has(capability)) {
       return;
     }
-    migrateCapability(this.storage, capability, migrations, undefined);
+    if (!isSchemaCurrent(this.sql, capability, migrations)) {
+      migrateCapability(this.storage, capability, migrations, undefined);
+    }
     this.migrated.add(capability);
   }
 
