@@ -951,7 +951,11 @@ export class DurabilityLog<Body = unknown> {
       }
       // Terminal intent is durable before the callback runs, so a failing
       // handler cannot resurrect a range that already exhausted its attempts.
-      this.#settle(reclaimed.batch_id, 'skipped');
+      // A skipped range counts as settled, so the cursor moves past it as for an ack.
+      this.#engine.transactionSync(() => {
+        this.#settle(reclaimed.batch_id, 'skipped');
+        this.#advance(consumer);
+      });
       try {
         await leases.onPoison!(lease as LogLease);
       } catch (error) {

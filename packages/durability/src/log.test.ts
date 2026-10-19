@@ -641,6 +641,18 @@ describe('log', () => {
     expect(await log.cursor('search')).toBe(2);
   });
 
+  it('moves the cursor past a poison range even when it is the last one', async () => {
+    const { log } = fixture({
+      leases: { maxAttempts: 1, onPoison: async () => undefined },
+    });
+    await offsetsOf(log, ['a']);
+    const first = await log.lease('search');
+    await log.nack('search', first!.batchId);
+    expect(await log.lease('search')).toBeUndefined();
+    // Nothing else will be acked, so skipping must commit on its own.
+    expect(await log.cursor('search')).toBe(1);
+  });
+
   it('rehydrates a leased range that retention already flushed', async () => {
     const cold = coldStore();
     const { log } = fixture({

@@ -7,3 +7,5 @@
 A leased consumer's cursor also advances over an acked range that retention trimmed part of; such a range was skipped when computing the cursor, which then never moved again.
 
 When a late range is acked, the cursor now passes every range acked behind it; it advanced at most `maxBatchSize` ranges per ack, and stopped behind the rest for good if no further ack came.
+
+Skipping a poison range also advances the cursor; when the poison range was the last one, the cursor stayed in front of it until some later ack.
