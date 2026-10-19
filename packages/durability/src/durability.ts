@@ -84,13 +84,22 @@ const readCall = (sql: SqlStorage, id: string): CallRow | undefined =>
  * ```
  */
 export type DurableCall<Payload> = {
-  /** The stable idempotency key supplied when the operation was registered. */
+  /**
+   * The stable idempotency key supplied when the operation was registered. This
+   * is the operation's logical identity: key any external deduplication or
+   * once-only effect by `id`, never by `attempt`.
+   */
   id: string;
   /** The handler name used to register the operation. */
   operation: string;
   /** The JSON-serializable payload supplied when the operation was registered. */
   payload: Payload;
-  /** The one-based attempt number. */
+  /**
+   * The one-based attempt ordinal, durably recorded before the handler runs. It
+   * is retry and logging context, not a record of what the handler did: never
+   * gate once-only work on it (such as `attempt === 1`). Key such work on
+   * durable state keyed by `id` instead. See the README identity glossary.
+   */
   attempt: number;
   /** Aborts when the attempt exceeds its configured timeout. */
   signal: AbortSignal;
