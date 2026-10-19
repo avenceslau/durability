@@ -97,6 +97,7 @@ describe('migrations', () => {
     });
     expect(tableNames(operationsOnly)).toEqual([
       'durability_calls',
+      'durability_memos',
       'durability_migrations',
     ]);
 
@@ -109,6 +110,7 @@ describe('migrations', () => {
     });
     expect(tableNames(alarmsOnly)).toEqual([
       'durability_alarms',
+      'durability_memos',
       'durability_migrations',
     ]);
   });
@@ -215,6 +217,7 @@ describe('migrations', () => {
         name: 'durability_0004_alarms_generation_and_created_at',
         capability: 'namedAlarms',
       },
+      { name: 'durability_0012_create_memos', capability: 'memos' },
     ]);
     expect(Durability.migrate(context)).toEqual({
       applied: [],
@@ -1498,6 +1501,7 @@ describe('DurabilityAlarms', () => {
       retryCount: 0,
       idempotencyKey: expect.stringMatching(/^durability-alarm:v1:/),
       signal: expect.any(AbortSignal),
+      memoize: expect.any(Function),
       platform,
     });
     expect(storage.alarmAt).toBeNull();
