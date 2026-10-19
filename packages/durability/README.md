@@ -86,12 +86,53 @@ switch (result.status) {
   case 'completed':
     console.log(result.result);
     break;
+  case 'cancelled':
+    console.log(result.cancelledAt, result.reason, result.outcomeMayBeUnknown);
+    break;
 }
 ```
 
 The completed result type is inferred from the handler. Looking up a key that belongs to another operation throws `DuplicateDurableCallError`. Payloads and results must be JSON-serializable; as with `JSON.stringify`, `undefined` properties are dropped and `undefined` array elements become `null`.
 
 An ID stays bound to its operation and payload. Registering it again with the same operation and the same data (object key order does not matter; array order and values do) is a no-op, which is what makes retries safe. Registering it with another operation throws `DuplicateDurableCallError`, and with a different payload `DuplicateDurablePayloadError`, instead of silently dropping the new call.
+
+### Cancelling an operation
+
+```ts
+const outcome = await this.durability.sendEmail.cancel('email:123', {
+  reason: 'customer withdrew request',
+});
+```
+
+`cancel` durably moves a `pending` call to the terminal `cancelled` status so the
+library never starts or retries it again, reconciles the physical alarm for the
+remaining work in the same transaction, and then makes a best-effort attempt to
+abort a running handler by aborting its `signal` with a `DurableCancellationError`
+(available as `signal.reason`). A handler that ignores the signal may still
+settle, but its late completion or failure cannot overwrite the `cancelled`
+state, because every attempt write is conditional on the row still being
+`pending`. Cancellation racing a completion therefore has a single,
+transactionally enforced winner.
+
+The call is idempotent and safe when no live instance owns the work. It returns a
+discriminated outcome keyed by `status`:
+
+- `cancelled` — a pending call was moved to the cancelled state (`cancelledAt`, `reason`).
+- `already_cancelled` — the call was already cancelled; the first reason is kept.
+- `not_found` — no call exists for the idempotency key.
+- `not_pending` — the call already reached `completed` or `failed` (`operationStatus`); it is not rewritten.
+
+Reusing an idempotency key that belongs to another operation throws `DuplicateDurableCallError`, exactly as `getResult` does.
+
+The cancelled ID stays reserved, so registering it again is still deduplicated.
+`reason` is bounded and truncated to 1,024 characters. Cancellation is an honest,
+narrow guarantee: it prevents future library starts and retries, but it cannot
+forcibly terminate arbitrary JavaScript or undo an external side effect that a
+running attempt may already have committed. When an attempt had started,
+`getResult` reports `outcomeMayBeUnknown: true` to reflect that.
+
+Named alarms do not yet expose cancellation; schedule the name again to replace a
+pending occurrence, or use `purgeBefore` to remove records.
 
 ## Named alarms
 

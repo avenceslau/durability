@@ -87,6 +87,14 @@ export type DurabilityLifecycleEvent =
       reason: 'attempts_exhausted' | 'dead_lettered';
       error: SerializedError;
     })
+  | (LifecycleEntity & {
+      type: 'cancelled';
+      timestamp: number;
+      /** Attempts already started when the cancellation won. */
+      attempt: number;
+      /** The bounded cancellation reason, or null. */
+      reason: string | null;
+    })
   | {
       type: 'purged';
       entityKind: LifecycleEntity['entityKind'];

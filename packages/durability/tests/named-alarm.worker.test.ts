@@ -214,4 +214,53 @@ describe('durability in workerd', () => {
       result: 'new',
     });
   });
+
+  it('does not restart a cancelled operation after eviction and alarm delivery', async () => {
+    const id = env.ALARM_TEST.newUniqueId();
+    const stub = env.ALARM_TEST.get(id);
+    await stub.startCancellable();
+    await waitFor(async () => {
+      expect(await stub.getCancellableAttempts()).toEqual([1]);
+    });
+
+    expect(await stub.cancelCancellable('withdrawn')).toMatchObject({
+      status: 'cancelled',
+      reason: 'withdrawn',
+    });
+
+    await stub.armNow();
+    await evictDurableObject(stub);
+    const recovered = env.ALARM_TEST.get(id);
+    await scheduler.wait(250);
+    await runDurableObjectAlarm(recovered);
+
+    expect(await recovered.getCancellableAttempts()).toEqual([1]);
+    await expect(recovered.getCancellableResult()).resolves.toMatchObject({
+      status: 'cancelled',
+      attempt: 1,
+      reason: 'withdrawn',
+      outcomeMayBeUnknown: true,
+    });
+  });
+
+  it('aborts a running handler in workerd with a cancellation reason', async () => {
+    const stub = env.ALARM_TEST.get(env.ALARM_TEST.newUniqueId());
+    await stub.startCancelRunning();
+    await waitFor(async () => {
+      expect(await stub.getCancelRunningStarted()).toBe(true);
+    });
+
+    expect(await stub.cancelRunningOp('abort me')).toMatchObject({
+      status: 'cancelled',
+    });
+    await waitFor(async () => {
+      expect(await stub.getCancelRunningReason()).toBe(
+        'DurableCancellationError'
+      );
+    });
+    await expect(stub.getCancelRunningResult()).resolves.toMatchObject({
+      status: 'cancelled',
+      reason: 'abort me',
+    });
+  });
 });

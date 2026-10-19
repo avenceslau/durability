@@ -8,11 +8,13 @@ import {
   DuplicateDurableCallError,
   DuplicateDurablePayloadError,
   DurableAttemptsExhaustedError,
+  DurableCancellationError,
   DurableResultSerializationError,
   DurableRetryPolicyError,
   NonRetryableError as DurabilityNonRetryableError,
   type DurableCall,
   type DurabilityLifecycleEvent,
+  type DurableOperationResult,
 } from './index';
 import { migrate } from './migrations';
 import { contextFor, FakeStorage } from './test-fakes';
@@ -43,6 +45,7 @@ describe('migrations', () => {
         'durability_0001_create_calls',
         'durability_0002_pending_index',
         'durability_0004_calls_generation_and_created_at',
+        'durability_0012_calls_cancelled_status',
       ],
       rolledBack: [],
     });
@@ -62,6 +65,7 @@ describe('migrations', () => {
       {
         applied: [],
         rolledBack: [
+          'durability_0012_calls_cancelled_status',
           'durability_0004_calls_generation_and_created_at',
           'durability_0002_pending_index',
         ],
@@ -214,6 +218,10 @@ describe('migrations', () => {
         name: 'durability_0004_alarms_generation_and_created_at',
         capability: 'namedAlarms',
       },
+      {
+        name: 'durability_0012_calls_cancelled_status',
+        capability: 'operations',
+      },
     ]);
     expect(Durability.migrate(context)).toEqual({
       applied: [],
@@ -263,6 +271,7 @@ describe('migrations', () => {
       'durability_0004_alarms_generation_and_created_at',
       'durability_0004_calls_generation_and_created_at',
       'durability_0004_generation_and_created_at',
+      'durability_0012_calls_cancelled_status',
     ]);
   });
 
@@ -1257,6 +1266,258 @@ describe('Durability', () => {
         }),
       })
     );
+  });
+});
+
+describe('operation cancellation', () => {
+  it('cancels a pending retry before it runs again', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const handler = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValue('done');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+      retries: { delay: () => 5_000 },
+    });
+
+    await durability.work({ id: 'job:1', payload: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    const outcome = await durability.work.cancel('job:1', {
+      reason: 'withdrawn',
+    });
+    expect(outcome).toMatchObject({ status: 'cancelled', reason: 'withdrawn' });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(storage.alarmAt).toBeNull();
+
+    await expect(durability.work.getResult('job:1')).resolves.toMatchObject({
+      status: 'cancelled',
+      attempt: 1,
+      reason: 'withdrawn',
+    });
+  });
+
+  const insertPending = (
+    storage: FakeStorage,
+    id: string,
+    options: { operation?: string; nextAttemptAt?: number } = {}
+  ): void => {
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+        (id, operation, payload, status, attempt, next_attempt_at,
+         created_at, generation_id)
+       VALUES (?, ?, ?, 'pending', 0, ?, 0, ?)`,
+      id,
+      options.operation ?? 'work',
+      JSON.stringify({ kind: 'value', value: null }),
+      options.nextAttemptAt ?? 0,
+      `gen-${id}`
+    );
+  };
+
+  it('never starts work cancelled before its first attempt', async () => {
+    const storage = new FakeStorage();
+    const handler = vi.fn(async () => 'done');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+    });
+    insertPending(storage, 'pending:1');
+
+    await expect(durability.work.cancel('pending:1')).resolves.toMatchObject({
+      status: 'cancelled',
+      reason: null,
+    });
+    await durability.alarm();
+
+    expect(handler).not.toHaveBeenCalled();
+    await expect(durability.work.getResult('pending:1')).resolves.toEqual({
+      status: 'cancelled',
+      attempt: 0,
+      cancelledAt: expect.any(Number),
+      reason: null,
+      outcomeMayBeUnknown: false,
+    });
+  });
+
+  it('aborts a running handler with a cancellation-specific reason and keeps the cancelled state', async () => {
+    const storage = new FakeStorage();
+    let captured: AbortSignal | undefined;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        // Ignores the abort signal, so its late resolution must not win.
+        work: async ({ signal }: DurableCall<null>) => {
+          captured = signal;
+          await gate;
+          return 'done';
+        },
+      },
+    });
+
+    await durability.work({ id: 'run:1', payload: null });
+    await vi.waitFor(() => expect(captured).toBeDefined());
+
+    const outcome = await durability.work.cancel('run:1', { reason: 'stop' });
+    expect(outcome.status).toBe('cancelled');
+    expect(captured?.aborted).toBe(true);
+    const abortReason = captured?.reason;
+    expect(abortReason).toBeInstanceOf(DurableCancellationError);
+    expect((abortReason as DurableCancellationError).reason).toBe('stop');
+
+    release?.();
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('run:1')).resolves.toMatchObject({
+        status: 'cancelled',
+        reason: 'stop',
+        outcomeMayBeUnknown: true,
+      });
+    });
+  });
+
+  it('is idempotent and preserves the first reason', async () => {
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => 'done' },
+    });
+    insertPending(storage, 'twice');
+
+    await expect(
+      durability.work.cancel('twice', { reason: 'first' })
+    ).resolves.toMatchObject({ status: 'cancelled', reason: 'first' });
+    await expect(
+      durability.work.cancel('twice', { reason: 'second' })
+    ).resolves.toEqual({ status: 'already_cancelled' });
+    await expect(durability.work.getResult('twice')).resolves.toMatchObject({
+      status: 'cancelled',
+      reason: 'first',
+    });
+  });
+
+  it('reports a documented outcome for every non-pending source status', async () => {
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async () => 'done',
+        other: async () => 'x',
+        doomed: async () => {
+          throw new DurabilityNonRetryableError('nope');
+        },
+      },
+    });
+
+    await expect(durability.work.cancel('missing')).resolves.toEqual({
+      status: 'not_found',
+    });
+
+    await durability.work({ id: 'done:1', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('done:1')).resolves.toMatchObject({
+        status: 'completed',
+      });
+    });
+    await expect(durability.work.cancel('done:1')).resolves.toEqual({
+      status: 'not_pending',
+      operationStatus: 'completed',
+    });
+    await expect(durability.work.getResult('done:1')).resolves.toMatchObject({
+      status: 'completed',
+    });
+
+    await durability.doomed({ id: 'fail:1', payload: null });
+    await vi.waitFor(async () => {
+      await expect(
+        durability.doomed.getResult('fail:1')
+      ).resolves.toMatchObject({ status: 'failed' });
+    });
+    await expect(durability.doomed.cancel('fail:1')).resolves.toEqual({
+      status: 'not_pending',
+      operationStatus: 'failed',
+    });
+
+    await expect(durability.other.cancel('done:1')).rejects.toBeInstanceOf(
+      DuplicateDurableCallError
+    );
+  });
+
+  it('reconciles the alarm to the earliest remaining call', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => 'done' },
+      alarmMinDelayMs: 1_000,
+    });
+    const soon = Date.now() + 2_000;
+    const later = Date.now() + 60_000;
+    insertPending(storage, 'soon', { nextAttemptAt: soon });
+    insertPending(storage, 'later', { nextAttemptAt: later });
+
+    await durability.alarm();
+    expect(storage.alarmAt).toBe(soon);
+
+    await durability.work.cancel('soon');
+    expect(storage.alarmAt).toBe(later);
+  });
+
+  it('bounds the stored cancellation reason', async () => {
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => 'done' },
+    });
+    insertPending(storage, 'long');
+
+    const outcome = await durability.work.cancel('long', {
+      reason: 'x'.repeat(5_000),
+    });
+    expect(outcome).toMatchObject({
+      status: 'cancelled',
+      reason: 'x'.repeat(1_024),
+    });
+    await expect(durability.work.getResult('long')).resolves.toMatchObject({
+      status: 'cancelled',
+      reason: 'x'.repeat(1_024),
+    });
+  });
+
+  it('keeps a cancelled id reserved for deduplication', async () => {
+    const storage = new FakeStorage();
+    const handler = vi.fn(async () => 'done');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+    });
+    insertPending(storage, 'dedupe');
+
+    await durability.work.cancel('dedupe');
+    await durability.work({ id: 'dedupe', payload: null });
+    await durability.alarm();
+
+    expect(handler).not.toHaveBeenCalled();
+    await expect(durability.work.getResult('dedupe')).resolves.toMatchObject({
+      status: 'cancelled',
+    });
+  });
+
+  it('includes cancelled in the result union', () => {
+    expectTypeOf<DurableOperationResult<string>['status']>().toEqualTypeOf<
+      'not_found' | 'pending' | 'failed' | 'completed' | 'cancelled'
+    >();
   });
 });
 

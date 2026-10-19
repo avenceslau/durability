@@ -89,12 +89,41 @@ export class NamedAlarmTestObject extends DurableObject {
         }
         return 'new';
       },
+      cancellable: async ({ attempt }: DurableCall<null>) => {
+        const attempts =
+          (await this.ctx.storage.get<number[]>('cancellable-attempts')) ?? [];
+        await this.ctx.storage.put('cancellable-attempts', [
+          ...attempts,
+          attempt,
+        ]);
+        throw new Error('retry cancellable');
+      },
+      cancelRunning: async ({ signal }: DurableCall<null>) => {
+        await this.ctx.storage.put('cancel-running-started', true);
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              const reason = signal.reason as Error | undefined;
+              void this.ctx.storage.put(
+                'cancel-running-reason',
+                reason?.name ?? null
+              );
+              reject(signal.reason);
+            },
+            { once: true }
+          );
+        });
+      },
     },
     methods: {
       crash: {
         attemptTimeoutMs: 50,
         retries: { delay: () => 0, maxAttempts: 2 },
         retryTimeouts: true,
+      },
+      cancellable: {
+        retries: { delay: () => 200, maxAttempts: 5 },
       },
       timeout: {
         attemptTimeoutMs: 50,
@@ -253,6 +282,48 @@ export class NamedAlarmTestObject extends DurableObject {
 
   getReuseResult() {
     return this.durability.reuse.getResult('reuse');
+  }
+
+  startCancellable() {
+    return this.durability.cancellable({ id: 'cancellable', payload: null });
+  }
+
+  cancelCancellable(reason?: string) {
+    return this.durability.cancellable.cancel(
+      'cancellable',
+      reason === undefined ? undefined : { reason }
+    );
+  }
+
+  getCancellableAttempts() {
+    return this.ctx.storage.get<number[]>('cancellable-attempts');
+  }
+
+  getCancellableResult() {
+    return this.durability.cancellable.getResult('cancellable');
+  }
+
+  startCancelRunning() {
+    return this.durability.cancelRunning({
+      id: 'cancel-running',
+      payload: null,
+    });
+  }
+
+  cancelRunningOp(reason: string) {
+    return this.durability.cancelRunning.cancel('cancel-running', { reason });
+  }
+
+  getCancelRunningStarted() {
+    return this.ctx.storage.get<boolean>('cancel-running-started');
+  }
+
+  getCancelRunningReason() {
+    return this.ctx.storage.get<string | null>('cancel-running-reason');
+  }
+
+  getCancelRunningResult() {
+    return this.durability.cancelRunning.getResult('cancel-running');
   }
 
   armNow() {

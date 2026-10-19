@@ -66,6 +66,26 @@ export class DurableResultSerializationError extends Error {
   }
 }
 
+/**
+ * Abort reason passed to a running handler's signal when its operation is
+ * cancelled. Signal-aware handlers can detect cancellation specifically by
+ * checking `signal.reason` against this type.
+ */
+export class DurableCancellationError extends Error {
+  /** The bounded reason supplied to `cancel`, if any. */
+  readonly reason: string | null;
+
+  constructor(operation: string, reason: string | null) {
+    super(
+      reason === null
+        ? `Durable operation "${operation}" was cancelled`
+        : `Durable operation "${operation}" was cancelled: ${reason}`
+    );
+    this.name = 'DurableCancellationError';
+    this.reason = reason;
+  }
+}
+
 /** Error persisted when pending work has already reached its attempt limit. */
 export class DurableAttemptsExhaustedError extends Error {
   constructor(entity: 'operation' | 'named alarm', name: string, max: number) {

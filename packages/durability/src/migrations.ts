@@ -91,6 +91,76 @@ export const durabilityOperationMigrations = [
       ON durability_calls (status, next_attempt_at);
     `,
   },
+  {
+    name: 'durability_0012_calls_cancelled_status',
+    up: `
+      DROP INDEX IF EXISTS durability_calls_pending_idx;
+      DROP INDEX IF EXISTS durability_calls_created_idx;
+      ALTER TABLE durability_calls RENAME TO durability_calls_v4;
+      CREATE TABLE durability_calls (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed', 'cancelled')),
+        result TEXT,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        completed_at INTEGER,
+        generation_id TEXT NOT NULL DEFAULT 'legacy',
+        created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
+        cancelled_at INTEGER,
+        cancel_reason TEXT
+      );
+      INSERT INTO durability_calls
+      SELECT id, operation, payload, status, result, attempt, next_attempt_at,
+        last_error, last_error_name, completed_at, generation_id, created_at,
+        NULL, NULL
+      FROM durability_calls_v4;
+      DROP TABLE durability_calls_v4;
+      CREATE INDEX durability_calls_pending_idx
+      ON durability_calls (status, next_attempt_at);
+      CREATE INDEX durability_calls_created_idx
+      ON durability_calls (created_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_calls_pending_idx;
+      DROP INDEX IF EXISTS durability_calls_created_idx;
+      ALTER TABLE durability_calls RENAME TO durability_calls_v5;
+      CREATE TABLE durability_calls (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
+        result TEXT,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        completed_at INTEGER,
+        generation_id TEXT NOT NULL DEFAULT 'legacy',
+        created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER))
+      );
+      INSERT INTO durability_calls
+      SELECT id, operation, payload,
+        CASE WHEN status = 'cancelled' THEN 'failed' ELSE status END,
+        result, attempt, next_attempt_at,
+        CASE WHEN status = 'cancelled'
+          THEN COALESCE(last_error, cancel_reason, 'Durable operation was cancelled')
+          ELSE last_error END,
+        CASE WHEN status = 'cancelled'
+          THEN COALESCE(last_error_name, 'DurableCancellationError')
+          ELSE last_error_name END,
+        completed_at, generation_id, created_at
+      FROM durability_calls_v5;
+      DROP TABLE durability_calls_v5;
+      CREATE INDEX durability_calls_pending_idx
+      ON durability_calls (status, next_attempt_at);
+      CREATE INDEX durability_calls_created_idx
+      ON durability_calls (created_at);
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**

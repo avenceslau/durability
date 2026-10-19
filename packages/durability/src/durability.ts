@@ -5,6 +5,7 @@ import {
   DuplicateDurablePayloadError,
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
+  DurableCancellationError,
   DurableResultSerializationError,
   isErrorInstance,
   NonRetryableError,
@@ -40,6 +41,7 @@ import { canonical, deserialize, serialize } from './serialization.js';
 import { listCreated, updateAttempt, type DurableTable } from './storage.js';
 import {
   registerTrackedSource,
+  type TrackedState,
   type UntypedRecord,
   type UntypedSource,
   type UntypedSummary,
@@ -49,7 +51,7 @@ const callRowSchema = z.object({
   id: z.string(),
   operation: z.string(),
   payload: z.string(),
-  status: z.enum(['pending', 'completed', 'failed']),
+  status: z.enum(['pending', 'completed', 'failed', 'cancelled']),
   result: z.string().nullable(),
   attempt: z.number().int().nonnegative(),
   next_attempt_at: z.number().int().nonnegative(),
@@ -58,7 +60,21 @@ const callRowSchema = z.object({
   completed_at: z.number().int().nonnegative().nullable(),
   created_at: z.number().int().nonnegative(),
   generation_id: z.string(),
+  cancelled_at: z.number().int().nonnegative().nullable(),
+  cancel_reason: z.string().nullable(),
 });
+
+/** Cancellation reasons longer than this are truncated before they are stored. */
+const maxCancelReasonLength = 1_024;
+
+const boundedReason = (reason: string | undefined): string | null => {
+  if (reason === undefined) {
+    return null;
+  }
+  return reason.length > maxCancelReasonLength
+    ? reason.slice(0, maxCancelReasonLength)
+    : reason;
+};
 
 type CallRow = z.infer<typeof callRowSchema>;
 
@@ -171,6 +187,75 @@ export type DurableOperationResult<Result> =
       status: 'completed';
       /** The handler's persisted return value. */
       result: Result;
+    }
+  | {
+      /** The operation was durably cancelled before completing. */
+      status: 'cancelled';
+      /** The number of attempts that had started when cancellation won. */
+      attempt: number;
+      /** Unix timestamp in milliseconds when the cancellation was recorded. */
+      cancelledAt: number;
+      /** The bounded reason supplied to `cancel`, or null. */
+      reason: string | null;
+      /**
+       * True when an attempt had already started, so a protected side effect
+       * may have committed before cancellation. Cancellation never proves that
+       * no external effect occurred.
+       */
+      outcomeMayBeUnknown: boolean;
+    };
+
+/**
+ * The result of a cancellation request, discriminated by `status`.
+ *
+ * Cancellation durably prevents future library starts and retries and makes a
+ * best-effort attempt to abort a running handler. It cannot forcibly terminate
+ * arbitrary JavaScript or undo an external effect that already committed.
+ */
+export type DurableCancellationOutcome =
+  | {
+      /** A pending operation was transitioned to the cancelled state. */
+      status: 'cancelled';
+      /** Unix timestamp in milliseconds when the cancellation was recorded. */
+      cancelledAt: number;
+      /** The bounded reason that was stored, or null. */
+      reason: string | null;
+    }
+  | {
+      /** The operation was already cancelled; the call is idempotent. */
+      status: 'already_cancelled';
+    }
+  | {
+      /** No operation exists for the supplied idempotency key. */
+      status: 'not_found';
+    }
+  | {
+      /** The operation already reached a non-cancellable terminal state. */
+      status: 'not_pending';
+      /** The terminal status that blocked cancellation. */
+      operationStatus: 'completed' | 'failed';
+    };
+
+/** Options accepted by an operation's `cancel` method. */
+export type DurableCancellationOptions = {
+  /** A human-readable reason stored with the cancellation and bounded in length. */
+  reason?: string;
+};
+
+/**
+ * The result of the cancellation transaction. A successful transition carries
+ * the generation and attempt the post-commit step needs to abort the running
+ * handler and emit the lifecycle event.
+ */
+type CancelTransition =
+  | {
+      outcome: Exclude<DurableCancellationOutcome, { status: 'cancelled' }>;
+      generation?: undefined;
+    }
+  | {
+      outcome: Extract<DurableCancellationOutcome, { status: 'cancelled' }>;
+      generation: string;
+      attempt: number;
     };
 
 type OperationEvent = Extract<
@@ -213,6 +298,15 @@ export type DurableOperation<Handler> = ((
   getResult: (
     idempotencyKey: string
   ) => Promise<DurableOperationResult<HandlerResult<Handler>>>;
+  /**
+   * Durably cancels a pending call so it never starts or retries, and makes a
+   * best-effort attempt to abort a running handler. Idempotent and safe when
+   * no live instance owns the call.
+   */
+  cancel: (
+    idempotencyKey: string,
+    options?: DurableCancellationOptions
+  ) => Promise<DurableCancellationOutcome>;
 };
 
 /**
@@ -286,10 +380,36 @@ const callState = (
       },
     };
   }
+  if (call.status === 'cancelled') {
+    return {
+      status: 'cancelled',
+      attempt: call.attempt,
+      cancelledAt: call.cancelled_at ?? 0,
+      reason: call.cancel_reason,
+      outcomeMayBeUnknown: call.attempt > 0,
+    };
+  }
   if (call.result === null) {
     throw new Error(`Completed durable call "${call.id}" has no result`);
   }
   return { status: 'completed', result: deserialize(call.result) };
+};
+
+// The tracker represents finer outcomes as `failed` with a specific error name,
+// so a cancelled call surfaces there as a DurableCancellationError failure.
+const trackedCallState = (call: CallRow): TrackedState<unknown> => {
+  const state = callState(call);
+  if (state.status === 'cancelled') {
+    return {
+      status: 'failed',
+      attempt: state.attempt,
+      error: {
+        name: 'DurableCancellationError',
+        message: call.cancel_reason ?? 'Durable operation was cancelled',
+      },
+    };
+  }
+  return state;
 };
 
 const callRecord = (call: CallRow): UntypedRecord => ({
@@ -297,7 +417,7 @@ const callRecord = (call: CallRow): UntypedRecord => ({
   name: call.operation,
   generation: call.generation_id,
   createdAt: call.created_at,
-  state: callState(call),
+  state: trackedCallState(call),
 });
 
 // Summaries never read `payload` or `result`, so a list stays bounded and
@@ -377,6 +497,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
             `Durability.${operation}.getResult`,
             (idempotencyKey: string) =>
               this.#getResult(operation, idempotencyKey)
+          ),
+          cancel: traceFunction(
+            `Durability.${operation}.cancel`,
+            (idempotencyKey: string, options?: DurableCancellationOptions) =>
+              this.#cancel(operation, idempotencyKey, options)
           ),
         }
       );
@@ -501,6 +626,74 @@ class DurabilityCore<Handlers extends HandlerMap> {
     }
     assertOperation(idempotencyKey, call.operation, operation);
     return callState(call);
+  }
+
+  async #cancel(
+    operation: string,
+    idempotencyKey: string,
+    options?: DurableCancellationOptions
+  ): Promise<DurableCancellationOutcome> {
+    const reason = boundedReason(options?.reason);
+
+    // Read and transition in one transaction so a completion or failure that
+    // commits concurrently is the enforced winner: the pending guard on the
+    // UPDATE, and on every attempt write, makes the two mutually exclusive.
+    const transition = await this.#engine.transaction(
+      (sql): CancelTransition => {
+        const call = readCall(sql, idempotencyKey);
+        if (!call) {
+          return { outcome: { status: 'not_found' } };
+        }
+        assertOperation(idempotencyKey, call.operation, operation);
+        if (call.status === 'cancelled') {
+          return { outcome: { status: 'already_cancelled' } };
+        }
+        if (call.status !== 'pending') {
+          return {
+            outcome: { status: 'not_pending', operationStatus: call.status },
+          };
+        }
+
+        const cancelledAt = Date.now();
+        sql.exec(
+          `UPDATE durability_calls
+           SET status = 'cancelled', cancelled_at = ?, cancel_reason = ?
+           WHERE id = ? AND status = 'pending'`,
+          cancelledAt,
+          reason,
+          idempotencyKey
+        );
+        return {
+          outcome: { status: 'cancelled', cancelledAt, reason },
+          generation: call.generation_id,
+          attempt: call.attempt,
+        };
+      }
+    );
+
+    if (transition.generation === undefined) {
+      return transition.outcome;
+    }
+
+    const { outcome, generation, attempt } = transition;
+    this.#engine.notify(callsTable, idempotencyKey);
+    const running = this.#active.get(idempotencyKey);
+    if (running?.generation === generation) {
+      running.controller?.abort(
+        new DurableCancellationError(operation, reason)
+      );
+    }
+    this.#emit({
+      entityKind: 'operation',
+      operation,
+      id: idempotencyKey,
+      generation,
+      type: 'cancelled',
+      timestamp: outcome.cancelledAt,
+      attempt,
+      reason,
+    });
+    return outcome;
   }
 
   async #run(input: {
