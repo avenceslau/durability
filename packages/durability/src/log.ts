@@ -471,7 +471,7 @@ const leasesFrom = (
     sql
       .exec(
         `SELECT * FROM durability_log_leases
-         WHERE consumer = ? AND first_offset >= ?
+         WHERE consumer = ? AND last_offset >= ?
          ORDER BY first_offset ASC
          LIMIT ?`,
         consumer,

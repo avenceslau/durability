@@ -530,6 +530,25 @@ describe('log', () => {
     ]);
   });
 
+  it('advances the cursor over an acked range that retention partly trimmed', async () => {
+    const { log } = fixture({ retention: { maxRecords: 3 }, leases: {} });
+    await offsetsOf(log, ['a', 'b', 'c', 'd']);
+    const straddling = await log.lease('search', 3);
+    expect(straddling).toMatchObject({ firstOffset: 0, lastOffset: 2 });
+
+    // Retention trims 0..1 while the range is held; the holder still acks it.
+    await offsetsOf(log, ['e']);
+    await log.trim();
+    expect(await log.bounds()).toMatchObject({ oldestOffset: 2 });
+    await log.ack('search', straddling!.batchId);
+    expect(await log.cursor('search')).toBe(3);
+
+    const rest = await log.lease('search');
+    expect(rest).toMatchObject({ firstOffset: 3, lastOffset: 4 });
+    await log.ack('search', rest!.batchId);
+    expect(await log.cursor('search')).toBe(5);
+  });
+
   it('rejects double settlement of one batch', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a']);
