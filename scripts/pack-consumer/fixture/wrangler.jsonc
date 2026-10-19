@@ -1,0 +1,9 @@
+{
+  "name": "durability-consumer-smoke",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-07",
+  "durable_objects": {
+    "bindings": [{ "name": "SMOKE", "class_name": "SmokeObject" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SmokeObject"] }],
+}

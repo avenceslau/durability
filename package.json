@@ -16,6 +16,7 @@
     "format:check": "oxfmt --check \"**/*.{json,jsonc,md,ts}\"",
     "lint": "turbo run lint",
     "pack:check": "pnpm --filter durability --filter @durability/storage --filter @durability/transforms --filter @durability/lint --filter @durability/tanstack-db exec publint",
+    "pack:consumer": "node scripts/pack-consumer/index.mjs",
     "release": "pnpm build && changeset publish",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",

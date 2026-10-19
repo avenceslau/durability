@@ -38,6 +38,9 @@ jobs:
       - name: Validate
         run: pnpm check
 
+      - name: Packed artifact smoke test
+        run: pnpm pack:consumer
+
       - name: Install npm with trusted publishing support
         run: npm install --global npm@11.18.0
 
