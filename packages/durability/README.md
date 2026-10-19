@@ -213,6 +213,7 @@ const durability = new Durability({
   methods: {
     resizeImage: {
       attemptTimeoutMs: 10 * 60_000,
+      retryTimeouts: true,
       retries: {
         maxAttempts: 2,
         delay: (attempt) => exponential(attempt, 500, 30_000),
@@ -222,7 +223,7 @@ const durability = new Durability({
 });
 ```
 
-Each attempt receives its own `AbortSignal`. A timed-out operation follows the normal retry policy; a timed-out named alarm is terminal unless `retryTimeouts` is set. If a handler ignores abort, its in-memory lock and concurrency permit remain held until it actually settles, so a same-isolate retry cannot overlap it.
+Each attempt receives its own `AbortSignal` that aborts with `DurableAttemptTimeoutError` once the attempt exceeds its timeout. A timeout is terminal by default on both operations and named alarms, because the external outcome is unknown; set `retryTimeouts: true` in a method's options only when the handler's side effects use the call ID or alarm `idempotencyKey`, or otherwise reconcile their outcome before retrying. If a handler ignores abort, its in-memory lock and concurrency permit remain held until it actually settles, so a same-isolate retry cannot overlap it; a never-settling handler blocks the same-instance retry until the object is evicted, after which at-least-once recovery reconstructs the work.
 
 Throw `NonRetryableError` to move work directly to `failed` without another attempt. Errors named `NonRetryableError` from other packages, such as `cloudflare:workflows`, are recognized too.
 

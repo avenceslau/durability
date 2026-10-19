@@ -888,6 +888,7 @@ describe('Durability', () => {
         work: {
           attemptTimeoutMs: 100,
           retries: { delay: () => 0, maxAttempts: 2 },
+          retryTimeouts: true,
         },
       },
     });
@@ -908,6 +909,91 @@ describe('Durability', () => {
 
     expect(attempts).toEqual([1, 2]);
     await expect(durability.work.getResult('timeout-lock')).resolves.toEqual({
+      status: 'completed',
+      result: undefined,
+    });
+  });
+
+  it('makes timed-out operations terminal by default', async () => {
+    vi.useFakeTimers();
+    const storage = new FakeStorage();
+    let timeoutSignal: AbortSignal | undefined;
+    const handler = vi.fn(async ({ signal }: DurableCall<null>) => {
+      timeoutSignal = signal;
+      await new Promise(() => undefined);
+    });
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+      methods: {
+        work: {
+          attemptTimeoutMs: 100,
+          retries: { delay: () => 0, maxAttempts: 5 },
+        },
+      },
+    });
+
+    await durability.work({ id: 'timeout-terminal', payload: null });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(timeoutSignal?.aborted).toBe(true);
+    await expect(
+      durability.work.getResult('timeout-terminal')
+    ).resolves.toEqual({
+      status: 'failed',
+      attempt: 1,
+      error: {
+        name: 'DurableAttemptTimeoutError',
+        message: 'Durable operation "work" timed out after 100ms',
+      },
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries timed-out operations when retryTimeouts is enabled', async () => {
+    vi.useFakeTimers();
+    let finishFirst: (() => void) | undefined;
+    const firstPending = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const attempts: number[] = [];
+    const handler = vi.fn(async ({ attempt }: DurableCall<null>) => {
+      attempts.push(attempt);
+      if (attempt === 1) {
+        await firstPending;
+      }
+    });
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+      alarmHandoffMs: 50,
+      alarmConcurrency: 1,
+      methods: {
+        work: {
+          attemptTimeoutMs: 100,
+          retries: { delay: () => 0, maxAttempts: 2 },
+          retryTimeouts: true,
+        },
+      },
+    });
+
+    await durability.work({ id: 'timeout-retry', payload: null });
+    await vi.advanceTimersByTimeAsync(100);
+    storage.alarmAt = null;
+    const blocked = durability.alarm();
+    await vi.advanceTimersByTimeAsync(50);
+    await blocked;
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    finishFirst?.();
+    await firstPending;
+    await vi.advanceTimersByTimeAsync(0);
+    storage.alarmAt = null;
+    await durability.alarm();
+
+    expect(attempts).toEqual([1, 2]);
+    await expect(durability.work.getResult('timeout-retry')).resolves.toEqual({
       status: 'completed',
       result: undefined,
     });

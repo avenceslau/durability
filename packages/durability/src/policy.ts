@@ -31,13 +31,19 @@ export type DurabilityMethodOptions = {
   attemptTimeoutMs?: number;
   /** Retry policy overrides for this method. */
   retries?: DurabilityRetryOptions;
-};
-
-/** Execution policy overrides for one named alarm. */
-export type DurabilityAlarmMethodOptions = DurabilityMethodOptions & {
-  /** Retry timed-out attempts only when their side effects are idempotent or reconciled. */
+  /**
+   * Retry a timed-out attempt instead of failing it. A timeout is terminal by
+   * default because the external outcome is unknown; enable this only when the
+   * handler's side effects are idempotent or reconciled before retry.
+   */
   retryTimeouts?: boolean;
 };
+
+/**
+ * Execution policy overrides for one named alarm. Named alarms and durable
+ * operations share the same options.
+ */
+export type DurabilityAlarmMethodOptions = DurabilityMethodOptions;
 
 /** Policy options shared by durable operations and named alarms. */
 export type ExecutionPolicyOptions = {
@@ -64,14 +70,10 @@ const retryOptionsSchema = z.object({
 export const methodOptionsSchema = z.object({
   attemptTimeoutMs: z.number().optional(),
   retries: retryOptionsSchema.optional(),
-});
-
-export const alarmMethodOptionsSchema = methodOptionsSchema.extend({
   retryTimeouts: z.boolean().optional(),
 });
 
 export type MethodPolicy = z.infer<typeof methodOptionsSchema>;
-export type AlarmMethodPolicy = z.infer<typeof alarmMethodOptionsSchema>;
 
 export const assertPositiveInteger = (name: string, value: number): void => {
   if (!Number.isInteger(value) || value < 1) {

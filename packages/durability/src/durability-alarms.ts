@@ -19,11 +19,11 @@ import {
   type DurabilityMigrationResult,
 } from './migrations.js';
 import {
-  alarmMethodOptionsSchema,
   createPolicyResolver,
-  type AlarmMethodPolicy,
+  methodOptionsSchema,
   type DurabilityAlarmMethodOptions,
   type ExecutionPolicyOptions,
+  type MethodPolicy,
   type PolicyResolver,
 } from './policy.js';
 import {
@@ -165,7 +165,7 @@ const alarmEntity = (row: AlarmRow): AlarmLifecycleEntity => ({
 class DurabilityAlarmsCore<Names extends string> {
   readonly #engine: Engine;
   readonly #handlers: Map<string, DurableAlarmHandler>;
-  readonly #policy: PolicyResolver<AlarmMethodPolicy>;
+  readonly #policy: PolicyResolver<MethodPolicy>;
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
   readonly #active = new Map<string, ActiveExecution>();
@@ -180,7 +180,7 @@ class DurabilityAlarmsCore<Names extends string> {
     this.#policy = createPolicyResolver(
       config,
       config.methods ?? {},
-      alarmMethodOptionsSchema
+      methodOptionsSchema
     );
     this.#lifecycle = createLifecycleHooks(
       (hook) => this.#engine.emitter(hook),

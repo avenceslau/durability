@@ -583,6 +583,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
   #start(call: CallRow, eagerPermit: (() => void) | undefined): Promise<void> {
     const policy = this.#policy(call.operation);
+    const retryTimeouts = policy.method?.retryTimeouts ?? false;
     const handler = this.#handlers[call.operation] as
       | ((durableCall: DurableCall<unknown>) => unknown)
       | undefined;
@@ -641,7 +642,9 @@ class DurabilityCore<Handlers extends HandlerMap> {
           return updated ? timestamp : undefined;
         },
         isTerminal: (error) =>
-          isErrorInstance(error, DurableResultSerializationError),
+          isErrorInstance(error, DurableResultSerializationError) ||
+          (isErrorInstance(error, DurableAttemptTimeoutError) &&
+            !retryTimeouts),
       },
       eagerPermit
     );
