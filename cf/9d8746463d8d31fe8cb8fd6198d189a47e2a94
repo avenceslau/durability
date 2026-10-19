@@ -1,0 +1,65 @@
+.changeset/payload-versions.md
+  s_7287f08f532739::t_0007f616887c6d 1-7
+packages/durability/README.md
+  s_cc1c5a6bd7921e::t_1bcbf9dd034528 229-272
+packages/durability/src/durability.ts
+  s_cc1c5a6bd7921e::t_cbf0fcd867bc87 8,13,28,34,64,67-107,350,365,522,531-532,540-541,610-615,630-741
+packages/durability/src/errors.ts
+  s_09ff76da01d4bc::t_e781a333b30b5a 96-113
+packages/durability/src/index.test.ts
+  s_cc1c5a6bd7921e::t_7783cbbb42388b 46,66,162-165,223-226,276,760-1013
+packages/durability/src/index.ts
+  s_f96639b30e27c8::t_3480f6b5720769 67,93
+packages/durability/src/migrations.ts
+  s_89dff2fd3753ec::t_ebffa5c88bfeb6 94-103
+packages/durability/src/policy.ts
+  s_f96639b30e27c8::t_8781d4711b72e8 28-30,37-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cf9d8746463d8d31fe8cb8fd6198d189a47e2a94",
+  "prompts": {},
+  "sessions": {
+    "s_09ff76da01d4bc": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-896a-7047-94e6-beaa9319119c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_7287f08f532739": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8958-7047-94e6-bea88c865e4d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_cc1c5a6bd7921e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8945-7047-94e6-bea70bb805be",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f96639b30e27c8": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13576-8ece-720a-a5c8-6657b701d885",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
