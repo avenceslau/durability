@@ -1,0 +1,23 @@
+.changeset/log-redelivery-cold.md
+  s_89dff2fd3753ec::t_d0cb48dc2c6d4c 8-9
+packages/durability/src/log.test.ts
+  s_89dff2fd3753ec::t_48454a4ccfb7c3 552-575
+packages/durability/src/log.ts
+  s_89dff2fd3753ec::t_33a0a7cde9130d 1097-1110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5c9323fa1405b38c1f615882cfa156011ee8e942",
+  "prompts": {},
+  "sessions": {
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
