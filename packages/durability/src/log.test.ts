@@ -549,6 +549,30 @@ describe('log', () => {
     expect(await log.cursor('search')).toBe(5);
   });
 
+  it('advances the cursor over every range acked behind a late one', async () => {
+    const { log } = fixture({
+      maxBatchSize: 2,
+      leases: { maxParallelism: 8, leaseMs: 1_000 },
+    });
+    for (const body of ['a', 'b', 'c', 'd', 'e', 'f']) {
+      // eslint-disable-next-line no-await-in-loop
+      await offsetsOf(log, [body]);
+    }
+    const leases = [];
+    for (let i = 0; i < 6; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      leases.push(await log.lease('search', 1));
+    }
+    // Every range but the first is acked while the first is still out.
+    for (const lease of leases.slice(1)) {
+      // eslint-disable-next-line no-await-in-loop
+      await log.ack('search', lease!.batchId);
+    }
+    expect(await log.cursor('search')).toBeUndefined();
+    await log.ack('search', leases[0]!.batchId);
+    expect(await log.cursor('search')).toBe(6);
+  });
+
   it('rejects double settlement of one batch', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a']);

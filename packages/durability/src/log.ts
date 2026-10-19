@@ -1092,17 +1092,23 @@ export class DurabilityLog<Body = unknown> {
       readCursor(sql, consumer) ?? 0,
       readBounds(sql).oldestOffset
     );
-    const candidates = leasesFrom(sql, consumer, from, this.#maxBatchSize);
     let cursor = from;
     const settled: string[] = [];
-    for (const row of candidates) {
-      const contiguous = row.first_offset <= cursor;
-      const done = row.state === 'acked' || row.state === 'skipped';
-      if (!contiguous || !done) {
-        break;
+    // Ranges settled while an earlier one was outstanding wait behind it; when
+    // it settles the cursor must pass all of them, however many pages that is.
+    for (let page = true; page; ) {
+      const candidates = leasesFrom(sql, consumer, cursor, this.#maxBatchSize);
+      page = candidates.length === this.#maxBatchSize;
+      for (const row of candidates) {
+        const contiguous = row.first_offset <= cursor;
+        const done = row.state === 'acked' || row.state === 'skipped';
+        if (!contiguous || !done) {
+          page = false;
+          break;
+        }
+        cursor = Math.max(cursor, row.last_offset + 1);
+        settled.push(row.batch_id);
       }
-      cursor = Math.max(cursor, row.last_offset + 1);
-      settled.push(row.batch_id);
     }
     if (settled.length === 0) {
       return;
