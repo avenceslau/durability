@@ -1,0 +1,19 @@
+packages/durability/src/index.test.ts
+  s_29bb3c0e2b9125::t_201e4099d6cedf 808-875
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "392b69333cacbd4ba6d824a1eec76ebb5b129e8c",
+  "prompts": {},
+  "sessions": {
+    "s_29bb3c0e2b9125": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-898a-7047-94e6-bead09b4591d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
