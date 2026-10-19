@@ -1137,7 +1137,7 @@ type LogColdStorage<Body> = {
 
 External storage expires on its own schedule, so mirror a lifecycle rule with `forgetColdBefore(offset)` to drop stale index entries. Returning `undefined` from `read` is also honoured: a segment the index outlived surfaces as truncation rather than a silent gap.
 
-Retention still **ignores cursors**, exactly as a log should: a consumer slower than everything readable loses records. It learns loudly rather than silently skipping, because reading below the oldest readable offset throws `LogTruncatedError` carrying `requestedOffset` and `oldestOffset`. Compare `bounds()` against a cursor to detect the risk before it happens.
+Retention still **ignores cursors**, exactly as a log should: a consumer slower than everything readable loses records. It learns loudly rather than silently skipping, because reading below the oldest readable offset throws `LogTruncatedError` carrying `requestedOffset` and `oldestOffset`. Leased consumers learn the same way: when a range awaiting redelivery (nacked or expired) was trimmed, `lease()` throws `LogTruncatedError` once, drops the trimmed offsets from the range, and the next call carries on from what is still retained. A leased consumer's cursor moves past offsets trimmed before anyone leased them. Compare `bounds()` against a cursor to detect the risk before it happens.
 
 ### Leases for parallel consumers
 

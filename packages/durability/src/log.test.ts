@@ -440,6 +440,60 @@ describe('log', () => {
     expect(await log.cursor('search')).toBe(1);
   });
 
+  it('drops trimmed offsets from a range awaiting redelivery instead of wedging the consumer', async () => {
+    const { log } = fixture({
+      retention: { maxRecords: 3 },
+      leases: { leaseMs: 1_000, maxParallelism: 2 },
+    });
+    await offsetsOf(log, ['a', 'b', 'c', 'd']);
+    const whole = await log.lease('search', 2);
+    const straddling = await log.lease('search', 2);
+    expect(whole).toMatchObject({ firstOffset: 0, lastOffset: 1 });
+    expect(straddling).toMatchObject({ firstOffset: 2, lastOffset: 3 });
+    await log.nack('search', whole!.batchId);
+    await log.nack('search', straddling!.batchId);
+
+    // Retention trims 0..2 before either range is redelivered.
+    await offsetsOf(log, ['e', 'f']);
+    await log.trim();
+    expect(await log.bounds()).toMatchObject({ oldestOffset: 3 });
+
+    // Each lost range is reported once, then the consumer moves on.
+    await expect(log.lease('search')).rejects.toThrow(LogTruncatedError);
+    await expect(log.lease('search')).rejects.toThrow(LogTruncatedError);
+    const retained = await log.lease('search');
+    expect(retained).toMatchObject({
+      firstOffset: 3,
+      lastOffset: 3,
+      attempt: 2,
+    });
+    expect(retained!.records.map((record) => record.body)).toEqual(['d']);
+    await log.ack('search', retained!.batchId);
+    const rest = await log.lease('search');
+    expect(rest!.records.map((record) => record.body)).toEqual(['e', 'f']);
+    await log.ack('search', rest!.batchId);
+    expect(await log.cursor('search')).toBe(6);
+  });
+
+  it('moves the cursor past offsets trimmed before they were ever leased', async () => {
+    const { log } = fixture({ retention: { maxRecords: 2 }, leases: {} });
+    const first = await (async () => {
+      await offsetsOf(log, ['a']);
+      return log.lease('search');
+    })();
+    await log.ack('search', first!.batchId);
+    expect(await log.cursor('search')).toBe(1);
+
+    await offsetsOf(log, ['b', 'c', 'd', 'e']);
+    await log.trim();
+    expect(await log.bounds()).toMatchObject({ oldestOffset: 3 });
+
+    const next = await log.lease('search');
+    expect(next).toMatchObject({ firstOffset: 3, lastOffset: 4 });
+    await log.ack('search', next!.batchId);
+    expect(await log.cursor('search')).toBe(5);
+  });
+
   it('rejects double settlement of one batch', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a']);
