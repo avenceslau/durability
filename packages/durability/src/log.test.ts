@@ -494,6 +494,42 @@ describe('log', () => {
     expect(await log.cursor('search')).toBe(5);
   });
 
+  it('redelivers a whole range that retention flushed partly to cold storage', async () => {
+    const segments = new Map<string, LogRecord<string>[]>();
+    const cold: LogColdStorage<string> = {
+      write: async (segment) => {
+        const locator = `s${segments.size}`;
+        segments.set(locator, segment.records);
+        return locator;
+      },
+      read: async (locator) => segments.get(locator),
+    };
+    const { log } = fixture({
+      cold,
+      retention: { maxRecords: 3 },
+      leases: { leaseMs: 1_000 },
+    });
+    await offsetsOf(log, ['a', 'b', 'c', 'd']);
+    const first = await log.lease('search', 4);
+    await log.nack('search', first!.batchId);
+
+    // Two flushes split the range over two segments and the hot window.
+    await offsetsOf(log, ['e']);
+    await log.trim();
+    await offsetsOf(log, ['f']);
+    await log.trim();
+    expect(await log.bounds()).toMatchObject({ oldestOffset: 0, hotOffset: 3 });
+
+    const again = await log.lease('search');
+    expect(again).toMatchObject({ firstOffset: 0, lastOffset: 3, attempt: 2 });
+    expect(again!.records.map((record) => record.body)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+    ]);
+  });
+
   it('rejects double settlement of one batch', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a']);
