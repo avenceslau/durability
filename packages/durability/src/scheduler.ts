@@ -173,6 +173,7 @@ export class Engine {
   private readonly alarmMinDelayMs: number;
   private readonly alarmHandoffMs: number;
   private readonly participants: Participant[] = [];
+  private readonly migrated = new Set<MigrationCapability>();
   private availablePermits: number;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
@@ -252,7 +253,13 @@ export class Engine {
     capability: MigrationCapability,
     migrations: DurableMigrations
   ): void {
+    // Helpers of one kind on one scheduler share their tables; checking the
+    // schema again for each would only add statements to every construction.
+    if (this.migrated.has(capability)) {
+      return;
+    }
     migrate(this.storage, capability, migrations, undefined);
+    this.migrated.add(capability);
   }
 
   /** Runs synchronous writes atomically without touching the physical alarm. */
