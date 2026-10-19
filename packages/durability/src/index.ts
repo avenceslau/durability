@@ -9,8 +9,11 @@ export {
   type DurableHandler,
   type DurableOperation,
   type DurableOperationResult,
+  type DurableReplayOptions,
+  type DurableReplayResult,
   type DurabilityOperationEvent,
   type HandlerMap,
+  type TerminalClassification,
 } from './durability.js';
 export {
   DurabilityAlarms,

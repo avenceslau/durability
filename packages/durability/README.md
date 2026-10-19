@@ -341,6 +341,28 @@ An operation key names durable, pending work. Renaming or removing an operation 
 
 A rollback between steps is safe: the older deployment blocks the newer rows instead of corrupting or failing them, and resumes them when rolled forward again.
 
+## Replaying terminal failures
+
+A `failed` operation is terminal: re-registering the same ID is a no-op, so without replay the only recovery is a new ID or a destructive purge. `retryFailed` remediates a failure in place, under the original ID, operation, and payload:
+
+```ts
+const outcome = await this.durability.sendEmail.retryFailed('email:123', {
+  at: Date.now(),
+  force: false,
+});
+```
+
+It moves the record from `failed` back to `pending` in a fresh retry cycle, granting a new attempt budget while preserving the lifetime attempt count and the previous terminal error until the new cycle settles. The status check, generation bump, and physical-alarm reconciliation commit in one transaction, so concurrent callers open exactly one new cycle. The call resolves once that transition commits, like registration; a replay scheduled for a future `at`, or one evicted before it runs, is picked up by the alarm.
+
+The result is discriminated on `status`:
+
+- `replayed` — the record entered a new cycle (`cycle`, `nextAttemptAt`).
+- `not_found` — no record for the ID.
+- `not_failed` — the record is `pending`, `completed`, or `cancelled` (in `current`); only `failed` records replay.
+- `requires_force` — the failure is permanent or uncertain (`classification`) and needs `force: true`.
+
+Only a plain `attempts_exhausted` failure replays without options. Every other classification (`non_retryable`, `timeout`, `policy_error`, `serialization_error`, `payload_decode_error`) requires `force: true`, because re-running them is more likely to repeat an external effect whose outcome is unknown. **Replay cannot undo or detect a side effect a prior attempt already committed**; set `force` only when re-running is safe or the handler is idempotent (pass the call ID to external services). Reusing an ID bound to a different operation still throws `DuplicateDurableCallError`.
+
 ## Delivery semantics and concurrency
 
 Work is delivered at least once. A process can stop after a side effect succeeds but before its completion record commits, so handlers should be idempotent and pass the call ID or alarm `idempotencyKey` to external services.

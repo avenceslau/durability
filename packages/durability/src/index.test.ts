@@ -48,6 +48,7 @@ describe('migrations', () => {
         'durability_0004_calls_generation_and_created_at',
         'durability_0012_calls_cancelled_status',
         'durability_0013_calls_payload_version',
+        'durability_0014_calls_retry_cycle',
       ],
       rolledBack: [],
     });
@@ -67,6 +68,7 @@ describe('migrations', () => {
       {
         applied: [],
         rolledBack: [
+          'durability_0014_calls_retry_cycle',
           'durability_0013_calls_payload_version',
           'durability_0012_calls_cancelled_status',
           'durability_0004_calls_generation_and_created_at',
@@ -160,8 +162,12 @@ describe('migrations', () => {
         applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
       )
     `);
+    // Reproduce the v2 schema: every operation and alarm migration that existed
+    // before the retry-cycle columns were added.
     for (const migration of [
-      ...durabilityOperationMigrations,
+      ...durabilityOperationMigrations.filter(
+        ({ name }) => name !== 'durability_0014_calls_retry_cycle'
+      ),
       ...durabilityNamedAlarmMigrations,
     ]) {
       // 2.x predates payload versioning; construction must apply it forward.
@@ -233,6 +239,10 @@ describe('migrations', () => {
         name: 'durability_0013_calls_payload_version',
         capability: 'operations',
       },
+      {
+        name: 'durability_0014_calls_retry_cycle',
+        capability: 'operations',
+      },
     ]);
     expect(Durability.migrate(context)).toEqual({
       applied: [],
@@ -284,6 +294,7 @@ describe('migrations', () => {
       'durability_0004_generation_and_created_at',
       'durability_0012_calls_cancelled_status',
       'durability_0013_calls_payload_version',
+      'durability_0014_calls_retry_cycle',
     ]);
   });
 
@@ -1867,6 +1878,359 @@ describe('operation cancellation', () => {
     expectTypeOf<DurableOperationResult<string>['status']>().toEqualTypeOf<
       'not_found' | 'pending' | 'failed' | 'completed' | 'cancelled'
     >();
+  });
+});
+
+describe('operation replay', () => {
+  const exhaust = async (
+    durability: {
+      work: { getResult: (id: string) => Promise<{ status: string }> };
+    },
+    id: string
+  ): Promise<void> => {
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult(id)).resolves.toMatchObject({
+        status: 'failed',
+      });
+    });
+  };
+
+  it('cannot re-run a failed operation under the same ID without replay', async () => {
+    const handler = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValue(new Error('boom'));
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: { work: handler },
+      retries: { maxAttempts: 2, delay: () => 0 },
+    });
+
+    await durability.work({ id: 'job', payload: null });
+    await exhaust(durability, 'job');
+    const callsAtFailure = handler.mock.calls.length;
+
+    // Re-registering the same terminal ID is a no-op: the handler never reruns.
+    await durability.work({ id: 'job', payload: null });
+    await Promise.resolve();
+    expect(handler.mock.calls.length).toBe(callsAtFailure);
+    await expect(durability.work.getResult('job')).resolves.toMatchObject({
+      status: 'failed',
+    });
+  });
+
+  it('replays an exhausted transient failure under the same ID', async () => {
+    const handler = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue('ok');
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: { work: handler },
+      retries: { maxAttempts: 2, delay: () => 0 },
+    });
+
+    await durability.work({ id: 'job', payload: null });
+    await exhaust(durability, 'job');
+
+    await expect(durability.work.retryFailed('job')).resolves.toMatchObject({
+      status: 'replayed',
+      cycle: 1,
+    });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('job')).resolves.toEqual({
+        status: 'completed',
+        result: 'ok',
+      });
+    });
+  });
+
+  it('opens a fresh retry budget while preserving lifetime attempts', async () => {
+    const storage = new FakeStorage();
+    const handler = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue('ok');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+      retries: { maxAttempts: 2, delay: () => 0 },
+    });
+
+    await durability.work({ id: 'job', payload: null });
+    await exhaust(durability, 'job');
+
+    await expect(durability.work.retryFailed('job')).resolves.toEqual({
+      status: 'replayed',
+      cycle: 1,
+      nextAttemptAt: expect.any(Number),
+    });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('job')).resolves.toEqual({
+        status: 'completed',
+        result: 'ok',
+      });
+    });
+
+    // attempt is the current cycle's budget; total_attempts carries the prior
+    // cycle's two attempts, so the lifetime count is three.
+    expect(
+      storage.sql
+        .exec<{ retry_cycle: number; total_attempts: number; attempt: number }>(
+          `SELECT retry_cycle, total_attempts, attempt
+           FROM durability_calls WHERE id = 'job'`
+        )
+        .toArray()[0]
+    ).toEqual({ retry_cycle: 1, total_attempts: 2, attempt: 1 });
+  });
+
+  it('preserves the previous terminal error while the replay is pending', async () => {
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        work: async () => {
+          throw new Error('boom');
+        },
+      },
+      retries: { maxAttempts: 1, delay: () => 0 },
+    });
+
+    await durability.work({ id: 'job', payload: null });
+    await exhaust(durability, 'job');
+
+    // A future schedule keeps the row pending without running, so the previous
+    // failure stays visible until the new cycle reaches its own outcome.
+    await expect(
+      durability.work.retryFailed('job', { at: Date.now() + 60_000 })
+    ).resolves.toMatchObject({ status: 'replayed', cycle: 1 });
+    await expect(durability.work.getResult('job')).resolves.toMatchObject({
+      status: 'pending',
+      attempt: 0,
+      lastError: 'boom',
+    });
+  });
+
+  it('reuses the original stored payload and never takes a new one', async () => {
+    const seen: unknown[] = [];
+    const handler = vi.fn(async ({ payload }: DurableCall<{ to: string }>) => {
+      seen.push(payload);
+      throw new Error('boom');
+    });
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: { work: handler },
+      retries: { maxAttempts: 1, delay: () => 0 },
+    });
+
+    await durability.work({ id: 'job', payload: { to: 'ana' } });
+    await exhaust(durability, 'job');
+    expect(seen).toEqual([{ to: 'ana' }]);
+
+    await expect(durability.work.retryFailed('job')).resolves.toMatchObject({
+      status: 'replayed',
+      cycle: 1,
+    });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    expect(seen).toEqual([{ to: 'ana' }, { to: 'ana' }]);
+  });
+
+  it('reports not_found, not_failed, and wrong-operation reuse', async () => {
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        work: async () => 'done',
+        other: async () => 'other',
+      },
+    });
+
+    await expect(durability.work.retryFailed('missing')).resolves.toEqual({
+      status: 'not_found',
+    });
+
+    await durability.work({ id: 'done', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('done')).resolves.toMatchObject({
+        status: 'completed',
+      });
+    });
+    await expect(durability.work.retryFailed('done')).resolves.toEqual({
+      status: 'not_failed',
+      current: 'completed',
+    });
+
+    await expect(durability.other.retryFailed('done')).rejects.toBeInstanceOf(
+      DuplicateDurableCallError
+    );
+  });
+
+  it('reports not_failed for a cancelled record', async () => {
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => 'done' },
+    });
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+         (id, operation, payload, status, attempt, next_attempt_at, cancelled_at)
+       VALUES (?, 'work', ?, 'cancelled', 0, 0, ?)`,
+      'gone',
+      JSON.stringify({ kind: 'value', value: null }),
+      Date.now()
+    );
+
+    await expect(durability.work.retryFailed('gone')).resolves.toEqual({
+      status: 'not_failed',
+      current: 'cancelled',
+    });
+  });
+
+  it('keeps cancellation uncertainty after a replay that reset the attempt', async () => {
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        work: async () => {
+          throw new Error('boom');
+        },
+      },
+      retries: { maxAttempts: 1, delay: () => 0 },
+    });
+
+    await durability.work({ id: 'job', payload: null });
+    await exhaust(durability, 'job');
+
+    // Replay opens a new cycle with attempt reset to 0; the prior attempt that
+    // may have committed an effect now lives in total_attempts.
+    await expect(
+      durability.work.retryFailed('job', { at: Date.now() + 60_000 })
+    ).resolves.toMatchObject({ status: 'replayed', cycle: 1 });
+    await expect(durability.work.cancel('job')).resolves.toMatchObject({
+      status: 'cancelled',
+    });
+
+    await expect(durability.work.getResult('job')).resolves.toMatchObject({
+      status: 'cancelled',
+      attempt: 0,
+      outcomeMayBeUnknown: true,
+    });
+  });
+
+  it('requires force for permanent and uncertain failures', async () => {
+    vi.useFakeTimers();
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        permanent: async () => {
+          throw new DurabilityNonRetryableError('invalid');
+        },
+        slow: async () => new Promise(() => undefined),
+      },
+      methods: {
+        slow: { attemptTimeoutMs: 100, retries: { maxAttempts: 1 } },
+      },
+    });
+
+    await durability.permanent({ id: 'permanent', payload: null });
+    await vi.waitFor(async () => {
+      await expect(
+        durability.permanent.getResult('permanent')
+      ).resolves.toMatchObject({ status: 'failed' });
+    });
+    await expect(
+      durability.permanent.retryFailed('permanent')
+    ).resolves.toEqual({
+      status: 'requires_force',
+      classification: 'non_retryable',
+    });
+    await expect(
+      durability.permanent.retryFailed('permanent', { force: true })
+    ).resolves.toMatchObject({ status: 'replayed', cycle: 1 });
+
+    await durability.slow({ id: 'slow', payload: null });
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(async () => {
+      await expect(durability.slow.getResult('slow')).resolves.toMatchObject({
+        status: 'failed',
+      });
+    });
+    await expect(durability.slow.retryFailed('slow')).resolves.toEqual({
+      status: 'requires_force',
+      classification: 'timeout',
+    });
+  });
+
+  it('survives eviction before the replayed attempt runs', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const failing = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async () => {
+          throw new Error('boom');
+        },
+      },
+      retries: { maxAttempts: 1, delay: () => 0 },
+      alarmMinDelayMs: 1_000,
+    });
+
+    await failing.work({ id: 'job', payload: null });
+    await vi.waitFor(async () => {
+      await expect(failing.work.getResult('job')).resolves.toMatchObject({
+        status: 'failed',
+      });
+    });
+    await expect(
+      failing.work.retryFailed('job', { at: Date.now() + 5_000 })
+    ).resolves.toMatchObject({ status: 'replayed', cycle: 1 });
+
+    // Eviction: a fresh helper over the same storage resumes the pending replay.
+    const run = vi.fn(async () => 'ok');
+    const recovered = new Durability({
+      context: contextFor(storage),
+      handlers: { work: run },
+      alarmMinDelayMs: 1_000,
+    });
+    vi.advanceTimersByTime(5_000);
+    await recovered.alarm();
+
+    await vi.waitFor(async () => {
+      await expect(recovered.work.getResult('job')).resolves.toEqual({
+        status: 'completed',
+        result: 'ok',
+      });
+    });
+  });
+
+  it('creates exactly one new cycle under concurrent replay', async () => {
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async () => {
+          throw new Error('boom');
+        },
+      },
+      retries: { maxAttempts: 1, delay: () => 0 },
+    });
+
+    await durability.work({ id: 'job', payload: null });
+    await exhaust(durability, 'job');
+
+    const future = Date.now() + 60_000;
+    const outcomes = await Promise.all([
+      durability.work.retryFailed('job', { at: future }),
+      durability.work.retryFailed('job', { at: future }),
+    ]);
+    const statuses = outcomes.map(({ status }) => status).sort();
+    expect(statuses).toEqual(['not_failed', 'replayed']);
+    expect(
+      storage.sql
+        .exec<{ retry_cycle: number }>(
+          `SELECT retry_cycle FROM durability_calls WHERE id = 'job'`
+        )
+        .toArray()[0]
+    ).toEqual({ retry_cycle: 1 });
   });
 });
 

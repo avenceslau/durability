@@ -68,6 +68,8 @@ const callRowSchema = z.object({
   cancelled_at: z.number().int().nonnegative().nullable(),
   cancel_reason: z.string().nullable(),
   payload_version: z.number().int().positive(),
+  retry_cycle: z.number().int().nonnegative(),
+  total_attempts: z.number().int().nonnegative(),
 });
 
 /** Cancellation reasons longer than this are truncated before they are stored. */
@@ -310,6 +312,81 @@ type CancelTransition =
       attempt: number;
     };
 
+/**
+ * Why a terminal operation failed. `attempts_exhausted` is a plain transient
+ * failure that used up its retry budget; every other class carries an uncertain
+ * or permanent outcome and requires {@link DurableReplayOptions.force} to replay.
+ */
+export type TerminalClassification =
+  | 'attempts_exhausted'
+  | 'non_retryable'
+  | 'timeout'
+  | 'policy_error'
+  | 'serialization_error'
+  | 'payload_decode_error';
+
+/** Options for {@link DurableOperation.retryFailed}. */
+export type DurableReplayOptions = {
+  /**
+   * When the replayed attempt becomes eligible, as a Unix timestamp in
+   * milliseconds. Defaults to now, which starts the attempt immediately.
+   */
+  at?: number;
+  /**
+   * Acknowledge replaying a failure whose outcome is permanent or uncertain
+   * (anything other than `attempts_exhausted`). Replay never undoes or detects
+   * an external side effect a prior attempt may have already committed; set
+   * this only when re-running is known to be safe or idempotent.
+   */
+  force?: boolean;
+};
+
+/** The outcome of a {@link DurableOperation.retryFailed} call. */
+export type DurableReplayResult =
+  | {
+      /**
+       * The failed record was moved back to pending in a fresh retry cycle.
+       */
+      status: 'replayed';
+      /** The new one-based retry cycle. */
+      cycle: number;
+      /** When the replayed attempt becomes eligible. */
+      nextAttemptAt: number;
+    }
+  | {
+      /** No operation exists for the supplied idempotency key. */
+      status: 'not_found';
+    }
+  | {
+      /** The record is not in a terminal failed state and cannot be replayed. */
+      status: 'not_failed';
+      /** The record's current non-failed status. */
+      current: 'pending' | 'completed' | 'cancelled';
+    }
+  | {
+      /**
+       * The failure is permanent or uncertain and needs
+       * {@link DurableReplayOptions.force} to replay.
+       */
+      status: 'requires_force';
+      /** The terminal classification that requires acknowledgement. */
+      classification: TerminalClassification;
+    };
+
+// Exhausting the retry budget records the handler's own retryable error, so a
+// name not listed here is a transient failure that is safe to replay. Only
+// these known terminal errors mark an uncertain or permanent outcome.
+const terminalClassifications: Record<string, TerminalClassification> = {
+  DurableAttemptTimeoutError: 'timeout',
+  DurableRetryPolicyError: 'policy_error',
+  DurableResultSerializationError: 'serialization_error',
+  NonRetryableError: 'non_retryable',
+  DurablePayloadDecodeError: 'payload_decode_error',
+};
+
+const classifyTerminal = (errorName: string | null): TerminalClassification =>
+  terminalClassifications[errorName ?? ''] ?? 'attempts_exhausted';
+
 type OperationEvent = Extract<
   DurabilityLifecycleEvent,
   { entityKind: 'operation' }
@@ -359,6 +436,19 @@ export type DurableOperation<Handler> = ((
     idempotencyKey: string,
     options?: DurableCancellationOptions
   ) => Promise<DurableCancellationOutcome>;
+  /**
+   * Replays a terminally failed operation under its original ID, operation, and
+   * payload. It opens a fresh retry cycle with a new attempt budget while
+   * preserving the lifetime attempt count and the previous terminal error.
+   *
+   * An `attempts_exhausted` failure replays without options; any other terminal
+   * class needs {@link DurableReplayOptions.force}. The call resolves once the
+   * durable transition commits, like registration.
+   */
+  retryFailed: (
+    idempotencyKey: string,
+    options?: DurableReplayOptions
+  ) => Promise<DurableReplayResult>;
 };
 
 /**
@@ -443,7 +533,10 @@ const callState = (
       attempt: call.attempt,
       cancelledAt: call.cancelled_at ?? 0,
       reason: call.cancel_reason,
-      outcomeMayBeUnknown: call.attempt > 0,
+      // Lifetime, not cycle-local: a replay resets `attempt` to zero and carries
+      // prior attempts in `total_attempts`, so an effect committed before replay
+      // must still mark the cancelled outcome uncertain.
+      outcomeMayBeUnknown: call.total_attempts + call.attempt > 0,
     };
   }
   if (call.result === null) {
@@ -561,6 +654,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
             `Durability.${operation}.cancel`,
             (idempotencyKey: string, options?: DurableCancellationOptions) =>
               this.#cancel(operation, idempotencyKey, options)
+          ),
+          retryFailed: traceFunction(
+            `Durability.${operation}.retryFailed`,
+            (idempotencyKey: string, options?: DurableReplayOptions) =>
+              this.#retryFailed(operation, idempotencyKey, options)
           ),
         }
       );
@@ -805,7 +903,74 @@ class DurabilityCore<Handlers extends HandlerMap> {
       timestamp: now,
       attempt: 0,
     });
-    // Start eagerly only when a permit is free; otherwise the reconciled alarm picks the row up.
+    this.#startEagerly(input.id, input.operation);
+  }
+
+  /**
+   * Replays a terminally failed call under the same ID in a fresh retry cycle.
+   * The status check and generation compare-and-swap run inside the alarm
+   * reconciliation transaction, so concurrent callers open exactly one cycle.
+   */
+  async #retryFailed(
+    operation: string,
+    id: string,
+    options: DurableReplayOptions = {}
+  ): Promise<DurableReplayResult> {
+    const now = Date.now();
+    const at = options.at ?? now;
+    if (!Number.isSafeInteger(at) || at < 0) {
+      throw new RangeError('at must be a non-negative safe integer');
+    }
+
+    const outcome = await this.#engine.transaction(
+      (sql): DurableReplayResult => {
+        const call = readCall(sql, id);
+        if (!call) {
+          return { status: 'not_found' };
+        }
+        assertOperation(id, call.operation, operation);
+        if (call.status !== 'failed') {
+          return { status: 'not_failed', current: call.status };
+        }
+
+        const classification = classifyTerminal(call.last_error_name);
+        if (classification !== 'attempts_exhausted' && !options.force) {
+          return { status: 'requires_force', classification };
+        }
+
+        const cycle = call.retry_cycle + 1;
+        // Keep the previous terminal error until the new cycle settles; only the
+        // counters, status, generation, and schedule move.
+        sql.exec(
+          `UPDATE durability_calls
+         SET status = 'pending',
+             generation_id = ?,
+             retry_cycle = ?,
+             total_attempts = total_attempts + attempt,
+             attempt = 0,
+             next_attempt_at = ?
+         WHERE id = ? AND status = 'failed' AND generation_id = ?`,
+          crypto.randomUUID(),
+          cycle,
+          at,
+          id,
+          call.generation_id
+        );
+        return { status: 'replayed', cycle, nextAttemptAt: at };
+      }
+    );
+
+    if (outcome.status === 'replayed') {
+      this.#engine.notify(callsTable, id);
+      if (outcome.nextAttemptAt <= Date.now()) {
+        this.#startEagerly(id, operation);
+      }
+    }
+    return outcome;
+  }
+
+  /** Starts a due call eagerly when a permit is free; the alarm covers the rest. */
+  #startEagerly(id: string, operation: string): void {
     const eagerPermit = this.#engine.tryAcquirePermit();
     if (!eagerPermit) {
       return;
@@ -813,10 +978,10 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const onError = (error: unknown) =>
       reportFailure(
         'durability.background_execution.failed',
-        { operation: input.operation, id: input.id },
+        { operation, id },
         error
       );
-    const background = this.#execute(input.id, eagerPermit)
+    const background = this.#execute(id, eagerPermit)
       .then(() => this.#engine.scheduleNextAlarm())
       .catch(onError);
     this.#engine.waitUntil(background, onError);

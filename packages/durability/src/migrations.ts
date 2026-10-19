@@ -171,6 +171,17 @@ export const durabilityOperationMigrations = [
       ALTER TABLE durability_calls DROP COLUMN payload_version;
     `,
   },
+  {
+    name: 'durability_0014_calls_retry_cycle',
+    up: `
+      ALTER TABLE durability_calls ADD COLUMN retry_cycle INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE durability_calls ADD COLUMN total_attempts INTEGER NOT NULL DEFAULT 0;
+    `,
+    down: `
+      ALTER TABLE durability_calls DROP COLUMN total_attempts;
+      ALTER TABLE durability_calls DROP COLUMN retry_cycle;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**
