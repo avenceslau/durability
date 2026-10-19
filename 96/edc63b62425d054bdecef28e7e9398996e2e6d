@@ -1,0 +1,41 @@
+.changeset/durable-steps.md
+  s_ac3394297cebb2::t_839828b6bf280b 1-5
+packages/durability/README.md
+  s_ac3394297cebb2::t_4ad43254f20b83 17,170-197,208,304-313
+packages/durability/src/durability-alarms.ts
+  s_ac3394297cebb2::t_09ff2571803815 18,36-41,81-82,207,220,226-227,362-363,423-427
+packages/durability/src/durability.ts
+  s_ac3394297cebb2::t_38ec9c72c499f4 22,41-45,103-104,360,373,379-380,624-628
+packages/durability/src/errors.ts
+  s_ac3394297cebb2::t_892cb68fd36efb 69-82
+packages/durability/src/index.test.ts
+  s_ac3394297cebb2::t_bf0bc8eb4989c7 100,113,219,1411
+packages/durability/src/index.ts
+  s_ac3394297cebb2::t_3f8bcd6f328a42 23,70,87
+packages/durability/src/migrations.ts
+  s_ac3394297cebb2::t_d6ba399a7f3439 178-199,598
+packages/durability/src/scheduler.ts
+  s_ac3394297cebb2::t_6a5285192c8287 18,407,662-663,698-699,706-711,736-737,746-751
+packages/durability/src/steps.test.ts
+  s_ac3394297cebb2::t_b39a09c7975fa1 1-358
+packages/durability/src/steps.ts
+  s_ac3394297cebb2::t_73a2e640837764 1-168
+packages/durability/src/storage.ts
+  s_ac3394297cebb2::t_35820a488974fe 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "96edc63b62425d054bdecef28e7e9398996e2e6d",
+  "prompts": {},
+  "sessions": {
+    "s_ac3394297cebb2": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a153f2-c7b2-7437-af27-69bcb51b176c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
