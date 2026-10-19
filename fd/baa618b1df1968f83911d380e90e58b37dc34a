@@ -1,0 +1,27 @@
+.changeset/current-schema-one-read.md
+  s_ac3394297cebb2::t_7792669388482c 1-5
+packages/durability/src/dev.test.ts
+  s_ac3394297cebb2::t_a28c9bdbd0334b 71-72,74-79
+packages/durability/src/index.test.ts
+  s_ac3394297cebb2::t_34d9ebcbd95e6f 117-171
+packages/durability/src/migrations.ts
+  s_ac3394297cebb2::t_42fa6c168fbf65 740-780
+packages/durability/src/scheduler.ts
+  s_ac3394297cebb2::t_829a02210e1314 16-20,266-268
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fdbaa618b1df1968f83911d380e90e58b37dc34a",
+  "prompts": {},
+  "sessions": {
+    "s_ac3394297cebb2": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a153f2-c7b2-7437-af27-69bcb51b176c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
