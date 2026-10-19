@@ -18,6 +18,7 @@ import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
 import {
   claimAttempt,
   exhaustAttempts,
+  failPending,
   updateAttempt,
   type DurableTable,
 } from './storage.js';
@@ -97,6 +98,12 @@ export type ExecutionSpec = {
   emit: Emit;
   exhaustedError: () => Error;
   timeoutError: () => Error;
+  /**
+   * Runs before any attempt is claimed. A throw is a deterministic terminal
+   * failure (such as an undecodable stored payload) that is persisted without
+   * consuming the handler's retry budget and never reaches {@link invoke}.
+   */
+  prepare?: () => void;
   invoke: (attempt: number, signal: AbortSignal) => unknown;
   /**
    * Persists a successful attempt and returns its settlement timestamp, or
@@ -613,6 +620,14 @@ export class Engine {
 
     const execution = (async (): Promise<void> => {
       releasePermit ??= await this.acquirePermit();
+      if (spec.prepare) {
+        try {
+          spec.prepare();
+        } catch (error) {
+          await this.failDeterministic(spec, error);
+          return;
+        }
+      }
       const attempt = claimAttempt(
         this.sql,
         spec.table,
@@ -713,6 +728,30 @@ export class Engine {
       attempt,
       reason: 'attempts_exhausted',
       error: exhausted,
+    });
+  }
+
+  private async failDeterministic(
+    spec: ExecutionSpec,
+    error: unknown
+  ): Promise<void> {
+    const { key, row } = spec;
+    const serialized = serializeError(error);
+    const attempt = await this.transaction((sql) =>
+      failPending(sql, spec.table, key, row.generation_id, serialized)
+    );
+    if (attempt === undefined) {
+      return;
+    }
+
+    this.notify(spec.table, key);
+    spec.emit({
+      ...spec.entity,
+      type: 'terminal',
+      timestamp: Date.now(),
+      attempt,
+      reason: 'payload_decode_error',
+      error: serialized,
     });
   }
 

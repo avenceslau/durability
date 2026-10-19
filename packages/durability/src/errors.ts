@@ -53,6 +53,17 @@ export class DurableRetryPolicyError extends Error {
   }
 }
 
+/** Error persisted when a stored payload cannot be decoded before a handler runs. */
+export class DurablePayloadDecodeError extends Error {
+  constructor(operation: string, reason?: unknown) {
+    super(`Payload for durable operation "${operation}" could not be decoded`);
+    this.name = 'DurablePayloadDecodeError';
+    if (reason !== undefined) {
+      Object.defineProperty(this, 'cause', { value: reason });
+    }
+  }
+}
+
 /** Error persisted when a successful result cannot be JSON-serialized. */
 export class DurableResultSerializationError extends Error {
   constructor(operation: string, reason?: unknown) {

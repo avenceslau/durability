@@ -94,6 +94,8 @@ switch (result.status) {
 
 The completed result type is inferred from the handler. Looking up a key that belongs to another operation throws `DuplicateDurableCallError`. Payloads and results must be JSON-serializable; as with `JSON.stringify`, `undefined` properties are dropped and `undefined` array elements become `null`.
 
+These failures are deterministic, so they are terminal rather than retried. A stored payload that cannot be decoded (for example after data corruption) fails with `DurablePayloadDecodeError` before the handler runs, so it never consumes the retry budget. A handler that returns a non-serializable result fails with `DurableResultSerializationError` after running; because the handler's side effect may already have committed, that failed result sets `outcomeMayBeUnknown: true` so operators know the external outcome is unverified before replaying.
+
 An ID stays bound to its operation and payload. Registering it again with the same operation and the same data (object key order does not matter; array order and values do) is a no-op, which is what makes retries safe. Registering it with another operation throws `DuplicateDurableCallError`, and with a different payload `DuplicateDurablePayloadError`, instead of silently dropping the new call.
 
 ### Cancelling an operation

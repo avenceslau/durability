@@ -113,6 +113,33 @@ export const exhaustAttempts = (
       .toArray()[0]
   )?.attempt;
 
+/**
+ * Fails a pending generation without starting an attempt and returns its
+ * attempt count. Used for deterministic input errors that must not consume the
+ * handler's retry budget.
+ */
+export const failPending = (
+  sql: SqlStorage,
+  table: DurableTable,
+  key: string,
+  generation: string,
+  error: { name: string; message: string }
+): number | undefined =>
+  attemptRowSchema.optional().parse(
+    sql
+      .exec(
+        `UPDATE ${table.name}
+         SET status = 'failed', last_error = ?, last_error_name = ?
+         WHERE ${pendingGeneration(table)}
+         RETURNING attempt`,
+        error.message,
+        error.name,
+        key,
+        generation
+      )
+      .toArray()[0]
+  )?.attempt;
+
 export type CreatedQuery = {
   limit: number;
   /** Opaque position from a previous page's `next`. */

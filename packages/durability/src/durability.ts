@@ -6,6 +6,7 @@ import {
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
   DurableCancellationError,
+  DurablePayloadDecodeError,
   DurableResultSerializationError,
   isErrorInstance,
   NonRetryableError,
@@ -181,6 +182,12 @@ export type DurableOperationResult<Result> =
       attempt: number;
       /** The terminal error's serialized name and message. */
       error: { name: string; message: string };
+      /**
+       * True when a handler side effect may have completed but its result could
+       * not be recorded, so the external outcome is unverified. Set for result
+       * serialization failures; manual replay should acknowledge the risk.
+       */
+      outcomeMayBeUnknown?: boolean;
     }
   | {
       /** The operation completed successfully. */
@@ -378,6 +385,11 @@ const callState = (
         name: call.last_error_name ?? 'Error',
         message: call.last_error ?? 'Durable operation failed',
       },
+      // A serialization failure happens after the handler ran, so its external
+      // side effect may have committed even though the result was not recorded.
+      ...(call.last_error_name === DurableResultSerializationError.name
+        ? { outcomeMayBeUnknown: true }
+        : {}),
     };
   }
   if (call.status === 'cancelled') {
@@ -809,6 +821,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const handler = this.#handlers[call.operation] as
       | ((durableCall: DurableCall<unknown>) => unknown)
       | undefined;
+    let payload: unknown;
     return this.#engine.startExecution(
       {
         table: callsTable,
@@ -830,6 +843,13 @@ class DurabilityCore<Handlers extends HandlerMap> {
             call.operation,
             policy.attemptTimeoutMs
           ),
+        prepare: () => {
+          try {
+            payload = deserialize(call.payload);
+          } catch (error) {
+            throw new DurablePayloadDecodeError(call.operation, error);
+          }
+        },
         invoke: (attempt, signal) => {
           if (!handler) {
             throw new NonRetryableError(
@@ -839,7 +859,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
           return handler({
             id: call.id,
             operation: call.operation,
-            payload: deserialize(call.payload),
+            payload,
             attempt,
             signal,
           });

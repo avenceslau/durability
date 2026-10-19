@@ -9,6 +9,7 @@ import {
   DuplicateDurablePayloadError,
   DurableAttemptsExhaustedError,
   DurableCancellationError,
+  DurablePayloadDecodeError,
   DurableResultSerializationError,
   DurableRetryPolicyError,
   NonRetryableError as DurabilityNonRetryableError,
@@ -1089,6 +1090,40 @@ describe('Durability', () => {
       });
     });
     expect(handler).toHaveBeenCalledTimes(1);
+    await expect(durability.work.getResult('bigint')).resolves.toMatchObject({
+      status: 'failed',
+      outcomeMayBeUnknown: true,
+    });
+  });
+
+  it('fails a corrupt stored payload terminally without an attempt', async () => {
+    const storage = new FakeStorage();
+    const handler = vi.fn(async () => 'ok');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+      retries: { maxAttempts: 3, delay: () => 0 },
+    });
+    Durability.migrate(contextFor(storage));
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+        (id, operation, payload, status, attempt, next_attempt_at,
+         created_at, generation_id)
+       VALUES (?, 'work', ?, 'pending', 0, 0, 0, ?)`,
+      'corrupt',
+      'not-json',
+      crypto.randomUUID()
+    );
+
+    storage.alarmAt = null;
+    await durability.alarm();
+
+    expect(handler).not.toHaveBeenCalled();
+    await expect(durability.work.getResult('corrupt')).resolves.toMatchObject({
+      status: 'failed',
+      attempt: 0,
+      error: { name: DurablePayloadDecodeError.name },
+    });
   });
 
   it('leaves saturated eager calls for their reconciled alarm', async () => {

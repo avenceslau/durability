@@ -67,6 +67,7 @@ export {
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
   DurableCancellationError,
+  DurablePayloadDecodeError,
   DurableResultSerializationError,
   DurableRetryPolicyError,
   NonRetryableError,

@@ -84,7 +84,7 @@ export type DurabilityLifecycleEvent =
       type: 'terminal';
       timestamp: number;
       attempt: number;
-      reason: 'attempts_exhausted' | 'dead_lettered';
+      reason: 'attempts_exhausted' | 'dead_lettered' | 'payload_decode_error';
       error: SerializedError;
     })
   | (LifecycleEntity & {
