@@ -49,10 +49,12 @@ describe('migrations', () => {
         'durability_0012_calls_cancelled_status',
         'durability_0013_calls_payload_version',
         'durability_0014_calls_retry_cycle',
+        'durability_0015_create_call_tombstones',
       ],
       rolledBack: [],
     });
     expect(tableNames(storage)).toEqual([
+      'durability_call_tombstones',
       'durability_calls',
       'durability_migrations',
     ]);
@@ -68,6 +70,7 @@ describe('migrations', () => {
       {
         applied: [],
         rolledBack: [
+          'durability_0015_create_call_tombstones',
           'durability_0014_calls_retry_cycle',
           'durability_0013_calls_payload_version',
           'durability_0012_calls_cancelled_status',
@@ -104,6 +107,7 @@ describe('migrations', () => {
       },
     });
     expect(tableNames(operationsOnly)).toEqual([
+      'durability_call_tombstones',
       'durability_calls',
       'durability_migrations',
     ]);
@@ -243,6 +247,10 @@ describe('migrations', () => {
         name: 'durability_0014_calls_retry_cycle',
         capability: 'operations',
       },
+      {
+        name: 'durability_0015_create_call_tombstones',
+        capability: 'operations',
+      },
     ]);
     expect(Durability.migrate(context)).toEqual({
       applied: [],
@@ -295,6 +303,7 @@ describe('migrations', () => {
       'durability_0012_calls_cancelled_status',
       'durability_0013_calls_payload_version',
       'durability_0014_calls_retry_cycle',
+      'durability_0015_create_call_tombstones',
     ]);
   });
 
@@ -1565,6 +1574,206 @@ describe('Durability', () => {
     });
   });
 
+  it('prunes terminal data while preserving same-id deduplication', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10);
+    const storage = new FakeStorage();
+    let invocations = 0;
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async () => {
+          invocations += 1;
+          return `run-${invocations}`;
+        },
+        other: async () => 'other',
+      },
+    });
+
+    await durability.work({ id: 'keep', payload: { n: 1 } });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('keep')).resolves.toEqual({
+        status: 'completed',
+        result: 'run-1',
+      });
+    });
+
+    const cutoff = Date.now() + 1;
+    vi.setSystemTime(cutoff);
+    await expect(durability.prune({ completedBefore: cutoff })).resolves.toBe(
+      1
+    );
+
+    await expect(durability.work.getResult('keep')).resolves.toEqual({
+      status: 'pruned',
+      outcome: 'completed',
+    });
+
+    await durability.work({ id: 'keep', payload: { n: 1 } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(invocations).toBe(1);
+    await expect(durability.work.getResult('keep')).resolves.toEqual({
+      status: 'pruned',
+      outcome: 'completed',
+    });
+
+    await expect(
+      durability.other({ id: 'keep', payload: null })
+    ).rejects.toBeInstanceOf(DuplicateDurableCallError);
+  });
+
+  it('enforces the operation binding on cancel and retryFailed after pruning', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10);
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async () => 'done',
+        other: async () => 'other',
+      },
+    });
+
+    await durability.work({ id: 'keep', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('keep')).resolves.toMatchObject({
+        status: 'completed',
+      });
+    });
+
+    const cutoff = Date.now() + 1;
+    vi.setSystemTime(cutoff);
+    await expect(durability.prune({ completedBefore: cutoff })).resolves.toBe(
+      1
+    );
+
+    // The live row is gone, but the tombstone keeps the operation binding, so a
+    // wrong-operation reuse must still throw rather than silently report not_found.
+    await expect(durability.other.cancel('keep')).rejects.toBeInstanceOf(
+      DuplicateDurableCallError
+    );
+    await expect(durability.other.retryFailed('keep')).rejects.toBeInstanceOf(
+      DuplicateDurableCallError
+    );
+
+    // The owning operation still sees a pruned record as not_found for these.
+    await expect(durability.work.cancel('keep')).resolves.toEqual({
+      status: 'not_found',
+    });
+    await expect(durability.work.retryFailed('keep')).resolves.toEqual({
+      status: 'not_found',
+    });
+  });
+
+  it('prunes only eligible statuses in bounded batches', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      retries: { maxAttempts: 1 },
+      handlers: {
+        ok: async () => 'ok',
+        boom: async () => {
+          throw new DurabilityNonRetryableError('nope');
+        },
+        hang: () => new Promise<void>(() => undefined),
+      },
+    });
+
+    for (const n of [0, 1, 2]) {
+      await durability.ok({ id: `ok-${n}`, payload: null });
+    }
+    await durability.boom({ id: 'boom', payload: null });
+    await durability.hang({ id: 'hang', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.ok.getResult('ok-2')).resolves.toMatchObject({
+        status: 'completed',
+      });
+      await expect(durability.boom.getResult('boom')).resolves.toMatchObject({
+        status: 'failed',
+      });
+    });
+
+    const cutoff = Date.now() + 1;
+    vi.setSystemTime(cutoff);
+
+    // Only completed rows are eligible; the limit bounds each batch.
+    await expect(
+      durability.prune({ completedBefore: cutoff, limit: 2 })
+    ).resolves.toBe(2);
+    await expect(
+      durability.prune({ completedBefore: cutoff, limit: 2 })
+    ).resolves.toBe(1);
+    await expect(
+      durability.prune({ completedBefore: cutoff, limit: 2 })
+    ).resolves.toBe(0);
+
+    // The failed row stays until failedBefore selects it.
+    await expect(durability.boom.getResult('boom')).resolves.toMatchObject({
+      status: 'failed',
+    });
+    await expect(durability.prune({ failedBefore: cutoff })).resolves.toBe(1);
+    await expect(durability.boom.getResult('boom')).resolves.toEqual({
+      status: 'pruned',
+      outcome: 'failed',
+    });
+
+    // The still-pending row is never pruned.
+    await expect(durability.hang.getResult('hang')).resolves.toMatchObject({
+      status: 'pending',
+    });
+  });
+
+  it('purgeBefore clears tombstones so a pruned id can be reused', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10);
+    const storage = new FakeStorage();
+    let invocations = 0;
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async () => {
+          invocations += 1;
+          return `run-${invocations}`;
+        },
+      },
+    });
+
+    await durability.work({ id: 'reuse', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('reuse')).resolves.toMatchObject({
+        status: 'completed',
+      });
+    });
+
+    const cutoff = Date.now() + 1;
+    vi.setSystemTime(cutoff);
+    await expect(durability.prune({ completedBefore: cutoff })).resolves.toBe(
+      1
+    );
+    await expect(durability.work.getResult('reuse')).resolves.toEqual({
+      status: 'pruned',
+      outcome: 'completed',
+    });
+
+    // The call row is already gone, so the count is the tombstone it removes.
+    await expect(durability.purgeBefore(cutoff)).resolves.toBe(1);
+    await expect(durability.work.getResult('reuse')).resolves.toEqual({
+      status: 'not_found',
+    });
+
+    // With the tombstone gone the id is free to run as new work.
+    await durability.work({ id: 'reuse', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('reuse')).resolves.toEqual({
+        status: 'completed',
+        result: 'run-2',
+      });
+    });
+    expect(invocations).toBe(2);
+  });
+
   it('emits compact lifecycle events and isolates hook failures', async () => {
     const storage = new FakeStorage();
     const events: DurabilityLifecycleEvent[] = [];
@@ -1874,9 +2083,9 @@ describe('operation cancellation', () => {
     });
   });
 
-  it('includes cancelled in the result union', () => {
+  it('includes cancelled and pruned in the result union', () => {
     expectTypeOf<DurableOperationResult<string>['status']>().toEqualTypeOf<
-      'not_found' | 'pending' | 'failed' | 'completed' | 'cancelled'
+      'not_found' | 'pending' | 'failed' | 'completed' | 'cancelled' | 'pruned'
     >();
   });
 });

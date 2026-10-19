@@ -1,0 +1,7 @@
+---
+'durability': minor
+---
+
+Add `Durability.prune`, a dedup-preserving retention policy. It rewrites terminal operation records into small identity tombstones, discarding the payload, result, and error in bounded batches while keeping deduplication intact: a reused ID never reruns, `getResult` reports it as `{ status: 'pruned', outcome }`, and reusing it under another operation still throws `DuplicateDurableCallError`. Records are matched by creation time with separate `completedBefore`/`failedBefore` cutoffs, so failed work can be retained longer than completed work. `purgeBefore` now also deletes tombstones created before its cutoff, so it stays the single destructive path that frees an ID for reuse and the only way to shrink the tombstone table. Retention stays opt-in and manual — existing consumers keep records indefinitely unless they call `prune` (dedup-preserving) or `purgeBefore` (destructive). A new `durability_0015_create_call_tombstones` migration applies automatically and is reversible.
+
+This is `minor` rather than `major`, but note the one source-compatibility caveat: the new `pruned` member on the `DurableOperationResult` union can make a previously exhaustive `switch` on `status` (or an `assertNever`-style default) stop type-checking in consumers. Runtime behavior of existing branches is unchanged, and the state only appears after a consumer opts into `prune`, so this is judged acceptable for a minor.

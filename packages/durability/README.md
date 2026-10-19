@@ -67,7 +67,7 @@ export class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-Every handler becomes a method on the instance. Handler names that collide with instance members (`alarm`, `purgeBefore`) are rejected at construction.
+Every handler becomes a method on the instance. Handler names that collide with instance members (`alarm`, `purgeBefore`, `prune`) are rejected at construction.
 
 ### Reading results
 
@@ -89,10 +89,15 @@ switch (result.status) {
   case 'cancelled':
     console.log(result.cancelledAt, result.reason, result.outcomeMayBeUnknown);
     break;
+  case 'pruned':
+    console.log('retained only as a tombstone', result.outcome);
+    break;
 }
 ```
 
-The completed result type is inferred from the handler. Looking up a key that belongs to another operation throws `DuplicateDurableCallError`. Payloads and results must be JSON-serializable; as with `JSON.stringify`, `undefined` properties are dropped and `undefined` array elements become `null`.
+A `pruned` result means the payload, result, and error were discarded by
+[bounded pruning](#bounded-pruning-and-tombstones) but the ID is still
+deduplicated; `outcome` records whether it had completed or failed. The completed result type is inferred from the handler. Looking up a key that belongs to another operation throws `DuplicateDurableCallError`. Payloads and results must be JSON-serializable; as with `JSON.stringify`, `undefined` properties are dropped and `undefined` array elements become `null`.
 
 These failures are deterministic, so they are terminal rather than retried. A stored payload that cannot be decoded (for example after data corruption) fails with `DurablePayloadDecodeError` before the handler runs, so it never consumes the retry budget. A handler that returns a non-serializable result fails with `DurableResultSerializationError` after running; because the handler's side effect may already have committed, that failed result sets `outcomeMayBeUnknown: true` so operators know the external outcome is unverified before replaying.
 
@@ -369,11 +374,35 @@ Work is delivered at least once. A process can stop after a side effect succeeds
 
 `alarmConcurrency` defaults to 10 and is one FIFO limit shared by eager operation handlers, timer-driven work, and physical-alarm work attached to the same scheduler. Newly registered operations start eagerly only when a permit is immediately available. Work due before the physical-alarm minimum enters the same queue when its in-memory timer fires.
 
-Completion records are retained indefinitely so IDs remain deduplicated. The scheduler owns the Durable Object's alarm; compose unrelated scheduled work as named alarms instead of replacing the physical alarm.
+Completion records are retained indefinitely so IDs remain deduplicated. Retention is never automatic: nothing is discarded unless the application calls `prune` or `purgeBefore`. The scheduler owns the Durable Object's alarm; compose unrelated scheduled work as named alarms instead of replacing the physical alarm.
+
+Storage therefore grows with lifetime call volume and with the size of each retained payload and result. The two sections below bound it in two different ways: pruning keeps deduplication, purging does not.
+
+## Bounded pruning and tombstones
+
+`prune` discards the bulky parts of terminal operation records — payload, result, and error — while keeping a small identity tombstone, so storage shrinks without weakening deduplication. A pruned ID never reruns, `getResult` reports it as `{ status: 'pruned', outcome }`, and reusing it under another operation still throws `DuplicateDurableCallError`.
+
+```ts
+const limit = 100;
+let pruned: number;
+do {
+  pruned = await this.durability.prune({
+    completedBefore: Date.now() - thirtyDays,
+    failedBefore: Date.now() - ninetyDays,
+    limit,
+  });
+} while (pruned === limit);
+```
+
+Records are matched by creation time (`created_at`), like `purgeBefore`, so failed work can be retained longer than completed work for incident analysis. Omit a cutoff to leave that status untouched. Pending records are never pruned. Cancelled records are not pruned either; they are retained until `purgeBefore` removes them. Each call rewrites at most `limit` records (default 100) in one transaction and returns how many it moved; loop until the count is below the limit to drain a backlog in bounded batches. Pruning runs in the same storage as registration, so a reused ID cannot slip through a window and execute twice.
+
+Pruning is deliberately an explicit call rather than an automatic alarm pass: no capability schedules work the application did not ask for. Compose a `DurabilityAlarms` handler when a schedule is wanted.
+
+Tombstones themselves grow without bound while forever-deduplication is desired, but each is far smaller than the record it replaces. Because a tombstone can outlive the business entity that produced it, scope idempotency keys to the work rather than reusing a bare entity ID (for example `resize:<imageId>:<version>`), so a new generation of the entity is not silently deduplicated against an old tombstone. The experimental tracker and its `list`/`get` report a pruned record as `not_found`, because their cross-source state has no pruned variant; the operation's own `getResult` reports `pruned`.
 
 ## Destructive retention purge
 
-`purgeBefore(timestamp)` on either helper deletes that helper's records created strictly before `timestamp`, regardless of status, and returns the count. Records created exactly at the cutoff are retained.
+`purgeBefore(timestamp)` on either helper deletes that helper's records created strictly before `timestamp`, regardless of status, and returns the count. Records created exactly at the cutoff are retained. On a `Durability` helper it also deletes tombstones created before the cutoff, so it stays the single path that fully frees an ID for reuse and the only way to shrink the tombstone table; the returned count includes those tombstones. Unlike `prune`, it leaves nothing behind, so a purged ID can run again and duplicate an external effect; use it only when immediate ID reuse is acceptable.
 
 ```ts
 const removedOperations = await this.durability.purgeBefore(retentionCutoff);
@@ -618,7 +647,7 @@ export class ImageJobs extends DurableObject<Env> {
 
 All three methods take the same query: `{ source, name, status, limit, cursor }`. `limit` defaults to 50 and is capped at 100. Pass `cursor` back with the same query to continue; it is present only while more records may follow. Sources are read one after another, so there is no ordering across sources.
 
-- `list(query)` returns `{ items, cursor }`. Each item has `source`, `id`, `name`, `generation`, `createdAt`, and a summarized `state`, plus `get()`, which reads the latest state, and `wait({ timeoutMs })`, which resolves once the record is `completed` or `failed`, or returns the latest state after the timeout without polling storage. Both return `not_found` once the record is purged or its ID is reused for new work.
+- `list(query)` returns `{ items, cursor }`. Each item has `source`, `id`, `name`, `generation`, `createdAt`, and a summarized `state`, plus `get()`, which reads the latest state, and `wait({ timeoutMs })`, which resolves once the record is `completed` or `failed`, or returns the latest state after the timeout without polling storage. Both return `not_found` once the record is purged or its ID is reused for new work. A [pruned](#bounded-pruning-and-tombstones) record is also reported as `not_found` here and drops out of listings, because the cross-source `state` has no pruned variant; read the operation's own `getResult` to see `pruned`.
 - `get(source, id)` returns one such handle, or `undefined`.
 - `records(query)` returns `{ records, cursor }` with the same data and no functions.
 

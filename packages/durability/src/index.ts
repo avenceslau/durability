@@ -11,6 +11,7 @@ export {
   type DurableOperationResult,
   type DurableReplayOptions,
   type DurableReplayResult,
+  type DurabilityPruneOptions,
   type DurabilityOperationEvent,
   type HandlerMap,
   type TerminalClassification,

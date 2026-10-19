@@ -182,6 +182,28 @@ export const durabilityOperationMigrations = [
       ALTER TABLE durability_calls DROP COLUMN retry_cycle;
     `,
   },
+  {
+    name: 'durability_0015_create_call_tombstones',
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_call_tombstones (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'failed')),
+        created_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        pruned_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS durability_call_tombstones_created_idx
+      ON durability_call_tombstones (created_at);
+      CREATE INDEX IF NOT EXISTS durability_call_tombstones_pruned_idx
+      ON durability_call_tombstones (pruned_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_call_tombstones_created_idx;
+      DROP INDEX IF EXISTS durability_call_tombstones_pruned_idx;
+      DROP TABLE IF EXISTS durability_call_tombstones;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**

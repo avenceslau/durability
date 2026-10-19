@@ -29,6 +29,10 @@
         "name": "SHARD_TEST",
         "class_name": "JobShard",
       },
+      {
+        "name": "OPERATIONS_TEST",
+        "class_name": "OperationsTestObject",
+      },
     ],
   },
   "services": [
@@ -86,6 +90,10 @@
     {
       "tag": "v9",
       "new_sqlite_classes": ["TopologyCoordinator", "TopologyShard"],
+    },
+    {
+      "tag": "v10",
+      "new_sqlite_classes": ["OperationsTestObject"],
     },
   ],
 }

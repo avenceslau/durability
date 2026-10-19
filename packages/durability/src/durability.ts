@@ -126,13 +126,55 @@ const resolveCompatibility = (
 
 type CallRow = z.infer<typeof callRowSchema>;
 
+const tombstoneRowSchema = z.object({
+  id: z.string(),
+  operation: z.string(),
+  outcome: z.enum(['completed', 'failed']),
+  created_at: z.number().int().nonnegative(),
+  completed_at: z.number().int().nonnegative().nullable(),
+  pruned_at: z.number().int().nonnegative(),
+});
+
+type TombstoneRow = z.infer<typeof tombstoneRowSchema>;
+
 const callsTable: DurableTable = { name: 'durability_calls', key: 'id' };
+
+const countRowSchema = z.object({ count: z.number().int().nonnegative() });
+
+const prunePolicySchema = z.object({
+  completedBefore: z.number().int().nonnegative().optional(),
+  failedBefore: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().default(100),
+});
+
+/**
+ * Selects which terminal records {@link Durability.prune} rewrites into identity
+ * tombstones. Records are matched by creation time (`created_at`), like
+ * {@link Durability.purgeBefore}; omit a cutoff to keep that status untouched.
+ */
+export type DurabilityPruneOptions = {
+  /** Prune completed records created strictly before this Unix timestamp (ms). */
+  completedBefore?: number;
+  /** Prune failed records created strictly before this Unix timestamp (ms). */
+  failedBefore?: number;
+  /** Maximum records rewritten in one call. Defaults to 100. */
+  limit?: number;
+};
 
 const readCall = (sql: SqlStorage, id: string): CallRow | undefined =>
   callRowSchema
     .optional()
     .parse(
       sql.exec('SELECT * FROM durability_calls WHERE id = ?', id).toArray()[0]
+    );
+
+const readTombstone = (sql: SqlStorage, id: string): TombstoneRow | undefined =>
+  tombstoneRowSchema
+    .optional()
+    .parse(
+      sql
+        .exec('SELECT * FROM durability_call_tombstones WHERE id = ?', id)
+        .toArray()[0]
     );
 
 /**
@@ -257,6 +299,15 @@ export type DurableOperationResult<Result> =
        * no external effect occurred.
        */
       outcomeMayBeUnknown: boolean;
+    }
+  | {
+      /**
+       * The payload, result, and error were pruned, but an identity tombstone
+       * still deduplicates the ID and records how the operation ended.
+       */
+      status: 'pruned';
+      /** Whether the pruned operation had completed or failed. */
+      outcome: 'completed' | 'failed';
     };
 
 /**
@@ -501,9 +552,42 @@ const assertOperation = (
   }
 };
 
+/**
+ * The operation that owns `id`, resolved from either its live row or its pruned
+ * tombstone. A pruned record keeps its operation binding, so ownership is one
+ * rule across both states.
+ */
+type OwnedCall =
+  | { kind: 'live'; call: CallRow }
+  | { kind: 'pruned'; outcome: TombstoneRow['outcome'] }
+  | { kind: 'absent' };
+
+// Asserts the operation binding for `id` against a live row or, once pruned, its
+// tombstone, so a wrong-operation reuse always throws instead of being accepted.
+const resolveOwnedCall = (
+  sql: SqlStorage,
+  id: string,
+  operation: string
+): OwnedCall => {
+  const call = readCall(sql, id);
+  if (call) {
+    assertOperation(id, call.operation, operation);
+    return { kind: 'live', call };
+  }
+  const tombstone = readTombstone(sql, id);
+  if (tombstone) {
+    assertOperation(id, tombstone.operation, operation);
+    return { kind: 'pruned', outcome: tombstone.outcome };
+  }
+  return { kind: 'absent' };
+};
+
 const callState = (
   call: CallRow
-): Exclude<DurableOperationResult<unknown>, { status: 'not_found' }> => {
+): Exclude<
+  DurableOperationResult<unknown>,
+  { status: 'not_found' | 'pruned' }
+> => {
   if (call.status === 'pending') {
     return {
       status: 'pending',
@@ -709,12 +793,32 @@ class DurabilityCore<Handlers extends HandlerMap> {
    * timestamp, regardless of status, and returns how many were removed.
    */
   async purgeBefore(before: number): Promise<number> {
-    const count = await this.#engine.purge(
+    const operations = await this.#engine.purge(
       callsTable,
       before,
       this.#active,
       'Durable operation was purged'
     );
+    // Tombstones live in a separate table the engine purge never sees; deleting
+    // them here keeps purgeBefore the one path that fully frees an ID for reuse.
+    const tombstones = await this.#engine.transaction((sql) => {
+      const { count } = countRowSchema.parse(
+        sql
+          .exec(
+            `SELECT COUNT(*) AS count FROM durability_call_tombstones
+             WHERE created_at < ?`,
+            before
+          )
+          .toArray()[0]
+      );
+      sql.exec(
+        'DELETE FROM durability_call_tombstones WHERE created_at < ?',
+        before
+      );
+      return count;
+    });
+
+    const count = operations + tombstones;
     this.#emit({
       type: 'purged',
       entityKind: 'operation',
@@ -723,6 +827,76 @@ class DurabilityCore<Handlers extends HandlerMap> {
       count,
     });
     return count;
+  }
+
+  /**
+   * Rewrites terminal operation records into identity tombstones, dropping the
+   * payload, result, and error while keeping deduplication intact: a reused ID
+   * never reruns and `getResult` reports it as `pruned`. Reusing the ID under a
+   * different operation still throws {@link DuplicateDurableCallError}.
+   *
+   * Prunes at most `limit` records (default 100) per call, oldest first, so
+   * large backlogs are cleared by looping until the returned count is below the
+   * limit. Pending records are never pruned.
+   */
+  async prune(options: DurabilityPruneOptions): Promise<number> {
+    const { completedBefore, failedBefore, limit } =
+      prunePolicySchema.parse(options);
+    if (completedBefore === undefined && failedBefore === undefined) {
+      return 0;
+    }
+
+    const prunedAt = Date.now();
+    const ids = await this.#engine.transaction((sql) => {
+      // Move and delete with a fixed number of bound parameters, never one per
+      // row: SQLite in a Durable Object caps a statement at 100 parameters, so
+      // an id list would fail at the default limit. The copy stamps this batch
+      // with prunedAt; the delete then removes exactly the rows it just wrote.
+      const moved = z
+        .object({ id: z.string() })
+        .array()
+        .parse(
+          sql
+            .exec(
+              `INSERT INTO durability_call_tombstones
+                 (id, operation, outcome, created_at, completed_at, pruned_at)
+               SELECT id, operation, status, created_at, completed_at, ?
+               FROM durability_calls
+               WHERE (status = 'completed' AND ? IS NOT NULL AND created_at < ?)
+                  OR (status = 'failed' AND ? IS NOT NULL AND created_at < ?)
+               ORDER BY created_at ASC, id ASC
+               LIMIT ?
+               RETURNING id`,
+              prunedAt,
+              completedBefore ?? null,
+              completedBefore ?? null,
+              failedBefore ?? null,
+              failedBefore ?? null,
+              limit
+            )
+            .toArray()
+        )
+        .map(({ id }) => id);
+      if (moved.length === 0) {
+        return [];
+      }
+
+      // A tombstone never coexists with a live call row for the same id, so the
+      // only call rows matching this batch's tombstones are the ones just moved.
+      sql.exec(
+        `DELETE FROM durability_calls
+         WHERE id IN (
+           SELECT id FROM durability_call_tombstones WHERE pruned_at = ?
+         )`,
+        prunedAt
+      );
+      return moved;
+    });
+
+    for (const id of ids) {
+      this.#engine.notify(callsTable, id);
+    }
+    return ids.length;
   }
 
   #trackedSource(): UntypedSource {
@@ -777,12 +951,14 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string,
     idempotencyKey: string
   ): Promise<DurableOperationResult<unknown>> {
-    const call = readCall(this.#engine.sql, idempotencyKey);
-    if (!call) {
-      return { status: 'not_found' };
+    const owned = resolveOwnedCall(this.#engine.sql, idempotencyKey, operation);
+    if (owned.kind === 'live') {
+      return callState(owned.call);
     }
-    assertOperation(idempotencyKey, call.operation, operation);
-    return callState(call);
+    if (owned.kind === 'pruned') {
+      return { status: 'pruned', outcome: owned.outcome };
+    }
+    return { status: 'not_found' };
   }
 
   async #cancel(
@@ -797,11 +973,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
     // UPDATE, and on every attempt write, makes the two mutually exclusive.
     const transition = await this.#engine.transaction(
       (sql): CancelTransition => {
-        const call = readCall(sql, idempotencyKey);
-        if (!call) {
+        const owned = resolveOwnedCall(sql, idempotencyKey, operation);
+        if (owned.kind !== 'live') {
           return { outcome: { status: 'not_found' } };
         }
-        assertOperation(idempotencyKey, call.operation, operation);
+        const call = owned.call;
         if (call.status === 'cancelled') {
           return { outcome: { status: 'already_cancelled' } };
         }
@@ -863,6 +1039,13 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const now = Date.now();
     const generation = crypto.randomUUID();
     const { inserted, winner } = await this.#engine.transaction((sql) => {
+      // A pruned ID keeps only an identity tombstone: dedup the same operation
+      // and reject a different one, without recreating a live row.
+      const tombstone = readTombstone(sql, input.id);
+      if (tombstone) {
+        assertOperation(input.id, tombstone.operation, input.operation);
+        return { inserted: false, winner: undefined };
+      }
       const created =
         sql
           .exec(
@@ -893,7 +1076,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       }
       return { inserted: created, winner: current };
     });
-    if (!inserted) {
+    if (!inserted || !winner) {
       return;
     }
 
@@ -924,11 +1107,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
     const outcome = await this.#engine.transaction(
       (sql): DurableReplayResult => {
-        const call = readCall(sql, id);
-        if (!call) {
+        const owned = resolveOwnedCall(sql, id, operation);
+        if (owned.kind !== 'live') {
           return { status: 'not_found' };
         }
-        assertOperation(id, call.operation, operation);
+        const call = owned.call;
         if (call.status !== 'failed') {
           return { status: 'not_failed', current: call.status };
         }
