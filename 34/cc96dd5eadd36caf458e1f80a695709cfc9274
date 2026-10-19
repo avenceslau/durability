@@ -1,0 +1,74 @@
+packages/durability/src/migrations.ts
+  s_89dff2fd3753ec::t_ebffa5c88bfeb6 94-103
+packages/durability/src/index.test.ts
+  s_cc1c5a6bd7921e::t_7783cbbb42388b 46,66,162-165,223-226,276,760-1062
+packages/durability/src/durability.ts
+  s_cc1c5a6bd7921e::t_cbf0fcd867bc87 8,13,28,34,64,67-106,349,364,521,530-531,539-540,609-614,629-746
+packages/durability/src/policy.ts
+  s_f96639b30e27c8::t_8781d4711b72e8 28-30,37-46
+packages/durability/src/errors.ts
+  s_09ff76da01d4bc::t_e781a333b30b5a 96-113
+packages/durability/README.md
+  s_cc1c5a6bd7921e::t_1bcbf9dd034528 229-274
+.changeset/payload-versions.md
+  s_7287f08f532739::t_0007f616887c6d 1-7
+  s_7b4fd204e849d6::t_0c6dcc6ad10e14 8-9
+packages/durability/src/index.ts
+  s_f96639b30e27c8::t_3480f6b5720769 67,93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "34cc96dd5eadd36caf458e1f80a695709cfc9274",
+  "prompts": {},
+  "sessions": {
+    "s_09ff76da01d4bc": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-896a-7047-94e6-beaa9319119c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_7287f08f532739": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8958-7047-94e6-bea88c865e4d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_7b4fd204e849d6": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151c6-9e82-7047-94e6-beb85ed58cb5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_cc1c5a6bd7921e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8945-7047-94e6-bea70bb805be",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f96639b30e27c8": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a13576-8ece-720a-a5c8-6657b701d885",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
