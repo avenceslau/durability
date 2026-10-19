@@ -1,0 +1,65 @@
+packages/durability/src/errors.ts
+  s_ac3394297cebb2::t_892cb68fd36efb 69-84
+packages/durability/src/durability.ts
+  s_ac3394297cebb2::t_38ec9c72c499f4 22,41-45,103-104,360,373,379-380,624-628
+packages/durability/README.md
+  s_ac3394297cebb2::t_189be9c5601b84 304-313
+  s_ac3394297cebb2::t_4ad43254f20b83 17,170-197,208
+packages/durability/src/index.ts
+  s_ac3394297cebb2::t_3f8bcd6f328a42 23,70,87
+packages/durability/src/scheduler.ts
+  s_ac3394297cebb2::t_09e02980d5a29b 660
+  s_6276d7440d2ea0::t_a42053f7221396 661-667
+  s_ac3394297cebb2::t_6a5285192c8287 18,407,703-704,711-716,741-742,751-756
+packages/durability/src/dev.test.ts
+  s_ac3394297cebb2::t_8b26723bba681a 104-148
+  s_ac3394297cebb2::t_1245d2bd564466 2,6-11
+packages/durability/src/storage.ts
+  s_ac3394297cebb2::t_35820a488974fe 25
+packages/durability/src/index.test.ts
+  s_ac3394297cebb2::t_bf0bc8eb4989c7 219,1411
+  s_ac3394297cebb2::t_ca3e70d196faea 99,112
+packages/durability/src/migrations.ts
+  s_ac3394297cebb2::t_d6ba399a7f3439 175-195,598
+  s_4b72101621f039::t_9067d2ba80192a 174
+packages/durability/src/durability-alarms.ts
+  s_ac3394297cebb2::t_09ff2571803815 18,36-41,81-82,207,220,226-227,362-363,423-427
+.changeset/durable-memoize.md
+  s_ac3394297cebb2::t_7f9e3dcafb209c 1-5
+packages/durability/src/memoize.test.ts
+  s_ac3394297cebb2::t_0618b7b0e6b902 1-476
+packages/durability/src/memoize.ts
+  s_ac3394297cebb2::t_a73c754e657bb2 1-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a95e1b5e38f2cbd097398d6424310c434a53eca6",
+  "prompts": {},
+  "sessions": {
+    "s_4b72101621f039": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0aaaa-d999-73e5-8517-a74e1be3894d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_6276d7440d2ea0": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a149e4-3cc9-7617-baca-1649e9e99808",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_ac3394297cebb2": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a153f2-c7b2-7437-af27-69bcb51b176c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
