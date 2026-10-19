@@ -18,7 +18,11 @@ import {
 } from './lifecycle.js';
 import { RoutingLoad, type EnqueueResult, type LoadSnapshot } from './load.js';
 import type { MessageWrite, StoredMessage } from './stored-message.js';
-import { durabilityFanoutMigrations, migrate } from './migrations.js';
+import {
+  durabilityFanoutMigrations,
+  migrate,
+  type MigrateOptions,
+} from './migrations.js';
 import {
   assertPositiveInteger,
   createPolicyResolver,
@@ -252,13 +256,15 @@ export class DurabilityFanout<Body = unknown> {
 
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
+    target?: string | null,
+    options?: MigrateOptions
   ) {
     return migrate(
       context.storage,
       'fanout',
       durabilityFanoutMigrations,
-      target
+      target,
+      options
     );
   }
 

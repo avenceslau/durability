@@ -153,6 +153,38 @@ export class DuplicateDurablePayloadError extends Error {
 }
 
 /**
+ * Thrown when a migration call would roll back a migration (running its `down`
+ * script and dropping stored data) without an explicit acknowledgement.
+ *
+ * Rollbacks are destructive. Pass `{ allowDataLoss: true }` to confirm you
+ * accept losing the data the reverted migrations own.
+ */
+export class DurableMigrationDataLossError extends Error {
+  constructor(capability: string, migrations: string[]) {
+    super(
+      `Rolling back durability ${capability} migrations (${migrations.join(', ')}) drops stored data; pass { allowDataLoss: true } to confirm`
+    );
+    this.name = 'DurableMigrationDataLossError';
+  }
+}
+
+/**
+ * Thrown when a destructive rollback is refused because pending work would be
+ * destroyed.
+ *
+ * Drain or cancel the work first, or pass `{ force: true }` to proceed and
+ * accept that external outcomes of the pending work may be left unresolved.
+ */
+export class DurableMigrationPendingWorkError extends Error {
+  constructor(capability: string, pending: number) {
+    super(
+      `Refusing to roll back durability ${capability}: ${pending} pending item(s) would be destroyed; drain or cancel them, or pass { force: true }`
+    );
+    this.name = 'DurableMigrationPendingWorkError';
+  }
+}
+
+/**
  * Error thrown when a fanout delivery is settled twice.
  *
  * The first `ack`, `retry`, or `deadLetter` call is binding. A second call on

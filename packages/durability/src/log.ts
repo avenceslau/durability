@@ -12,6 +12,7 @@ import {
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
   migrate,
+  type MigrateOptions,
 } from './migrations.js';
 import { assertPositiveInteger } from './policy.js';
 import {
@@ -653,9 +654,16 @@ export class DurabilityLog<Body = unknown> {
 
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
+    target?: string | null,
+    options?: MigrateOptions
   ) {
-    return migrate(context.storage, 'log', durabilityLogMigrations, target);
+    return migrate(
+      context.storage,
+      'log',
+      durabilityLogMigrations,
+      target,
+      options
+    );
   }
 
   /**

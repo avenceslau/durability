@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { reportFailure, TopologyError } from './errors.js';
 import type { LifecycleHook } from './lifecycle.js';
-import { durabilityTopologyMigrations, migrate } from './migrations.js';
+import {
+  durabilityTopologyMigrations,
+  migrate,
+  type MigrateOptions,
+} from './migrations.js';
 import {
   DurabilityOutbox,
   discardWithin,
@@ -354,13 +358,15 @@ export class DurabilityTopology<
   /** Reverts only the topology tables; outbox channels migrate with `DurabilityOutbox.migrate`. */
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
+    target?: string | null,
+    options?: MigrateOptions
   ) {
     return migrate(
       context.storage,
       'topology',
       durabilityTopologyMigrations,
-      target
+      target,
+      options
     );
   }
 

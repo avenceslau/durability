@@ -5,6 +5,7 @@ import {
   durabilitySocketMigrations,
   migrate,
   type DurabilityMigrationResult,
+  type MigrateOptions,
 } from './migrations.js';
 import { deserialize, serialize } from './serialization.js';
 import {
@@ -187,13 +188,15 @@ class DurabilitySocketCore<
   /** Applies or reverts the `durability_socket_events` schema. */
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
+    target?: string | null,
+    options?: MigrateOptions
   ): DurabilityMigrationResult {
     return migrate(
       context.storage,
       'socket',
       durabilitySocketMigrations,
-      target
+      target,
+      options
     );
   }
 

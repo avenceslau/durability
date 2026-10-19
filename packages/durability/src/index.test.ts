@@ -37,11 +37,11 @@ const tableNames = (storage: FakeStorage): string[] =>
     .map(({ name }) => name);
 
 describe('migrations', () => {
-  it('migrates each capability up and down independently', () => {
+  it('migrates each capability up and down independently', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
 
-    expect(Durability.migrate(context)).toEqual({
+    expect(await Durability.migrate(context)).toEqual({
       applied: [
         'durability_0001_create_calls',
         'durability_0002_pending_index',
@@ -52,6 +52,7 @@ describe('migrations', () => {
         'durability_0015_create_call_tombstones',
       ],
       rolledBack: [],
+      reset: false,
     });
     expect(tableNames(storage)).toEqual([
       'durability_call_tombstones',
@@ -59,41 +60,51 @@ describe('migrations', () => {
       'durability_migrations',
     ]);
 
-    expect(DurabilityAlarms.migrate(context)).toEqual({
+    expect(await DurabilityAlarms.migrate(context)).toEqual({
       applied: [
         'durability_0003_create_alarms',
         'durability_0004_alarms_generation_and_created_at',
       ],
       rolledBack: [],
+      reset: false,
     });
-    expect(Durability.migrate(context, 'durability_0001_create_calls')).toEqual(
-      {
-        applied: [],
-        rolledBack: [
-          'durability_0015_create_call_tombstones',
-          'durability_0014_calls_retry_cycle',
-          'durability_0013_calls_payload_version',
-          'durability_0012_calls_cancelled_status',
-          'durability_0004_calls_generation_and_created_at',
-          'durability_0002_pending_index',
-        ],
-      }
-    );
-    expect(Durability.migrate(context, null)).toEqual({
+    expect(
+      await Durability.migrate(context, 'durability_0001_create_calls', {
+        allowDataLoss: true,
+      })
+    ).toEqual({
+      applied: [],
+      rolledBack: [
+        'durability_0015_create_call_tombstones',
+        'durability_0014_calls_retry_cycle',
+        'durability_0013_calls_payload_version',
+        'durability_0012_calls_cancelled_status',
+        'durability_0004_calls_generation_and_created_at',
+        'durability_0002_pending_index',
+      ],
+      reset: false,
+    });
+    expect(
+      await Durability.migrate(context, null, { allowDataLoss: true })
+    ).toEqual({
       applied: [],
       rolledBack: ['durability_0001_create_calls'],
+      reset: false,
     });
     expect(tableNames(storage)).toEqual([
       'durability_alarms',
       'durability_migrations',
     ]);
 
-    expect(DurabilityAlarms.migrate(context, null)).toEqual({
+    expect(
+      await DurabilityAlarms.migrate(context, null, { allowDataLoss: true })
+    ).toEqual({
       applied: [],
       rolledBack: [
         'durability_0004_alarms_generation_and_created_at',
         'durability_0003_create_alarms',
       ],
+      reset: true,
     });
     expect(tableNames(storage)).toEqual([]);
   });
@@ -125,17 +136,17 @@ describe('migrations', () => {
     ]);
   });
 
-  it('stamps legacy rows during migration and removes v4 columns on rollback', () => {
+  it('stamps legacy rows during migration and removes v4 columns on rollback', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
-    Durability.migrate(context, 'durability_0002_pending_index');
+    await Durability.migrate(context, 'durability_0002_pending_index');
     storage.sql.exec(
       `INSERT INTO durability_calls
         (id, operation, payload, status, attempt, next_attempt_at)
        VALUES ('legacy', 'work', '{"kind":"value","value":null}', 'pending', 0, 0)`
     );
 
-    Durability.migrate(context);
+    await Durability.migrate(context);
     const migrated = storage.sql
       .exec<{ created_at: number; generation_id: string }>(
         'SELECT created_at, generation_id FROM durability_calls WHERE id = ?',
@@ -145,7 +156,10 @@ describe('migrations', () => {
     expect(migrated?.created_at).toBeGreaterThan(0);
     expect(migrated?.generation_id).toBe('legacy:legacy');
 
-    Durability.migrate(context, 'durability_0002_pending_index');
+    await Durability.migrate(context, 'durability_0002_pending_index', {
+      allowDataLoss: true,
+      force: true,
+    });
     expect(
       storage.sql
         .exec<{ name: string }>('PRAGMA table_info(durability_calls)')
@@ -252,9 +266,10 @@ describe('migrations', () => {
         capability: 'operations',
       },
     ]);
-    expect(Durability.migrate(context)).toEqual({
+    expect(await Durability.migrate(context)).toEqual({
       applied: [],
       rolledBack: [],
+      reset: false,
     });
     await expect(durability.work.getResult('kept')).resolves.toMatchObject({
       status: 'pending',
@@ -262,11 +277,11 @@ describe('migrations', () => {
     });
   });
 
-  it('translates the combined v2 history without re-running migrations', () => {
+  it('translates the combined v2 history without re-running migrations', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
-    Durability.migrate(context);
-    DurabilityAlarms.migrate(context);
+    await Durability.migrate(context);
+    await DurabilityAlarms.migrate(context);
     storage.sql.exec(
       `DELETE FROM durability_migrations
        WHERE name IN (?, ?)`,
@@ -278,13 +293,15 @@ describe('migrations', () => {
       'durability_0004_generation_and_created_at'
     );
 
-    expect(Durability.migrate(context)).toEqual({
+    expect(await Durability.migrate(context)).toEqual({
       applied: [],
       rolledBack: [],
+      reset: false,
     });
-    expect(DurabilityAlarms.migrate(context)).toEqual({
+    expect(await DurabilityAlarms.migrate(context)).toEqual({
       applied: [],
       rolledBack: [],
+      reset: false,
     });
     expect(
       storage.sql
@@ -307,10 +324,10 @@ describe('migrations', () => {
     ]);
   });
 
-  it('reverts migrations recorded by a newer version on downgrade', () => {
+  it('reverts migrations recorded by a newer version on downgrade', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
-    Durability.migrate(context);
+    await Durability.migrate(context);
     storage.sql.exec('CREATE TABLE durability_future (id TEXT PRIMARY KEY)');
     storage.sql.exec(
       `INSERT INTO durability_migrations (name, capability, down)
@@ -319,9 +336,10 @@ describe('migrations', () => {
       'DROP TABLE durability_future;'
     );
 
-    expect(Durability.migrate(context)).toEqual({
+    expect(await Durability.migrate(context)).toEqual({
       applied: [],
       rolledBack: ['durability_0005_calls_future'],
+      reset: false,
     });
     expect(tableNames(storage)).not.toContain('durability_future');
     expect(
@@ -334,10 +352,10 @@ describe('migrations', () => {
     ).toBe('DROP INDEX IF EXISTS durability_calls_pending_idx;');
   });
 
-  it('refuses to unwind a schema more than two migrations ahead', () => {
+  it('refuses to unwind a schema more than two migrations ahead', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
-    Durability.migrate(context);
+    await Durability.migrate(context);
     for (const version of [5, 6, 7]) {
       storage.sql.exec(
         `INSERT INTO durability_migrations (name, capability, down)
@@ -346,7 +364,7 @@ describe('migrations', () => {
       );
     }
 
-    expect(() => Durability.migrate(context)).toThrow(
+    await expect(Durability.migrate(context)).rejects.toThrow(
       'refusing to revert more than 2'
     );
   });
@@ -1438,7 +1456,7 @@ describe('Durability', () => {
       handlers: { work: handler },
       retries: { maxAttempts: 3, delay: () => 0 },
     });
-    Durability.migrate(contextFor(storage));
+    await Durability.migrate(contextFor(storage));
     storage.sql.exec(
       `INSERT INTO durability_calls
         (id, operation, payload, status, attempt, next_attempt_at,

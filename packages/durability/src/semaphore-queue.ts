@@ -4,6 +4,7 @@ import {
   durabilitySemaphoreQueueMigrations,
   migrate,
   type DurabilityMigrationResult,
+  type MigrateOptions,
 } from './migrations.js';
 import { DurabilityOutbox, stageWithin, type OutboxEntry } from './outbox.js';
 import {
@@ -279,13 +280,15 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
 
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
+    target?: string | null,
+    options?: MigrateOptions
   ): DurabilityMigrationResult {
     return migrate(
       context.storage,
       'semaphoreQueue',
       durabilitySemaphoreQueueMigrations,
-      target
+      target,
+      options
     );
   }
 

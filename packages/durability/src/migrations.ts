@@ -1,6 +1,10 @@
 import type { DurableMigrations } from '@durability/storage';
 import { z } from 'zod';
 import { traceStorage } from './dev.js';
+import {
+  DurableMigrationDataLossError,
+  DurableMigrationPendingWorkError,
+} from './errors.js';
 
 export const migrationTableName = 'durability_migrations';
 
@@ -681,6 +685,34 @@ export type DurabilityMigrationResult = {
   applied: string[];
   /** Migrations reverted in descending order. */
   rolledBack: string[];
+  /**
+   * True when the call removed the last durability history row and dropped the
+   * shared `durability_migrations` table, so no durability schema remains.
+   */
+  reset: boolean;
+};
+
+/** Acknowledgements required for a destructive durability migration. */
+export type MigrateOptions = {
+  /**
+   * Required to run any `down` migration. Reverting a migration drops the data
+   * it owns, so rollbacks refuse to run until the caller acknowledges the loss.
+   */
+  allowDataLoss?: boolean;
+  /**
+   * Proceed even when pending work would be destroyed. The external outcomes of
+   * that work may be left unresolved.
+   */
+  force?: boolean;
+};
+
+/**
+ * Internal probe that counts logical work a destructive rollback would destroy,
+ * read inside the destructive transaction so nothing can slip in between the
+ * safety check and the DDL.
+ */
+type MigrateInternalOptions = MigrateOptions & {
+  pendingWork?: (sql: SqlStorage) => number;
 };
 
 export type MigrationCapability =
@@ -832,6 +864,11 @@ const revertFutureMigrations = (
  * needed. `null` reverts every migration in the list; the shared migration
  * table is dropped once no durability history remains.
  *
+ * Reverting a known migration is destructive and requires
+ * `{ allowDataLoss: true }`. A caller may also supply a `pendingWork` probe,
+ * read inside the destructive transaction, to refuse the rollback when pending
+ * work would be lost unless `{ force: true }` is set.
+ *
  * Each migration's `down` is stored alongside its history row so a later
  * downgrade of the library can still revert it. Batches of migrations apply or
  * revert atomically.
@@ -840,7 +877,8 @@ export const migrate = (
   storage: MigrationStorage,
   capability: MigrationCapability,
   migrations: DurableMigrations,
-  target: string | null | undefined
+  target: string | null | undefined,
+  options: MigrateInternalOptions = {}
 ): DurabilityMigrationResult => {
   storage = traceStorage(storage);
   const resolvedTarget =
@@ -882,7 +920,24 @@ export const migrate = (
     .slice(0, targetIndex + 1)
     .filter(({ name, down }) => applied.get(name)?.down !== down);
 
+  // Reverting known migrations runs their `down` scripts and drops their data;
+  // automatic downgrade reverts (handled above) are exempt because they are
+  // part of safely reading a database written by a newer version.
+  const destructive = toRevert.length > 0;
+  if (destructive && options.allowDataLoss !== true) {
+    throw new DurableMigrationDataLossError(
+      capability,
+      toRevert.map(({ name }) => name)
+    );
+  }
+
   storage.transactionSync(() => {
+    if (destructive && options.force !== true) {
+      const pending = options.pendingWork?.(storage.sql) ?? 0;
+      if (pending > 0) {
+        throw new DurableMigrationPendingWorkError(capability, pending);
+      }
+    }
     for (const migration of toRevert) {
       runDown(storage.sql, migration.name, migration.down);
     }
@@ -919,5 +974,6 @@ export const migrate = (
   return {
     applied: toApply.map(({ name }) => name),
     rolledBack: [...rolledBack, ...toRevert.map(({ name }) => name)],
+    reset: remaining === 0,
   };
 };

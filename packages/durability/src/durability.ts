@@ -25,6 +25,7 @@ import {
   durabilityOperationMigrations,
   migrate,
   type DurabilityMigrationResult,
+  type MigrateOptions,
 } from './migrations.js';
 import {
   assertPositiveInteger,
@@ -159,6 +160,26 @@ export type DurabilityPruneOptions = {
   failedBefore?: number;
   /** Maximum records rewritten in one call. Defaults to 100. */
   limit?: number;
+};
+
+/** Counts operations a reset would destroy; absent table means no pending work. */
+const countPendingOperations = (sql: SqlStorage): number => {
+  const exists = sql
+    .exec(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+      callsTable.name
+    )
+    .toArray();
+  if (exists.length === 0) {
+    return 0;
+  }
+  return countRowSchema.parse(
+    sql
+      .exec(
+        `SELECT COUNT(*) AS count FROM ${callsTable.name} WHERE status = 'pending'`
+      )
+      .toArray()[0]
+  ).count;
 };
 
 const readCall = (sql: SqlStorage, id: string): CallRow | undefined =>
@@ -760,17 +781,30 @@ class DurabilityCore<Handlers extends HandlerMap> {
     registerTrackedSource(this, this.#trackedSource());
   }
 
-  /** Applies or reverts the `durability_calls` schema; see {@link migrate}. */
-  static migrate(
+  /**
+   * Applies or reverts the `durability_calls` schema; see {@link migrate}.
+   *
+   * Forward migration is unchanged. A rollback is destructive: it requires
+   * `{ allowDataLoss: true }`, refuses to run while operations are pending
+   * unless `{ force: true }`, and a full reset deletes the library-owned
+   * physical alarm so it cannot later fire against the dropped tables.
+   */
+  static async migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
-  ): DurabilityMigrationResult {
-    return migrate(
+    target?: string | null,
+    options?: MigrateOptions
+  ): Promise<DurabilityMigrationResult> {
+    const result = migrate(
       context.storage,
       'operations',
       durabilityOperationMigrations,
-      target
+      target,
+      { ...options, pendingWork: countPendingOperations }
     );
+    if (result.reset) {
+      await context.storage.deleteAlarm();
+    }
+    return result;
   }
 
   /** Processes due operations and re-arms the physical alarm. */

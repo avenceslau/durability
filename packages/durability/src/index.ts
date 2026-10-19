@@ -71,6 +71,8 @@ export {
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
   DurableCancellationError,
+  DurableMigrationDataLossError,
+  DurableMigrationPendingWorkError,
   DurablePayloadCompatibilityError,
   DurablePayloadDecodeError,
   DurableResultSerializationError,
@@ -92,6 +94,7 @@ export {
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
   type DurabilityMigrationResult,
+  type MigrateOptions,
   type MigrationCapability,
 } from './migrations.js';
 export type {

@@ -229,19 +229,70 @@ Durability stores its records in the object's SQLite database. Configure the Dur
 
 ### Explicit migrations
 
-Rollbacks are explicit because reverting the initial migration deletes records:
+Forward migration is automatic: constructing a helper applies its migrations to
+the latest version. `Durability.migrate(ctx)` (no target) does the same by hand.
+Moving forward is safe and needs no acknowledgement:
+
+```ts
+import { Durability } from 'durability';
+
+await Durability.migrate(this.ctx, 'durability_0002_pending_index');
+```
+
+Passing a name moves that capability's schema to exactly that version. The
+history changes apply in one synchronous transaction, so a failure leaves the
+schema untouched. `migrate` is async because a full reset reconciles the
+Durable Object's physical alarm after the schema transaction commits.
+
+Every history row stores its migration's `down` script. If a Durable Object
+later runs an older `durability` version, that version reverts the migrations it
+does not recognize using the stored scripts, so downgrades are safe without code
+changes. To guard against deploying a very old version by mistake, at most two
+unknown migrations are reverted; beyond that, construction throws. The
+`durability_migrations` table is dropped once no durability history remains.
+
+### Rolling back and resetting (destructive)
+
+Reverting a migration runs its `down` script and **drops the data it owns**.
+Moving a capability's target backward, or to `null` to remove its schema
+entirely, is destructive and guarded:
+
+- A rollback refuses to run unless you pass `{ allowDataLoss: true }`, which
+  throws `DurableMigrationDataLossError` otherwise.
+- It then refuses while pending work (pending operations, or pending/failed
+  named alarms) would be destroyed, throwing `DurableMigrationPendingWorkError`
+  with the count. Pass `{ force: true }` to proceed anyway — the external
+  outcomes of that pending work may be left unresolved.
+- A full reset deletes the library-owned physical alarm as part of the reset,
+  so it cannot later fire against the dropped tables. Durability owns the
+  physical alarm exclusively, so reset every capability on the object together.
+
+Schema rollback is not application-code rollback: an older build may be unable
+to process payloads written by a newer one even when the tables still exist.
+There is no built-in export, so rehearse resets against a copied/staging Durable
+Object where possible.
+
+Operator runbook for a deliberate reset:
 
 ```ts
 import { Durability, DurabilityAlarms } from 'durability';
 
-Durability.migrate(this.ctx, 'durability_0001_create_calls');
-Durability.migrate(this.ctx, null); // remove the operations schema entirely
-DurabilityAlarms.migrate(this.ctx, null); // remove the named alarm schema
+// 1. Plan: read current state before touching anything.
+const pending = this.ctx.storage.sql
+  .exec(
+    "SELECT COUNT(*) AS count FROM durability_calls WHERE status = 'pending'"
+  )
+  .toArray()[0];
+
+// 2. Drain or cancel: let pending work settle, or cancel it explicitly.
+// 3. Verify: confirm no pending work remains (the guards enforce this).
+// 4. Reset: acknowledge the data loss. Reset every capability together.
+await Durability.migrate(this.ctx, null, { allowDataLoss: true });
+await DurabilityAlarms.migrate(this.ctx, null, { allowDataLoss: true });
 ```
 
-Passing a name moves that capability's schema to exactly that version. Each batch of migrations applies or reverts in one synchronous transaction, so a failure leaves the schema untouched.
-
-Every history row stores its migration's `down` script. If a Durable Object later runs an older `durability` version, that version reverts the migrations it does not recognize using the stored scripts, so downgrades are safe without code changes. To guard against deploying a very old version by mistake, at most two unknown migrations are reverted; beyond that, construction throws. The `durability_migrations` table is dropped once no durability history remains.
+For an emergency reset that cannot wait for a clean drain, add `{ force: true }`
+and treat any in-flight external effects as unknown rather than resolved.
 
 ## Retries, timeouts, and terminal failures
 
@@ -768,7 +819,7 @@ const grant = await limits.with(timeout, 5_000).request(accountId, {
 - **Limits are live.** `limit` and `groupLimit` are resolved once per round. Lowering a limit never evicts running work; it stops new admissions until usage is below the new ceiling.
 - **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`.
 
-`usage()` reports the limit, outstanding permits, lease footprint, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
+`usage()` reports the limit, outstanding permits, lease footprint, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null, { allowDataLoss: true })` removes the schema.
 
 ### Leases
 
@@ -855,7 +906,7 @@ export class JobShard extends DurableObject<Env> {
 - **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
 - **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
 
-`DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema. See the typechecked [account concurrency composition](../../examples/account-concurrency).
+`DurabilitySemaphoreQueue.migrate(this.ctx, null, { allowDataLoss: true })` removes the queue schema. See the typechecked [account concurrency composition](../../examples/account-concurrency).
 
 ## Routing and fanout
 
@@ -1075,7 +1126,7 @@ export class Account extends DurableObject<Env> {
 - **Channels.** Several outboxes share one scheduler and one set of tables, partitioned by `channel` (default `default`); each owns its own `publish`, and the same key in different channels is independent. Attaching two outboxes with the same channel to one scheduler throws. Entries of a channel no outbox attaches are retained and postponed, as fanout does for a removed target.
 - **Batching.** `maxBatchSize` (default 50) bounds one `publish` call. `batchDelayMs` rounds first publication up to the next multiple of the delay, so stages within one window coalesce into a batch; a stage landing exactly on a boundary is due immediately.
 
-`DurabilityOutbox.migrate(this.ctx, null)` removes the outbox schema.
+`DurabilityOutbox.migrate(this.ctx, null, { allowDataLoss: true })` removes the outbox schema.
 
 ## Shard topology (experimental)
 

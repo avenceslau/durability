@@ -15,6 +15,7 @@ import {
   durabilityOutboxMigrations,
   migrate,
   type DurabilityMigrationResult,
+  type MigrateOptions,
 } from './migrations.js';
 import {
   assertPositiveInteger,
@@ -303,13 +304,15 @@ export class DurabilityOutbox<Value = unknown> {
 
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
+    target?: string | null,
+    options?: MigrateOptions
   ): DurabilityMigrationResult {
     return migrate(
       context.storage,
       'outbox',
       durabilityOutboxMigrations,
-      target
+      target,
+      options
     );
   }
 

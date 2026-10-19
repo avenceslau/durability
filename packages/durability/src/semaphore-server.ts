@@ -4,6 +4,7 @@ import {
   durabilitySemaphoreMigrations,
   migrate,
   type DurabilityMigrationResult,
+  type MigrateOptions,
 } from './migrations.js';
 import { assertPositiveInteger } from './policy.js';
 import {
@@ -238,13 +239,15 @@ export class DurabilitySemaphoreServer {
 
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
-    target?: string | null
+    target?: string | null,
+    options?: MigrateOptions
   ): DurabilityMigrationResult {
     return migrate(
       context.storage,
       'semaphore',
       durabilitySemaphoreMigrations,
-      target
+      target,
+      options
     );
   }
 
