@@ -6,11 +6,13 @@ import {
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
   DurableCancellationError,
+  DurablePayloadCompatibilityError,
   DurablePayloadDecodeError,
   DurableResultSerializationError,
   isErrorInstance,
   NonRetryableError,
   reportFailure,
+  serializeError,
 } from './errors.js';
 import {
   createLifecycleHooks,
@@ -25,11 +27,13 @@ import {
   type DurabilityMigrationResult,
 } from './migrations.js';
 import {
+  assertPositiveInteger,
   createPolicyResolver,
   methodOptionsSchema,
   type DurabilityMethodOptions,
   type ExecutionPolicyOptions,
   type MethodPolicy,
+  type PayloadMigrator,
   type PolicyResolver,
 } from './policy.js';
 import {
@@ -63,6 +67,7 @@ const callRowSchema = z.object({
   generation_id: z.string(),
   cancelled_at: z.number().int().nonnegative().nullable(),
   cancel_reason: z.string().nullable(),
+  payload_version: z.number().int().positive(),
 });
 
 /** Cancellation reasons longer than this are truncated before they are stored. */
@@ -75,6 +80,46 @@ const boundedReason = (reason: string | undefined): string | null => {
   return reason.length > maxCancelReasonLength
     ? reason.slice(0, maxCancelReasonLength)
     : reason;
+};
+
+/** Blocked work waits at least this long, instead of consuming a retry, before a recheck. */
+const minCompatibilityBackoffMs = 60_000;
+/** ...and at most this long, so an operation removed for good wakes the object hourly, not every minute. */
+const maxCompatibilityBackoffMs = 60 * 60_000;
+
+type OperationCompatibility = {
+  version: number;
+  migrators: Map<number, PayloadMigrator>;
+};
+
+const emptyCompatibility: OperationCompatibility = {
+  version: 1,
+  migrators: new Map(),
+};
+
+const resolveCompatibility = (
+  methods: Record<string, DurabilityMethodOptions | undefined>
+): ((operation: string) => OperationCompatibility) => {
+  const parsed = new Map<string, OperationCompatibility>();
+  for (const [name, option] of Object.entries(methods)) {
+    const version = option?.payloadVersion ?? 1;
+    assertPositiveInteger(`methods.${name}.payloadVersion`, version);
+    const migrators = new Map<number, PayloadMigrator>();
+    for (const [key, migrator] of Object.entries(
+      option?.migratePayload ?? {}
+    )) {
+      const from = Number(key);
+      assertPositiveInteger(`methods.${name}.migratePayload key`, from);
+      if (typeof migrator !== 'function') {
+        throw new TypeError(
+          `methods.${name}.migratePayload[${key}] must be a function`
+        );
+      }
+      migrators.set(from, migrator);
+    }
+    parsed.set(name, { version, migrators });
+  }
+  return (operation) => parsed.get(operation) ?? emptyCompatibility;
 };
 
 type CallRow = z.infer<typeof callRowSchema>;
@@ -471,6 +516,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
   readonly #engine: Engine;
   readonly #handlers: Handlers;
   readonly #policy: PolicyResolver<MethodPolicy>;
+  readonly #compat: (operation: string) => OperationCompatibility;
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
   readonly #active = new Map<string, ActiveExecution>();
@@ -485,6 +531,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       config.methods ?? {},
       methodOptionsSchema
     );
+    this.#compat = resolveCompatibility(config.methods ?? {});
     this.#lifecycle = createLifecycleHooks(
       (hook) => this.#engine.emitter(hook),
       config.onLifecycleEvent
@@ -714,6 +761,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     payload: unknown;
   }): Promise<void> {
     const payload = serialize(input.payload);
+    const version = this.#compat(input.operation).version;
     const now = Date.now();
     const generation = crypto.randomUUID();
     const { inserted, winner } = await this.#engine.transaction((sql) => {
@@ -722,8 +770,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
           .exec(
             `INSERT INTO durability_calls
                (id, operation, payload, status, attempt, next_attempt_at,
-                created_at, generation_id)
-             VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+                created_at, generation_id, payload_version)
+             VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING
              RETURNING id`,
             input.id,
@@ -731,7 +779,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
             payload,
             now,
             now,
-            generation
+            generation,
+            version
           )
           .toArray().length > 0;
       const current = readCall(sql, input.id);
@@ -800,7 +849,12 @@ class DurabilityCore<Handlers extends HandlerMap> {
         return;
       }
 
-      const execution = this.#start(call, eagerPermit);
+      const ready = await this.#prepareForExecution(call);
+      if (!ready) {
+        return;
+      }
+
+      const execution = this.#start(ready, eagerPermit);
       permitTransferred = true;
       releaseStart();
       return execution;
@@ -813,6 +867,123 @@ class DurabilityCore<Handlers extends HandlerMap> {
         eagerPermit?.();
       }
     }
+  }
+
+  /**
+   * Resolves a pending call against the running deployment before any attempt is
+   * claimed. Returns the row to execute, applying any payload migration first,
+   * or `undefined` after blocking work that this deployment cannot run safely.
+   *
+   * Blocking never consumes retry budget or marks the call failed: the row stays
+   * pending with a slow backoff so a later compatible deployment recovers it.
+   */
+  async #prepareForExecution(call: CallRow): Promise<CallRow | undefined> {
+    const { version: supported, migrators } = this.#compat(call.operation);
+
+    if (!this.#handlers[call.operation]) {
+      await this.#blockForCompatibility(
+        call,
+        `no handler is registered for operation "${call.operation}"`
+      );
+      return undefined;
+    }
+    if (call.payload_version > supported) {
+      await this.#blockForCompatibility(
+        call,
+        `stored payload version ${call.payload_version} is newer than the supported version ${supported}`
+      );
+      return undefined;
+    }
+    if (call.payload_version === supported) {
+      return call;
+    }
+
+    let value: unknown;
+    try {
+      value = deserialize(call.payload);
+    } catch {
+      // A corrupt payload cannot be fixed by a later deploy, unlike a missing
+      // handler or an unsupported version. Return the row unchanged so the
+      // pre-attempt decode fails it terminally with DurablePayloadDecodeError.
+      return call;
+    }
+    for (let from = call.payload_version; from < supported; from += 1) {
+      const migrator = migrators.get(from);
+      if (!migrator) {
+        await this.#blockForCompatibility(
+          call,
+          `no payload migration from version ${from} to ${from + 1}`
+        );
+        return undefined;
+      }
+      try {
+        value = migrator(value);
+      } catch (error) {
+        await this.#blockForCompatibility(
+          call,
+          `payload migration from version ${from} failed: ${serializeError(error).message}`
+        );
+        return undefined;
+      }
+    }
+
+    let migrated: string;
+    try {
+      migrated = serialize(value);
+    } catch (error) {
+      await this.#blockForCompatibility(
+        call,
+        `migrated payload is not JSON-serializable: ${serializeError(error).message}`
+      );
+      return undefined;
+    }
+
+    // Commit the upgraded payload and version atomically before the handler is
+    // entered, guarded by the generation so a reset cannot run the migrator twice.
+    const committed = await this.#engine.transaction(
+      (sql) =>
+        sql
+          .exec(
+            `UPDATE durability_calls
+             SET payload = ?, payload_version = ?
+             WHERE id = ? AND generation_id = ? AND status = 'pending'
+             RETURNING id`,
+            migrated,
+            supported,
+            call.id,
+            call.generation_id
+          )
+          .toArray().length > 0
+    );
+    if (!committed) {
+      return undefined;
+    }
+    return { ...call, payload: migrated, payload_version: supported };
+  }
+
+  async #blockForCompatibility(call: CallRow, reason: string): Promise<void> {
+    const error = serializeError(
+      new DurablePayloadCompatibilityError(call.operation, reason)
+    );
+    const now = Date.now();
+    // Derive the wait from row age so it roughly doubles as each wait elapses, capped.
+    const backoff = Math.min(
+      maxCompatibilityBackoffMs,
+      Math.max(minCompatibilityBackoffMs, now - call.created_at)
+    );
+    const nextAttemptAt = now + backoff;
+    await this.#engine.transaction((sql) => {
+      sql.exec(
+        `UPDATE durability_calls
+         SET next_attempt_at = ?, last_error = ?, last_error_name = ?
+         WHERE id = ? AND generation_id = ? AND status = 'pending'`,
+        nextAttemptAt,
+        error.message,
+        error.name,
+        call.id,
+        call.generation_id
+      );
+    });
   }
 
   #start(call: CallRow, eagerPermit: (() => void) | undefined): Promise<void> {

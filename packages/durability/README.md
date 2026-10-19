@@ -295,6 +295,52 @@ if (attempt === 1) {
 await this.env.BILLING.chargeOnce(id, payload);
 ```
 
+## Payload versions and compatibility
+
+A pending operation is durable data, but its handler and payload type are deployment-local code. Across upgrades, rollbacks, and eviction a new deployment can meet a row an older one wrote, and an old deployment can meet a row a newer one wrote. Payload versions keep that work safe instead of failing it.
+
+Every call stores a `payload_version`. Rows written before this feature, and calls for operations without a configured version, are version `1`, so plain handlers need no configuration. Declare the version a method writes and understands, plus pure JSON-to-JSON upcasters keyed by the version they consume:
+
+```ts
+const durability = new Durability({
+  context: this.ctx,
+  handlers,
+  methods: {
+    sendEmail: {
+      payloadVersion: 3,
+      migratePayload: {
+        1: (v1) => toV2(v1),
+        2: (v2) => toV3(v2),
+      },
+    },
+  },
+});
+```
+
+New registrations store the configured version. Before an attempt is claimed, a due call older than the configured version is upgraded by running each required upcaster in order; the migrated payload and new version commit in one transaction before the handler is entered, so a crash afterward reuses the upgraded payload and never re-runs a migrator.
+
+Work this deployment cannot run safely is left **pending with a slow backoff** rather than failed, so retry budget is never spent and a later compatible deployment recovers it automatically. This covers a call whose stored version is newer than the deployment supports (a rollback), a missing or throwing migration step, and an operation whose handler is unregistered. The reason is recorded as a `DurablePayloadCompatibilityError` on the pending row's `lastError` for inspection. The backoff starts at one minute and escalates with the row's age, up to one hour, so permanently unrunnable work wakes the object at most hourly. Blocking leaves the row `pending`, so the scheduler reconciles the physical alarm to the new `next_attempt_at` like any other pending work.
+
+> **Removing a handler no longer discards its pending work.** Before payload versions, work for an unregistered handler failed terminally; it now stays pending indefinitely waiting for compatible code. If you remove a handler on purpose and want its pending rows gone rather than waiting, discard them explicitly with [`purgeBefore`](#destructive-retention-purge).
+
+### Operation keys are wire-protocol identifiers
+
+An operation key names durable, pending work. Renaming or removing an operation that still has pending rows is a compatibility change: the old rows block until code that registers that key returns. Automatic migration covers payload _shape_ only. If an operation's meaning or **result** shape changes incompatibly, introduce a new immutable key such as `sendEmailV2` and keep the old handler registered until its backlog drains. Result-shape migration is intentionally out of scope.
+
+| Change                                     | Approach                                                              |
+| ------------------------------------------ | --------------------------------------------------------------------- |
+| Payload fields added, removed, or reshaped | Bump `payloadVersion` and add an upcaster                             |
+| Operation meaning or result shape changes  | New operation key; retain the old handler until drained               |
+| Operation no longer needed                 | Keep the handler registered until no pending rows remain, then remove |
+
+### Safe rolling deploys
+
+1. Ship readers first: deploy code that registers the new version's upcasters and can decode old rows, while still writing the old version.
+2. Begin writing the new version by raising `payloadVersion`.
+3. Remove old compatibility code only after inspection shows no rows remain at the old version.
+
+A rollback between steps is safe: the older deployment blocks the newer rows instead of corrupting or failing them, and resumes them when rolled forward again.
+
 ## Delivery semantics and concurrency
 
 Work is delivered at least once. A process can stop after a side effect succeeds but before its completion record commits, so handlers should be idempotent and pass the call ID or alarm `idempotencyKey` to external services.

@@ -161,6 +161,16 @@ export const durabilityOperationMigrations = [
       ON durability_calls (created_at);
     `,
   },
+  {
+    name: 'durability_0013_calls_payload_version',
+    up: `
+      ALTER TABLE durability_calls
+      ADD COLUMN payload_version INTEGER NOT NULL DEFAULT 1;
+    `,
+    down: `
+      ALTER TABLE durability_calls DROP COLUMN payload_version;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**

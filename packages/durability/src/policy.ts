@@ -25,6 +25,9 @@ export type DurabilityRetryOptions = {
   maxAttempts?: number;
 };
 
+/** Transforms a payload from one stored version to the next. Must be pure JSON-to-JSON. */
+export type PayloadMigrator = (payload: unknown) => unknown;
+
 /** Execution policy overrides for one durable operation method. */
 export type DurabilityMethodOptions = {
   /** Maximum duration of one attempt in milliseconds. */
@@ -37,6 +40,16 @@ export type DurabilityMethodOptions = {
    * handler's side effects are idempotent or reconciled before retry.
    */
   retryTimeouts?: boolean;
+  /**
+   * The payload version this deployment writes and understands. Defaults to 1,
+   * which is also how rows written before versioning are interpreted.
+   */
+  payloadVersion?: number;
+  /**
+   * Upgraders keyed by the source version they consume. Each produces the next
+   * version's payload; chaining them lifts an old row up to {@link payloadVersion}.
+   */
+  migratePayload?: Record<number, PayloadMigrator>;
 };
 
 /**

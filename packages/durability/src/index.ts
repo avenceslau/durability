@@ -67,6 +67,7 @@ export {
   DurableAttemptsExhaustedError,
   DurableAttemptTimeoutError,
   DurableCancellationError,
+  DurablePayloadCompatibilityError,
   DurablePayloadDecodeError,
   DurableResultSerializationError,
   DurableRetryPolicyError,
@@ -93,4 +94,5 @@ export type {
   DurabilityAlarmMethodOptions,
   DurabilityMethodOptions,
   DurabilityRetryOptions,
+  PayloadMigrator,
 } from './policy.js';

@@ -47,6 +47,7 @@ describe('migrations', () => {
         'durability_0002_pending_index',
         'durability_0004_calls_generation_and_created_at',
         'durability_0012_calls_cancelled_status',
+        'durability_0013_calls_payload_version',
       ],
       rolledBack: [],
     });
@@ -66,6 +67,7 @@ describe('migrations', () => {
       {
         applied: [],
         rolledBack: [
+          'durability_0013_calls_payload_version',
           'durability_0012_calls_cancelled_status',
           'durability_0004_calls_generation_and_created_at',
           'durability_0002_pending_index',
@@ -162,6 +164,10 @@ describe('migrations', () => {
       ...durabilityOperationMigrations,
       ...durabilityNamedAlarmMigrations,
     ]) {
+      // 2.x predates payload versioning; construction must apply it forward.
+      if (migration.name === 'durability_0013_calls_payload_version') {
+        continue;
+      }
       storage.sql.exec(migration.up);
     }
     for (const name of [
@@ -223,6 +229,10 @@ describe('migrations', () => {
         name: 'durability_0012_calls_cancelled_status',
         capability: 'operations',
       },
+      {
+        name: 'durability_0013_calls_payload_version',
+        capability: 'operations',
+      },
     ]);
     expect(Durability.migrate(context)).toEqual({
       applied: [],
@@ -273,6 +283,7 @@ describe('migrations', () => {
       'durability_0004_calls_generation_and_created_at',
       'durability_0004_generation_and_created_at',
       'durability_0012_calls_cancelled_status',
+      'durability_0013_calls_payload_version',
     ]);
   });
 
@@ -754,6 +765,309 @@ describe('Durability', () => {
         durability.workflowRejected.getResult('workflow-rejected:1')
       ).resolves.toMatchObject({ status: 'failed', attempt: 1 });
     });
+  });
+
+  it('does not terminally fail pending work when its handler is missing', async () => {
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { other: async (_call: DurableCall<null>) => undefined },
+    });
+    // A pending call for an operation this deployment no longer registers,
+    // as happens when a handler is renamed or removed while work is pending.
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+         (id, operation, payload, status, attempt, next_attempt_at)
+       VALUES (?, 'send', ?, 'pending', 0, 0)`,
+      'msg:1',
+      JSON.stringify({ kind: 'value', value: { message: 'hi' } })
+    );
+
+    await durability.alarm();
+
+    const row = storage.sql
+      .exec<{ status: string; attempt: number }>(
+        `SELECT status, attempt FROM durability_calls WHERE id = ?`,
+        'msg:1'
+      )
+      .toArray()[0];
+    expect(row?.status).toBe('pending');
+    expect(row?.attempt).toBe(0);
+  });
+
+  it('blocks a missing handler for compatibility and recovers it when restored', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const absent = new Durability({
+      context: contextFor(storage),
+      handlers: { other: async (_call: DurableCall<null>) => undefined },
+      alarmMinDelayMs: 1_000,
+    });
+    // A freshly created row blocks at the minimum backoff.
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+         (id, operation, payload, status, attempt, next_attempt_at, created_at)
+       VALUES (?, 'send', ?, 'pending', 0, 0, ?)`,
+      'msg:1',
+      JSON.stringify({ kind: 'value', value: { message: 'hi' } }),
+      Date.now()
+    );
+
+    storage.alarmAt = null;
+    await absent.alarm();
+
+    const blocked = storage.sql
+      .exec<{
+        status: string;
+        attempt: number;
+        last_error_name: string | null;
+        next_attempt_at: number;
+      }>(
+        `SELECT status, attempt, last_error_name, next_attempt_at
+         FROM durability_calls WHERE id = ?`,
+        'msg:1'
+      )
+      .toArray()[0];
+    expect(blocked).toMatchObject({
+      status: 'pending',
+      attempt: 0,
+      last_error_name: 'DurablePayloadCompatibilityError',
+      next_attempt_at: Date.now() + 60_000,
+    });
+    // The physical alarm is reconciled to the blocked row's next attempt.
+    expect(storage.alarmAt).toBe(Date.now() + 60_000);
+
+    const handler = vi.fn(
+      async ({ payload }: DurableCall<{ message: string }>) => payload.message
+    );
+    const restored = new Durability({
+      context: contextFor(storage),
+      handlers: { send: handler },
+      alarmMinDelayMs: 1_000,
+    });
+    vi.advanceTimersByTime(60_000);
+    storage.alarmAt = null;
+    await restored.alarm();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    await expect(restored.send.getResult('msg:1')).resolves.toEqual({
+      status: 'completed',
+      result: 'hi',
+    });
+  });
+
+  it('migrates an evicted payload before the handler and migrates only once', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const migrator = vi.fn((old: unknown) => ({ v: 2, from: old }));
+    let attempts = 0;
+    const seen: unknown[] = [];
+    const versionsAtEntry: number[] = [];
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        send: async ({ id, payload }: DurableCall<{ v: number }>) => {
+          attempts += 1;
+          seen.push(payload);
+          versionsAtEntry.push(
+            storage.sql
+              .exec<{ payload_version: number }>(
+                `SELECT payload_version FROM durability_calls WHERE id = ?`,
+                id
+              )
+              .toArray()[0]?.payload_version ?? 0
+          );
+          if (attempts === 1) {
+            throw new Error('transient');
+          }
+          return 'done';
+        },
+      },
+      methods: {
+        send: { payloadVersion: 2, migratePayload: { 1: migrator } },
+      },
+      retries: { delay: () => 1_000 },
+      alarmMinDelayMs: 1_000,
+    });
+    // An evicted v1 row; the payload_version column defaults to 1.
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+         (id, operation, payload, status, attempt, next_attempt_at)
+       VALUES (?, 'send', ?, 'pending', 0, 0)`,
+      'm:1',
+      JSON.stringify({ kind: 'value', value: { v: 1 } })
+    );
+
+    storage.alarmAt = null;
+    await durability.alarm();
+    // The upgraded payload and version commit before the handler is entered, so
+    // the first failing attempt already saw v2.
+    expect(migrator).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([{ v: 2, from: { v: 1 } }]);
+    expect(versionsAtEntry).toEqual([2]);
+
+    vi.advanceTimersByTime(1_000);
+    storage.alarmAt = null;
+    await durability.alarm();
+    // The retry reuses the already-migrated payload; the migrator never reruns.
+    expect(migrator).toHaveBeenCalledTimes(1);
+    await expect(durability.send.getResult('m:1')).resolves.toEqual({
+      status: 'completed',
+      result: 'done',
+    });
+  });
+
+  it('blocks a payload newer than the deployment without consuming retries', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const handler = vi.fn(async (_call: DurableCall<{ v: number }>) => 'ok');
+    const old = new Durability({
+      context: contextFor(storage),
+      handlers: { send: handler },
+      alarmMinDelayMs: 1_000,
+    });
+    // A row an upgraded deployment wrote at version 2.
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+         (id, operation, payload, status, attempt, next_attempt_at, created_at,
+          payload_version)
+       VALUES (?, 'send', ?, 'pending', 0, 0, ?, 2)`,
+      'm:1',
+      JSON.stringify({ kind: 'value', value: { v: 2 } }),
+      Date.now()
+    );
+
+    storage.alarmAt = null;
+    await old.alarm();
+
+    expect(handler).not.toHaveBeenCalled();
+    const blocked = storage.sql
+      .exec<{
+        status: string;
+        attempt: number;
+        last_error_name: string | null;
+      }>(
+        `SELECT status, attempt, last_error_name
+         FROM durability_calls WHERE id = ?`,
+        'm:1'
+      )
+      .toArray()[0];
+    expect(blocked).toMatchObject({
+      status: 'pending',
+      attempt: 0,
+      last_error_name: 'DurablePayloadCompatibilityError',
+    });
+
+    // The newer deployment comes back and runs the work it understands.
+    const upgraded = new Durability({
+      context: contextFor(storage),
+      handlers: { send: handler },
+      methods: { send: { payloadVersion: 2 } },
+      alarmMinDelayMs: 1_000,
+    });
+    vi.advanceTimersByTime(60_000);
+    storage.alarmAt = null;
+    await upgraded.alarm();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    await expect(upgraded.send.getResult('m:1')).resolves.toEqual({
+      status: 'completed',
+      result: 'ok',
+    });
+  });
+
+  it('blocks when a migration step is missing or throws', async () => {
+    const storage = new FakeStorage();
+    const missingHandler = vi.fn(async (_call: DurableCall<unknown>) => 'ok');
+    const throwingHandler = vi.fn(async (_call: DurableCall<unknown>) => 'ok');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { gap: missingHandler, boom: throwingHandler },
+      methods: {
+        gap: { payloadVersion: 3, migratePayload: { 2: (v) => v } },
+        boom: {
+          payloadVersion: 2,
+          migratePayload: {
+            1: () => {
+              throw new Error('bad upcast');
+            },
+          },
+        },
+      },
+    });
+    for (const id of ['gap:1', 'boom:1']) {
+      storage.sql.exec(
+        `INSERT INTO durability_calls
+           (id, operation, payload, status, attempt, next_attempt_at)
+         VALUES (?, ?, ?, 'pending', 0, 0)`,
+        id,
+        id.split(':')[0],
+        JSON.stringify({ kind: 'value', value: { n: 1 } })
+      );
+    }
+
+    await durability.alarm();
+
+    expect(missingHandler).not.toHaveBeenCalled();
+    expect(throwingHandler).not.toHaveBeenCalled();
+    for (const id of ['gap:1', 'boom:1']) {
+      const row = storage.sql
+        .exec<{ status: string; attempt: number; payload_version: number }>(
+          `SELECT status, attempt, payload_version
+           FROM durability_calls WHERE id = ?`,
+          id
+        )
+        .toArray()[0];
+      expect(row).toMatchObject({
+        status: 'pending',
+        attempt: 0,
+        payload_version: 1,
+      });
+    }
+  });
+
+  it('escalates the compatibility backoff with row age up to an hour cap', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const storage = new FakeStorage();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { other: async (_call: DurableCall<null>) => undefined },
+      alarmMinDelayMs: 1_000,
+    });
+    const now = Date.now();
+    // id -> [age, expected backoff]: floor at 60s, grows with age, caps at 1h.
+    const rows: Record<string, [number, number]> = {
+      fresh: [0, 60_000],
+      hour: [10 * 60_000, 10 * 60_000],
+      ancient: [3 * 60 * 60_000, 60 * 60_000],
+    };
+    for (const [id, [age]] of Object.entries(rows)) {
+      storage.sql.exec(
+        `INSERT INTO durability_calls
+           (id, operation, payload, status, attempt, next_attempt_at, created_at)
+         VALUES (?, 'send', ?, 'pending', 0, 0, ?)`,
+        id,
+        JSON.stringify({ kind: 'value', value: null }),
+        now - age
+      );
+    }
+
+    await durability.alarm();
+
+    for (const [id, [, backoff]] of Object.entries(rows)) {
+      const row = storage.sql
+        .exec<{ next_attempt_at: number; attempt: number }>(
+          `SELECT next_attempt_at, attempt
+           FROM durability_calls WHERE id = ?`,
+          id
+        )
+        .toArray()[0];
+      expect(row).toEqual({ next_attempt_at: now + backoff, attempt: 0 });
+    }
   });
 
   it('rejects reuse of an ID for a different operation', async () => {

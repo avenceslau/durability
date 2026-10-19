@@ -124,6 +124,24 @@ export class DuplicateDurableCallError extends Error {
   }
 }
 
+/**
+ * Recorded on a pending operation that cannot run under the current deployment:
+ * its handler is unregistered, its stored payload version is newer than this
+ * deployment supports, or a payload migration step is missing or failed.
+ *
+ * The work is left pending with a slow backoff rather than failed, so a later
+ * compatible deployment recovers it automatically. The message carries the
+ * specific reason for inspection.
+ */
+export class DurablePayloadCompatibilityError extends Error {
+  constructor(operation: string, reason: string) {
+    super(
+      `Durable operation "${operation}" is blocked for compatibility: ${reason}`
+    );
+    this.name = 'DurablePayloadCompatibilityError';
+  }
+}
+
 /** Thrown when an idempotency key is reused for the same operation with a different payload. */
 export class DuplicateDurablePayloadError extends Error {
   constructor(id: string, operation: string) {
