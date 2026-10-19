@@ -1,0 +1,81 @@
+packages/durability/README.md
+  s_75f82dc2c17012::t_5f8f9c0e41d491 70,92-94,98-100,377-396,398-401,405
+packages/durability/src/migrations.ts
+  s_89dff2fd3753ec::t_77973ea4cd116d 94,187-206
+.changeset/operation-prune-tombstones.md
+  s_90ce42b2579dd8::t_6cdc4bd34cc79c 1-4,6-7
+packages/durability/src/index.test.ts
+  s_ba60f5b28abc98::t_71b2bda35b591b 57,110,238,252-253,1577-1733
+packages/durability/src/durability.ts
+  s_90ce42b2579dd8::t_2ea47723322e84 129-139,142-163,171-179,286,303-310,557-560,780-781,784,786,799-868,922-924,926-931,1012-1018,1049
+  s_edc72d8b0ec969::t_74c40b46efd945 763
+  s_93467d6c20ba92::t_1dbdf83741d265 769-779,782-783,785,787-788
+packages/durability/src/index.ts
+  s_030e4eb58aee82::t_835d1a26f13c90 14
+packages/durability/tests/named-alarm-worker.ts
+  s_75f82dc2c17012::t_98f1de473f4d2d 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1a363c00dfdbe9d4884329bf66ebc5d23081a215",
+  "prompts": {},
+  "sessions": {
+    "s_030e4eb58aee82": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-890e-7047-94e6-bea0988045fb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_75f82dc2c17012": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14fa4-fa01-7041-9abd-a95f03319332",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_89dff2fd3753ec": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a14a66-1369-7313-a98a-80e66b38cf8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_90ce42b2579dd8": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151c5-1c5f-7047-94e6-beb61665c0bb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_93467d6c20ba92": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151c7-1de2-7041-9abd-a970769006f8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_ba60f5b28abc98": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-88f9-7047-94e6-be9e6298cc89",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_edc72d8b0ec969": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0963d-e34c-7ee9-af9b-1abea2216c85",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
