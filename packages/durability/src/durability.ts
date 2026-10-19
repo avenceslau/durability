@@ -644,10 +644,15 @@ type OperationMethods<Handlers extends HandlerMap> = {
 };
 
 /**
- * Alarm-backed, effectively-once durable operations for one Durable Object.
+ * Alarm-backed, at-least-once durable operations for one Durable Object.
  *
  * Every handler becomes a typed method on the instance. Methods resolve once
  * the call is durably registered; read outcomes through `getResult`.
+ *
+ * Delivery is at least once: a handler may run again after a crash, timeout, or
+ * eviction. The call `id` is a stable idempotency key; pass it to external
+ * systems and make effects idempotent or reconcilable to reach an effectively
+ * once outcome. See the README "Delivery and safety contract".
  *
  * @example
  * ```ts

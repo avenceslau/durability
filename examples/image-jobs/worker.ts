@@ -1,9 +1,11 @@
 /**
- * `Durability` example: effectively-once operations with idempotency keys.
+ * `Durability` example: at-least-once operations with a stable idempotency key.
  *
  * A resize request is registered durably and survives eviction, restarts, and
- * transient API failures. The same idempotency key never runs the resize
- * twice, and the persisted result is read back with `getResult`.
+ * transient API failures. The handler runs at least once; passing the stable
+ * call id as the resize idempotency key lets the image service collapse
+ * duplicate attempts into one effect. The persisted result is read back with
+ * `getResult`.
  */
 import { DurableObject } from 'cloudflare:workers';
 import { Durability, NonRetryableError, type DurableCall } from 'durability';
