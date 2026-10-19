@@ -805,6 +805,74 @@ describe('Durability', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('ignores nested object key order and never leaks payloads in conflicts', async () => {
+    const calls: unknown[] = [];
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        send: async ({ payload }: DurableCall<Record<string, unknown>>) => {
+          calls.push(payload);
+          return 'ok';
+        },
+      },
+    });
+
+    await durability.send({ id: 'nested', payload: { meta: { a: 1, b: 2 } } });
+    // A nested object with the same data in a different key order is a no-op.
+    await durability.send({ id: 'nested', payload: { meta: { b: 2, a: 1 } } });
+    await vi.waitFor(async () => {
+      await expect(durability.send.getResult('nested')).resolves.toMatchObject({
+        status: 'completed',
+      });
+    });
+    expect(calls).toHaveLength(1);
+
+    const error = await durability
+      .send({
+        id: 'nested',
+        payload: { meta: { a: 1, b: 2 }, token: 'leaky-secret' },
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DuplicateDurablePayloadError);
+    const reported = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
+    expect(reported).not.toContain('leaky-secret');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('commits one authoritative payload for concurrent first registrations', async () => {
+    const calls: unknown[] = [];
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        send: async ({ payload }: DurableCall<{ cents: number }>) => {
+          calls.push(payload);
+          return payload.cents;
+        },
+      },
+    });
+
+    const results = await Promise.allSettled([
+      durability.send({ id: 'transfer:42', payload: { cents: 100 } }),
+      durability.send({ id: 'transfer:42', payload: { cents: 10_000 } }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === 'fulfilled');
+    const rejected = results.filter((result) => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      DuplicateDurablePayloadError
+    );
+
+    await vi.waitFor(async () => {
+      await expect(
+        durability.send.getResult('transfer:42')
+      ).resolves.toMatchObject({ status: 'completed' });
+    });
+    expect(calls).toHaveLength(1);
+    const stored = await durability.send.getResult('transfer:42');
+    expect([100, 10_000]).toContain((stored as { result: number }).result);
+  });
+
   it('keeps its alarm armed when a run cannot reconcile, instead of failing the alarm', async () => {
     const storage = new FakeStorage();
     const durability = new Durability({
