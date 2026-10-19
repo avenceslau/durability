@@ -42,6 +42,7 @@ import {
   registerTrackedSource,
   type UntypedRecord,
   type UntypedSource,
+  type UntypedSummary,
 } from './tracked-source.js';
 
 const callRowSchema = z.object({
@@ -299,6 +300,34 @@ const callRecord = (call: CallRow): UntypedRecord => ({
   state: callState(call),
 });
 
+// Summaries never read `payload` or `result`, so a list stays bounded and
+// cannot leak secrets even when a completed result is large.
+const callSummaryState = (call: CallRow): UntypedSummary['state'] => {
+  if (call.status === 'completed') {
+    return { status: 'completed' };
+  }
+  if (call.status === 'failed') {
+    return {
+      status: 'failed',
+      attempt: call.attempt,
+      error: { name: call.last_error_name ?? 'Error' },
+    };
+  }
+  return {
+    status: 'pending',
+    attempt: call.attempt,
+    nextAttemptAt: call.next_attempt_at,
+  };
+};
+
+const callSummary = (call: CallRow): UntypedSummary => ({
+  id: call.id,
+  name: call.operation,
+  generation: call.generation_id,
+  createdAt: call.created_at,
+  state: callSummaryState(call),
+});
+
 const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
   entityKind: 'operation',
   operation: call.operation,
@@ -428,7 +457,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
           status,
           name,
         });
-        const records = callRowSchema.array().parse(page.rows).map(callRecord);
+        const records = callRowSchema.array().parse(page.rows).map(callSummary);
         return page.next === undefined
           ? { records }
           : { records, cursor: page.next };

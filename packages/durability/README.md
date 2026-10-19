@@ -507,11 +507,11 @@ export class ImageJobs extends DurableObject<Env> {
 
 All three methods take the same query: `{ source, name, status, limit, cursor }`. `limit` defaults to 50 and is capped at 100. Pass `cursor` back with the same query to continue; it is present only while more records may follow. Sources are read one after another, so there is no ordering across sources.
 
-- `list(query)` returns `{ items, cursor }`. Each item has `source`, `id`, `name`, `generation`, `createdAt`, and `state`, plus `get()`, which reads the latest state, and `wait({ timeoutMs })`, which resolves once the record is `completed` or `failed`, or returns the latest state after the timeout without polling storage. Both return `not_found` once the record is purged or its ID is reused for new work.
+- `list(query)` returns `{ items, cursor }`. Each item has `source`, `id`, `name`, `generation`, `createdAt`, and a summarized `state`, plus `get()`, which reads the latest state, and `wait({ timeoutMs })`, which resolves once the record is `completed` or `failed`, or returns the latest state after the timeout without polling storage. Both return `not_found` once the record is purged or its ID is reused for new work.
 - `get(source, id)` returns one such handle, or `undefined`.
 - `records(query)` returns `{ records, cursor }` with the same data and no functions.
 
-Narrowing on `source` and `name` narrows `state.result` to that handler's result type.
+List and record `state` is a summary: `pending` carries `attempt` and `nextAttemptAt`, `failed` carries `attempt` and `error.name`, and `completed` carries only the status. It never includes payloads, results, or error messages, which may hold secrets and can make a page unbounded. Read those explicitly with `get()`, `wait({ timeoutMs })`, or `getResult(id)`; `get()` and `wait()` narrow the completed `result` to that handler's result type.
 
 ### Handles over RPC
 
@@ -566,8 +566,9 @@ const approvals: TrackedSource<Approvals> = {
 new DurabilityTracker({ sources: { jobs: this.durability, approvals } });
 ```
 
-- `get(id)` and `list(query)` return records with `id`, `name`, `generation`, `createdAt`, and `state`. Keep `generation` stable unless the ID is reused for new work.
+- `get(id)` returns a full record whose `state` carries the completed `result`; `list(query)` returns summaries whose `state` omits payloads, results, and error messages. Both share `id`, `name`, `generation`, and `createdAt`. Keep `generation` stable unless the ID is reused for new work.
 - `state.status` is `pending`, `completed`, or `failed`. Express finer outcomes, such as a rejection, as `failed` with a specific `error.name`.
+- The tracker re-summarizes whatever a custom source returns from `list`, so a source that includes a result there will not leak it through the tracker.
 - `list` may return fewer than `limit` records together with a cursor. Omit the cursor at the end.
 - `watch(id, listener)` is optional and returns an unsubscribe function. Call `listener()` after a record may have settled; pass the settled record when it can no longer be read. Without `watch`, `wait` reads again only at its timeout.
 

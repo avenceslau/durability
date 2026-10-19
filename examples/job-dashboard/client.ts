@@ -4,7 +4,7 @@
  * imports through the dashboard, which waits on the pipeline for the result.
  */
 import { DurabilitySocketClient } from 'durability/client';
-import type { TrackedRecord } from 'durability/experimental';
+import type { TrackedListRecord } from 'durability/experimental';
 import type { Dashboard } from './dashboard';
 import type { Jobs } from './shared';
 
@@ -14,10 +14,10 @@ const client = new DurabilitySocketClient<Dashboard['socket']>({
 
 export const openDashboard = (
   tenant: string,
-  render: (jobs: TrackedRecord<Jobs>[]) => void
+  render: (jobs: TrackedListRecord<Jobs>[]) => void
 ) => {
   const conn = client.connect(tenant);
-  const jobs = new Map<string, TrackedRecord<Jobs>>();
+  const jobs = new Map<string, TrackedListRecord<Jobs>>();
 
   const reload = async () => {
     jobs.clear();

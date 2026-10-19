@@ -10,15 +10,17 @@ import type {
   OperationResults,
 } from './durability.js';
 import {
+  summaryStateOf,
   trackedSourceOf,
   type Names,
-  type TrackedEntry,
   type TrackedResults,
   type TrackedSource,
   type TrackedState,
   type TrackedStatus,
+  type TrackedSummary,
   type UntypedRecord,
   type UntypedSource,
+  type UntypedSummary,
 } from './tracked-source.js';
 
 /** A tracked state, or `not_found` when the record or its generation is gone. */
@@ -55,7 +57,7 @@ export type TrackedItem<
   Source extends string,
   Results extends TrackedResults,
 > = {
-  [Name in Names<Results>]: TrackedEntry<Name, Results[Name]> & {
+  [Name in Names<Results>]: TrackedSummary<Name> & {
     source: Source;
   };
 }[Names<Results>];
@@ -68,7 +70,7 @@ export type TrackedHandle<
   Source extends string,
   Results extends TrackedResults,
 > = {
-  [Name in Names<Results>]: TrackedEntry<Name, Results[Name]> & {
+  [Name in Names<Results>]: TrackedSummary<Name> & {
     source: Source;
     /** Reads the latest state of this generation. */
     get(): Promise<TrackedResult<Results[Name]>>;
@@ -125,7 +127,7 @@ export type DurabilityTrackerConfig<Sources extends TrackerSources> = {
 };
 
 type AnyResult = TrackedResult<unknown>;
-type AnyItem = UntypedRecord & { source: string };
+type AnyItem = UntypedSummary & { source: string };
 type AnyHandle = AnyItem & {
   get(): Promise<AnyResult>;
   wait(options: TrackedWaitOptions): Promise<AnyResult>;
@@ -139,21 +141,25 @@ const cursorSchema = z.tuple([
 ]);
 
 const resultFor = (
-  entry: UntypedRecord,
+  entry: { generation: string },
   record: UntypedRecord | undefined
 ): AnyResult =>
   record?.generation === entry.generation
     ? record.state
     : { status: 'not_found' };
 
-// Copy only contract fields so extras from custom sources never leave the object.
-const itemFor = (key: string, record: UntypedRecord): AnyItem => ({
+// Copy only summary fields so results, payloads, error messages, and extras
+// from custom sources never leave the object on a list or handle.
+const itemFor = (
+  key: string,
+  record: UntypedRecord | UntypedSummary
+): AnyItem => ({
   source: key,
   id: record.id,
   name: record.name,
   generation: record.generation,
   createdAt: record.createdAt,
-  state: record.state,
+  state: summaryStateOf(record.state),
 });
 
 /**
@@ -279,7 +285,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
 
   #wait(
     source: UntypedSource,
-    entry: UntypedRecord,
+    entry: AnyItem,
     options: TrackedWaitOptions
   ): Promise<AnyResult> {
     const timeoutMs = options?.timeoutMs;

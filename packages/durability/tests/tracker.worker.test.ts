@@ -55,6 +55,29 @@ describe('DurabilityTracker over RPC', () => {
     await expect(waiting).resolves.toEqual({ status: 'completed', result: 4 });
   });
 
+  it('excludes results and payloads from list output', async () => {
+    const stub = env.TRACKER_TEST.get(env.TRACKER_TEST.newUniqueId());
+    await stub.start('job-secret', 777);
+    await release(stub, 'job-secret');
+
+    await waitFor(async () => {
+      const { items } = await stub.listWork();
+      expect(items[0]?.state).toEqual({ status: 'completed' });
+    });
+
+    const { items } = await stub.listWork();
+    const [item] = items;
+    if (!item) {
+      throw new Error('Expected a tracked job');
+    }
+    expect(item.state).toEqual({ status: 'completed' });
+    expect(JSON.stringify(item.state)).not.toContain('1554');
+    await expect(item.get()).resolves.toEqual({
+      status: 'completed',
+      result: 1554,
+    });
+  });
+
   it('pipelines wait onto a returned handle', async () => {
     const stub = env.TRACKER_TEST.get(env.TRACKER_TEST.newUniqueId());
 

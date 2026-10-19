@@ -2,8 +2,10 @@
  * Hub of the `job-dashboard` example. Three kinds of peers talk to it:
  *
  * - Browsers, over `DurabilitySocket`. `work` serves `tracker.records()` as
- *   the snapshot (plain JSON, no functions); every ingested change is pushed
- *   as a `job` event, which the socket persists and replays after reconnects.
+ *   the snapshot (plain JSON, no functions) of summarized status; every
+ *   ingested change is pushed as a `job` event, which the socket persists and
+ *   replays after reconnects. Neither carries the order result; browsers wait
+ *   on a handle for it, as `importOrder` does.
  *   `importOrder` starts a job on the tenant's `Pipeline` and waits for its
  *   result through a tracker handle, in one pipelined RPC round trip.
  * - The tenant's `Pipeline`, through fanout deliveries into `ingest`.
@@ -14,9 +16,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   DurabilityTracker,
+  type TrackedListRecord,
   type TrackedRecord,
   type TrackedSource,
   type TrackedStatus,
+  type TrackedSummaryState,
 } from 'durability/experimental';
 import { DurabilitySocket, event } from 'durability/socket';
 import { z } from 'zod';
@@ -37,6 +41,28 @@ const toRecord = (row: JobRow): TrackedRecord<Jobs> => ({
   generation: row.generation,
   createdAt: row.created_at,
   state: JSON.parse(row.state),
+});
+
+// Snapshots and pushed events carry only status, never the order's result.
+// Browsers that need the result wait on a handle, as `importOrder` does.
+const summarize = (
+  state: TrackedRecord<Jobs>['state']
+): TrackedSummaryState => {
+  if (state.status === 'completed') {
+    return { status: 'completed' };
+  }
+  if (state.status === 'failed') {
+    return { status: 'failed', error: { name: state.error.name } };
+  }
+  return { status: 'pending' };
+};
+
+const toSummary = (row: JobRow): TrackedListRecord<Jobs> => ({
+  id: row.id,
+  name: 'importOrder',
+  generation: row.generation,
+  createdAt: row.created_at,
+  state: summarize(JSON.parse(row.state)),
 });
 
 const workQuery = z.object({
@@ -82,7 +108,7 @@ export class Dashboard extends DurableObject<Env> {
         .toArray();
       const page = rows.slice(0, limit);
       const last = page[page.length - 1];
-      const records = page.map(toRecord);
+      const records = page.map(toSummary);
       return rows.length > limit && last
         ? { records, cursor: JSON.stringify([last.created_at, last.id]) }
         : { records };
@@ -119,7 +145,7 @@ export class Dashboard extends DurableObject<Env> {
         }) => this.tracker.records(query),
       },
     },
-    outbound: { job: event<TrackedRecord<Jobs>>() },
+    outbound: { job: event<TrackedListRecord<Jobs>>() },
   });
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -165,7 +191,7 @@ export class Dashboard extends DurableObject<Env> {
       if (!row) {
         continue;
       }
-      const record = toRecord(row);
+      const record = toSummary(row);
       this.socket.job(record);
       for (const listener of this.watchers.get(job.id) ?? []) {
         listener();

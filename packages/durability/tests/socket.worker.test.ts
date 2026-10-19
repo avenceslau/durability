@@ -129,7 +129,7 @@ describe('DurabilitySocket in workerd', () => {
           name: 'create',
           generation: expect.any(String),
           createdAt: expect.any(Number),
-          state: { status: 'completed', result: todo },
+          state: { status: 'completed' },
         },
       ],
     });

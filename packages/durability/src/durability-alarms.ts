@@ -37,6 +37,7 @@ import {
   registerTrackedSource,
   type UntypedRecord,
   type UntypedSource,
+  type UntypedSummary,
 } from './tracked-source.js';
 
 const alarmRowSchema = z.object({
@@ -152,6 +153,26 @@ const alarmRecord = (row: AlarmRow): UntypedRecord => ({
             name: row.last_error_name ?? 'Error',
             message: row.last_error ?? 'Durable alarm failed',
           },
+        },
+});
+
+// Summaries drop the error message so a list cannot leak sensitive detail.
+const alarmSummary = (row: AlarmRow): UntypedSummary => ({
+  id: row.name,
+  name: row.name,
+  generation: row.generation_id,
+  createdAt: row.created_at,
+  state:
+    row.status === 'pending'
+      ? {
+          status: 'pending',
+          attempt: row.attempt,
+          nextAttemptAt: row.next_attempt_at,
+        }
+      : {
+          status: 'failed',
+          attempt: row.attempt,
+          error: { name: row.last_error_name ?? 'Error' },
         },
 });
 
@@ -279,7 +300,7 @@ class DurabilityAlarmsCore<Names extends string> {
         const records = alarmRowSchema
           .array()
           .parse(page.rows)
-          .map(alarmRecord);
+          .map(alarmSummary);
         return page.next === undefined
           ? { records }
           : { records, cursor: page.next };

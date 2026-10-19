@@ -81,9 +81,13 @@ describe('DurabilityTracker listing', () => {
         source: 'jobs',
         id: 'c',
         name: 'done',
-        state: { status: 'completed', result: 'ok' },
+        state: { status: 'completed' },
       },
     ]);
+    await expect(named.items[0]?.get()).resolves.toEqual({
+      status: 'completed',
+      result: 'ok',
+    });
 
     gate.resolve();
   });
@@ -305,6 +309,50 @@ describe('DurabilityTracker', () => {
     await expect(tracker.get('jobs', 'missing')).resolves.toBeUndefined();
   });
 
+  it('omits results, payloads, and error text from list output', async () => {
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        done: async (_call: DurableCall<null>) => ({ secret: 'token-123' }),
+        flaky: async (_call: DurableCall<null>) => {
+          throw new NonRetryableError('sensitive detail');
+        },
+      },
+      retries: { maxAttempts: 1, delay: () => 60_000 },
+    });
+    const tracker = new DurabilityTracker({ sources: { jobs: durability } });
+    await durability.done({ id: 'ok', payload: null });
+    await durability.flaky({ id: 'bad', payload: null });
+    await vi.waitFor(async () => {
+      expect(await durability.done.getResult('ok')).toMatchObject({
+        status: 'completed',
+      });
+      expect(await durability.flaky.getResult('bad')).toMatchObject({
+        status: 'failed',
+      });
+    });
+
+    const { records } = await tracker.records({ source: 'jobs' });
+    const completed = records.find(({ id }) => id === 'ok');
+    const failed = records.find(({ id }) => id === 'bad');
+    expect(completed?.state).toEqual({ status: 'completed' });
+    expect(failed?.state).toEqual({
+      status: 'failed',
+      attempt: 1,
+      error: { name: 'NonRetryableError' },
+    });
+    expect(JSON.stringify(records)).not.toContain('token-123');
+    expect(JSON.stringify(records)).not.toContain('sensitive detail');
+
+    const { items } = await tracker.list({ source: 'jobs' });
+    const handle = items.find(({ id }) => id === 'ok');
+    expect(handle?.state).toEqual({ status: 'completed' });
+    await expect(handle?.get()).resolves.toEqual({
+      status: 'completed',
+      result: { secret: 'token-123' },
+    });
+  });
+
   it('reports a named alarm success even though success deletes it', async () => {
     const gate = deferred();
     const alarms = new DurabilityAlarms({
@@ -425,11 +473,14 @@ describe('DurabilityTracker', () => {
       const { items } = await tracker.list({ source: 'jobs' });
       for (const item of items) {
         expectTypeOf(item.source).toEqualTypeOf<'jobs'>();
-        if (item.name === 'resize' && item.state.status === 'completed') {
-          expectTypeOf(item.state.result).toEqualTypeOf<number>();
+        if (item.state.status === 'completed') {
+          expectTypeOf(item.state).not.toHaveProperty('result');
         }
-        if (item.name === 'label' && item.state.status === 'completed') {
-          expectTypeOf(item.state.result).toEqualTypeOf<string>();
+        if (item.name === 'resize') {
+          const result = await item.get();
+          if (result.status === 'completed') {
+            expectTypeOf(result.result).toEqualTypeOf<number>();
+          }
         }
       }
       const handle = await tracker.get('alarms', 'cleanup');
@@ -437,8 +488,8 @@ describe('DurabilityTracker', () => {
       const { records } = await tracker.records({ source: 'jobs' });
       for (const record of records) {
         expectTypeOf(record).not.toHaveProperty('wait');
-        if (record.name === 'resize' && record.state.status === 'completed') {
-          expectTypeOf(record.state.result).toEqualTypeOf<number>();
+        if (record.state.status === 'completed') {
+          expectTypeOf(record.state).not.toHaveProperty('result');
         }
       }
     };

@@ -19,6 +19,7 @@ export {
 } from './tracker.js';
 export type {
   TrackedEntry,
+  TrackedListRecord,
   TrackedPage,
   TrackedQuery,
   TrackedRecord,
@@ -26,6 +27,8 @@ export type {
   TrackedSource,
   TrackedState,
   TrackedStatus,
+  TrackedSummary,
+  TrackedSummaryState,
 } from './tracked-source.js';
 export {
   DurabilityOutbox,
