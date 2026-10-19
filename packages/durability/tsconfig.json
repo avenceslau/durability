@@ -1,6 +1,12 @@
 {
   "extends": "@durability/typescript-config/base.json",
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.workers.config.ts"],
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "bench/**/*.ts",
+    "vitest.workers.config.ts",
+    "vitest.bench.config.ts"
+  ],
   "compilerOptions": {
     "exactOptionalPropertyTypes": true,
     "noEmit": true,

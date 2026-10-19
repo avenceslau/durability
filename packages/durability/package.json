@@ -11,6 +11,7 @@
     "README.md"
   ],
   "scripts": {
+    "bench:load": "vitest run --config vitest.bench.config.ts",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "oxlint",
     "prepack": "pnpm build",
