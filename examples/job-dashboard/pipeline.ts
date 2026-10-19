@@ -35,6 +35,8 @@ export class Pipeline extends DurableObject<Env> {
         return response.json();
       },
     },
+    // Completed lifecycle events carry the summary the dashboard publishes.
+    includeResults: true,
   });
 
   private readonly tracker = new DurabilityTracker({
@@ -67,7 +69,11 @@ export class Pipeline extends DurableObject<Env> {
       if (event.type === 'registered') {
         return this.publish(event, { status: 'pending' });
       }
-      if (event.type === 'attempt_settled' && event.outcome === 'completed') {
+      if (
+        event.type === 'attempt_settled' &&
+        event.outcome === 'completed' &&
+        event.result !== undefined
+      ) {
         return this.publish(event, {
           status: 'completed',
           result: event.result,
