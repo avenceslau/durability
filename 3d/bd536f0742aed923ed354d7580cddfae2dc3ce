@@ -1,0 +1,51 @@
+packages/durability/README.md
+  s_cc1c5a6bd7921e::t_6fb68424277f8e 131,229-250
+packages/durability/src/durability-alarms.ts
+  s_5061331f918af4::t_b06915d117f718 64-72,78-82
+packages/durability/tests/attempt-worker.ts
+  s_7287f08f532739::t_3faa596ace4fdc 1-111
+packages/durability/tests/named-alarm-worker.ts
+  s_29bb3c0e2b9125::t_0effdba2091a8a 16
+packages/durability/wrangler.test.jsonc
+  s_29bb3c0e2b9125::t_d7ec2ae54a2906 32-39,98-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3dbd536f0742aed923ed354d7580cddfae2dc3ce",
+  "prompts": {},
+  "sessions": {
+    "s_29bb3c0e2b9125": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-898a-7047-94e6-bead09b4591d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_5061331f918af4": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8923-7047-94e6-bea3d13b7a1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_7287f08f532739": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8958-7047-94e6-bea88c865e4d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_cc1c5a6bd7921e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8945-7047-94e6-bea70bb805be",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
