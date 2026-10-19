@@ -1,0 +1,41 @@
+.changeset/operation-replay.md
+  s_90ce42b2579dd8::t_4b3c201a266712 1-7
+packages/durability/src/durability.ts
+  s_5061331f918af4::t_4cffc2dbf65d51 60-61,168-240,281-293,431-435,609-676,684,687
+packages/durability/src/index.test.ts
+  s_5061331f918af4::t_5669cdd942938f 46,66,158-159,161-163,223-226,276,1188-1489
+packages/durability/src/migrations.ts
+  s_09ff76da01d4bc::t_a227d37c9e6327 94-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "77c08f1ff52538a4da94ab0dc62c24d99d5c3bea",
+  "prompts": {},
+  "sessions": {
+    "s_09ff76da01d4bc": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-896a-7047-94e6-beaa9319119c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_5061331f918af4": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151bf-8923-7047-94e6-bea3d13b7a1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_90ce42b2579dd8": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a151c5-1c5f-7047-94e6-beb61665c0bb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
