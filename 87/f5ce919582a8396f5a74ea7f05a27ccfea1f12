@@ -1,0 +1,19 @@
+.changeset/durable-memoize.md
+  s_ac3394297cebb2::t_4eef3e76c0e76a 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "87f5ce919582a8396f5a74ea7f05a27ccfea1f12",
+  "prompts": {},
+  "sessions": {
+    "s_ac3394297cebb2": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a153f2-c7b2-7437-af27-69bcb51b176c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
