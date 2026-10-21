@@ -2,7 +2,7 @@ import { traceLifecycle, traceMethods } from './dev.js';
 import { SemaphoreProtocolError, reportFailure } from './errors.js';
 import {
   durabilitySemaphoreMigrations,
-  migrate,
+  migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
 import { assertPositiveInteger } from './policy.js';
@@ -240,7 +240,7 @@ export class DurabilitySemaphoreServer {
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrate(
+    return migrateCapability(
       context.storage,
       'semaphore',
       durabilitySemaphoreMigrations,

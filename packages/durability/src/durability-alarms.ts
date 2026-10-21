@@ -15,7 +15,7 @@ import {
 } from './lifecycle.js';
 import {
   durabilityNamedAlarmMigrations,
-  migrate,
+  migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
 import {
@@ -202,12 +202,12 @@ class DurabilityAlarmsCore<Names extends string> {
     registerTrackedSource(this, this.#trackedSource());
   }
 
-  /** Applies or reverts the `durability_alarms` schema; see {@link migrate}. */
+  /** Applies or reverts the `durability_alarms` schema; see {@link migrateCapability}. */
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrate(
+    return migrateCapability(
       context.storage,
       'namedAlarms',
       durabilityNamedAlarmMigrations,

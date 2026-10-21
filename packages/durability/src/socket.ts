@@ -3,7 +3,7 @@ import { trace, traceFunction, traceMethods, traceStorage } from './dev.js';
 import { reportFailure, serializeError } from './errors.js';
 import {
   durabilitySocketMigrations,
-  migrate,
+  migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
 import { deserialize, serialize } from './serialization.js';
@@ -174,7 +174,12 @@ class DurabilitySocketCore<
       });
     }
 
-    migrate(this.#storage, 'socket', durabilitySocketMigrations, undefined);
+    migrateCapability(
+      this.#storage,
+      'socket',
+      durabilitySocketMigrations,
+      undefined
+    );
     // Keep-alive pings are answered by the runtime without waking a hibernated object.
     this.#context.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair(
@@ -189,7 +194,7 @@ class DurabilitySocketCore<
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrate(
+    return migrateCapability(
       context.storage,
       'socket',
       durabilitySocketMigrations,

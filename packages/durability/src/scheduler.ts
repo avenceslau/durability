@@ -13,7 +13,7 @@ import {
   type Emit,
   type LifecycleEntity,
 } from './lifecycle.js';
-import { migrate, type MigrationCapability } from './migrations.js';
+import { migrateCapability, type MigrationCapability } from './migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
 import {
   claimAttempt,
@@ -258,7 +258,7 @@ export class Engine {
     if (this.migrated.has(capability)) {
       return;
     }
-    migrate(this.storage, capability, migrations, undefined);
+    migrateCapability(this.storage, capability, migrations, undefined);
     this.migrated.add(capability);
   }
 

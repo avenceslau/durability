@@ -18,7 +18,7 @@ import {
 } from './lifecycle.js';
 import { RoutingLoad, type EnqueueResult, type LoadSnapshot } from './load.js';
 import type { MessageWrite, StoredMessage } from './stored-message.js';
-import { durabilityFanoutMigrations, migrate } from './migrations.js';
+import { durabilityFanoutMigrations, migrateCapability } from './migrations.js';
 import {
   assertPositiveInteger,
   createPolicyResolver,
@@ -254,7 +254,7 @@ export class DurabilityFanout<Body = unknown> {
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ) {
-    return migrate(
+    return migrateCapability(
       context.storage,
       'fanout',
       durabilityFanoutMigrations,

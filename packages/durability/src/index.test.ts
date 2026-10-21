@@ -13,8 +13,9 @@ import {
   NonRetryableError as DurabilityNonRetryableError,
   type DurableCall,
   type DurabilityLifecycleEvent,
+  migrate,
 } from './index';
-import { migrate } from './migrations';
+import { migrateCapability } from './migrations';
 import { contextFor, FakeStorage } from './test-fakes';
 import { exponential, jitter } from './utils';
 
@@ -326,7 +327,7 @@ describe('migrations', () => {
     ];
 
     expect(() =>
-      migrate(
+      migrateCapability(
         storage as unknown as DurableObjectStorage,
         'operations',
         migrations,
@@ -339,6 +340,98 @@ describe('migrations', () => {
         .exec('SELECT COUNT(*) AS count FROM durability_migrations')
         .toArray()[0]?.['count']
     ).toBe(0);
+  });
+});
+
+describe('migrate', () => {
+  const jobsMigrations = [
+    {
+      name: '0001_create_jobs',
+      up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+      down: 'DROP TABLE jobs;',
+    },
+    {
+      name: '0002_add_jobs_status',
+      up: "ALTER TABLE jobs ADD COLUMN status TEXT NOT NULL DEFAULT 'queued';",
+      down: 'ALTER TABLE jobs DROP COLUMN status;',
+    },
+  ];
+  const asStorage = (storage: FakeStorage) =>
+    storage as unknown as DurableObjectStorage;
+
+  it('tracks application migrations apart from durability history', () => {
+    const storage = new FakeStorage();
+    Durability.migrate(contextFor(storage));
+
+    expect(migrate(asStorage(storage), jobsMigrations)).toEqual({
+      applied: ['0001_create_jobs', '0002_add_jobs_status'],
+      rolledBack: [],
+    });
+    expect(migrate(asStorage(storage), jobsMigrations)).toEqual({
+      applied: [],
+      rolledBack: [],
+    });
+    expect(tableNames(storage)).toEqual([
+      'durability_calls',
+      'durability_migrations',
+      'jobs',
+      'schema_migrations',
+    ]);
+    expect(
+      storage.sql
+        .exec('SELECT COUNT(*) AS count FROM durability_migrations')
+        .toArray()[0]?.['count']
+    ).toBe(3);
+  });
+
+  it('moves to a target and drops its history table once empty', () => {
+    const storage = new FakeStorage();
+    migrate(asStorage(storage), jobsMigrations, { table: 'app_history' });
+
+    expect(
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'app_history',
+        target: '0001_create_jobs',
+      })
+    ).toEqual({ applied: [], rolledBack: ['0002_add_jobs_status'] });
+    expect(
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'app_history',
+        target: null,
+      })
+    ).toEqual({ applied: [], rolledBack: ['0001_create_jobs'] });
+    expect(tableNames(storage)).toEqual([]);
+  });
+
+  it('reverts migrations an application downgrade does not know', () => {
+    const storage = new FakeStorage();
+    migrate(asStorage(storage), jobsMigrations);
+
+    expect(migrate(asStorage(storage), jobsMigrations.slice(0, 1))).toEqual({
+      applied: [],
+      rolledBack: ['0002_add_jobs_status'],
+    });
+    expect(
+      storage.sql
+        .exec<{ name: string }>(`SELECT name FROM pragma_table_info('jobs')`)
+        .toArray()
+        .map(({ name }) => name)
+    ).toEqual(['id']);
+  });
+
+  it('rejects a history table it cannot safely name', () => {
+    const storage = new FakeStorage();
+
+    expect(() =>
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'jobs; DROP TABLE x',
+      })
+    ).toThrow('Invalid schema migration table');
+    expect(() =>
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'durability_migrations',
+      })
+    ).toThrow('Invalid schema migration table');
   });
 });
 

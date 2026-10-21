@@ -613,10 +613,17 @@ const legacyHalves = [
   'durability_0004_alarms_generation_and_created_at',
 ];
 
-const ensureHistoryTable = (sql: SqlStorage): void => {
+/** Where one list of migrations records its history, and how errors name it. */
+type HistoryScope = {
+  table: string;
+  capability: string;
+  label: string;
+};
+
+const ensureHistoryTable = (sql: SqlStorage, table: string): void => {
   // The base shape matches the table earlier versions created through workers-qb.
   sql.exec(`
-    CREATE TABLE IF NOT EXISTS ${migrationTableName} (
+    CREATE TABLE IF NOT EXISTS ${table} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
       applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
@@ -624,13 +631,13 @@ const ensureHistoryTable = (sql: SqlStorage): void => {
   `);
   const columns = new Set(
     sql
-      .exec(`SELECT name FROM pragma_table_info('${migrationTableName}')`)
+      .exec(`SELECT name FROM pragma_table_info('${table}')`)
       .toArray()
       .map((row) => row['name'])
   );
   for (const column of ['capability', 'down']) {
     if (!columns.has(column)) {
-      sql.exec(`ALTER TABLE ${migrationTableName} ADD COLUMN ${column} TEXT`);
+      sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
     }
   }
 };
@@ -655,45 +662,50 @@ const translateLegacyHistory = (sql: SqlStorage): void => {
 
 const readHistory = (
   sql: SqlStorage,
-  capability: MigrationCapability,
+  scope: HistoryScope,
   migrations: DurableMigrations
 ): HistoryRow[] => {
   // Rows written before capabilities were tracked are claimed by the list that names them.
   for (const { name } of migrations) {
     sql.exec(
-      `UPDATE ${migrationTableName} SET capability = ?
+      `UPDATE ${scope.table} SET capability = ?
        WHERE name = ? AND capability IS NULL`,
-      capability,
+      scope.capability,
       name
     );
   }
   return historyRowSchema.array().parse(
     sql
       .exec(
-        `SELECT id, name, capability, down FROM ${migrationTableName}
+        `SELECT id, name, capability, down FROM ${scope.table}
          WHERE capability = ? ORDER BY id`,
-        capability
+        scope.capability
       )
       .toArray()
   );
 };
 
-const runDown = (sql: SqlStorage, name: string, down: string | null): void => {
+const runDown = (
+  sql: SqlStorage,
+  table: string,
+  name: string,
+  down: string | null
+): void => {
   if (down === null) {
     throw new Error(`Migration "${name}" has no stored down script`);
   }
   sql.exec(down);
-  sql.exec(`DELETE FROM ${migrationTableName} WHERE name = ?`, name);
+  sql.exec(`DELETE FROM ${table} WHERE name = ?`, name);
 };
 
 /**
- * Reverts migrations recorded by a newer library version, newest first, using
- * the down scripts it stored. Refuses when the schema is further ahead than
+ * Reverts migrations recorded by a newer version, newest first, using the down
+ * scripts it stored. Refuses when the schema is further ahead than
  * {@link maxFutureMigrations}.
  */
 const revertFutureMigrations = (
   storage: MigrationStorage,
-  capability: MigrationCapability,
+  scope: HistoryScope,
   history: HistoryRow[],
   known: ReadonlySet<string>
 ): string[] => {
@@ -703,29 +715,20 @@ const revertFutureMigrations = (
   }
   if (future.length > maxFutureMigrations) {
     throw new Error(
-      `Durability ${capability} schema is ${future.length} migrations ahead of this version; refusing to revert more than ${maxFutureMigrations}`
+      `${scope.label} schema is ${future.length} migrations ahead of this version; refusing to revert more than ${maxFutureMigrations}`
     );
   }
   storage.transactionSync(() => {
     for (const row of future) {
-      runDown(storage.sql, row.name, row.down);
+      runDown(storage.sql, scope.table, row.name, row.down);
     }
   });
   return future.map(({ name }) => name);
 };
 
-/**
- * Moves one capability's schema to a target migration, applying or reverting as
- * needed. `null` reverts every migration in the list; the shared migration
- * table is dropped once no durability history remains.
- *
- * Each migration's `down` is stored alongside its history row so a later
- * downgrade of the library can still revert it. Batches of migrations apply or
- * revert atomically.
- */
-export const migrate = (
+const migrateScope = (
   storage: MigrationStorage,
-  capability: MigrationCapability,
+  scope: HistoryScope,
   migrations: DurableMigrations,
   target: string | null | undefined
 ): DurabilityMigrationResult => {
@@ -739,19 +742,18 @@ export const migrate = (
       ? -1
       : migrations.findIndex((migration) => migration.name === resolvedTarget);
   if (resolvedTarget !== null && targetIndex === -1) {
-    throw new Error(`Unknown durability migration target "${resolvedTarget}"`);
+    throw new Error(
+      `Unknown ${scope.label} migration target "${resolvedTarget}"`
+    );
   }
 
-  ensureHistoryTable(storage.sql);
-  translateLegacyHistory(storage.sql);
+  ensureHistoryTable(storage.sql, scope.table);
+  if (scope.table === migrationTableName) {
+    translateLegacyHistory(storage.sql);
+  }
   const known = new Set(migrations.map(({ name }) => name));
-  const history = readHistory(storage.sql, capability, migrations);
-  const rolledBack = revertFutureMigrations(
-    storage,
-    capability,
-    history,
-    known
-  );
+  const history = readHistory(storage.sql, scope, migrations);
+  const rolledBack = revertFutureMigrations(storage, scope, history, known);
   const applied = new Map(
     history
       .filter(({ name }) => known.has(name))
@@ -771,21 +773,21 @@ export const migrate = (
 
   storage.transactionSync(() => {
     for (const migration of toRevert) {
-      runDown(storage.sql, migration.name, migration.down);
+      runDown(storage.sql, scope.table, migration.name, migration.down);
     }
     for (const migration of toApply) {
       storage.sql.exec(migration.up);
       storage.sql.exec(
-        `INSERT INTO ${migrationTableName} (name, capability, down) VALUES (?, ?, ?)`,
+        `INSERT INTO ${scope.table} (name, capability, down) VALUES (?, ?, ?)`,
         migration.name,
-        capability,
+        scope.capability,
         migration.down
       );
     }
     // Keep stored down scripts current so a downgrade runs the latest revert logic.
     for (const migration of toRefresh) {
       storage.sql.exec(
-        `UPDATE ${migrationTableName} SET down = ? WHERE name = ?`,
+        `UPDATE ${scope.table} SET down = ? WHERE name = ?`,
         migration.down,
         migration.name
       );
@@ -796,15 +798,99 @@ export const migrate = (
     .object({ count: z.number().int() })
     .parse(
       storage.sql
-        .exec(`SELECT COUNT(*) AS count FROM ${migrationTableName}`)
+        .exec(`SELECT COUNT(*) AS count FROM ${scope.table}`)
         .toArray()[0]
     ).count;
   if (remaining === 0) {
-    storage.sql.exec(`DROP TABLE IF EXISTS ${migrationTableName}`);
+    storage.sql.exec(`DROP TABLE IF EXISTS ${scope.table}`);
   }
 
   return {
     applied: toApply.map(({ name }) => name),
     rolledBack: [...rolledBack, ...toRevert.map(({ name }) => name)],
   };
+};
+
+/**
+ * Moves one capability's schema to a target migration, applying or reverting as
+ * needed. `null` reverts every migration in the list; the shared migration
+ * table is dropped once no durability history remains.
+ *
+ * Each migration's `down` is stored alongside its history row so a later
+ * downgrade of the library can still revert it. Batches of migrations apply or
+ * revert atomically.
+ */
+export const migrateCapability = (
+  storage: MigrationStorage,
+  capability: MigrationCapability,
+  migrations: DurableMigrations,
+  target: string | null | undefined
+): DurabilityMigrationResult =>
+  migrateScope(
+    storage,
+    {
+      table: migrationTableName,
+      capability,
+      label: `Durability ${capability}`,
+    },
+    migrations,
+    target
+  );
+
+/** Options for {@link migrate}. */
+export type MigrateOptions = {
+  /** History table for these migrations. Defaults to `schema_migrations`. */
+  table?: string;
+  /**
+   * Migration to move the schema to. Defaults to the last one; `null` reverts
+   * every migration.
+   */
+  target?: string | null;
+};
+
+const sqlIdentifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Moves an application's own schema to a target migration, with the same
+ * guarantees durability gives its tables: each batch applies or reverts in one
+ * synchronous transaction, every history row stores its `down` script, and a
+ * Durable Object running older code reverts up to two migrations it does not
+ * know before refusing.
+ *
+ * The history lives in its own table, apart from `durability_migrations`, and
+ * is dropped once no migration remains applied.
+ *
+ * @example
+ * ```ts
+ * constructor(ctx: DurableObjectState, env: Env) {
+ *   super(ctx, env);
+ *   migrate(ctx.storage, [
+ *     {
+ *       name: '0001_create_jobs',
+ *       up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+ *       down: 'DROP TABLE jobs;',
+ *     },
+ *   ]);
+ * }
+ * ```
+ */
+export const migrate = (
+  storage: MigrationStorage,
+  migrations: DurableMigrations,
+  options: MigrateOptions = {}
+): DurabilityMigrationResult => {
+  const table = options.table ?? 'schema_migrations';
+  if (!sqlIdentifier.test(table) || table === migrationTableName) {
+    throw new Error(`Invalid schema migration table "${table}"`);
+  }
+  return migrateScope(
+    storage,
+    {
+      table,
+      capability: 'schema',
+      label: `"${table}"`,
+    },
+    migrations,
+    options.target
+  );
 };

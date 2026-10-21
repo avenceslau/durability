@@ -82,9 +82,12 @@ export {
   durabilityFanoutMigrations,
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
+  migrate,
   type DurabilityMigrationResult,
+  type MigrateOptions,
   type MigrationCapability,
 } from './migrations.js';
+export type { DurableMigrations } from '@durability/storage';
 export type {
   DurabilityAlarmMethodOptions,
   DurabilityMethodOptions,
