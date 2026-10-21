@@ -820,7 +820,7 @@ const migrateScope = (
  * downgrade of the library can still revert it. Batches of migrations apply or
  * revert atomically.
  */
-export const migrate = (
+export const migrateCapability = (
   storage: MigrationStorage,
   capability: MigrationCapability,
   migrations: DurableMigrations,
@@ -837,8 +837,8 @@ export const migrate = (
     target
   );
 
-/** Options for {@link migrateSchema}. */
-export type MigrateSchemaOptions = {
+/** Options for {@link migrate}. */
+export type MigrateOptions = {
   /** History table for these migrations. Defaults to `schema_migrations`. */
   table?: string;
   /**
@@ -864,7 +864,7 @@ const sqlIdentifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * ```ts
  * constructor(ctx: DurableObjectState, env: Env) {
  *   super(ctx, env);
- *   migrateSchema(ctx.storage, [
+ *   migrate(ctx.storage, [
  *     {
  *       name: '0001_create_jobs',
  *       up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
@@ -874,10 +874,10 @@ const sqlIdentifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * }
  * ```
  */
-export const migrateSchema = (
+export const migrate = (
   storage: MigrationStorage,
   migrations: DurableMigrations,
-  options: MigrateSchemaOptions = {}
+  options: MigrateOptions = {}
 ): DurabilityMigrationResult => {
   const table = options.table ?? 'schema_migrations';
   if (!sqlIdentifier.test(table) || table === migrationTableName) {

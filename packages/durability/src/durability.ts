@@ -19,7 +19,7 @@ import {
 } from './lifecycle.js';
 import {
   durabilityOperationMigrations,
-  migrate,
+  migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
 import {
@@ -356,12 +356,12 @@ class DurabilityCore<Handlers extends HandlerMap> {
     registerTrackedSource(this, this.#trackedSource());
   }
 
-  /** Applies or reverts the `durability_calls` schema; see {@link migrate}. */
+  /** Applies or reverts the `durability_calls` schema; see {@link migrateCapability}. */
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrate(
+    return migrateCapability(
       context.storage,
       'operations',
       durabilityOperationMigrations,

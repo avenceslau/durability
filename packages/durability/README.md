@@ -197,11 +197,11 @@ Every history row stores its migration's `down` script. If a Durable Object late
 
 ### Application schemas
 
-`migrateSchema` gives an application's own tables the same guarantees. Its history lives in a separate table (`schema_migrations` unless `table` is set), so it never mixes with durability's:
+`migrate` gives an application's own tables the same guarantees. Its history lives in a separate table (`schema_migrations` unless `table` is set), so it never mixes with durability's:
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
-import { migrateSchema, type DurableMigrations } from 'durability';
+import { migrate, type DurableMigrations } from 'durability';
 
 const migrations: DurableMigrations = [
   {
@@ -214,7 +214,7 @@ const migrations: DurableMigrations = [
 export class Jobs extends DurableObject {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    migrateSchema(ctx.storage, migrations);
+    migrate(ctx.storage, migrations);
   }
 }
 ```
