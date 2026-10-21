@@ -1,0 +1,27 @@
+.changeset/migrate-schema.md
+  s_d68926d199af54::t_6236dd803706ea 1-5
+packages/durability/README.md
+  s_d68926d199af54::t_af16f15b7e7235 198-223
+packages/durability/src/index.test.ts
+  s_d68926d199af54::t_9ea40555395bdb 16,346-436
+packages/durability/src/index.ts
+  s_d68926d199af54::t_4f2fb47f761949 85,87
+packages/durability/src/migrations.ts
+  s_d68926d199af54::t_92134a7b6c064f 616-623,626,634,640,665,671,673,680,682,688-693,698,702-703,708,718,723,729,731,745-747,750-753,755-756,776,781,783,790,801,805,813-896
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1bb9fe54c698d6f18908aa72bb1172fbba508600",
+  "prompts": {},
+  "sessions": {
+    "s_d68926d199af54": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a15a52-77b4-75aa-8d95-d2ef82b9a7b9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
