@@ -195,6 +195,32 @@ Passing a name moves that capability's schema to exactly that version. Each batc
 
 Every history row stores its migration's `down` script. If a Durable Object later runs an older `durability` version, that version reverts the migrations it does not recognize using the stored scripts, so downgrades are safe without code changes. To guard against deploying a very old version by mistake, at most two unknown migrations are reverted; beyond that, construction throws. The `durability_migrations` table is dropped once no durability history remains.
 
+### Application schemas
+
+`migrateSchema` gives an application's own tables the same guarantees. Its history lives in a separate table (`schema_migrations` unless `table` is set), so it never mixes with durability's:
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { migrateSchema, type DurableMigrations } from 'durability';
+
+const migrations: DurableMigrations = [
+  {
+    name: '0001_create_jobs',
+    up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+    down: 'DROP TABLE jobs;',
+  },
+];
+
+export class Jobs extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    migrateSchema(ctx.storage, migrations);
+  }
+}
+```
+
+Pass `target` to move to a named migration, or `null` to revert every migration and drop the history table.
+
 ## Retries, timeouts, and terminal failures
 
 Attempts use exponential backoff with equal jitter, stop after five attempts, and time out after five minutes by default. The retry `delay` function fully controls scheduling and can be overridden globally or per method on either helper:
