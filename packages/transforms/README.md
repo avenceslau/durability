@@ -113,13 +113,13 @@ await stub.greet('Ada');
 
 `applyTransforms` mutates the class prototype and is cumulative. Call it once during module initialization, not per request or instance.
 
-Caller transforms also receive `actorId`, the `DurableObjectId` of the Durable Object addressed by the stub. It is `undefined` for every other binding. It stays on the caller and is not sent to the callee:
+Caller transforms defined for a Durable Object class also receive `actorId`, the `DurableObjectId` of the object addressed by the stub. Transforms defined for other targets, such as `defineTransform<object>()`, do not see the field, and a Durable Object transform cannot be attached to a binding that is not a Durable Object stub. The ID stays on the caller and is not sent to the callee:
 
 ```ts
-const actorLog = defineTransform<object>().caller(
+const actorLog = defineTransform<ExampleObject>().caller(
   () =>
     async ({ actorId, method, next }) => {
-      console.log('rpc', method, actorId?.toString());
+      console.log('rpc', method, actorId.toString());
       return next();
     }
 );

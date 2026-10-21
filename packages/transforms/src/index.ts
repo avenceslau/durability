@@ -89,13 +89,13 @@ type SharedTransformContext<
 export type CallerTransformContext<
   TTarget extends object,
   TContext extends TransformContext,
-> = SharedTransformContext<TTarget, TContext> & {
-  /**
-   * ID of the Durable Object addressed by the stub, or `undefined` when the
-   * target is not a Durable Object stub.
-   */
-  actorId: DurableObjectId | undefined;
-};
+> = SharedTransformContext<TTarget, TContext> &
+  (TTarget extends Rpc.DurableObjectBranded
+    ? {
+        /** ID of the Durable Object addressed by the stub. */
+        actorId: DurableObjectId;
+      }
+    : unknown);
 
 type TargetEnv<TTarget extends object> = TTarget extends { env: infer TEnv }
   ? TEnv
@@ -201,6 +201,15 @@ type TransformContextOf<TTransform> = TTransform extends {
 type TransformContextInvoker = {
   invoke(method: string, args: unknown[]): Promise<unknown>;
 };
+
+// A transform typed for a Durable Object reads `actorId`, so it may only be
+// attached to a stub that carries one.
+type RequireDurableObjectStub<TTarget, TTransform> =
+  TransformTargetOf<TTransform> extends Rpc.DurableObjectBranded
+    ? TTarget extends { readonly id: DurableObjectId }
+      ? unknown
+      : { readonly durableObjectTransformRequiresDurableObjectStub: never }
+    : unknown;
 
 type RequireSetContext<TTarget, TTransform> =
   keyof TransformContextOf<TTransform> extends never
@@ -381,7 +390,8 @@ export type TransformWith<TTarget extends object> = {
   with<TTransform>(
     transform: TTransform &
       TransformIdentity &
-      RequireSetContext<TTarget, TTransform> & {
+      RequireSetContext<TTarget, TTransform> &
+      RequireDurableObjectStub<TTarget, TTransform> & {
         callerFactory: (options: CallerOptions<TTransform>) => unknown;
       },
     ...options: TransformOptionsArguments<CallerOptions<TTransform>>
