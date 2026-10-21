@@ -113,6 +113,20 @@ await stub.greet('Ada');
 
 `applyTransforms` mutates the class prototype and is cumulative. Call it once during module initialization, not per request or instance.
 
+Caller transforms defined for a Durable Object class also receive `actorId`, the `DurableObjectId` of the object addressed by the stub. Transforms defined for other targets, such as `defineTransform<object>()`, do not see the field, and a Durable Object transform cannot be attached to a binding that is not a Durable Object stub. The ID stays on the caller and is not sent to the callee:
+
+```ts
+const actorLog = defineTransform<ExampleObject>().caller(
+  () =>
+    async ({ actorId, method, next }) => {
+      console.log('rpc', method, actorId.toString());
+      return next();
+    }
+);
+
+await env.EXAMPLE.getByName('example').with(actorLog).greet('Ada');
+```
+
 Transform context is untrusted caller metadata. It is suitable for request IDs, tracing, and hints, but it must not be accepted as proof of identity, tenancy, roles, or authorization. Derive authorization from independently authenticated data on the callee.
 
 ## Built-in caller transforms
