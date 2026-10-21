@@ -1,8 +1,14 @@
 import { env } from 'cloudflare:test';
 import { Result } from 'better-result';
 import { describe, expect, it } from 'vitest';
-import { defineTransform, errorBoundary, retry, timeout } from '../src/index';
-import type { PipelineDO } from './test-worker';
+import {
+  createTransformStub,
+  defineTransform,
+  errorBoundary,
+  retry,
+  timeout,
+} from '../src/index';
+import type { ContextService, PipelineDO } from './test-worker';
 
 type Call = { method: string; args: unknown[] };
 
@@ -22,7 +28,9 @@ const actorRecorder = defineTransform<PipelineDO>().caller(
     }
 );
 
-function assertActorIdTypes() {
+function assertActorIdTypes(
+  binding: Service<typeof ContextService> | DurableObjectStub<PipelineDO>
+) {
   defineTransform<object>().caller(() => async (context) => {
     // @ts-expect-error only Durable Object transforms receive an actor ID
     void context.actorId;
@@ -31,6 +39,9 @@ function assertActorIdTypes() {
 
   // @ts-expect-error Durable Object transforms require a Durable Object stub
   env.KV.with(actorRecorder, []);
+
+  // @ts-expect-error every member of a union target must be a Durable Object stub
+  createTransformStub(binding).with(actorRecorder, []);
 }
 void assertActorIdTypes;
 

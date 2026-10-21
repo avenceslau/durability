@@ -203,10 +203,11 @@ type TransformContextInvoker = {
 };
 
 // A transform typed for a Durable Object reads `actorId`, so it may only be
-// attached to a stub that carries one.
+// attached to a stub that carries one. The tuple keeps a union target from
+// passing when only some members are Durable Object stubs.
 type RequireDurableObjectStub<TTarget, TTransform> =
   TransformTargetOf<TTransform> extends Rpc.DurableObjectBranded
-    ? TTarget extends { readonly id: DurableObjectId }
+    ? [TTarget] extends [{ readonly id: DurableObjectId }]
       ? unknown
       : { readonly durableObjectTransformRequiresDurableObjectStub: never }
     : unknown;
