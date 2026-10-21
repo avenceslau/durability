@@ -1,0 +1,25 @@
+.changeset/camel-case-keys.md
+  s_d68926d199af54::t_ba3262ab22856f 1-5
+packages/transforms/README.md
+  s_d68926d199af54::t_4aa9c83ed26d2f 138
+packages/transforms/src/index.ts
+  s_d68926d199af54::t_6c39f7d28fc190 123-124,337-341,1293-1385
+packages/transforms/tests/transforms.test.ts
+  s_d68926d199af54::t_8fbd85d7ec8fb7 13,277-330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4688d3a2fa901440dea064534e2e1c4c4065b3c9",
+  "prompts": {},
+  "sessions": {
+    "s_d68926d199af54": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a15a52-77b4-75aa-8d95-d2ef82b9a7b9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
