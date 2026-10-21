@@ -13,6 +13,14 @@ const recorder = defineTransform<object>().caller(
     }
 );
 
+const actorRecorder = defineTransform<object>().caller(
+  (actorIds: (DurableObjectId | undefined)[]) =>
+    async ({ actorId, next }) => {
+      actorIds.push(actorId);
+      return next();
+    }
+);
+
 describe('Vite plugin coverage', () => {
   it('wraps KV, R2, and Workflow bindings', () => {
     expect(env.KV.with).toBeTypeOf('function');
@@ -174,5 +182,31 @@ describe('Durable Object promise pipelining', () => {
 
     await expect(stub.label).resolves.toBe('pipeline');
     await expect(stub.with(timeout, 1_000).label).resolves.toBe('pipeline');
+  });
+});
+
+describe('caller actor IDs', () => {
+  it('exposes the addressed Durable Object ID to caller transforms', async () => {
+    const actorIds: (DurableObjectId | undefined)[] = [];
+    const stub = env.PIPELINE_DO.getByName('actor').with(
+      actorRecorder,
+      actorIds
+    );
+
+    await stub.echo('first');
+    await stub.echo('second');
+
+    const expected = env.PIPELINE_DO.idFromName('actor');
+    expect(actorIds).toHaveLength(2);
+    expect(actorIds.every((actorId) => actorId?.equals(expected))).toBe(true);
+  });
+
+  it('leaves the actor ID undefined for non-Durable Object bindings', async () => {
+    const actorIds: (DurableObjectId | undefined)[] = [];
+
+    await env.CONTEXT_SERVICE.with(actorRecorder, actorIds).greet('Ada');
+    await env.KV.with(actorRecorder, actorIds).get('missing');
+
+    expect(actorIds).toEqual([undefined, undefined]);
   });
 });
