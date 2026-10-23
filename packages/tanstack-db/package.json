@@ -1,6 +1,6 @@
 {
   "name": "@durability/tanstack-db",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "TanStack DB collections synced over a DurabilitySocket",
   "type": "module",
   "license": "ISC",
@@ -49,7 +49,7 @@
   ],
   "peerDependencies": {
     "@tanstack/db": ">=0.13.0",
-    "durability": "workspace:^4.0.0"
+    "durability": "workspace:^5.0.0"
   },
   "devDependencies": {
     "@durability/typescript-config": "workspace:*",
