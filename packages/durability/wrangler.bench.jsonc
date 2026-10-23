@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "durability-load-bench",
+  "main": "bench/load-worker.ts",
+  "compatibility_date": "2026-07-07",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LOAD_TEST",
+        "class_name": "LoadTestObject",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["LoadTestObject"],
+    },
+  ],
+}
