@@ -69,13 +69,23 @@ export type DurableAlarmInfo = {
   name: string;
   /** Timestamp originally passed to the named alarm method. */
   scheduledTime: number;
-  /** One-based execution attempt for this scheduled occurrence. */
+  /**
+   * One-based attempt ordinal for this scheduled occurrence, durably recorded
+   * before the handler runs. It is retry and logging context, not a record of
+   * what the handler did: never gate once-only work on it (such as
+   * `attempt === 1`). Key such work on durable state keyed by `idempotencyKey`
+   * instead. See the README identity glossary.
+   */
   attempt: number;
   /** Whether this scheduled occurrence has run before. */
   isRetry: boolean;
   /** Number of previous attempts for this scheduled occurrence. */
   retryCount: number;
-  /** Stable key shared by every attempt of this scheduled occurrence. */
+  /**
+   * Stable key shared by every attempt of this scheduled occurrence. This is
+   * the occurrence's logical identity: pass it to downstream services for
+   * deduplication rather than relying on `attempt`.
+   */
   idempotencyKey: string;
   /** Aborts when the attempt exceeds its configured timeout. */
   signal: AbortSignal;
