@@ -13,7 +13,7 @@ import type {
 } from './lifecycle.js';
 import {
   durabilityOutboxMigrations,
-  migrate,
+  migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
 import {
@@ -305,7 +305,7 @@ export class DurabilityOutbox<Value = unknown> {
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrate(
+    return migrateCapability(
       context.storage,
       'outbox',
       durabilityOutboxMigrations,

@@ -1,5 +1,26 @@
 # durability
 
+## 4.3.0
+
+### Minor Changes
+
+- f30c81a: Add a build-time dev mode. Defining `__DURABILITY_DEV__` as `true` logs every public call, storage access, SQL statement, and lifecycle event as structured, sequence-numbered `console.debug` entries, so deterministic simulation tests can print or capture a full transcript. Production builds that define it as `false` drop the tracing code.
+- c7e83a8: Add the experimental `DurabilityTopology` to `durability/experimental`. A coordinator Durable Object holds the membership of shard groups, publishes each group's snapshot to a read store, and drives every member to the latest value of each state channel, both over `DurabilityOutbox` channels. Readers use `DurabilityTopology.client`, which caches and validates snapshots and never contacts the coordinator unless the application opts into a fallback.
+- 59f6c3a: Add `migrate` for an application's own SQLite schema. It applies and reverts `{ name, up, down }` migrations the way durability migrates its tables, stores each `down` script so older code can revert up to two unknown migrations, and keeps the history in its own table (`schema_migrations` by default).
+
+### Patch Changes
+
+- 37b81b5: `DurabilityLog` leased consumers no longer wedge when retention trims records they have not finished. A range awaiting redelivery (nacked or expired) that retention trimmed made every `lease()` re-claim it and throw `LogTruncatedError`, so nothing past it was delivered again; `lease()` now throws once, drops the trimmed offsets from the range, and continues from the retained records. A leased consumer's cursor also moves past offsets trimmed before they were ever leased, instead of staying behind every acked range.
+- e99d557: A scheduler checks each capability's schema once, however many helpers of that kind attach to it. Several outbox channels, a semaphore queue's internal outbox, or `DurabilityTopology` on outbox channels each re-ran the same migration check on every construction, adding statements (and chances to hit a storage error) to every wake of the object.
+- 19f4541: `DurabilitySemaphoreQueue` (experimental) renews leases that have permits in use. A client reported a lease only with a permit request or when its counts changed, so a client running long work with nothing else queued let the lease expire at the holder, which then leased the same permits again and exceeded the limit. The queue now reports such a lease at half its lifetime at the holder, on its own alarm.
+
+  The holder no longer forgets a lease nobody reported for `ttlMs`: it retires it and keeps its permits counted until the client reports what it drew and released, as it does for claimed grant permits. A client cut off from the holder for longer than the TTL could otherwise have its running work's permits leased again. The queue reports a stopped lease until the holder confirms it settled.
+
+  The queue also recovers faster from faults: claim and release reports retry at most every 5 seconds instead of backing off for minutes (a claim the holder has not heard about within `grantTimeoutMs` is reclaimed), and a request whose reply cannot be applied is retried after the retry delay instead of waiting for the request deadline.
+
+- Updated dependencies [9a21161]
+  - @durability/transforms@0.6.0
+
 ## 4.2.0
 
 ### Minor Changes

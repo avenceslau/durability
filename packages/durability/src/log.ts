@@ -11,7 +11,7 @@ import { RoutingLoad, type EnqueueResult, type LoadSnapshot } from './load.js';
 import {
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
-  migrate,
+  migrateCapability,
 } from './migrations.js';
 import { assertPositiveInteger } from './policy.js';
 import {
@@ -655,7 +655,12 @@ export class DurabilityLog<Body = unknown> {
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ) {
-    return migrate(context.storage, 'log', durabilityLogMigrations, target);
+    return migrateCapability(
+      context.storage,
+      'log',
+      durabilityLogMigrations,
+      target
+    );
   }
 
   /**
