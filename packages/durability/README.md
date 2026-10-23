@@ -2,7 +2,7 @@
 
 Composable capabilities for application-owned Cloudflare Durable Objects:
 
-- **`Durability`** — effectively-once operations with retries, idempotency, and result lookup.
+- **`Durability`** — at-least-once operations with stable idempotency keys, retries, and result lookup.
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
 - **`DurabilityOutbox`** _(experimental, `durability/experimental`)_ — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
@@ -15,6 +15,46 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 Durable capabilities own their storage and migrations. Routing observations are in-memory and advisory. When an object composes durable capabilities, one `DurabilityScheduler` shares its physical alarm and concurrency pool. No queue factory, generated DO class, or special consumer superclass is required.
 
 Durability is not an event-sourcing, replay-log, or workflow-orchestration engine: [memoized](#memoize) results only last while one operation or alarm occurrence is retried, and are deleted when it settles. Operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed work is retried from later alarms. Only SQLite-backed Durable Object classes are supported.
+
+## Delivery and safety contract
+
+Durability executes work **at least once** with a stable idempotency key per operation or named alarm. "Effectively once" is a business outcome you earn by making the receiver deduplicate that key or reconcile an uncertain prior outcome; it is never an unconditional platform guarantee. Read this before copying an example that mutates an external system.
+
+| Concern                    | Guarantee                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| Registration / scheduling  | Exactly once — the durable record commits atomically or not at all.          |
+| Local completion record    | Deduplicated by the stable key, so retries never double-record a result.     |
+| Handler delivery           | At least once — a handler may run again after a crash, timeout, or eviction. |
+| External side effect       | At least once — the library cannot close a cross-system transaction.         |
+| "Effectively once" outcome | Your responsibility — requires an idempotent or reconciling receiver.        |
+
+The unavoidable window: a handler asks an external system to commit an effect, the system commits it, then the acknowledgement is lost or the object stops before the local completion record commits. Durability retries the same stable key. Pass that key (`DurableCall.id`, or an alarm handler's `idempotencyKey`) to the external system so it can collapse the duplicate. An HTTP success — or failure — is not proof of the committed outcome after a lost acknowledgement.
+
+The stable key is the call `id` you choose (or an alarm name). Namespace it per logical operation (`resize:${imageId}`), keep it stable across retries, and never reuse one key for different payloads: an ID stays bound to its operation and payload for the life of the record. A receiver-side idempotency table turns at-least-once delivery into an effectively-once effect by keying committed effects on it:
+
+```ts
+// In the receiving Durable Object, keyed on the caller's stable id.
+async chargeOnce(key: string, amountCents: number) {
+  const prior = this.ctx.storage.sql
+    .exec<{ result: string }>('SELECT result FROM charges WHERE key = ?', key)
+    .toArray();
+  if (prior.length > 0) {
+    return JSON.parse(prior[0]!.result); // replay: return the first committed outcome
+  }
+
+  const result = await this.gateway.charge(amountCents);
+  this.ctx.storage.sql.exec(
+    'INSERT INTO charges (key, result) VALUES (?, ?)',
+    key,
+    JSON.stringify(result)
+  );
+  return result;
+}
+```
+
+The sketch assumes one call per key at a time; the gateway `await` lets other requests interleave, so concurrent calls for the same key need a pending row or the gateway's own idempotency key.
+
+When a receiver can neither deduplicate the key nor reconcile the prior outcome, do not retry the effect automatically: compensate (a saga) or require a human decision instead.
 
 ## Migrating to v3
 
@@ -284,7 +324,7 @@ Throw `NonRetryableError` to move work directly to `failed` without another atte
 
 ## Delivery semantics and concurrency
 
-Work is delivered at least once. A process can stop after a side effect succeeds but before its completion record commits, so handlers should be idempotent and pass the call ID or alarm `idempotencyKey` to external services.
+Work is delivered at least once, as the [delivery and safety contract](#delivery-and-safety-contract) describes. A process can stop after a side effect succeeds but before its completion record commits, so handlers should be idempotent and pass the call ID or alarm `idempotencyKey` to external services.
 
 `alarmConcurrency` defaults to 10 and is one FIFO limit shared by eager operation handlers, timer-driven work, and physical-alarm work attached to the same scheduler. Newly registered operations start eagerly only when a permit is immediately available. Work due before the physical-alarm minimum enters the same queue when its in-memory timer fires.
 
