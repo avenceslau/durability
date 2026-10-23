@@ -29,6 +29,7 @@ export class SocketTestObject extends DurableObject<Env> {
         return payload;
       },
     },
+    includeResults: true,
   });
 
   private readonly tracker = new DurabilityTracker({
@@ -75,7 +76,8 @@ export class SocketTestObject extends DurableObject<Env> {
     this.durability.lifecycle((lifecycleEvent) => {
       if (
         lifecycleEvent.type === 'attempt_settled' &&
-        lifecycleEvent.outcome === 'completed'
+        lifecycleEvent.outcome === 'completed' &&
+        lifecycleEvent.result !== undefined
       ) {
         this.socket.created(lifecycleEvent.result);
       }
