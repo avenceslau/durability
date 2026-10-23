@@ -1323,6 +1323,57 @@ describe('Durability', () => {
       })
     );
   });
+
+  it('omits handler results from default lifecycle events', async () => {
+    const storage = new FakeStorage();
+    const events: DurabilityLifecycleEvent[] = [];
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => ({ secret: 'token-abc' }) },
+      onLifecycleEvent(event) {
+        events.push(event);
+      },
+    });
+
+    await durability.work({ id: 'events', payload: null });
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.type === 'attempt_settled')).toBe(
+        true
+      )
+    );
+
+    const settled = events.find((event) => event.type === 'attempt_settled');
+    expect(settled).toMatchObject({ outcome: 'completed' });
+    expect(settled).not.toHaveProperty('result');
+    expect(JSON.stringify(events)).not.toContain('token-abc');
+  });
+
+  it('includes handler results only when includeResults is enabled', async () => {
+    const storage = new FakeStorage();
+    const events: DurabilityLifecycleEvent[] = [];
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => ({ secret: 'token-abc' }) },
+      includeResults: true,
+      onLifecycleEvent(event) {
+        events.push(event);
+      },
+    });
+
+    await durability.work({ id: 'events', payload: null });
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.type === 'attempt_settled')).toBe(
+        true
+      )
+    );
+
+    expect(
+      events.find((event) => event.type === 'attempt_settled')
+    ).toMatchObject({
+      outcome: 'completed',
+      result: { secret: 'token-abc' },
+    });
+  });
 });
 
 describe('DurabilityAlarms', () => {
@@ -2152,14 +2203,17 @@ describe('lifecycle hooks', () => {
       handlers: {
         work: async ({ payload }: DurableCall<number>) => payload * 2,
       },
+      includeResults: true,
     });
     const configured: string[] = [];
     const results: number[] = [];
     const detach = durability.lifecycle((event) => {
       if (event.type === 'attempt_settled' && event.outcome === 'completed') {
-        expectTypeOf(event.result).toEqualTypeOf<number>();
+        expectTypeOf(event.result).toEqualTypeOf<number | undefined>();
         expectTypeOf(event.operation).toEqualTypeOf<'work'>();
-        results.push(event.result);
+        if (event.result !== undefined) {
+          results.push(event.result);
+        }
       }
     });
     durability.lifecycle((event) => {

@@ -90,14 +90,18 @@ describe('dev mode', () => {
         query: expect.stringContaining('INSERT INTO durability_calls'),
       })
     );
-    expect(entries).toContainEqual(
-      expect.objectContaining({
-        event: 'durability.dev.lifecycle',
-        type: 'attempt_settled',
-        outcome: 'completed',
-        result: 'hello Ada',
-      })
+    const lifecycle = entries.find(
+      (entry) =>
+        entry.event === 'durability.dev.lifecycle' &&
+        entry['outcome'] === 'completed'
     );
+    expect(lifecycle).toMatchObject({
+      type: 'attempt_settled',
+      outcome: 'completed',
+    });
+    // Results stay out of the default lifecycle event; dev mode still surfaces
+    // them through the handler return trace below.
+    expect(lifecycle).not.toHaveProperty('result');
     expect(entries).toContainEqual(
       expect.objectContaining({
         event: 'durability.dev.call.return',

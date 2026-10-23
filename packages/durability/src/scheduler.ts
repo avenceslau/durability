@@ -100,6 +100,8 @@ export type ExecutionSpec = {
   active: Map<string, ActiveExecution>;
   policy: AttemptPolicy;
   emit: Emit;
+  /** When true, the completed event carries the handler result; omitted by default to keep results out of telemetry. */
+  includeResult?: boolean;
   exhaustedError: () => Error;
   timeoutError: () => Error;
   invoke: (attempt: number, signal: AbortSignal) => unknown;
@@ -680,7 +682,7 @@ export class Engine {
             attempt,
             durationMs: Math.max(0, timestamp - startedAt),
             outcome: 'completed',
-            result,
+            ...(spec.includeResult ? { result } : {}),
           });
         }
       } catch (caught) {

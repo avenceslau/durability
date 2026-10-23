@@ -184,7 +184,8 @@ type TypedOperationEvent<
   ? Event extends { outcome: 'completed' }
     ? Omit<Event, 'operation' | 'result'> & {
         operation: Operation;
-        result: Result;
+        /** Present only when the instance was created with `includeResults: true`. */
+        result?: Result;
       }
     : Event extends object
       ? Omit<Event, 'operation'> & { operation: Operation }
@@ -193,7 +194,8 @@ type TypedOperationEvent<
 
 /**
  * A lifecycle event for one of this instance's operations. Completed events
- * carry the handler's typed result.
+ * carry the handler's typed result only when the instance is created with
+ * `includeResults: true`.
  */
 export type DurabilityOperationEvent<Handlers extends HandlerMap> =
   | {
@@ -236,6 +238,12 @@ export type DurabilityOptions<Handlers extends HandlerMap = HandlerMap> =
     >;
     /** Receives best-effort, non-durable lifecycle metrics events. */
     onLifecycleEvent?: LifecycleHook;
+    /**
+     * Attach the handler's return value to `completed` lifecycle events.
+     * Off by default so results never reach telemetry sinks unintentionally;
+     * enable only when the sink is trusted with result content.
+     */
+    includeResults?: boolean;
   };
 
 /**
@@ -326,6 +334,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
   readonly #policy: PolicyResolver<MethodPolicy>;
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
+  readonly #includeResults: boolean;
   readonly #active = new Map<string, ActiveExecution>();
   readonly #executionStarts = new Map<string, Promise<void>>();
 
@@ -343,6 +352,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       config.onLifecycleEvent
     );
     this.#emit = this.#lifecycle.emit;
+    this.#includeResults = config.includeResults ?? false;
 
     const reserved = new Set(
       Object.getOwnPropertyNames(DurabilityCore.prototype)
@@ -616,6 +626,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
         active: this.#active,
         policy,
         emit: this.#emit,
+        includeResult: this.#includeResults,
         exhaustedError: () =>
           new DurableAttemptsExhaustedError(
             'operation',
