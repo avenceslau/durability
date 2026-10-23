@@ -13,8 +13,13 @@ import {
   type Emit,
   type LifecycleEntity,
 } from './lifecycle.js';
-import { migrate, type MigrationCapability } from './migrations.js';
+import {
+  isSchemaCurrent,
+  migrateCapability,
+  type MigrationCapability,
+} from './migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
+import { deleteMemos, deleteStaleMemos } from './memoize.js';
 import {
   claimAttempt,
   exhaustAttempts,
@@ -260,7 +265,9 @@ export class Engine {
     if (this.migrated.has(capability)) {
       return;
     }
-    migrate(this.storage, capability, migrations, undefined);
+    if (!isSchemaCurrent(this.sql, capability, migrations)) {
+      migrateCapability(this.storage, capability, migrations, undefined);
+    }
     this.migrated.add(capability);
   }
 
@@ -405,6 +412,7 @@ export class Engine {
           .toArray()[0]
       );
       sql.exec(`DELETE FROM ${table.name} WHERE created_at < ?`, before);
+      deleteStaleMemos(sql, table);
       return count;
     });
 
@@ -657,7 +665,14 @@ export class Engine {
         });
         const result = await Promise.race([handlerResult, timeoutResult]);
 
-        const timestamp = spec.complete(result, attempt);
+        // One transaction: a failed memo cleanup must undo the completion, not orphan the memos.
+        const timestamp = this.transactionSync((sql) => {
+          const completedAt = spec.complete(result, attempt);
+          if (completedAt !== undefined) {
+            deleteMemos(sql, spec.table, key);
+          }
+          return completedAt;
+        });
         if (timestamp !== undefined) {
           this.notify(spec.table, key, row);
           spec.emit({
@@ -693,16 +708,20 @@ export class Engine {
   private async failExhausted(spec: ExecutionSpec): Promise<void> {
     const { key, row, policy } = spec;
     const exhausted = serializeError(spec.exhaustedError());
-    const attempt = await this.transaction((sql) =>
-      exhaustAttempts(
+    const attempt = await this.transaction((sql) => {
+      const exhaustedAttempt = exhaustAttempts(
         sql,
         spec.table,
         key,
         row.generation_id,
         policy.maxAttempts,
         exhausted
-      )
-    );
+      );
+      if (exhaustedAttempt !== undefined) {
+        deleteMemos(sql, spec.table, key);
+      }
+      return exhaustedAttempt;
+    });
     if (attempt === undefined) {
       return;
     }
@@ -727,8 +746,8 @@ export class Engine {
     const { key, row } = spec;
     const decision = decideRetry(spec, attempt, caught);
     const serializedError = serializeError(decision.error);
-    const updated = await this.transaction((sql) =>
-      updateAttempt(
+    const updated = await this.transaction((sql) => {
+      const owned = updateAttempt(
         sql,
         spec.table,
         { key, generation: row.generation_id, attempt },
@@ -737,8 +756,12 @@ export class Engine {
         decision.nextAttemptAt,
         serializedError.message,
         serializedError.name
-      )
-    );
+      );
+      if (owned && decision.terminal) {
+        deleteMemos(sql, spec.table, key);
+      }
+      return owned;
+    });
     if (!updated) {
       return;
     }

@@ -1,7 +1,14 @@
 import { env } from 'cloudflare:test';
 import { Result } from 'better-result';
 import { describe, expect, it } from 'vitest';
-import { defineTransform, errorBoundary, retry, timeout } from '../src/index';
+import {
+  createTransformStub,
+  defineTransform,
+  errorBoundary,
+  retry,
+  timeout,
+} from '../src/index';
+import type { ContextService, PipelineDO } from './test-worker';
 
 type Call = { method: string; args: unknown[] };
 
@@ -12,6 +19,31 @@ const recorder = defineTransform<object>().caller(
       return next();
     }
 );
+
+const actorRecorder = defineTransform<PipelineDO>().caller(
+  (actorIds: DurableObjectId[]) =>
+    async ({ actorId, next }) => {
+      actorIds.push(actorId);
+      return next();
+    }
+);
+
+function assertActorIdTypes(
+  binding: Service<typeof ContextService> | DurableObjectStub<PipelineDO>
+) {
+  defineTransform<object>().caller(() => async (context) => {
+    // @ts-expect-error only Durable Object transforms receive an actor ID
+    void context.actorId;
+    return context.next();
+  });
+
+  // @ts-expect-error Durable Object transforms require a Durable Object stub
+  env.KV.with(actorRecorder, []);
+
+  // @ts-expect-error every member of a union target must be a Durable Object stub
+  createTransformStub(binding).with(actorRecorder, []);
+}
+void assertActorIdTypes;
 
 describe('Vite plugin coverage', () => {
   it('wraps KV, R2, and Workflow bindings', () => {
@@ -174,5 +206,21 @@ describe('Durable Object promise pipelining', () => {
 
     await expect(stub.label).resolves.toBe('pipeline');
     await expect(stub.with(timeout, 1_000).label).resolves.toBe('pipeline');
+  });
+});
+
+describe('caller actor IDs', () => {
+  it('exposes the addressed Durable Object ID to caller transforms', async () => {
+    const actorIds: DurableObjectId[] = [];
+    const stub = env.PIPELINE_DO.getByName('actor')
+      .with(timeout, 1_000)
+      .with(actorRecorder, actorIds);
+
+    await stub.echo('first');
+    await stub.echo('second');
+
+    const expected = env.PIPELINE_DO.idFromName('actor');
+    expect(actorIds).toHaveLength(2);
+    expect(actorIds.every((actorId) => actorId.equals(expected))).toBe(true);
   });
 });

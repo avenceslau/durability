@@ -15,7 +15,8 @@ import {
 } from './lifecycle.js';
 import {
   durabilityNamedAlarmMigrations,
-  migrate,
+  durabilityMemoMigrations,
+  migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
 import {
@@ -32,6 +33,13 @@ import {
   type Engine,
   type SchedulerAttachment,
 } from './scheduler.js';
+import {
+  createMemoize,
+  deleteMemos,
+  deleteMemosOfDroppedTable,
+  memoizedKeys,
+  type DurableMemoize,
+} from './memoize.js';
 import { deleteAttempt, listCreated, type DurableTable } from './storage.js';
 import {
   registerTrackedSource,
@@ -71,6 +79,8 @@ export type DurableAlarmInfo = {
   idempotencyKey: string;
   /** Aborts when the attempt exceeds its configured timeout. */
   signal: AbortSignal;
+  /** Persists a callback's result by key so a retry of this occurrence reuses it. */
+  memoize: DurableMemoize;
   /** Invocation information for the shared physical Durable Object alarm. */
   platform: AlarmInvocationInfo | undefined;
 };
@@ -122,7 +132,7 @@ const readAlarm = (sql: SqlStorage, name: string): AlarmRow | undefined =>
         .toArray()[0]
     );
 
-const alarmRecord = (row: AlarmRow): UntypedRecord => ({
+const alarmRecord = (sql: SqlStorage, row: AlarmRow): UntypedRecord => ({
   id: row.name,
   name: row.name,
   generation: row.generation_id,
@@ -134,6 +144,7 @@ const alarmRecord = (row: AlarmRow): UntypedRecord => ({
           attempt: row.attempt,
           nextAttemptAt: row.next_attempt_at,
           lastError: row.last_error,
+          memoized: memoizedKeys(sql, alarmsTable, row.name, row.generation_id),
         }
       : {
           status: 'failed',
@@ -195,6 +206,7 @@ class DurabilityAlarmsCore<Names extends string> {
     }
 
     this.#engine.migrateSchema('namedAlarms', durabilityNamedAlarmMigrations);
+    this.#engine.migrateSchema('memos', durabilityMemoMigrations);
     this.#engine.register({
       table: alarmsTable,
       runDue: (now, info) => this.#runDue(now, info),
@@ -202,17 +214,19 @@ class DurabilityAlarmsCore<Names extends string> {
     registerTrackedSource(this, this.#trackedSource());
   }
 
-  /** Applies or reverts the `durability_alarms` schema; see {@link migrate}. */
+  /** Applies or reverts the `durability_alarms` schema; see {@link migrateCapability}. */
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrate(
+    const result = migrateCapability(
       context.storage,
       'namedAlarms',
       durabilityNamedAlarmMigrations,
       target
     );
+    deleteMemosOfDroppedTable(context.storage.sql, alarmsTable);
+    return result;
   }
 
   /** Runs due named alarms and re-arms the physical alarm. */
@@ -257,7 +271,7 @@ class DurabilityAlarmsCore<Names extends string> {
     return {
       get: async (name) => {
         const row = readAlarm(sql, name);
-        return row && alarmRecord(row);
+        return row && alarmRecord(sql, row);
       },
       list: async ({ limit, cursor, status, name }) => {
         const page = listCreated(sql, alarmsTable, 'name', {
@@ -269,7 +283,7 @@ class DurabilityAlarmsCore<Names extends string> {
         const records = alarmRowSchema
           .array()
           .parse(page.rows)
-          .map(alarmRecord);
+          .map((row) => alarmRecord(sql, row));
         return page.next === undefined
           ? { records }
           : { records, cursor: page.next };
@@ -347,6 +361,8 @@ class DurabilityAlarmsCore<Names extends string> {
         scheduledTime,
         createdAt
       );
+      // Memoized results belong to the replaced occurrence, never to the new one.
+      deleteMemos(sql, alarmsTable, name);
     });
     // A waiter on the replaced occurrence resolves now instead of at its timeout.
     this.#engine.notify(alarmsTable, name);
@@ -406,6 +422,11 @@ class DurabilityAlarmsCore<Names extends string> {
           retryCount: attempt - 1,
           idempotencyKey: `durability-alarm:v1:${row.generation_id}`,
           signal,
+          memoize: createMemoize(this.#engine.sql, alarmsTable, {
+            key: row.name,
+            generation: row.generation_id,
+            attempt,
+          }),
           platform,
         });
       },

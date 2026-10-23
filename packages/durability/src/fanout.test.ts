@@ -580,6 +580,72 @@ describe('fanout', () => {
     ]);
   });
 
+  it('reuses a delivery memoized result on retry and deletes it on ack', async () => {
+    const lookups = vi.fn(async (id: string) => `resolved:${id}`);
+    let failing = true;
+    const delivered: string[] = [];
+    const { fanout, storage } = fixture({
+      consumer: {
+        deliver: async (messages) => {
+          await Promise.all(
+            messages.map(async (message) => {
+              const address = await message.memoize('address', () =>
+                lookups(message.id)
+              );
+              if (failing) {
+                await message.retry();
+                return;
+              }
+              delivered.push(address);
+              await message.ack();
+            })
+          );
+        },
+      },
+    });
+    const memoRows = () =>
+      storage.sql
+        .exec('SELECT owner, memo_key FROM durability_memos')
+        .toArray();
+
+    await fanout.enqueue({ id: 'm', body: 'x' });
+    await fanout.alarm();
+    expect(memoRows()).toEqual([
+      { owner: 'durability_fanout_deliveries', memo_key: 'address' },
+    ]);
+
+    failing = false;
+    vi.advanceTimersByTime(1_000);
+    await fanout.alarm();
+
+    expect(lookups).toHaveBeenCalledTimes(1);
+    expect(delivered).toEqual(['resolved:m']);
+    expect(memoRows()).toEqual([]);
+  });
+
+  it('deletes a delivery memoized results when it is dead-lettered', async () => {
+    const { fanout, storage, sink } = fixture({
+      consumer: {
+        deliver: async (messages) => {
+          await Promise.all(
+            messages.map(async (message) => {
+              await message.memoize('attempted', () => true);
+              await message.deadLetter();
+            })
+          );
+        },
+      },
+    });
+
+    await fanout.enqueue({ id: 'm', body: 'x' });
+    await fanout.alarm();
+
+    expect(sink.entries.size).toBe(1);
+    expect(
+      storage.sql.exec('SELECT * FROM durability_memos').toArray()
+    ).toEqual([]);
+  });
+
   it('reports the same pending count from a fresh instance over the same storage', async () => {
     const { fanout, config } = fixture({
       slow: { deliver: async () => undefined },

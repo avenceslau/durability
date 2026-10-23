@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { DurableCall } from './index';
 import { contextFor, FakeStorage } from './test-fakes';
+
+const traceEntrySchema = z.looseObject({
+  event: z.string(),
+  seq: z.number(),
+  method: z.string().optional(),
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -61,8 +68,15 @@ describe('dev mode', () => {
     );
     expect(entries[0]).toMatchObject({
       event: 'durability.dev.sql',
-      query: expect.stringContaining('CREATE TABLE IF NOT EXISTS'),
+      query:
+        'SELECT name, down FROM durability_migrations WHERE capability = ?',
     });
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        event: 'durability.dev.sql',
+        query: expect.stringContaining('CREATE TABLE IF NOT EXISTS'),
+      })
+    );
     expect(entries).toContainEqual(
       expect.objectContaining({
         event: 'durability.dev.call',
@@ -96,6 +110,51 @@ describe('dev mode', () => {
     );
     expect(events.indexOf('durability.dev.lifecycle')).toBeGreaterThan(
       events.indexOf('durability.dev.call')
+    );
+  });
+
+  it('logs a rejected memoize call with its owner, key, and attempt', async () => {
+    const debug = vi
+      .spyOn(console, 'debug')
+      .mockImplementation(() => undefined);
+    const Durability = await loadDurability(true);
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      retries: { maxAttempts: 1 },
+      handlers: {
+        work: async ({ memoize }: DurableCall<null>) =>
+          memoize('fetch', () => {
+            throw new Error('upstream down');
+          }),
+      },
+    });
+
+    await durability.work({ id: 'step-1', payload: null });
+    await vi.waitFor(async () => {
+      expect(await durability.work.getResult('step-1')).toMatchObject({
+        status: 'failed',
+      });
+    });
+
+    const entries = traceEntrySchema
+      .array()
+      .parse(debug.mock.calls.map(([entry]) => entry));
+    const call = entries.find(
+      (entry) =>
+        entry.event === 'durability.dev.call' && entry.method === 'memoize'
+    );
+    expect(call).toMatchObject({
+      owner: 'durability_calls',
+      key: 'step-1',
+      attempt: 1,
+      memoKey: 'fetch',
+    });
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        event: 'durability.dev.call.throw',
+        call: call?.seq,
+        error: expect.objectContaining({ message: 'upstream down' }),
+      })
     );
   });
 });
