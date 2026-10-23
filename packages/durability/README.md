@@ -2,7 +2,7 @@
 
 Composable capabilities for application-owned Cloudflare Durable Objects:
 
-- **`Durability`** — effectively-once operations with retries, idempotency, and result lookup.
+- **`Durability`** — at-least-once operations with stable idempotency keys, retries, and result lookup.
 - **`DurabilityAlarms`** — named logical alarms with retries and stable idempotency keys.
 - **`DurabilityFanout`** — durable batch acceptance and independent delivery to static consumer or storage targets.
 - **`DurabilityOutbox`** _(experimental, `durability/experimental`)_ — keyed latest-state publication: stage the newest value for a key with the state it describes, and it is republished until acknowledged.
@@ -14,7 +14,47 @@ Composable capabilities for application-owned Cloudflare Durable Objects:
 
 Durable capabilities own their storage and migrations. Routing observations are in-memory and advisory. When an object composes durable capabilities, one `DurabilityScheduler` shares its physical alarm and concurrency pool. No queue factory, generated DO class, or special consumer superclass is required.
 
-Durability is not an event-sourcing, replay-log, or workflow-orchestration engine. Operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed work is retried from later alarms. Only SQLite-backed Durable Object classes are supported.
+Durability is not an event-sourcing, replay-log, or workflow-orchestration engine: [memoized](#memoize) results only last while one operation or alarm occurrence is retried, and are deleted when it settles. Operation methods return `Promise<void>` after registration commits; they do not wait for the handler result. Failed work is retried from later alarms. Only SQLite-backed Durable Object classes are supported.
+
+## Delivery and safety contract
+
+Durability executes work **at least once** with a stable idempotency key per operation or named alarm. "Effectively once" is a business outcome you earn by making the receiver deduplicate that key or reconcile an uncertain prior outcome; it is never an unconditional platform guarantee. Read this before copying an example that mutates an external system.
+
+| Concern                    | Guarantee                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| Registration / scheduling  | Exactly once — the durable record commits atomically or not at all.          |
+| Local completion record    | Deduplicated by the stable key, so retries never double-record a result.     |
+| Handler delivery           | At least once — a handler may run again after a crash, timeout, or eviction. |
+| External side effect       | At least once — the library cannot close a cross-system transaction.         |
+| "Effectively once" outcome | Your responsibility — requires an idempotent or reconciling receiver.        |
+
+The unavoidable window: a handler asks an external system to commit an effect, the system commits it, then the acknowledgement is lost or the object stops before the local completion record commits. Durability retries the same stable key. Pass that key (`DurableCall.id`, or an alarm handler's `idempotencyKey`) to the external system so it can collapse the duplicate. An HTTP success — or failure — is not proof of the committed outcome after a lost acknowledgement.
+
+The stable key is the call `id` you choose (or an alarm name). Namespace it per logical operation (`resize:${imageId}`), keep it stable across retries, and never reuse one key for different payloads: an ID stays bound to its operation and payload for the life of the record. A receiver-side idempotency table turns at-least-once delivery into an effectively-once effect by keying committed effects on it:
+
+```ts
+// In the receiving Durable Object, keyed on the caller's stable id.
+async chargeOnce(key: string, amountCents: number) {
+  const prior = this.ctx.storage.sql
+    .exec<{ result: string }>('SELECT result FROM charges WHERE key = ?', key)
+    .toArray();
+  if (prior.length > 0) {
+    return JSON.parse(prior[0]!.result); // replay: return the first committed outcome
+  }
+
+  const result = await this.gateway.charge(amountCents);
+  this.ctx.storage.sql.exec(
+    'INSERT INTO charges (key, result) VALUES (?, ?)',
+    key,
+    JSON.stringify(result)
+  );
+  return result;
+}
+```
+
+The sketch assumes one call per key at a time; the gateway `await` lets other requests interleave, so concurrent calls for the same key need a pending row or the gateway's own idempotency key.
+
+When a receiver can neither deduplicate the key nor reconcile the prior outcome, do not retry the effect automatically: compensate (a saga) or require a human decision instead.
 
 ## Migrating to v3
 
@@ -167,6 +207,36 @@ export class ImageJobs extends DurableObject<Env> {
 
 A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
 
+## Memoize
+
+A retried attempt runs the whole handler again. Wrap work that must not repeat in `memoize(key, callback)`, which operation handlers, named alarm handlers, and [fanout messages](#independent-delivery) all receive. Once a key's callback succeeds, its result is persisted and every later call with that key returns it instead of running the callback:
+
+```ts
+const deliver = async ({ payload, memoize }: DurableCall<Batch>) => {
+  const targets = await memoize('targets', () => lookUpTargets(payload));
+  const results = await Promise.allSettled(
+    targets.map((target) =>
+      memoize(`send:${target.id}`, () => send(target, payload.events))
+    )
+  );
+  const failed = results.filter((result) => result.status === 'rejected');
+  if (failed.length > 0) {
+    throw new AggregateError(failed.map((result) => result.reason));
+  }
+};
+```
+
+Here a retry sends only to the targets that failed, and does not look them up again.
+
+- **Keys.** A key is a non-empty string that identifies one piece of work within the operation or alarm occurrence. Calling a key again returns its result, whether the call comes from a later attempt, later in the same attempt, or from inside another key's callback. A call for a key whose callback is still running rejects instead of waiting, including one made from that callback, which would otherwise wait on itself; await the first call instead.
+- **Results.** A callback that throws persists nothing; the next call with that key runs it again. Results must be JSON-serializable, and `memoize` returns the persisted form even on the first run, so a replay sees the same value. A result that cannot be serialized fails the work with `DurableMemoSerializationError` and no retry.
+- **Ownership.** Only the attempt that owns the record can run or persist a callback. Once its alarm is rescheduled or its record purged, a `memoize` call rejects without running, and one already running rejects instead of writing.
+- **Limits.** One operation, alarm occurrence, or fanout delivery may memoize at most `maxMemosPerRecord` (1,000) keys, and each serialized result may be at most `maxMemoBytes` (1 MiB) of UTF-8. A call that would exceed either fails the work with `DurableMemoLimitError` and no retry; a key that would exceed the count is rejected before its callback runs.
+- **Cleanup.** Memoized results are deleted in the transaction that settles the operation (completed or failed), the alarm occurrence, or the fanout delivery (acked or dead-lettered), when a named alarm is rescheduled, and by `purgeBefore`. Nothing is kept once the work is done.
+- **Tracking.** Pending operations and alarms list their memoized keys as `state.memoized` in [`DurabilityTracker`](#tracking-work-experimental) records, in the order they were saved. Results themselves are not exposed.
+
+Memoizing does not change delivery semantics. A process can stop after a callback's side effect succeeds but before its result commits, so the callback can run again; keep its side effects idempotent.
+
 ## Storage
 
 Durability stores its records in the object's SQLite database. Configure the Durable Object class with `new_sqlite_classes`:
@@ -177,7 +247,7 @@ Durability stores its records in the object's SQLite database. Configure the Dur
 }
 ```
 
-`Durability` creates and migrates `durability_calls`; `DurabilityAlarms` does the same for `durability_alarms`. Both histories are tracked in the shared `durability_migrations` table and only the constructed helpers' tables exist.
+`Durability` creates and migrates `durability_calls`; `DurabilityAlarms` does the same for `durability_alarms`. Both also create `durability_memos`, which they share. All histories are tracked in the shared `durability_migrations` table and only the constructed helpers' tables exist. Reverting either helper's schema leaves `durability_memos` in place for the other.
 
 ### Explicit migrations
 
@@ -194,6 +264,32 @@ DurabilityAlarms.migrate(this.ctx, null); // remove the named alarm schema
 Passing a name moves that capability's schema to exactly that version. Each batch of migrations applies or reverts in one synchronous transaction, so a failure leaves the schema untouched.
 
 Every history row stores its migration's `down` script. If a Durable Object later runs an older `durability` version, that version reverts the migrations it does not recognize using the stored scripts, so downgrades are safe without code changes. To guard against deploying a very old version by mistake, at most two unknown migrations are reverted; beyond that, construction throws. The `durability_migrations` table is dropped once no durability history remains.
+
+### Application schemas
+
+`migrate` gives an application's own tables the same guarantees. Its history lives in a separate table (`schema_migrations` unless `table` is set), so it never mixes with durability's:
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { migrate, type DurableMigrations } from 'durability';
+
+const migrations: DurableMigrations = [
+  {
+    name: '0001_create_jobs',
+    up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+    down: 'DROP TABLE jobs;',
+  },
+];
+
+export class Jobs extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    migrate(ctx.storage, migrations);
+  }
+}
+```
+
+Pass `target` to move to a named migration, or `null` to revert every migration and drop the history table.
 
 ## Retries, timeouts, and terminal failures
 
@@ -228,7 +324,7 @@ Throw `NonRetryableError` to move work directly to `failed` without another atte
 
 ## Delivery semantics and concurrency
 
-Work is delivered at least once. A process can stop after a side effect succeeds but before its completion record commits, so handlers should be idempotent and pass the call ID or alarm `idempotencyKey` to external services.
+Work is delivered at least once, as the [delivery and safety contract](#delivery-and-safety-contract) describes. A process can stop after a side effect succeeds but before its completion record commits, so handlers should be idempotent and pass the call ID or alarm `idempotencyKey` to external services.
 
 `alarmConcurrency` defaults to 10 and is one FIFO limit shared by eager operation handlers, timer-driven work, and physical-alarm work attached to the same scheduler. Newly registered operations start eagerly only when a permit is immediately available. Work due before the physical-alarm minimum enters the same queue when its in-memory timer fires.
 
@@ -259,11 +355,28 @@ const durability = new Durability({
 
 The hook is best-effort and non-blocking, is not a durable journal, and may duplicate or drop events across crashes. Hook failures are reported to `console.error` and never change queue state. Returned promises are attached to `waitUntil` when the context exposes it.
 
-Further hooks attach after construction with `lifecycle(hook)`, which returns a function that detaches it. `Durability` hooks are typed per operation: a `completed` settlement carries the handler's `result`.
+Events are built to be safe to forward to shared telemetry sinks: they carry structural fields (entity kind, operation or alarm name, idempotency `id`, `generation`, `attempt`, `durationMs`, `nextAttemptAt`) and a normalized `error` of `{ name, message }` with no stack, but **no payloads and no handler results by default**. The `id` is the raw idempotency key you chose, so hash or drop it before exporting to a metrics backend if it is high-cardinality or sensitive. Because an event is emitted per attempt, retry, and purge, treat these as counters and durations rather than an audit trail.
+
+To include a `completed` settlement's handler `result` — for example to bridge results to a WebSocket or cache — opt in with `includeResults: true`. Enable it only when every attached hook is trusted with result content, since results may contain sensitive data:
+
+```ts
+const durability = new Durability({
+  context: this.ctx,
+  handlers,
+  includeResults: true,
+  onLifecycleEvent: (event) => recordDurabilityMetric(event),
+});
+```
+
+Further hooks attach after construction with `lifecycle(hook)`, which returns a function that detaches it. `Durability` hooks are typed per operation: a `completed` settlement carries the handler's `result` only when `includeResults` is enabled, so the field is typed as optional.
 
 ```ts
 const detach = durability.lifecycle((event) => {
-  if (event.type === 'attempt_settled' && event.outcome === 'completed') {
+  if (
+    event.type === 'attempt_settled' &&
+    event.outcome === 'completed' &&
+    event.result !== undefined
+  ) {
     publish(event.operation, event.result);
   }
 });
@@ -273,16 +386,16 @@ const detach = durability.lifecycle((event) => {
 
 Define `__DURABILITY_DEV__` as `true` at build time to log every operation the package performs. Each entry is a structured `console.debug` object whose `event` starts with `durability.dev.`:
 
-| `event`                                            | Logged for                                                                                                                                                                                                           |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `durability.dev.call`                              | Each public method call on every helper, including the experimental outbox and semaphores, generated operation, alarm, and socket outbound methods, and fanout `ack`, `retry`, and `deadLetter`, with its arguments. |
-| `durability.dev.call.return` / `.call.throw`       | The call's result or serialized error, linked to the call by `call`.                                                                                                                                                 |
-| `durability.dev.storage`                           | Each storage method: transactions and alarm reads and writes, including those inside `transaction`.                                                                                                                  |
-| `durability.dev.storage.return` / `.storage.throw` | The storage call's result or serialized error, linked by `call`.                                                                                                                                                     |
-| `durability.dev.sql`                               | Each SQL statement, whitespace-compacted, with its bindings.                                                                                                                                                         |
-| `durability.dev.lifecycle`                         | Every lifecycle event, whether or not a hook is attached.                                                                                                                                                            |
-| `durability.dev.scheduler.early_alarm`             | An in-memory timer that runs due work before the physical alarm.                                                                                                                                                     |
-| `durability.dev.socket.send` / `.socket.close`     | Each frame sent to a browser socket, and each socket closed for a protocol error.                                                                                                                                    |
+| `event`                                            | Logged for                                                                                                                                                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `durability.dev.call`                              | Each public method call on every helper, including the experimental outbox and semaphores, generated operation, alarm, and socket outbound methods, `memoize`, and fanout `ack`, `retry`, and `deadLetter`, with its arguments. |
+| `durability.dev.call.return` / `.call.throw`       | The call's result or serialized error, linked to the call by `call`.                                                                                                                                                            |
+| `durability.dev.storage`                           | Each storage method: transactions and alarm reads and writes, including those inside `transaction`.                                                                                                                             |
+| `durability.dev.storage.return` / `.storage.throw` | The storage call's result or serialized error, linked by `call`.                                                                                                                                                                |
+| `durability.dev.sql`                               | Each SQL statement, whitespace-compacted, with its bindings.                                                                                                                                                                    |
+| `durability.dev.lifecycle`                         | Every lifecycle event, whether or not a hook is attached.                                                                                                                                                                       |
+| `durability.dev.scheduler.early_alarm`             | An in-memory timer that runs due work before the physical alarm.                                                                                                                                                                |
+| `durability.dev.socket.send` / `.socket.close`     | Each frame sent to a browser socket, and each socket closed for a protocol error.                                                                                                                                               |
 
 Every entry carries `seq`, a process-wide counter that orders entries across interleaved async work, and `at`, the `Date.now()` reading when it was logged. A deterministic simulation that controls time, randomness, and scheduling gets a replayable transcript by collecting the entries in order, for example with `vi.spyOn(console, 'debug')`.
 
@@ -335,6 +448,8 @@ export class TodoList extends DurableObject<Env> {
         return payload;
       },
     },
+    // Lifecycle events omit handler results unless this is set.
+    includeResults: true,
   });
 
   readonly socket = new DurabilitySocket({
@@ -374,7 +489,11 @@ export class TodoList extends DurableObject<Env> {
     super(ctx, env);
     // Push a durable operation's result to every subscriber once it has committed.
     this.durability.lifecycle((e) => {
-      if (e.type === 'attempt_settled' && e.outcome === 'completed') {
+      if (
+        e.type === 'attempt_settled' &&
+        e.outcome === 'completed' &&
+        e.result !== undefined
+      ) {
         this.socket.created(e.result);
       }
     });
@@ -485,7 +604,7 @@ All three methods take the same query: `{ source, name, status, limit, cursor }`
 - `get(source, id)` returns one such handle, or `undefined`.
 - `records(query)` returns `{ records, cursor }` with the same data and no functions.
 
-Narrowing on `source` and `name` narrows `state.result` to that handler's result type.
+Narrowing on `source` and `name` narrows `state.result` to that handler's result type. A pending operation or alarm also lists `state.memoized`, the keys its next attempt will [reuse](#memoize).
 
 ### Handles over RPC
 
@@ -787,7 +906,7 @@ First deliveries are ordered by enqueue sequence per shard and target. Waiting r
 
 Set `batchDelayMs` to hold first deliveries for up to that many milliseconds, so messages enqueued together reach the consumer as one batch instead of one call each. Each first attempt is rounded up to the next multiple of `batchDelayMs`, so messages enqueued within the same window become due at the same time. It delays delivery, not acceptance: `enqueue` still returns once the batch commits. Retries keep their policy delay.
 
-Consumer callbacks may forward the batch to any ordinary WorkerEntrypoint RPC method. Messages include `id`, `deliveryId`, `target`, `body`, `attempt`, `enqueuedAt`, and callable settlement capabilities:
+Consumer callbacks may forward the batch to any ordinary WorkerEntrypoint RPC method. Messages include `id`, `deliveryId`, `target`, `body`, `attempt`, `enqueuedAt`, a [`memoize`](#memoize) scoped to that message and target, so a retried delivery reuses work an earlier attempt finished, and callable settlement capabilities:
 
 - `ack()` settles this target only.
 - `retry(10)` schedules eligibility after 10 ms, overriding the policy delay. It is not a real-time delivery guarantee.

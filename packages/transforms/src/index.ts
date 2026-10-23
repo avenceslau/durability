@@ -71,8 +71,7 @@ export type TransformNextInput<TContext extends TransformContext> = {
   context?: Partial<TContext>;
 };
 
-/** Information available while a caller-side transform wraps an RPC method. */
-export type CallerTransformContext<
+type SharedTransformContext<
   TTarget extends object,
   TContext extends TransformContext,
 > = {
@@ -86,6 +85,18 @@ export type CallerTransformContext<
   next(input?: TransformNextInput<TContext>): Promise<unknown>;
 };
 
+/** Information available while a caller-side transform wraps an RPC method. */
+export type CallerTransformContext<
+  TTarget extends object,
+  TContext extends TransformContext,
+> = SharedTransformContext<TTarget, TContext> &
+  (TTarget extends Rpc.DurableObjectBranded
+    ? {
+        /** ID of the Durable Object addressed by the stub. */
+        actorId: DurableObjectId;
+      }
+    : unknown);
+
 type TargetEnv<TTarget extends object> = TTarget extends { env: infer TEnv }
   ? TEnv
   : Cloudflare.Env;
@@ -94,7 +105,7 @@ type TargetEnv<TTarget extends object> = TTarget extends { env: infer TEnv }
 export type CalleeTransformContext<
   TTarget extends object,
   TContext extends TransformContext,
-> = CallerTransformContext<TTarget, TContext> & {
+> = SharedTransformContext<TTarget, TContext> & {
   /** Durable Object or WorkerEntrypoint instance receiving the call. */
   instance: TTarget;
   /** Environment bindings exposed by the receiving instance. */
@@ -190,6 +201,16 @@ type TransformContextOf<TTransform> = TTransform extends {
 type TransformContextInvoker = {
   invoke(method: string, args: unknown[]): Promise<unknown>;
 };
+
+// A transform typed for a Durable Object reads `actorId`, so it may only be
+// attached to a stub that carries one. The tuple keeps a union target from
+// passing when only some members are Durable Object stubs.
+type RequireDurableObjectStub<TTarget, TTransform> =
+  TransformTargetOf<TTransform> extends Rpc.DurableObjectBranded
+    ? [TTarget] extends [{ readonly id: DurableObjectId }]
+      ? unknown
+      : { readonly durableObjectTransformRequiresDurableObjectStub: never }
+    : unknown;
 
 type RequireSetContext<TTarget, TTransform> =
   keyof TransformContextOf<TTransform> extends never
@@ -370,7 +391,8 @@ export type TransformWith<TTarget extends object> = {
   with<TTransform>(
     transform: TTransform &
       TransformIdentity &
-      RequireSetContext<TTarget, TTransform> & {
+      RequireSetContext<TTarget, TTransform> &
+      RequireDurableObjectStub<TTarget, TTransform> & {
         callerFactory: (options: CallerOptions<TTransform>) => unknown;
       },
     ...options: TransformOptionsArguments<CallerOptions<TTransform>>
@@ -409,7 +431,9 @@ type RuntimeTransformContext = {
 };
 
 type ConfiguredCallerTransform = (
-  context: RuntimeTransformContext
+  context: RuntimeTransformContext & {
+    actorId: DurableObjectId | undefined;
+  }
 ) => Promise<unknown>;
 
 type PipelineNode = {
@@ -562,6 +586,17 @@ export function createRestorableStubFactory(
   };
 }
 
+// Service binding stubs answer any property with a callable RPC stub, so only
+// an object exposing the DurableObjectId interface identifies a Durable Object.
+function isDurableObjectId(value: unknown): value is DurableObjectId {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof Reflect.get(value, 'equals') === 'function' &&
+    typeof Reflect.get(value, 'toString') === 'function'
+  );
+}
+
 function createSourceStub<TTarget extends object>(
   source: StubSource<TTarget>,
   transforms: ConfiguredCallerTransform[]
@@ -696,6 +731,9 @@ function createSourceStub<TTarget extends object>(
           }
         };
 
+        const id: unknown = Reflect.get(accessedStub, 'id');
+        const actorId = isDurableObjectId(id) ? id : undefined;
+
         const run = (
           index: number,
           context: TransformContext
@@ -710,6 +748,7 @@ function createSourceStub<TTarget extends object>(
           return transform({
             method: property,
             args: initialArgs,
+            actorId,
             context,
             next: (input) =>
               run(index + 1, {
