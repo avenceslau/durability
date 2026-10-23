@@ -69,7 +69,12 @@ export type DurabilityLifecycleEvent =
   | (LifecycleEntity &
       AttemptSettled & {
         outcome: 'completed';
-        /** The handler's return value. Absent for fanout acknowledgements. */
+        /**
+         * The handler's return value. Omitted by default to keep result
+         * content out of telemetry; present only when the emitting instance
+         * opts in (e.g. Durability's `includeResults`). Always absent for
+         * fanout acknowledgements.
+         */
         result?: unknown;
       })
   | (LifecycleEntity &

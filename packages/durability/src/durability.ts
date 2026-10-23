@@ -19,7 +19,8 @@ import {
 } from './lifecycle.js';
 import {
   durabilityOperationMigrations,
-  migrate,
+  durabilityMemoMigrations,
+  migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
 import {
@@ -37,6 +38,12 @@ import {
   type SchedulerAttachment,
 } from './scheduler.js';
 import { canonical, deserialize, serialize } from './serialization.js';
+import {
+  createMemoize,
+  deleteMemosOfDroppedTable,
+  memoizedKeys,
+  type DurableMemoize,
+} from './memoize.js';
 import { listCreated, updateAttempt, type DurableTable } from './storage.js';
 import {
   registerTrackedSource,
@@ -103,6 +110,8 @@ export type DurableCall<Payload> = {
   attempt: number;
   /** Aborts when the attempt exceeds its configured timeout. */
   signal: AbortSignal;
+  /** Persists a callback's result by key so a retry of this operation reuses it. */
+  memoize: DurableMemoize;
 };
 
 /** A function that executes one attempt of a durable operation. */
@@ -184,7 +193,8 @@ type TypedOperationEvent<
   ? Event extends { outcome: 'completed' }
     ? Omit<Event, 'operation' | 'result'> & {
         operation: Operation;
-        result: Result;
+        /** Present only when the instance was created with `includeResults: true`. */
+        result?: Result;
       }
     : Event extends object
       ? Omit<Event, 'operation'> & { operation: Operation }
@@ -193,7 +203,8 @@ type TypedOperationEvent<
 
 /**
  * A lifecycle event for one of this instance's operations. Completed events
- * carry the handler's typed result.
+ * carry the handler's typed result only when the instance is created with
+ * `includeResults: true`.
  */
 export type DurabilityOperationEvent<Handlers extends HandlerMap> =
   | {
@@ -236,6 +247,12 @@ export type DurabilityOptions<Handlers extends HandlerMap = HandlerMap> =
     >;
     /** Receives best-effort, non-durable lifecycle metrics events. */
     onLifecycleEvent?: LifecycleHook;
+    /**
+     * Attach the handler's return value to `completed` lifecycle events.
+     * Off by default so results never reach telemetry sinks unintentionally;
+     * enable only when the sink is trusted with result content.
+     */
+    includeResults?: boolean;
   };
 
 /**
@@ -291,13 +308,27 @@ const callState = (
   return { status: 'completed', result: deserialize(call.result) };
 };
 
-const callRecord = (call: CallRow): UntypedRecord => ({
-  id: call.id,
-  name: call.operation,
-  generation: call.generation_id,
-  createdAt: call.created_at,
-  state: callState(call),
-});
+const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
+  const state = callState(call);
+  return {
+    id: call.id,
+    name: call.operation,
+    generation: call.generation_id,
+    createdAt: call.created_at,
+    state:
+      state.status === 'pending'
+        ? {
+            ...state,
+            memoized: memoizedKeys(
+              sql,
+              callsTable,
+              call.id,
+              call.generation_id
+            ),
+          }
+        : state,
+  };
+};
 
 const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
   entityKind: 'operation',
@@ -312,6 +343,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
   readonly #policy: PolicyResolver<MethodPolicy>;
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
+  readonly #includeResults: boolean;
   readonly #active = new Map<string, ActiveExecution>();
   readonly #executionStarts = new Map<string, Promise<void>>();
 
@@ -329,6 +361,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       config.onLifecycleEvent
     );
     this.#emit = this.#lifecycle.emit;
+    this.#includeResults = config.includeResults ?? false;
 
     const reserved = new Set(
       Object.getOwnPropertyNames(DurabilityCore.prototype)
@@ -358,6 +391,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     }
 
     this.#engine.migrateSchema('operations', durabilityOperationMigrations);
+    this.#engine.migrateSchema('memos', durabilityMemoMigrations);
     this.#engine.register({
       table: callsTable,
       runDue: (now) => this.#runDue(now),
@@ -365,17 +399,19 @@ class DurabilityCore<Handlers extends HandlerMap> {
     registerTrackedSource(this, this.#trackedSource());
   }
 
-  /** Applies or reverts the `durability_calls` schema; see {@link migrate}. */
+  /** Applies or reverts the `durability_calls` schema; see {@link migrateCapability}. */
   static migrate(
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrate(
+    const result = migrateCapability(
       context.storage,
       'operations',
       durabilityOperationMigrations,
       target
     );
+    deleteMemosOfDroppedTable(context.storage.sql, callsTable);
+    return result;
   }
 
   /** Processes due operations and re-arms the physical alarm. */
@@ -419,7 +455,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     return {
       get: async (id) => {
         const call = readCall(sql, id);
-        return call && callRecord(call);
+        return call && callRecord(sql, call);
       },
       list: async ({ limit, cursor, status, name }) => {
         const page = listCreated(sql, callsTable, 'operation', {
@@ -428,7 +464,10 @@ class DurabilityCore<Handlers extends HandlerMap> {
           status,
           name,
         });
-        const records = callRowSchema.array().parse(page.rows).map(callRecord);
+        const records = callRowSchema
+          .array()
+          .parse(page.rows)
+          .map((call) => callRecord(sql, call));
         return page.next === undefined
           ? { records }
           : { records, cursor: page.next };
@@ -596,6 +635,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
         active: this.#active,
         policy,
         emit: this.#emit,
+        includeResult: this.#includeResults,
         exhaustedError: () =>
           new DurableAttemptsExhaustedError(
             'operation',
@@ -619,6 +659,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
             payload: deserialize(call.payload),
             attempt,
             signal,
+            memoize: createMemoize(this.#engine.sql, callsTable, {
+              key: call.id,
+              generation: call.generation_id,
+              attempt,
+            }),
           });
         },
         complete: (result, attempt) => {
@@ -653,10 +698,15 @@ type OperationMethods<Handlers extends HandlerMap> = {
 };
 
 /**
- * Alarm-backed, effectively-once durable operations for one Durable Object.
+ * Alarm-backed, at-least-once durable operations for one Durable Object.
  *
  * Every handler becomes a typed method on the instance. Methods resolve once
  * the call is durably registered; read outcomes through `getResult`.
+ *
+ * Delivery is at least once: a handler may run again after a crash, timeout, or
+ * eviction. The call `id` is a stable idempotency key; pass it to external
+ * systems and make effects idempotent or reconcilable to reach an effectively
+ * once outcome. See the README "Delivery and safety contract".
  *
  * @example
  * ```ts

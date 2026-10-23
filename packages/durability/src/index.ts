@@ -21,6 +21,11 @@ export {
   type DurableNamedAlarm,
 } from './durability-alarms.js';
 export {
+  maxMemoBytes,
+  maxMemosPerRecord,
+  type DurableMemoize,
+} from './memoize.js';
+export {
   DurabilityFanout,
   type DurabilityFanoutConfig,
   type DurabilityFanoutEvent,
@@ -66,6 +71,8 @@ export {
   DurableAttemptTimeoutError,
   DurableResultSerializationError,
   DurableRetryPolicyError,
+  DurableMemoLimitError,
+  DurableMemoSerializationError,
   NonRetryableError,
   FanoutTimeoutError,
   FanoutSettlementError,
@@ -82,9 +89,13 @@ export {
   durabilityFanoutMigrations,
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
+  durabilityMemoMigrations,
+  migrate,
   type DurabilityMigrationResult,
+  type MigrateOptions,
   type MigrationCapability,
 } from './migrations.js';
+export type { DurableMigrations } from '@durability/storage';
 export type {
   DurabilityAlarmMethodOptions,
   DurabilityMethodOptions,

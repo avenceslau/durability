@@ -742,16 +742,16 @@ describe('semaphore schema upgrades', () => {
     const {
       durabilitySemaphoreMigrations,
       durabilitySemaphoreQueueMigrations,
-      migrate,
+      migrateCapability,
     } = await import('./migrations');
     const storage = new FakeStorage();
-    migrate(
+    migrateCapability(
       storage,
       'semaphore',
       durabilitySemaphoreMigrations,
       'durability_0007_create_semaphore'
     );
-    migrate(
+    migrateCapability(
       storage,
       'semaphoreQueue',
       durabilitySemaphoreQueueMigrations,
@@ -764,7 +764,7 @@ describe('semaphore schema upgrades', () => {
       applied: ['durability_0009_create_semaphore_leases'],
     });
     expect(
-      migrate(
+      migrateCapability(
         storage,
         'semaphoreQueue',
         durabilitySemaphoreQueueMigrations,

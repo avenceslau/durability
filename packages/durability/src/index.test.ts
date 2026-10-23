@@ -13,8 +13,9 @@ import {
   NonRetryableError as DurabilityNonRetryableError,
   type DurableCall,
   type DurabilityLifecycleEvent,
+  migrate,
 } from './index';
-import { migrate } from './migrations';
+import { migrateCapability } from './migrations';
 import { contextFor, FakeStorage } from './test-fakes';
 import { exponential, jitter } from './utils';
 
@@ -96,6 +97,7 @@ describe('migrations', () => {
     });
     expect(tableNames(operationsOnly)).toEqual([
       'durability_calls',
+      'durability_memos',
       'durability_migrations',
     ]);
 
@@ -108,8 +110,64 @@ describe('migrations', () => {
     });
     expect(tableNames(alarmsOnly)).toEqual([
       'durability_alarms',
+      'durability_memos',
       'durability_migrations',
     ]);
+  });
+
+  it('reads the history once per capability when the schema is current', () => {
+    const storage = new FakeStorage();
+    const construct = () => {
+      const scheduler = new DurabilityScheduler({
+        context: contextFor(storage),
+      });
+      return [
+        new Durability({ scheduler, handlers: { work: async () => 1 } }),
+        new DurabilityAlarms({
+          scheduler,
+          handlers: { job: async () => undefined },
+        }),
+      ];
+    };
+    construct();
+    const exec = vi.spyOn(storage.sql, 'exec');
+
+    construct();
+
+    expect(exec.mock.calls.map(([query]) => query.trim())).toEqual([
+      'SELECT name, down FROM durability_migrations WHERE capability = ?',
+      'SELECT name, down FROM durability_migrations WHERE capability = ?',
+      'SELECT name, down FROM durability_migrations WHERE capability = ?',
+    ]);
+  });
+
+  it('migrates on construction when the stored history is stale', () => {
+    const storage = new FakeStorage();
+    const context = contextFor(storage);
+    Durability.migrate(context);
+    storage.sql.exec(
+      `UPDATE durability_migrations SET down = 'SELECT 1;' WHERE name = ?`,
+      'durability_0002_pending_index'
+    );
+    storage.sql.exec('CREATE TABLE durability_future (id TEXT PRIMARY KEY)');
+    storage.sql.exec(
+      `INSERT INTO durability_migrations (name, capability, down)
+       VALUES (?, 'operations', ?)`,
+      'durability_0005_calls_future',
+      'DROP TABLE durability_future;'
+    );
+
+    void new Durability({ context, handlers: { work: async () => 1 } });
+
+    expect(tableNames(storage)).not.toContain('durability_future');
+    expect(
+      storage.sql
+        .exec<{ down: string }>(
+          'SELECT down FROM durability_migrations WHERE name = ?',
+          'durability_0002_pending_index'
+        )
+        .toArray()[0]?.down
+    ).toBe('DROP INDEX IF EXISTS durability_calls_pending_idx;');
   });
 
   it('stamps legacy rows during migration and removes v4 columns on rollback', () => {
@@ -214,6 +272,7 @@ describe('migrations', () => {
         name: 'durability_0004_alarms_generation_and_created_at',
         capability: 'namedAlarms',
       },
+      { name: 'durability_0012_create_memos', capability: 'memos' },
     ]);
     expect(Durability.migrate(context)).toEqual({
       applied: [],
@@ -326,7 +385,7 @@ describe('migrations', () => {
     ];
 
     expect(() =>
-      migrate(
+      migrateCapability(
         storage as unknown as DurableObjectStorage,
         'operations',
         migrations,
@@ -339,6 +398,98 @@ describe('migrations', () => {
         .exec('SELECT COUNT(*) AS count FROM durability_migrations')
         .toArray()[0]?.['count']
     ).toBe(0);
+  });
+});
+
+describe('migrate', () => {
+  const jobsMigrations = [
+    {
+      name: '0001_create_jobs',
+      up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+      down: 'DROP TABLE jobs;',
+    },
+    {
+      name: '0002_add_jobs_status',
+      up: "ALTER TABLE jobs ADD COLUMN status TEXT NOT NULL DEFAULT 'queued';",
+      down: 'ALTER TABLE jobs DROP COLUMN status;',
+    },
+  ];
+  const asStorage = (storage: FakeStorage) =>
+    storage as unknown as DurableObjectStorage;
+
+  it('tracks application migrations apart from durability history', () => {
+    const storage = new FakeStorage();
+    Durability.migrate(contextFor(storage));
+
+    expect(migrate(asStorage(storage), jobsMigrations)).toEqual({
+      applied: ['0001_create_jobs', '0002_add_jobs_status'],
+      rolledBack: [],
+    });
+    expect(migrate(asStorage(storage), jobsMigrations)).toEqual({
+      applied: [],
+      rolledBack: [],
+    });
+    expect(tableNames(storage)).toEqual([
+      'durability_calls',
+      'durability_migrations',
+      'jobs',
+      'schema_migrations',
+    ]);
+    expect(
+      storage.sql
+        .exec('SELECT COUNT(*) AS count FROM durability_migrations')
+        .toArray()[0]?.['count']
+    ).toBe(3);
+  });
+
+  it('moves to a target and drops its history table once empty', () => {
+    const storage = new FakeStorage();
+    migrate(asStorage(storage), jobsMigrations, { table: 'app_history' });
+
+    expect(
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'app_history',
+        target: '0001_create_jobs',
+      })
+    ).toEqual({ applied: [], rolledBack: ['0002_add_jobs_status'] });
+    expect(
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'app_history',
+        target: null,
+      })
+    ).toEqual({ applied: [], rolledBack: ['0001_create_jobs'] });
+    expect(tableNames(storage)).toEqual([]);
+  });
+
+  it('reverts migrations an application downgrade does not know', () => {
+    const storage = new FakeStorage();
+    migrate(asStorage(storage), jobsMigrations);
+
+    expect(migrate(asStorage(storage), jobsMigrations.slice(0, 1))).toEqual({
+      applied: [],
+      rolledBack: ['0002_add_jobs_status'],
+    });
+    expect(
+      storage.sql
+        .exec<{ name: string }>(`SELECT name FROM pragma_table_info('jobs')`)
+        .toArray()
+        .map(({ name }) => name)
+    ).toEqual(['id']);
+  });
+
+  it('rejects a history table it cannot safely name', () => {
+    const storage = new FakeStorage();
+
+    expect(() =>
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'jobs; DROP TABLE x',
+      })
+    ).toThrow('Invalid schema migration table');
+    expect(() =>
+      migrate(asStorage(storage), jobsMigrations, {
+        table: 'durability_migrations',
+      })
+    ).toThrow('Invalid schema migration table');
   });
 });
 
@@ -805,6 +956,74 @@ describe('Durability', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('ignores nested object key order and never leaks payloads in conflicts', async () => {
+    const calls: unknown[] = [];
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        send: async ({ payload }: DurableCall<Record<string, unknown>>) => {
+          calls.push(payload);
+          return 'ok';
+        },
+      },
+    });
+
+    await durability.send({ id: 'nested', payload: { meta: { a: 1, b: 2 } } });
+    // A nested object with the same data in a different key order is a no-op.
+    await durability.send({ id: 'nested', payload: { meta: { b: 2, a: 1 } } });
+    await vi.waitFor(async () => {
+      await expect(durability.send.getResult('nested')).resolves.toMatchObject({
+        status: 'completed',
+      });
+    });
+    expect(calls).toHaveLength(1);
+
+    const error = await durability
+      .send({
+        id: 'nested',
+        payload: { meta: { a: 1, b: 2 }, token: 'leaky-secret' },
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DuplicateDurablePayloadError);
+    const reported = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
+    expect(reported).not.toContain('leaky-secret');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('commits one authoritative payload for concurrent first registrations', async () => {
+    const calls: unknown[] = [];
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        send: async ({ payload }: DurableCall<{ cents: number }>) => {
+          calls.push(payload);
+          return payload.cents;
+        },
+      },
+    });
+
+    const results = await Promise.allSettled([
+      durability.send({ id: 'transfer:42', payload: { cents: 100 } }),
+      durability.send({ id: 'transfer:42', payload: { cents: 10_000 } }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === 'fulfilled');
+    const rejected = results.filter((result) => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      DuplicateDurablePayloadError
+    );
+
+    await vi.waitFor(async () => {
+      await expect(
+        durability.send.getResult('transfer:42')
+      ).resolves.toMatchObject({ status: 'completed' });
+    });
+    expect(calls).toHaveLength(1);
+    const stored = await durability.send.getResult('transfer:42');
+    expect([100, 10_000]).toContain((stored as { result: number }).result);
+  });
+
   it('keeps its alarm armed when a run cannot reconcile, instead of failing the alarm', async () => {
     const storage = new FakeStorage();
     const durability = new Durability({
@@ -1172,6 +1391,57 @@ describe('Durability', () => {
       })
     );
   });
+
+  it('omits handler results from default lifecycle events', async () => {
+    const storage = new FakeStorage();
+    const events: DurabilityLifecycleEvent[] = [];
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => ({ secret: 'token-abc' }) },
+      onLifecycleEvent(event) {
+        events.push(event);
+      },
+    });
+
+    await durability.work({ id: 'events', payload: null });
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.type === 'attempt_settled')).toBe(
+        true
+      )
+    );
+
+    const settled = events.find((event) => event.type === 'attempt_settled');
+    expect(settled).toMatchObject({ outcome: 'completed' });
+    expect(settled).not.toHaveProperty('result');
+    expect(JSON.stringify(events)).not.toContain('token-abc');
+  });
+
+  it('includes handler results only when includeResults is enabled', async () => {
+    const storage = new FakeStorage();
+    const events: DurabilityLifecycleEvent[] = [];
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async () => ({ secret: 'token-abc' }) },
+      includeResults: true,
+      onLifecycleEvent(event) {
+        events.push(event);
+      },
+    });
+
+    await durability.work({ id: 'events', payload: null });
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.type === 'attempt_settled')).toBe(
+        true
+      )
+    );
+
+    expect(
+      events.find((event) => event.type === 'attempt_settled')
+    ).toMatchObject({
+      outcome: 'completed',
+      result: { secret: 'token-abc' },
+    });
+  });
 });
 
 describe('DurabilityAlarms', () => {
@@ -1405,6 +1675,7 @@ describe('DurabilityAlarms', () => {
       retryCount: 0,
       idempotencyKey: expect.stringMatching(/^durability-alarm:v1:/),
       signal: expect.any(AbortSignal),
+      memoize: expect.any(Function),
       platform,
     });
     expect(storage.alarmAt).toBeNull();
@@ -2000,14 +2271,17 @@ describe('lifecycle hooks', () => {
       handlers: {
         work: async ({ payload }: DurableCall<number>) => payload * 2,
       },
+      includeResults: true,
     });
     const configured: string[] = [];
     const results: number[] = [];
     const detach = durability.lifecycle((event) => {
       if (event.type === 'attempt_settled' && event.outcome === 'completed') {
-        expectTypeOf(event.result).toEqualTypeOf<number>();
+        expectTypeOf(event.result).toEqualTypeOf<number | undefined>();
         expectTypeOf(event.operation).toEqualTypeOf<'work'>();
-        results.push(event.result);
+        if (event.result !== undefined) {
+          results.push(event.result);
+        }
       }
     });
     durability.lifecycle((event) => {
