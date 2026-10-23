@@ -18,7 +18,17 @@ import {
 } from './lifecycle.js';
 import { RoutingLoad, type EnqueueResult, type LoadSnapshot } from './load.js';
 import type { MessageWrite, StoredMessage } from './stored-message.js';
-import { durabilityFanoutMigrations, migrateCapability } from './migrations.js';
+import {
+  createMemoize,
+  deleteMemos,
+  deleteMemosOfDroppedTable,
+  type DurableMemoize,
+} from './memoize.js';
+import {
+  durabilityFanoutMigrations,
+  durabilityMemoMigrations,
+  migrateCapability,
+} from './migrations.js';
 import {
   assertPositiveInteger,
   createPolicyResolver,
@@ -113,6 +123,11 @@ export type DurabilityFanoutMessage<Body = unknown> = {
   body: Body;
   attempt: number;
   enqueuedAt: number;
+  /**
+   * Persists a callback's result by key for this message and target, so a
+   * retried delivery reuses it. Deleted when the delivery is acked or dead-lettered.
+   */
+  memoize: DurableMemoize;
   ack(): Promise<void>;
   retry(delayMs?: number): Promise<void>;
   deadLetter(): Promise<void>;
@@ -244,6 +259,7 @@ export class DurabilityFanout<Body = unknown> {
     );
     this.#emit = this.#lifecycle.emit;
     this.#engine.migrateSchema('fanout', durabilityFanoutMigrations);
+    this.#engine.migrateSchema('memos', durabilityMemoMigrations);
     this.#engine.register({
       table: deliveriesTable,
       runDue: () => this.#runDue(),
@@ -254,12 +270,14 @@ export class DurabilityFanout<Body = unknown> {
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ) {
-    return migrateCapability(
+    const result = migrateCapability(
       context.storage,
       'fanout',
       durabilityFanoutMigrations,
       target
     );
+    deleteMemosOfDroppedTable(context.storage.sql, deliveriesTable);
+    return result;
   }
 
   alarm(info?: AlarmInvocationInfo): Promise<void> {
@@ -794,6 +812,7 @@ export class DurabilityFanout<Body = unknown> {
       body: deserialize(message.payload) as Body,
       enqueuedAt: message.created_at,
       attempt: row.attempt,
+      memoize: createMemoize(this.#engine.sql, deliveriesTable, attemptOf(row)),
       ack: traceFunction(
         'DurabilityFanoutMessage.ack',
         () =>
@@ -859,6 +878,7 @@ export class DurabilityFanout<Body = unknown> {
     if (!deleteAttempt(sql, deliveriesTable, attemptOf(row))) {
       return false;
     }
+    deleteMemos(sql, deliveriesTable, row.id);
 
     this.#adjustPending(-1);
     sql.exec(

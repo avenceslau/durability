@@ -19,6 +19,7 @@ import {
 } from './lifecycle.js';
 import {
   durabilityOperationMigrations,
+  durabilityMemoMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
@@ -37,6 +38,12 @@ import {
   type SchedulerAttachment,
 } from './scheduler.js';
 import { canonical, deserialize, serialize } from './serialization.js';
+import {
+  createMemoize,
+  deleteMemosOfDroppedTable,
+  memoizedKeys,
+  type DurableMemoize,
+} from './memoize.js';
 import { listCreated, updateAttempt, type DurableTable } from './storage.js';
 import {
   registerTrackedSource,
@@ -94,6 +101,8 @@ export type DurableCall<Payload> = {
   attempt: number;
   /** Aborts when the attempt exceeds its configured timeout. */
   signal: AbortSignal;
+  /** Persists a callback's result by key so a retry of this operation reuses it. */
+  memoize: DurableMemoize;
 };
 
 /** A function that executes one attempt of a durable operation. */
@@ -282,13 +291,27 @@ const callState = (
   return { status: 'completed', result: deserialize(call.result) };
 };
 
-const callRecord = (call: CallRow): UntypedRecord => ({
-  id: call.id,
-  name: call.operation,
-  generation: call.generation_id,
-  createdAt: call.created_at,
-  state: callState(call),
-});
+const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
+  const state = callState(call);
+  return {
+    id: call.id,
+    name: call.operation,
+    generation: call.generation_id,
+    createdAt: call.created_at,
+    state:
+      state.status === 'pending'
+        ? {
+            ...state,
+            memoized: memoizedKeys(
+              sql,
+              callsTable,
+              call.id,
+              call.generation_id
+            ),
+          }
+        : state,
+  };
+};
 
 const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
   entityKind: 'operation',
@@ -349,6 +372,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     }
 
     this.#engine.migrateSchema('operations', durabilityOperationMigrations);
+    this.#engine.migrateSchema('memos', durabilityMemoMigrations);
     this.#engine.register({
       table: callsTable,
       runDue: (now) => this.#runDue(now),
@@ -361,12 +385,14 @@ class DurabilityCore<Handlers extends HandlerMap> {
     context: Pick<DurableObjectState, 'storage'>,
     target?: string | null
   ): DurabilityMigrationResult {
-    return migrateCapability(
+    const result = migrateCapability(
       context.storage,
       'operations',
       durabilityOperationMigrations,
       target
     );
+    deleteMemosOfDroppedTable(context.storage.sql, callsTable);
+    return result;
   }
 
   /** Processes due operations and re-arms the physical alarm. */
@@ -410,7 +436,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     return {
       get: async (id) => {
         const call = readCall(sql, id);
-        return call && callRecord(call);
+        return call && callRecord(sql, call);
       },
       list: async ({ limit, cursor, status, name }) => {
         const page = listCreated(sql, callsTable, 'operation', {
@@ -419,7 +445,10 @@ class DurabilityCore<Handlers extends HandlerMap> {
           status,
           name,
         });
-        const records = callRowSchema.array().parse(page.rows).map(callRecord);
+        const records = callRowSchema
+          .array()
+          .parse(page.rows)
+          .map((call) => callRecord(sql, call));
         return page.next === undefined
           ? { records }
           : { records, cursor: page.next };
@@ -610,6 +639,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
             payload: deserialize(call.payload),
             attempt,
             signal,
+            memoize: createMemoize(this.#engine.sql, callsTable, {
+              key: call.id,
+              generation: call.generation_id,
+              attempt,
+            }),
           });
         },
         complete: (result, attempt) => {
