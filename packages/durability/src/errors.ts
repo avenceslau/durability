@@ -66,6 +66,33 @@ export class DurableResultSerializationError extends Error {
   }
 }
 
+/**
+ * Error persisted when a memoized result cannot be JSON-serialized. It is
+ * terminal because every retry would fail the same way.
+ */
+export class DurableMemoSerializationError extends NonRetryableError {
+  constructor(key: string, reason?: unknown) {
+    super(
+      `Memoized result for key ${JSON.stringify(key)} is not JSON-serializable`
+    );
+    this.name = 'DurableMemoSerializationError';
+    if (reason !== undefined) {
+      Object.defineProperty(this, 'cause', { value: reason });
+    }
+  }
+}
+
+/**
+ * Error persisted when work memoizes more keys, or a larger result, than the
+ * limits allow. It is terminal because every retry would fail the same way.
+ */
+export class DurableMemoLimitError extends NonRetryableError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DurableMemoLimitError';
+  }
+}
+
 /** Error persisted when pending work has already reached its attempt limit. */
 export class DurableAttemptsExhaustedError extends Error {
   constructor(entity: 'operation' | 'named alarm', name: string, max: number) {

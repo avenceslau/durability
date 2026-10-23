@@ -13,6 +13,8 @@ export type TrackedState<Result> =
       attempt?: number;
       nextAttemptAt?: number;
       lastError?: string | null;
+      /** Keys whose memoized results the next attempt reuses, in the order they were saved. */
+      memoized?: string[];
     }
   | {
       status: 'completed';

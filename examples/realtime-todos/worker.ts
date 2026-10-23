@@ -40,6 +40,8 @@ export class TodoList extends DurableObject<Env> {
         return payload;
       },
     },
+    // Needed so completed lifecycle events carry the todo to broadcast.
+    includeResults: true,
   });
 
   readonly socket = new DurabilitySocket({
@@ -87,7 +89,8 @@ export class TodoList extends DurableObject<Env> {
     this.durability.lifecycle((lifecycleEvent) => {
       if (
         lifecycleEvent.type === 'attempt_settled' &&
-        lifecycleEvent.outcome === 'completed'
+        lifecycleEvent.outcome === 'completed' &&
+        lifecycleEvent.result !== undefined
       ) {
         this.socket.created(lifecycleEvent.result);
       }

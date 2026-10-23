@@ -22,7 +22,7 @@ const attemptRowSchema = z.object({
 
 // Every write is conditional on the record's generation and pending status, so a
 // stale execution can never overwrite a replacement or a later attempt.
-const pendingGeneration = (table: DurableTable): string =>
+export const pendingGeneration = (table: DurableTable): string =>
   `${table.key} = ? AND generation_id = ? AND status = 'pending'`;
 
 /** Starts the next attempt and returns its number, unless the generation is gone or out of attempts. */

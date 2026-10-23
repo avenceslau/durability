@@ -494,6 +494,85 @@ describe('log', () => {
     expect(await log.cursor('search')).toBe(5);
   });
 
+  it('redelivers a whole range that retention flushed partly to cold storage', async () => {
+    const segments = new Map<string, LogRecord<string>[]>();
+    const cold: LogColdStorage<string> = {
+      write: async (segment) => {
+        const locator = `s${segments.size}`;
+        segments.set(locator, segment.records);
+        return locator;
+      },
+      read: async (locator) => segments.get(locator),
+    };
+    const { log } = fixture({
+      cold,
+      retention: { maxRecords: 3 },
+      leases: { leaseMs: 1_000 },
+    });
+    await offsetsOf(log, ['a', 'b', 'c', 'd']);
+    const first = await log.lease('search', 4);
+    await log.nack('search', first!.batchId);
+
+    // Two flushes split the range over two segments and the hot window.
+    await offsetsOf(log, ['e']);
+    await log.trim();
+    await offsetsOf(log, ['f']);
+    await log.trim();
+    expect(await log.bounds()).toMatchObject({ oldestOffset: 0, hotOffset: 3 });
+
+    const again = await log.lease('search');
+    expect(again).toMatchObject({ firstOffset: 0, lastOffset: 3, attempt: 2 });
+    expect(again!.records.map((record) => record.body)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+    ]);
+  });
+
+  it('advances the cursor over an acked range that retention partly trimmed', async () => {
+    const { log } = fixture({ retention: { maxRecords: 3 }, leases: {} });
+    await offsetsOf(log, ['a', 'b', 'c', 'd']);
+    const straddling = await log.lease('search', 3);
+    expect(straddling).toMatchObject({ firstOffset: 0, lastOffset: 2 });
+
+    // Retention trims 0..1 while the range is held; the holder still acks it.
+    await offsetsOf(log, ['e']);
+    await log.trim();
+    expect(await log.bounds()).toMatchObject({ oldestOffset: 2 });
+    await log.ack('search', straddling!.batchId);
+    expect(await log.cursor('search')).toBe(3);
+
+    const rest = await log.lease('search');
+    expect(rest).toMatchObject({ firstOffset: 3, lastOffset: 4 });
+    await log.ack('search', rest!.batchId);
+    expect(await log.cursor('search')).toBe(5);
+  });
+
+  it('advances the cursor over every range acked behind a late one', async () => {
+    const { log } = fixture({
+      maxBatchSize: 2,
+      leases: { maxParallelism: 8, leaseMs: 1_000 },
+    });
+    for (const body of ['a', 'b', 'c', 'd', 'e', 'f']) {
+      // eslint-disable-next-line no-await-in-loop
+      await offsetsOf(log, [body]);
+    }
+    const leases = [];
+    for (let i = 0; i < 6; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      leases.push(await log.lease('search', 1));
+    }
+    // Every range but the first is acked while the first is still out.
+    for (const lease of leases.slice(1)) {
+      // eslint-disable-next-line no-await-in-loop
+      await log.ack('search', lease!.batchId);
+    }
+    expect(await log.cursor('search')).toBeUndefined();
+    await log.ack('search', leases[0]!.batchId);
+    expect(await log.cursor('search')).toBe(6);
+  });
+
   it('rejects double settlement of one batch', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a']);
@@ -560,6 +639,18 @@ describe('log', () => {
     await log.ack('search', next!.batchId);
     // Committing runs over the skipped range as well as the acked one.
     expect(await log.cursor('search')).toBe(2);
+  });
+
+  it('moves the cursor past a poison range even when it is the last one', async () => {
+    const { log } = fixture({
+      leases: { maxAttempts: 1, onPoison: async () => undefined },
+    });
+    await offsetsOf(log, ['a']);
+    const first = await log.lease('search');
+    await log.nack('search', first!.batchId);
+    expect(await log.lease('search')).toBeUndefined();
+    // Nothing else will be acked, so skipping must commit on its own.
+    expect(await log.cursor('search')).toBe(1);
   });
 
   it('rehydrates a leased range that retention already flushed', async () => {

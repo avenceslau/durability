@@ -471,7 +471,7 @@ const leasesFrom = (
     sql
       .exec(
         `SELECT * FROM durability_log_leases
-         WHERE consumer = ? AND first_offset >= ?
+         WHERE consumer = ? AND last_offset >= ?
          ORDER BY first_offset ASC
          LIMIT ?`,
         consumer,
@@ -956,7 +956,11 @@ export class DurabilityLog<Body = unknown> {
       }
       // Terminal intent is durable before the callback runs, so a failing
       // handler cannot resurrect a range that already exhausted its attempts.
-      this.#settle(reclaimed.batch_id, 'skipped');
+      // A skipped range counts as settled, so the cursor moves past it as for an ack.
+      this.#engine.transactionSync(() => {
+        this.#settle(reclaimed.batch_id, 'skipped');
+        this.#advance(consumer);
+      });
       try {
         await leases.onPoison!(lease as LogLease);
       } catch (error) {
@@ -1097,17 +1101,23 @@ export class DurabilityLog<Body = unknown> {
       readCursor(sql, consumer) ?? 0,
       readBounds(sql).oldestOffset
     );
-    const candidates = leasesFrom(sql, consumer, from, this.#maxBatchSize);
     let cursor = from;
     const settled: string[] = [];
-    for (const row of candidates) {
-      const contiguous = row.first_offset <= cursor;
-      const done = row.state === 'acked' || row.state === 'skipped';
-      if (!contiguous || !done) {
-        break;
+    // Ranges settled while an earlier one was outstanding wait behind it; when
+    // it settles the cursor must pass all of them, however many pages that is.
+    for (let page = true; page; ) {
+      const candidates = leasesFrom(sql, consumer, cursor, this.#maxBatchSize);
+      page = candidates.length === this.#maxBatchSize;
+      for (const row of candidates) {
+        const contiguous = row.first_offset <= cursor;
+        const done = row.state === 'acked' || row.state === 'skipped';
+        if (!contiguous || !done) {
+          page = false;
+          break;
+        }
+        cursor = Math.max(cursor, row.last_offset + 1);
+        settled.push(row.batch_id);
       }
-      cursor = Math.max(cursor, row.last_offset + 1);
-      settled.push(row.batch_id);
     }
     if (settled.length === 0) {
       return;
@@ -1119,8 +1129,21 @@ export class DurabilityLog<Body = unknown> {
   /** Reads a stored range, rehydrating it when retention already flushed it. */
   async #between(first: number, last: number): Promise<LogRecord<Body>[]> {
     const bounds = readBounds(this.#engine.sql);
-    const records = await this.#readFrom(first, last - first + 1, bounds);
-    return records.filter((record) => record.offset <= last);
+    // One read stops at the end of a cold segment, and a range redelivered
+    // after a flush can span several segments and the hot window.
+    const records: LogRecord<Body>[] = [];
+    let from = first;
+    while (from <= last) {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await this.#readFrom(from, last - from + 1, bounds);
+      const inRange = page.filter((record) => record.offset <= last);
+      if (inRange.length === 0) {
+        break;
+      }
+      records.push(...inRange);
+      from = inRange[inRange.length - 1]!.offset + 1;
+    }
+    return records;
   }
 
   async #readFrom(
