@@ -1,5 +1,30 @@
 # durability
 
+## 5.0.0
+
+### Major Changes
+
+- c4ec65f: Lifecycle events no longer carry handler results by default. `onLifecycleEvent` and `lifecycle(hook)` emit structural metrics fields and a normalized `{ name, message }` error, but omit the `completed` settlement's `result` so events are safe to forward to shared telemetry sinks without leaking result content. Pass `includeResults: true` to `Durability` to restore the result on `completed` events for trusted hooks (for example, bridging results to a WebSocket).
+
+  This is breaking: the typed `result` on a `Durability` operation's `completed` event is now optional, and existing hooks that read `event.result` receive `undefined` unless they opt in. Persisted results and `getResult` are unchanged.
+
+### Minor Changes
+
+- 281b7fd: Add `memoize(key, callback)` to durable operation and named alarm handlers. Once a key's callback succeeds, its result is persisted and every later call with that key, in a retry or in the same attempt, returns it instead of running the callback; a callback that throws persists nothing and runs again. A call for a key whose callback is still running rejects instead of waiting on it. Results live in a new `durability_memos` table shared by `Durability`, `DurabilityAlarms`, and `DurabilityFanout`, and are deleted in the transaction that settles the operation or alarm occurrence, when a named alarm is rescheduled, by `purgeBefore`, and when a helper's schema is reverted. A result that is not JSON-serializable fails the work with the new `DurableMemoSerializationError`.
+
+  Fanout messages get the same `memoize`, scoped to one message and target and deleted when the delivery is acked or dead-lettered. One record may memoize at most `maxMemosPerRecord` (1,000) keys of at most `maxMemoBytes` (1 MiB) each; exceeding either fails the work with the new `DurableMemoLimitError`. `DurabilityTracker` records of pending operations and alarms list their memoized keys as `state.memoized`.
+
+### Patch Changes
+
+- 281b7fd: Construct helpers with one read per capability when its schema is already current, instead of re-running the migration bookkeeping on every Durable Object wake. A construction of `Durability` and `DurabilityAlarms` on a migrated object now runs 3 statements instead of 21, so a wake that hits a transient storage error is far less likely to fail before it reaches pending work. A missing or older history table, a pending or newer migration, a changed `down` script, or any failure of the read still runs the full migration.
+- 7173122: `DurabilityLog` redelivers a whole leased range after retention flushed part of it to cold storage. A nacked or expired range spanning a cold segment boundary, or a segment and the hot window, was redelivered with only the records of its first segment, so a consumer acking it would skip the rest unseen.
+
+  A leased consumer's cursor also advances over an acked range that retention trimmed part of; such a range was skipped when computing the cursor, which then never moved again.
+
+  When a late range is acked, the cursor now passes every range acked behind it; it advanced at most `maxBatchSize` ranges per ack, and stopped behind the rest for good if no further ack came.
+
+  Skipping a poison range also advances the cursor; when the poison range was the last one, the cursor stayed in front of it until some later ack.
+
 ## 4.3.0
 
 ### Minor Changes
