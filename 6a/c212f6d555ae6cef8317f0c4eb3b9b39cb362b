@@ -1,0 +1,19 @@
+packages/durability/src/scheduler.ts
+  s_8c81f4f82d7b2d::t_96df18d5d63aec 730,740
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6ac212f6d555ae6cef8317f0c4eb3b9b39cb362b",
+  "prompts": {},
+  "sessions": {
+    "s_8c81f4f82d7b2d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a17463-2106-720a-8298-88dfc1746928",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
