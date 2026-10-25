@@ -40,6 +40,13 @@ export type DurabilitySchedulerOptions = {
   alarmMinDelayMs?: number;
   /** Time before a running alarm hands unfinished work to a new alarm. Defaults to 14 minutes. */
   alarmHandoffMs?: number;
+  /**
+   * Experimental. Start due work from in-memory timers at its exact scheduled
+   * time, independent of `alarmMinDelayMs`, and let newly due work run without
+   * waiting behind long-running handlers. The physical alarm stays armed as the
+   * eviction fallback. Off by default.
+   */
+  liveTimers?: boolean;
 };
 
 /** Configuration for a scheduler shared by several helpers. */
@@ -57,8 +64,12 @@ export type SchedulerAttachment =
 
 const minAlarmDelayMs = 1_000;
 const maxAlarmDelayMs = 15_000;
+// setTimeout treats delays past this as zero, so anything further out can only
+// be served by the physical alarm fallback.
+const maxTimerMs = 2 ** 31 - 1;
 
-const nextAttemptRowSchema = z.object({
+const pendingHeadRowSchema = z.object({
+  pk: z.string(),
   next_attempt_at: z.number().int().nonnegative(),
 });
 const countRowSchema = z.object({ count: z.number().int().nonnegative() });
@@ -179,6 +190,7 @@ export class Engine {
   private readonly alarmConcurrency: number;
   private readonly alarmMinDelayMs: number;
   private readonly alarmHandoffMs: number;
+  readonly liveTimers: boolean;
   private readonly participants: Participant[] = [];
   private readonly migrated = new Set<MigrationCapability>();
   private availablePermits: number;
@@ -191,6 +203,9 @@ export class Engine {
     string,
     Map<string, Set<SettlementListener>>
   >();
+  // Keys whose attempt is currently executing, per table. The in-memory timer
+  // skips these so a still-due active row cannot drive a zero-delay timer loop.
+  private readonly activeByTable = new Map<string, Set<string>>();
 
   constructor(context: DurabilityContext, options: DurabilitySchedulerOptions) {
     this.context = context;
@@ -199,6 +214,7 @@ export class Engine {
     this.alarmConcurrency = options.alarmConcurrency ?? 10;
     this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
     this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
+    this.liveTimers = options.liveTimers ?? false;
     assertPositiveInteger('alarmConcurrency', this.alarmConcurrency);
     assertPositiveInteger('alarmMinDelayMs', this.alarmMinDelayMs);
     if (
@@ -291,49 +307,104 @@ export class Engine {
     return result;
   }
 
-  /** Returns the earliest pending time and maintains its bounded physical fallback. */
+  private trackActive(table: string, key: string): void {
+    let keys = this.activeByTable.get(table);
+    if (!keys) {
+      keys = new Set();
+      this.activeByTable.set(table, keys);
+    }
+    keys.add(key);
+  }
+
+  private releaseActive(table: string, key: string): void {
+    const keys = this.activeByTable.get(table);
+    if (!keys) {
+      return;
+    }
+    keys.delete(key);
+    if (keys.size === 0) {
+      this.activeByTable.delete(table);
+    }
+  }
+
+  /**
+   * The earliest pending time for one participant: `physical` arms the physical
+   * alarm (eviction fallback) and includes active work; `timer` drives the
+   * in-memory timer and, under liveTimers, skips work that is already executing
+   * so a still-due active row cannot re-fire a zero-delay timer in a loop.
+   */
+  private pendingTimes(participant: Participant): {
+    physical?: number | undefined;
+    timer?: number | undefined;
+  } {
+    if (participant.nextPendingAt) {
+      const at = participant.nextPendingAt(this.sql);
+      return at === undefined ? {} : { physical: at, timer: at };
+    }
+    const active = this.activeByTable.get(participant.table.name);
+    const limit = this.liveTimers ? (active?.size ?? 0) + 1 : 1;
+    const rows = pendingHeadRowSchema.array().parse(
+      this.sql
+        .exec(
+          `SELECT ${participant.table.key} AS pk, next_attempt_at
+           FROM ${participant.table.name}
+           WHERE status = 'pending'
+           ORDER BY next_attempt_at ASC
+           LIMIT ?`,
+          limit
+        )
+        .toArray()
+    );
+    const physical = rows[0]?.next_attempt_at;
+    if (!this.liveTimers) {
+      if (physical === undefined) {
+        return {};
+      }
+      return { physical, timer: physical };
+    }
+    const eligible = rows.find((row) => !active?.has(row.pk));
+    return { physical, timer: eligible?.next_attempt_at };
+  }
+
+  /**
+   * Arms the physical alarm from the earliest pending time (the eviction
+   * fallback) and returns the earliest time the in-memory timer should fire.
+   */
   private async reconcile(
     physicalAlarm: PhysicalAlarm
   ): Promise<number | undefined> {
-    const scheduled = this.participants.flatMap((participant) => {
-      if (participant.nextPendingAt) {
-        const at = participant.nextPendingAt(this.sql);
-        return at === undefined ? [] : [at];
+    const physicalTimes: number[] = [];
+    const timerTimes: number[] = [];
+    for (const participant of this.participants) {
+      const { physical, timer } = this.pendingTimes(participant);
+      if (physical !== undefined) {
+        physicalTimes.push(physical);
       }
-      return nextAttemptRowSchema
-        .array()
-        .parse(
-          this.sql
-            .exec(
-              `SELECT next_attempt_at FROM ${participant.table.name}
-               WHERE status = 'pending'
-               ORDER BY next_attempt_at ASC
-               LIMIT 1`
-            )
-            .toArray()
-        )
-        .map((row) => row.next_attempt_at);
-    });
-    const nextAlarmAt =
-      scheduled.length === 0 ? undefined : Math.min(...scheduled);
+      if (timer !== undefined) {
+        timerTimes.push(timer);
+      }
+    }
+
+    const physicalNextAt =
+      physicalTimes.length === 0 ? undefined : Math.min(...physicalTimes);
     const currentAlarm = await physicalAlarm.getAlarm();
-    if (nextAlarmAt === undefined) {
+    if (physicalNextAt === undefined) {
       if (currentAlarm !== null) {
         await physicalAlarm.deleteAlarm();
       }
       return undefined;
     }
 
-    const target = Math.max(nextAlarmAt, Date.now() + this.alarmMinDelayMs);
+    const target = Math.max(physicalNextAt, Date.now() + this.alarmMinDelayMs);
     // Preserve a fallback inside this range so frequent reconciliation cannot push it later.
     if (
       currentAlarm === null ||
-      currentAlarm < nextAlarmAt ||
+      currentAlarm < physicalNextAt ||
       currentAlarm > target
     ) {
       await physicalAlarm.setAlarm(target);
     }
-    return nextAlarmAt;
+    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);
   }
 
   private scheduleEarlyAlarm(timestamp: number | undefined): void {
@@ -344,10 +415,18 @@ export class Engine {
       clearTimeout(this.earlyAlarm.timer);
       this.earlyAlarm = undefined;
     }
-    if (
-      timestamp === undefined ||
-      timestamp >= Date.now() + this.alarmMinDelayMs
-    ) {
+    if (timestamp === undefined) {
+      return;
+    }
+    const delay = timestamp - Date.now();
+    // Without liveTimers the in-memory timer only covers the sub-min-delay
+    // window; the physical alarm handles everything beyond it. With liveTimers
+    // it fires at the exact due time no matter how far out, except past the
+    // timer's range where only the physical fallback can serve it.
+    if (!this.liveTimers && delay >= this.alarmMinDelayMs) {
+      return;
+    }
+    if (delay > maxTimerMs) {
       return;
     }
 
@@ -367,7 +446,7 @@ export class Engine {
         const execution = this.alarm().catch(onError);
         this.waitUntil(execution, onError);
       },
-      Math.max(timestamp - Date.now(), 0)
+      Math.max(delay, 0)
     );
     this.earlyAlarm = { timestamp, timer };
   }
@@ -609,6 +688,7 @@ export class Engine {
       settled,
     };
     spec.active.set(key, activeExecution);
+    this.trackActive(spec.table.name, key);
 
     let releasePermit = eagerPermit;
     let handlerStarted = false;
@@ -700,6 +780,18 @@ export class Engine {
     void settled.finally(() => {
       if (spec.active.get(key) === activeExecution) {
         spec.active.delete(key);
+      }
+      this.releaseActive(spec.table.name, key);
+      // Re-arm the in-memory timer now that this key is eligible again, so work
+      // the timer skipped while it executed is picked up at its exact time.
+      if (this.liveTimers) {
+        void this.scheduleNextAlarm().catch((error) =>
+          reportFailure(
+            'durability.scheduler.refresh_failed',
+            { table: spec.table.name, key },
+            error
+          )
+        );
       }
     });
     return execution;

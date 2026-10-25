@@ -330,8 +330,13 @@ class DurabilityAlarmsCore<Names extends string> {
         )
         .toArray()
     );
+    // With liveTimers a running occurrence re-arms itself when it settles, so
+    // skipping it keeps a long handler from blocking a concurrent alarm pass.
+    const pending = this.#engine.liveTimers
+      ? due.filter((row) => !this.#active.has(row.name))
+      : due;
     const failures: unknown[] = [];
-    await this.#engine.runConcurrent(due, async (row) => {
+    await this.#engine.runConcurrent(pending, async (row) => {
       try {
         await this.#execute(row, info);
       } catch (error) {
