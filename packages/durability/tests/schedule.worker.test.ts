@@ -32,6 +32,20 @@ describe('schedule in workerd', () => {
     expect((await stub.rowsWritten()) / runs).toBe(4);
   });
 
+  it('arms the physical alarm once per run when ticks are further apart than alarmMinDelayMs', async () => {
+    const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
+    const runs = 3;
+
+    await stub.start(1_500, runs, 5);
+    await expect
+      .poll(() => stub.outcomes(), { timeout: 10_000 })
+      .toHaveLength(runs);
+    await expect.poll(() => stub.pendingRuns()).toBe(0);
+
+    expect(await stub.setAlarmCalls()).toBe(runs);
+    expect((await stub.rowsWritten()) / runs).toBe(4);
+  });
+
   it('overlaps runs up to maxConcurrentRuns and reports every one', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
     const runs = 6;

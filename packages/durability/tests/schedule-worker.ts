@@ -31,6 +31,7 @@ type Window = z.infer<typeof windowSchema>;
 export class ScheduleObject extends DurableObject {
   // Only statements durability issues are counted, not the test's bookkeeping.
   private readonly cursors: Cursor[] = [];
+  private setAlarmCount = 0;
   private active = 0;
   private maxActive = 0;
 
@@ -94,9 +95,38 @@ export class ScheduleObject extends DurableObject {
           }
         : undefined
     );
-    const storage = bindAll(this.ctx.storage, (key) =>
-      key === 'sql' ? sql : undefined
-    );
+    const setAlarm = (
+      target: Pick<DurableObjectStorage, 'setAlarm'>,
+      scheduledTime: number | Date
+    ) => {
+      this.setAlarmCount += 1;
+      return target.setAlarm(scheduledTime);
+    };
+    const storage = bindAll(this.ctx.storage, (key) => {
+      if (key === 'sql') {
+        return sql;
+      }
+      if (key === 'setAlarm') {
+        return (scheduledTime: number | Date) =>
+          setAlarm(this.ctx.storage, scheduledTime);
+      }
+      if (key === 'transaction') {
+        return <T>(
+          closure: (transaction: DurableObjectTransaction) => Promise<T>
+        ) =>
+          this.ctx.storage.transaction((transaction) =>
+            closure(
+              bindAll(transaction, (name) =>
+                name === 'setAlarm'
+                  ? (scheduledTime: number | Date) =>
+                      setAlarm(transaction, scheduledTime)
+                  : undefined
+              )
+            )
+          );
+      }
+      return undefined;
+    });
     return {
       storage,
       waitUntil: (promise: Promise<unknown>) => this.ctx.waitUntil(promise),
@@ -105,8 +135,8 @@ export class ScheduleObject extends DurableObject {
   }
 
   /**
-   * Runs `count` ticks `every` ms apart and counts rows written from then on;
-   * a negative `runMs` never settles.
+   * Runs `count` ticks `every` ms apart and counts rows and alarm writes from
+   * then on; a negative `runMs` never settles.
    */
   async start(every: number, count: number, runMs: number): Promise<number> {
     await this.ctx.storage.put('run-ms', runMs);
@@ -118,6 +148,7 @@ export class ScheduleObject extends DurableObject {
     });
     // Counting starts after `set`, before the first tick can fire.
     this.cursors.length = 0;
+    this.setAlarmCount = 0;
     return first;
   }
 
@@ -126,6 +157,10 @@ export class ScheduleObject extends DurableObject {
       (total, cursor) => total + cursor.rowsWritten,
       0
     );
+  }
+
+  setAlarmCalls(): number {
+    return this.setAlarmCount;
   }
 
   observedMaxActive(): number {

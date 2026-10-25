@@ -55,7 +55,10 @@ type RunRow = z.infer<typeof runRowSchema>;
 const timeRowSchema = z.object({
   scheduled_time: z.number().int().nonnegative(),
 });
-const atRowSchema = z.object({ at: z.number().int().nullable() });
+const timedRowSchema = z.object({
+  scheduled_time: z.number().int().nonnegative(),
+  next_at: z.number().int().nonnegative(),
+});
 const serializedErrorSchema = z.object({
   name: z.string(),
   message: z.string(),
@@ -318,18 +321,7 @@ export class DurabilitySchedule {
     this.#engine.register({
       table: runsTable,
       runDue: () => this.#hold(),
-      nextPendingAt: (sql) =>
-        atRowSchema.parse(
-          sql
-            .exec(
-              `SELECT MIN(at) AS at FROM (
-                 SELECT next_at AS at FROM durability_schedule
-                 UNION ALL
-                 SELECT next_at AS at FROM durability_schedule_runs
-               )`
-            )
-            .toArray()[0]
-        ).at ?? undefined,
+      nextPendingAt: (sql) => this.#nextPendingAt(sql),
       holding: () => this.#loop !== undefined,
     });
   }
@@ -417,6 +409,43 @@ export class DurabilitySchedule {
       writeSchedule(sql, version ?? stored?.version ?? 0, null, null);
       return live;
     });
+  }
+
+  /**
+   * A run or delivery this instance holds needs the physical alarm only as its
+   * eviction fallback, which the next tick already provides. Counting it only
+   * when nothing else is pending keeps a run to one alarm write, instead of
+   * arming a fallback when it starts and re-arming the next tick when it ends.
+   */
+  #nextPendingAt(sql: SqlStorage): number | undefined {
+    const rows = timedRowSchema
+      .array()
+      .parse(
+        sql
+          .exec('SELECT scheduled_time, next_at FROM durability_schedule_runs')
+          .toArray()
+      );
+    const held: number[] = [];
+    const pending: number[] = [];
+    for (const row of rows) {
+      if (
+        this.#active.has(row.scheduled_time) ||
+        this.#delivering.has(row.scheduled_time)
+      ) {
+        held.push(row.next_at);
+      } else {
+        pending.push(row.next_at);
+      }
+    }
+    const tick = readSchedule(sql)?.next_at;
+    if (tick !== undefined && tick !== null) {
+      pending.push(tick);
+    }
+
+    if (pending.length > 0) {
+      return Math.min(...pending);
+    }
+    return held.length === 0 ? undefined : Math.min(...held);
   }
 
   #nextAfter(expression: string, after: number): number | undefined {

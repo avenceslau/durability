@@ -180,6 +180,30 @@ describe('DurabilitySchedule', () => {
     expect((totalChanges(storage) - before) / 3).toBe(4);
   });
 
+  it('arms the physical alarm once per run in the steady state', async () => {
+    start();
+    const { storage, schedule, outcomes } = setup({
+      run: () => new Promise((resolve) => setTimeout(resolve, 100)),
+    });
+    await schedule.set({ expression: '5000', version: 1 });
+    const setAlarm = vi.spyOn(storage, 'setAlarm');
+
+    for (const time of [15_000, 20_000, 25_000]) {
+      vi.setSystemTime(time);
+      // The platform clears a firing alarm before invoking the handler.
+      storage.alarmAt = null;
+      const pass = schedule.alarm();
+      // eslint-disable-next-line no-await-in-loop
+      await vi.advanceTimersByTimeAsync(100);
+      // eslint-disable-next-line no-await-in-loop
+      await pass;
+      expect(storage.alarmAt).toBe(time + 5_000);
+    }
+
+    expect(outcomes).toHaveLength(3);
+    expect(setAlarm).toHaveBeenCalledTimes(3);
+  });
+
   it('commits neither the run nor the cursor when nextOccurrence fails', async () => {
     start();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
