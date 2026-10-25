@@ -1,0 +1,19 @@
+packages/durability/src/durability.ts
+  s_cda4958a415705::t_490e64ae3c659a 495-500
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eb80ef9b2fc509284c0dd0ffb52cfa50f93fb4ae",
+  "prompts": {},
+  "sessions": {
+    "s_cda4958a415705": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a16952-3651-721e-bda1-3b9c5723b12f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
