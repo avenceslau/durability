@@ -1,0 +1,19 @@
+packages/durability/src/experimental-options.test.ts
+  s_17ea3cb760cf53::t_0d3edd460a293a 325
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1d0d03f20511854d831a5c5e98c18fbaa664975",
+  "prompts": {},
+  "sessions": {
+    "s_17ea3cb760cf53": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1738b-c503-720a-8298-88bf2ac03cb3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
