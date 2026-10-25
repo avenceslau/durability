@@ -6,6 +6,7 @@ import {
   isNonRetryable,
   reportFailure,
   serializeError,
+  type SerializedError,
 } from './errors.js';
 import {
   createEmitter,
@@ -47,6 +48,27 @@ export type DurabilitySchedulerOptions = {
    * eviction fallback. Off by default.
    */
   liveTimers?: boolean;
+  /**
+   * Called each time an alarm run fails and the scheduler re-arms its own
+   * fallback alarm instead of letting the platform retry, for example to send
+   * the error to an external service. Best effort: it runs after the fallback is
+   * armed, a returned promise is passed to `waitUntil`, and a throw or rejection
+   * is only logged, so it never changes scheduling.
+   */
+  onAlarmRetry?: (info: AlarmRetryInfo) => void | Promise<void>;
+};
+
+/** Details of a failed alarm run passed to `onAlarmRetry`. */
+export type AlarmRetryInfo = {
+  error: SerializedError;
+  /** Delay until the re-armed fallback alarm fires. */
+  retryInMs: number;
+  /** The platform's retry count for this alarm invocation, when it provided one. */
+  retryCount?: number;
+  /** Whether the platform marked this invocation as a retry, when it provided one. */
+  isRetry?: boolean;
+  /** The owning Durable Object's ID, when the context carries one. */
+  objectId?: string;
 };
 
 /** Configuration for a scheduler shared by several helpers. */
@@ -191,6 +213,7 @@ export class Engine {
   private readonly alarmMinDelayMs: number;
   private readonly alarmHandoffMs: number;
   readonly liveTimers: boolean;
+  private readonly onAlarmRetry: DurabilitySchedulerOptions['onAlarmRetry'];
   private readonly participants: Participant[] = [];
   private readonly migrated = new Set<MigrationCapability>();
   private availablePermits: number;
@@ -215,6 +238,13 @@ export class Engine {
     this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
     this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
     this.liveTimers = options.liveTimers ?? false;
+    this.onAlarmRetry = options.onAlarmRetry;
+    if (
+      this.onAlarmRetry !== undefined &&
+      typeof this.onAlarmRetry !== 'function'
+    ) {
+      throw new TypeError('onAlarmRetry must be a function');
+    }
     assertPositiveInteger('alarmConcurrency', this.alarmConcurrency);
     assertPositiveInteger('alarmMinDelayMs', this.alarmMinDelayMs);
     if (
@@ -611,6 +641,44 @@ export class Engine {
         { retryInMs: this.alarmMinDelayMs },
         error
       );
+      this.notifyAlarmRetry(error, info);
+    }
+  }
+
+  private notifyAlarmRetry(
+    failure: unknown,
+    invocation: AlarmInvocationInfo | undefined
+  ): void {
+    const hook = this.onAlarmRetry;
+    if (!hook) {
+      return;
+    }
+
+    const objectId = this.objectId();
+    const info: AlarmRetryInfo = {
+      error: serializeError(failure),
+      retryInMs: this.alarmMinDelayMs,
+      ...(invocation === undefined
+        ? {}
+        : {
+            retryCount: invocation.retryCount,
+            isRetry: invocation.isRetry,
+          }),
+      ...(objectId === undefined ? {} : { objectId }),
+    };
+    const report = (hookError: unknown): void =>
+      reportFailure(
+        'durability.alarm.retry_hook_failed',
+        { retryInMs: info.retryInMs },
+        hookError
+      );
+    try {
+      const result = hook(info);
+      if (result !== undefined) {
+        this.waitUntil(Promise.resolve(result).catch(report), report);
+      }
+    } catch (hookError) {
+      report(hookError);
     }
   }
 

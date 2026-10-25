@@ -58,6 +58,7 @@ export {
 export type { MessageWrite, StoredMessage } from './stored-message.js';
 export {
   DurabilityScheduler,
+  type AlarmRetryInfo,
   type DurabilityContext,
   type DurabilitySchedulerConfig,
   type DurabilitySchedulerOptions,

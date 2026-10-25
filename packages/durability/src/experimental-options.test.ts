@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Durability, type DurableCall } from './index';
+import { Durability, DurabilityScheduler, type DurableCall } from './index';
 import { contextFor, FakeStorage } from './test-fakes';
+
+const waitUntilContext = (storage: FakeStorage, sink: Promise<unknown>[]) => ({
+  ...contextFor(storage),
+  waitUntil(promise: Promise<unknown>) {
+    sink.push(promise);
+  },
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -102,5 +109,95 @@ describe('liveTimers scheduler option', () => {
     });
 
     releaseLong?.();
+  });
+});
+
+describe('onAlarmRetry scheduler option', () => {
+  const failingRun = (storage: FakeStorage) => {
+    storage.getAlarm = () => Promise.reject(new Error('storage unavailable'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  };
+
+  it('reports a failed alarm run with the platform retry count', async () => {
+    const storage = new FakeStorage();
+    const background: Promise<unknown>[] = [];
+    const onAlarmRetry = vi.fn();
+    const scheduler = new DurabilityScheduler({
+      context: waitUntilContext(storage, background),
+      alarmMinDelayMs: 1_000,
+      onAlarmRetry,
+    });
+    failingRun(storage);
+
+    await expect(
+      scheduler.alarm({ retryCount: 2, isRetry: true, scheduledTime: 0 })
+    ).resolves.toBeUndefined();
+
+    expect(onAlarmRetry).toHaveBeenCalledExactlyOnceWith({
+      error: { name: 'Error', message: 'storage unavailable' },
+      retryInMs: 1_000,
+      retryCount: 2,
+      isRetry: true,
+    });
+    expect(console.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'durability.alarm.failed' })
+    );
+  });
+
+  it('never lets the hook change scheduling', async () => {
+    const storage = new FakeStorage();
+    const background: Promise<unknown>[] = [];
+    const scheduler = new DurabilityScheduler({
+      context: waitUntilContext(storage, background),
+      alarmMinDelayMs: 1_000,
+      onAlarmRetry: () => {
+        throw new Error('hook broke');
+      },
+    });
+    const rejecting = new DurabilityScheduler({
+      context: waitUntilContext(storage, background),
+      alarmMinDelayMs: 1_000,
+      onAlarmRetry: () => Promise.reject(new Error('hook rejected')),
+    });
+    failingRun(storage);
+    const before = Date.now();
+
+    await expect(scheduler.alarm()).resolves.toBeUndefined();
+    await expect(rejecting.alarm()).resolves.toBeUndefined();
+    await Promise.all(background);
+
+    expect(background).toHaveLength(1);
+    expect(storage.alarmAt).toBeGreaterThanOrEqual(before + 1_000);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'durability.alarm.retry_hook_failed' })
+    );
+  });
+
+  it('is not called when the fallback cannot be armed', async () => {
+    const storage = new FakeStorage();
+    const onAlarmRetry = vi.fn();
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+      onAlarmRetry,
+    });
+    failingRun(storage);
+    storage.setAlarm = () => Promise.reject(new Error('storage unavailable'));
+
+    await expect(scheduler.alarm()).rejects.toThrow('storage unavailable');
+    expect(onAlarmRetry).not.toHaveBeenCalled();
+  });
+
+  it('reaches the private scheduler of a helper configured with context', async () => {
+    const storage = new FakeStorage();
+    const onAlarmRetry = vi.fn();
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: async (_call: DurableCall<null>) => undefined },
+      onAlarmRetry,
+    });
+    failingRun(storage);
+
+    await durability.alarm();
+    expect(onAlarmRetry).toHaveBeenCalledOnce();
   });
 });
