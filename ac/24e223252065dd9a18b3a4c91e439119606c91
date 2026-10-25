@@ -1,0 +1,21 @@
+packages/durability/src/durability.ts
+  s_c3ea6546e07096::t_d5867a982a47a1 35,41-42,130-157,300-307,409,430-432,470-508,757,831-846
+packages/durability/src/experimental-options.test.ts
+  s_c3ea6546e07096::t_863cc00d73eefd 2-8,11-22,139,149-153,179,280-283,338,366-456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ac24e223252065dd9a18b3a4c91e439119606c91",
+  "prompts": {},
+  "sessions": {
+    "s_c3ea6546e07096": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a17365-407f-720a-8298-88a4fdddf1b1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
