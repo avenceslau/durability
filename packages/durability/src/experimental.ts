@@ -65,3 +65,20 @@ export {
   type TopologyFallbackReason,
 } from './errors.js';
 export { durabilityTopologyMigrations } from './migrations.js';
+export {
+  DurabilitySchedule,
+  type DurabilityScheduleConfig,
+  type DurabilityScheduleEvent,
+  type ScheduleDefinition,
+  type ScheduledOutcomeDelivery,
+  type ScheduledRun,
+  type ScheduledRunContext,
+  type ScheduledRunOutcome,
+  type ScheduleState,
+} from './schedule.js';
+export {
+  ScheduledOutcomeTimeoutError,
+  ScheduledRunInterruptedError,
+  ScheduledRunTimeoutError,
+} from './errors.js';
+export { durabilityScheduleMigrations } from './migrations.js';

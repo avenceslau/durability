@@ -107,6 +107,12 @@ export type Participant = {
   runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
   /** Earliest due time, for tables without `status` and `next_attempt_at` columns. */
   nextPendingAt?(sql: SqlStorage): number | undefined;
+  /**
+   * True while the participant runs its own due work from an alarm invocation
+   * it keeps open. The in-memory timer then ignores its pending time, which only
+   * arms the physical alarm as the eviction fallback.
+   */
+  holding?(): boolean;
 };
 
 /**
@@ -369,7 +375,12 @@ export class Engine {
   } {
     if (participant.nextPendingAt) {
       const at = participant.nextPendingAt(this.sql);
-      return at === undefined ? {} : { physical: at, timer: at };
+      if (at === undefined) {
+        return {};
+      }
+      return participant.holding?.()
+        ? { physical: at }
+        : { physical: at, timer: at };
     }
     const active = this.activeByTable.get(participant.table.name);
     const limit = this.liveTimers ? (active?.size ?? 0) + 1 : 1;
