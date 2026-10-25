@@ -1,0 +1,39 @@
+.changeset/experimental-schedule.md
+  s_2e28d10ac35808::t_9dd8682263d2eb 5
+packages/durability/README.md
+  s_2e28d10ac35808::t_a8db50a62159ca 445-450,463-464,466-467,470
+packages/durability/src/migrations.ts
+  s_f03890725c090d::t_fbbc38d8540306 617-628
+packages/durability/src/schedule.test.ts
+  s_2e28d10ac35808::t_cb6813b634adb9 119,146,152-157,409-414,529,545,554-744
+packages/durability/src/schedule.ts
+  s_f03890725c090d::t_a973d5f2cf9ce1 41,48,60-63,82-89,93-101,107,109-113,214,219,221-222,226-231,249-258,260-262,386,394-395,402-403,412-417,432,448-453,484-486,508-512,514-516,520,523-524,622-624,663,676,688,694-695,698,705-718,720,724-725,733,738,756,759-774,776-779,781-783,819-820,822,891,899,913,918,922,928,943,963,987,1006
+packages/durability/tests/schedule-worker.ts
+  s_f03890725c090d::t_bead2b0589a42f 4-7,59,61-62,64-66,93-95,160-161,172,180-184,212-219
+packages/durability/tests/schedule.worker.test.ts
+  s_f03890725c090d::t_0c41c692da37f5 50-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bc7151c8f7c3d19cfe3b3f4ca93b95cfe80ffcec",
+  "prompts": {},
+  "sessions": {
+    "s_2e28d10ac35808": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a174bd-fc27-76fe-9055-7e896fa43d96",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f03890725c090d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1750a-1f21-7566-9ef0-1a35e481f8df",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
