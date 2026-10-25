@@ -13,7 +13,8 @@ export { TrackerTestObject } from './tracker-worker';
 export { OutboxObject } from './outbox-worker';
 export { JobShard, LimitObject } from './semaphore-worker';
 export { TopologyCoordinator, TopologyShard } from './topology-worker';
-export { ScheduleObject } from './schedule-worker';
+export { LiveScheduleObject, ScheduleObject } from './schedule-worker';
+export { LiveTimersObject } from './live-timers-worker';
 
 export type RecordedAlarm = {
   attempt: number;

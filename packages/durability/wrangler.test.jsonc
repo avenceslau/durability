@@ -33,6 +33,14 @@
         "name": "SCHEDULE_TEST",
         "class_name": "ScheduleObject",
       },
+      {
+        "name": "LIVE_SCHEDULE_TEST",
+        "class_name": "LiveScheduleObject",
+      },
+      {
+        "name": "LIVE_TIMERS_TEST",
+        "class_name": "LiveTimersObject",
+      },
     ],
   },
   "services": [
@@ -94,6 +102,10 @@
     {
       "tag": "v10",
       "new_sqlite_classes": ["ScheduleObject"],
+    },
+    {
+      "tag": "v11",
+      "new_sqlite_classes": ["LiveScheduleObject", "LiveTimersObject"],
     },
   ],
 }

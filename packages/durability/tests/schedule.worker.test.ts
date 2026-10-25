@@ -1,12 +1,13 @@
 import { env } from 'cloudflare:workers';
 import { runDurableObjectAlarm } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { ScheduleObject } from './schedule-worker';
+import type { LiveScheduleObject, ScheduleObject } from './schedule-worker';
 
 declare global {
   namespace Cloudflare {
     interface Env {
       SCHEDULE_TEST: DurableObjectNamespace<ScheduleObject>;
+      LIVE_SCHEDULE_TEST: DurableObjectNamespace<LiveScheduleObject>;
     }
   }
 }
@@ -99,4 +100,49 @@ describe('schedule in workerd', () => {
     expect(await recovered.pendingRuns()).toBe(0);
     expect(await runDurableObjectAlarm(recovered)).toBe(false);
   });
+
+  it.each(['SCHEDULE_TEST', 'LIVE_SCHEDULE_TEST'] as const)(
+    'reports a run interrupted mid-flight once and keeps ticking (%s)',
+    async (binding) => {
+      const namespace = env[binding];
+      const id = namespace.newUniqueId();
+      const stub = namespace.get(id);
+      const every = 1_200;
+
+      const first = await stub.start(every, 2, 5, true);
+      await expect.poll(() => stub.runs(), { timeout: 3_000 }).toHaveLength(1);
+      // While the run is in flight the next tick is its eviction fallback.
+      expect(await stub.physicalAlarm()).toBe(first + every);
+
+      const aborted = await stub.abort().then(
+        () => false,
+        () => true
+      );
+      expect(aborted).toBe(true);
+      const recovered = namespace.get(id);
+      await runDurableObjectAlarm(recovered);
+
+      await expect
+        .poll(() => recovered.outcomes(), { timeout: 5_000 })
+        .toEqual([
+          {
+            scheduled_time: first,
+            attempt: 1,
+            status: 'errored',
+            error_name: 'ScheduledRunInterruptedError',
+          },
+          {
+            scheduled_time: first + every,
+            attempt: 1,
+            status: 'complete',
+            error_name: null,
+          },
+        ]);
+      expect(
+        (await recovered.runs()).map(({ scheduled_time }) => scheduled_time)
+      ).toEqual([first, first + every]);
+      await expect.poll(() => recovered.pendingRuns()).toBe(0);
+      expect(await runDurableObjectAlarm(recovered)).toBe(false);
+    }
+  );
 });

@@ -35,9 +35,14 @@ export class ScheduleObject extends DurableObject {
   private active = 0;
   private maxActive = 0;
 
+  protected get liveTimers(): boolean {
+    return false;
+  }
+
   private readonly scheduler = new DurabilityScheduler({
     context: this.countingContext(),
     alarmMinDelayMs: 1_000,
+    liveTimers: this.liveTimers,
   });
 
   private readonly schedule = new DurabilitySchedule({
@@ -55,7 +60,8 @@ export class ScheduleObject extends DurableObject {
         idempotencyKey
       );
       const runMs = (await this.ctx.storage.get<number>('run-ms')) ?? 0;
-      if (runMs < 0) {
+      const hangAt = await this.ctx.storage.get<number>('hang-at');
+      if (runMs < 0 || scheduledTime === hangAt) {
         await new Promise(() => undefined);
       }
       this.active += 1;
@@ -136,11 +142,20 @@ export class ScheduleObject extends DurableObject {
 
   /**
    * Runs `count` ticks `every` ms apart and counts rows and alarm writes from
-   * then on; a negative `runMs` never settles.
+   * then on; a negative `runMs` never settles, and `hangFirst` makes only the
+   * first run never settle.
    */
-  async start(every: number, count: number, runMs: number): Promise<number> {
+  async start(
+    every: number,
+    count: number,
+    runMs: number,
+    hangFirst = false
+  ): Promise<number> {
     await this.ctx.storage.put('run-ms', runMs);
     const first = (Math.floor(Date.now() / every) + 1) * every;
+    if (hangFirst) {
+      await this.ctx.storage.put('hang-at', first);
+    }
     const until = first + (count - 1) * every;
     await this.schedule.set({
       expression: JSON.stringify({ every, until } satisfies Window),
@@ -161,6 +176,10 @@ export class ScheduleObject extends DurableObject {
 
   setAlarmCalls(): number {
     return this.setAlarmCount;
+  }
+
+  physicalAlarm(): Promise<number | null> {
+    return this.ctx.storage.getAlarm();
   }
 
   observedMaxActive(): number {
@@ -206,5 +225,11 @@ export class ScheduleObject extends DurableObject {
 
   override alarm(info?: AlarmInvocationInfo) {
     return this.scheduler.alarm(info);
+  }
+}
+
+export class LiveScheduleObject extends ScheduleObject {
+  protected override get liveTimers(): boolean {
+    return true;
   }
 }
