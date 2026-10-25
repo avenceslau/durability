@@ -1,0 +1,21 @@
+.changeset/experimental-schedule.md
+  s_8c81f4f82d7b2d::t_d0a4d14a982a0d 1-7
+packages/durability/README.md
+  s_8c81f4f82d7b2d::t_0445657924c197 380,452-513
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d46ebd3a05bc2d740ccd7b6a62b9cfdeb7f4cb67",
+  "prompts": {},
+  "sessions": {
+    "s_8c81f4f82d7b2d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a17463-2106-720a-8298-88dfc1746928",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
