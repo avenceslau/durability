@@ -1,0 +1,24 @@
+packages/durability/src/scheduler.ts
+  s_8c81f4f82d7b2d::t_0957b76ac514d5 51-71,216,241-247,644-648,650-658,660-681
+  s_8c81f4f82d7b2d::t_96df18d5d63aec 649,659
+packages/durability/src/index.ts
+  s_8c81f4f82d7b2d::t_0fc275b95180a9 61
+packages/durability/src/experimental-options.test.ts
+  s_8c81f4f82d7b2d::t_5cbe4c9039e14a 117-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7fd41f51b0b3d8aad098d47ee8ea72406a9fe097",
+  "prompts": {},
+  "sessions": {
+    "s_8c81f4f82d7b2d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a17463-2106-720a-8298-88dfc1746928",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
