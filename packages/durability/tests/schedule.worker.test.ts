@@ -47,6 +47,58 @@ describe('schedule in workerd', () => {
     expect((await stub.rowsWritten()) / runs).toBe(4);
   });
 
+  it('fires each tick at its nominal time plus jitterMs with four rows per run', async () => {
+    const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
+    const runs = 4;
+    const every = 60;
+    const jitterMs = 35;
+
+    const first = await stub.start(every, runs, 5, false, jitterMs);
+    await expect
+      .poll(() => stub.outcomes(), { timeout: 5_000 })
+      .toHaveLength(runs);
+    await expect.poll(() => stub.pendingRuns()).toBe(0);
+
+    const firings = await stub.firings();
+    expect(
+      firings.map(({ scheduled_time, due_at }) => [scheduled_time, due_at])
+    ).toEqual(
+      Array.from({ length: runs }, (_, index) => [
+        first + index * every,
+        first + index * every + jitterMs,
+      ])
+    );
+    for (const { due_at, started_at } of firings) {
+      expect(started_at).toBeGreaterThanOrEqual(due_at);
+    }
+    expect((await stub.outcomes()).map((row) => row.scheduled_time)).toEqual(
+      firings.map((row) => row.scheduled_time)
+    );
+    expect((await stub.rowsWritten()) / runs).toBe(4);
+  });
+
+  it('keeps a random jitter when the version is resent and re-rolls it for a new version', async () => {
+    const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
+    const expression = JSON.stringify({ every: 60_000, until: 2 ** 50 });
+    const jitterMs = { maxMs: 10 ** 9 };
+
+    const first = await stub.configure({ expression, version: 1, jitterMs });
+    const resent = await stub.configure({ expression, version: 1, jitterMs });
+    const next = await stub.configure({ expression, version: 2, jitterMs });
+
+    expect(first.applied).toBe(true);
+    expect(resent).toEqual({ applied: false, state: first.state });
+    expect(next.applied).toBe(true);
+    expect(next.state?.jitterMs).not.toBe(first.state?.jitterMs);
+    for (const { state } of [first, next]) {
+      expect(state?.jitterMs).toBeGreaterThanOrEqual(0);
+      expect(state?.jitterMs).toBeLessThanOrEqual(jitterMs.maxMs);
+    }
+    expect(await stub.physicalAlarm()).toBe(
+      (next.state?.nextAt ?? 0) + (next.state?.jitterMs ?? 0)
+    );
+  });
+
   it('overlaps runs up to maxConcurrentRuns and reports every one', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
     const runs = 6;

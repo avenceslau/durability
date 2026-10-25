@@ -1,7 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import { DurabilityScheduler } from '../src';
-import { DurabilitySchedule } from '../src/experimental';
+import {
+  DurabilitySchedule,
+  type ScheduleDefinition,
+} from '../src/experimental';
 
 type Cursor = SqlStorageCursor<Record<string, SqlStorageValue>>;
 
@@ -53,11 +56,19 @@ export class ScheduleObject extends DurableObject {
       const next = (Math.floor(after / every) + 1) * every;
       return next <= until ? next : undefined;
     },
-    run: async ({ scheduledTime, idempotencyKey }) => {
+    run: async ({ scheduledTime, dueAt, idempotencyKey }) => {
       this.ctx.storage.sql.exec(
-        'INSERT INTO app_runs (scheduled_time, idempotency_key) VALUES (?, ?)',
+        `INSERT INTO app_runs (
+           scheduled_time,
+           idempotency_key,
+           due_at,
+           started_at
+         )
+         VALUES (?, ?, ?, ?)`,
         scheduledTime,
-        idempotencyKey
+        idempotencyKey,
+        dueAt,
+        Date.now()
       );
       const runMs = (await this.ctx.storage.get<number>('run-ms')) ?? 0;
       const hangAt = await this.ctx.storage.get<number>('hang-at');
@@ -84,7 +95,12 @@ export class ScheduleObject extends DurableObject {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS app_runs (scheduled_time INTEGER, idempotency_key TEXT);
+      CREATE TABLE IF NOT EXISTS app_runs (
+        scheduled_time INTEGER,
+        idempotency_key TEXT,
+        due_at INTEGER,
+        started_at INTEGER
+      );
       CREATE TABLE IF NOT EXISTS app_outcomes (
         scheduled_time INTEGER, attempt INTEGER, status TEXT, error_name TEXT
       );
@@ -149,7 +165,8 @@ export class ScheduleObject extends DurableObject {
     every: number,
     count: number,
     runMs: number,
-    hangFirst = false
+    hangFirst = false,
+    jitterMs = 0
   ): Promise<number> {
     await this.ctx.storage.put('run-ms', runMs);
     const first = (Math.floor(Date.now() / every) + 1) * every;
@@ -160,11 +177,17 @@ export class ScheduleObject extends DurableObject {
     await this.schedule.set({
       expression: JSON.stringify({ every, until } satisfies Window),
       version: 1,
+      jitterMs,
     });
     // Counting starts after `set`, before the first tick can fire.
     this.cursors.length = 0;
     this.setAlarmCount = 0;
     return first;
+  }
+
+  async configure(definition: ScheduleDefinition) {
+    const applied = await this.schedule.set(definition);
+    return { applied, state: this.schedule.get() };
   }
 
   rowsWritten(): number {
@@ -190,6 +213,23 @@ export class ScheduleObject extends DurableObject {
     return this.ctx.storage.sql
       .exec<{ scheduled_time: number; idempotency_key: string }>(
         'SELECT scheduled_time, idempotency_key FROM app_runs ORDER BY scheduled_time'
+      )
+      .toArray();
+  }
+
+  firings() {
+    return this.ctx.storage.sql
+      .exec<{
+        scheduled_time: number;
+        due_at: number;
+        started_at: number;
+      }>(
+        `SELECT
+           scheduled_time,
+           due_at,
+           started_at
+         FROM app_runs
+         ORDER BY scheduled_time`
       )
       .toArray();
   }

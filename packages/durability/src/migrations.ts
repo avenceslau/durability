@@ -614,6 +614,18 @@ export const durabilityScheduleMigrations = [
       DROP TABLE IF EXISTS durability_schedule;
     `,
   },
+  {
+    name: 'durability_0014_add_schedule_jitter',
+    up: `
+      ALTER TABLE durability_schedule ADD COLUMN jitter_ms INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE durability_schedule_runs ADD COLUMN due_at INTEGER;
+      UPDATE durability_schedule_runs SET due_at = scheduled_time;
+    `,
+    down: `
+      ALTER TABLE durability_schedule_runs DROP COLUMN due_at;
+      ALTER TABLE durability_schedule DROP COLUMN jitter_ms;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /** Migration names changed by one migrate call. */

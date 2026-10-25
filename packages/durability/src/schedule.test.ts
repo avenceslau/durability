@@ -5,6 +5,7 @@ import {
   type DurabilityScheduleConfig,
   type DurabilityScheduleEvent,
   type ScheduledOutcomeDelivery,
+  type ScheduleDefinition,
   type ScheduledRunContext,
   type ScheduledRunOutcome,
 } from './experimental';
@@ -116,6 +117,7 @@ describe('DurabilitySchedule', () => {
     expect(schedule.get()).toEqual({
       expression: '1000',
       version: 2,
+      jitterMs: 0,
       nextAt: 11_000,
     });
     expect(storage.alarmAt).toBe(11_500);
@@ -142,12 +144,18 @@ describe('DurabilitySchedule', () => {
 
     expect(run).toHaveBeenCalledExactlyOnceWith({
       scheduledTime: 11_000,
+      dueAt: 11_000,
       idempotencyKey: 'object:11000',
       signal: expect.any(AbortSignal),
     });
     expect(outcomes).toEqual([
       [
-        { scheduledTime: 11_000, idempotencyKey: 'object:11000', attempt: 1 },
+        {
+          scheduledTime: 11_000,
+          dueAt: 11_000,
+          idempotencyKey: 'object:11000',
+          attempt: 1,
+        },
         { status: 'complete' },
       ],
     ]);
@@ -399,7 +407,12 @@ describe('DurabilitySchedule', () => {
     expect(run).not.toHaveBeenCalled();
     expect(second.outcomes).toEqual([
       [
-        { scheduledTime: 11_000, idempotencyKey: 'object:11000', attempt: 1 },
+        {
+          scheduledTime: 11_000,
+          dueAt: 11_000,
+          idempotencyKey: 'object:11000',
+          attempt: 1,
+        },
         {
           status: 'errored',
           error: {
@@ -514,6 +527,7 @@ describe('DurabilitySchedule', () => {
     expect(schedule.get()).toEqual({
       expression: '2000',
       version: 5,
+      jitterMs: 0,
       nextAt: 12_000,
     });
   });
@@ -529,12 +543,221 @@ describe('DurabilitySchedule', () => {
     expect(schedule.get()).toEqual({
       expression: 'never',
       version: 1,
+      jitterMs: 0,
       nextAt: undefined,
     });
     expect(storage.alarmAt).toBeNull();
     await expect(
       schedule.set({ expression: 'now', version: 2 })
     ).rejects.toThrow(RangeError);
+  });
+
+  it('fires each tick jitterMs after its nominal time without drifting', async () => {
+    start();
+    const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
+      async () => undefined
+    );
+    const { storage, schedule, outcomes } = setup({ run });
+    await schedule.set({ expression: '1000', version: 1, jitterMs: 700 });
+    expect(schedule.get()).toEqual({
+      expression: '1000',
+      version: 1,
+      jitterMs: 700,
+      nextAt: 11_000,
+    });
+    expect(storage.alarmAt).toBe(11_700);
+
+    vi.setSystemTime(11_699);
+    await schedule.alarm();
+    expect(run).not.toHaveBeenCalled();
+
+    const before = totalChanges(storage);
+    for (const time of [11_700, 12_700, 13_700]) {
+      vi.setSystemTime(time);
+      // eslint-disable-next-line no-await-in-loop
+      await schedule.alarm();
+    }
+
+    expect(
+      run.mock.calls.map(([call]) => [
+        call.scheduledTime,
+        call.dueAt,
+        call.idempotencyKey,
+      ])
+    ).toEqual([
+      [11_000, 11_700, 'object:11000'],
+      [12_000, 12_700, 'object:12000'],
+      [13_000, 13_700, 'object:13000'],
+    ]);
+    expect(outcomes[0]?.[0]).toEqual({
+      scheduledTime: 11_000,
+      dueAt: 11_700,
+      idempotencyKey: 'object:11000',
+      attempt: 1,
+    });
+    expect(schedule.get()?.nextAt).toBe(14_000);
+    expect(storage.alarmAt).toBe(14_700);
+    expect((totalChanges(storage) - before) / 3).toBe(4);
+  });
+
+  it('picks a random jitter once per version and keeps it when the version is resent', async () => {
+    start();
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const { storage, schedule } = setup();
+    const jitterMs = { maxMs: 400 };
+
+    expect(
+      await schedule.set({ expression: '1000', version: 1, jitterMs })
+    ).toBe(true);
+    expect(schedule.get()?.jitterMs).toBe(200);
+
+    random.mockReturnValue(0.9);
+    storage.alarmAt = null;
+    expect(
+      await schedule.set({ expression: '1000', version: 1, jitterMs })
+    ).toBe(false);
+    expect(schedule.get()?.jitterMs).toBe(200);
+    expect(storage.alarmAt).toBe(11_500);
+
+    expect(
+      await schedule.set({ expression: '1000', version: 2, jitterMs })
+    ).toBe(true);
+    expect(schedule.get()?.jitterMs).toBe(360);
+
+    await schedule.set({ expression: '1000', version: 3, jitterMs: 50 });
+    expect(schedule.get()?.jitterMs).toBe(50);
+    await schedule.set({ expression: '1000', version: 4 });
+    expect(schedule.get()?.jitterMs).toBe(0);
+  });
+
+  it('keeps a random jitter within [0, maxMs]', async () => {
+    start();
+    const random = vi.spyOn(Math, 'random');
+    const { schedule } = setup();
+    const jitterMs = { maxMs: 400 };
+
+    random.mockReturnValueOnce(0);
+    await schedule.set({ expression: '1000', version: 1, jitterMs });
+    expect(schedule.get()?.jitterMs).toBe(0);
+
+    random.mockReturnValueOnce(1 - Number.EPSILON);
+    await schedule.set({ expression: '1000', version: 2, jitterMs });
+    expect(schedule.get()?.jitterMs).toBe(400);
+
+    random.mockRestore();
+    for (let version = 3; version < 100; version += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await schedule.set({ expression: '1000', version, jitterMs });
+      const picked = schedule.get()?.jitterMs ?? -1;
+      expect(Number.isSafeInteger(picked)).toBe(true);
+      expect(picked).toBeGreaterThanOrEqual(0);
+      expect(picked).toBeLessThanOrEqual(400);
+    }
+  });
+
+  it.each([
+    -1,
+    1.5,
+    Number.NaN,
+    2 ** 31,
+    { maxMs: -1 },
+    { maxMs: 0.5 },
+    { maxMs: 2 ** 31 },
+  ])('rejects the jitter %o', async (jitterMs) => {
+    const { schedule } = setup();
+
+    await expect(
+      schedule.set({ expression: '1000', version: 1, jitterMs })
+    ).rejects.toThrow(RangeError);
+    expect(schedule.get()).toBeUndefined();
+  });
+
+  it.each([null, '5', true])('rejects the jitter type %o', async (jitterMs) => {
+    const { schedule } = setup();
+    const definition: ScheduleDefinition = { expression: '1000', version: 1 };
+    Object.defineProperty(definition, 'jitterMs', {
+      value: jitterMs,
+      enumerable: true,
+    });
+
+    await expect(schedule.set(definition)).rejects.toThrow(TypeError);
+    expect(schedule.get()).toBeUndefined();
+  });
+
+  it('fires every tick once and in order when jitterMs exceeds the interval', async () => {
+    start();
+    const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
+      async () => undefined
+    );
+    const { schedule } = setup({ run });
+    await schedule.set({ expression: '1000', version: 1, jitterMs: 2_500 });
+
+    for (const time of [13_500, 14_000, 14_500, 15_500]) {
+      vi.setSystemTime(time);
+      // eslint-disable-next-line no-await-in-loop
+      await schedule.alarm();
+    }
+
+    expect(
+      run.mock.calls.map(([call]) => [call.scheduledTime, call.dueAt])
+    ).toEqual([
+      [11_000, 13_500],
+      [12_000, 14_500],
+      [13_000, 15_500],
+    ]);
+    expect(schedule.get()?.nextAt).toBe(14_000);
+  });
+
+  it('collapses missed ticks by their jittered time', async () => {
+    start();
+    const { schedule, outcomes } = setup();
+    await schedule.set({ expression: '1000', version: 1, jitterMs: 700 });
+
+    vi.setSystemTime(15_500);
+    await schedule.alarm();
+
+    expect(outcomes.map(([run]) => [run.scheduledTime, run.dueAt])).toEqual([
+      [11_000, 11_700],
+    ]);
+    // The 15000 tick fires at 15700, still ahead, so it is not missed.
+    expect(schedule.get()?.nextAt).toBe(15_000);
+  });
+
+  it('backfills dueAt for runs recorded before the jitter migration', async () => {
+    start();
+    const storage = new FakeStorage();
+    DurabilitySchedule.migrate(
+      contextFor(storage),
+      'durability_0013_create_schedule'
+    );
+    storage.sql.exec(
+      `INSERT INTO durability_schedule_runs (scheduled_time, state, next_at)
+       VALUES (9000, 'complete', 9000)`
+    );
+
+    const { schedule, outcomes } = setup({}, storage);
+    await schedule.alarm();
+
+    expect(outcomes).toEqual([
+      [
+        {
+          scheduledTime: 9_000,
+          dueAt: 9_000,
+          idempotencyKey: 'object:9000',
+          attempt: 1,
+        },
+        { status: 'complete' },
+      ],
+    ]);
+    expect(
+      DurabilitySchedule.migrate(
+        contextFor(storage),
+        'durability_0013_create_schedule'
+      )
+    ).toEqual({
+      applied: [],
+      rolledBack: ['durability_0014_add_schedule_jitter'],
+    });
   });
 
   it('attaches once per scheduler', () => {
