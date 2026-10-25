@@ -375,6 +375,98 @@ const removedAlarms = await this.alarms.purgeBefore(retentionCutoff);
 
 The purge runs in one transaction. It best-effort aborts matching active handlers, but cannot force an abort-ignoring handler to stop. Operation IDs can be reused immediately; a late old generation cannot overwrite the replacement record.
 
+## Experimental options
+
+These options, methods, and capabilities are opt-in: none takes effect unless you set, call, or construct it, so leaving them alone keeps every behavior described above. Their names and behavior may change in a minor release. Scheduler options also apply to the private scheduler of a helper configured with `context`.
+
+```ts
+const scheduler = new DurabilityScheduler({
+  context: this.ctx,
+  liveTimers: true,
+});
+
+const alarms = new DurabilityAlarms({
+  scheduler,
+  handlers: { tick: async () => this.enqueueDueRuns() },
+});
+
+await alarms.tick.cancel();
+```
+
+### `liveTimers` (scheduler)
+
+`liveTimers?: boolean`. Due work starts from an in-memory timer at its exact scheduled time, however far beyond `alarmMinDelayMs`, and an alarm pass skips records that are already running instead of waiting for them, so a long handler no longer delays newly due work. The physical alarm stays armed at the usual bounded delay as the eviction fallback, and the handoff before the alarm wall-time limit is unchanged.
+
+Gives up: every settled attempt runs one more reconciliation transaction to re-arm the timer, and timers do not survive eviction, so after one the work runs only when the physical alarm fires. Attempts interrupted by the eviction are counted as usual, so an operation with `maxAttempts: 1` fails instead of running again.
+
+### `cancel` (named alarm method)
+
+`alarms.<name>.cancel(): Promise<boolean>`. This deletes the alarm's pending occurrence and its memos and reconciles the physical alarm in one transaction, then aborts the `signal` of a running attempt of it. That attempt's settlement can no longer retry it. It resolves `true` when a pending occurrence was deleted. Failed occurrences are left for `purgeBefore`.
+
+Gives up: cancelling does not stop later scheduling. A call to the scheduling method after `cancel`, including one from the running handler before it returns, schedules a new occurrence.
+
+### `onAlarmRetry` (scheduler)
+
+`onAlarmRetry?: (info: AlarmRetryInfo) => void | Promise<void>`, where `info` is `{ error: { name, message }, retryInMs, retryCount?, isRetry?, objectId? }`. It is called each time an alarm run fails and the scheduler re-arms its own fallback alarm (see [When a run cannot finish](#when-a-run-cannot-finish)), so the error can go to an external service. `retryInMs` is `alarmMinDelayMs`; `retryCount` and `isRetry` come from the platform's `AlarmInvocationInfo` when the invocation carried one, and `objectId` from the context.
+
+The `durability.alarm.failed` report still happens. The hook is best effort: it runs after the fallback is armed, a returned promise is passed to `waitUntil`, and a throw or rejection is only reported as `durability.alarm.retry_hook_failed`, so it cannot change scheduling. It is not called when even the fallback cannot be armed, because the failure then reaches the platform.
+
+```ts
+const scheduler = new DurabilityScheduler({
+  context: this.ctx,
+  onAlarmRetry: (info) => this.env.ERRORS.send(info),
+});
+```
+
+### `DurabilitySchedule`
+
+`DurabilitySchedule` is exported from `durability/experimental`. It runs one recurring schedule per Durable Object: each tick starts a run, runs overlap, every run is tracked on its own, and its outcome is reported once and then forgotten. It replaces a `DurabilityAlarms` tick that registers a `Durability` operation per run, which needs retained records to deduplicate and keeps them until purged.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityScheduler } from 'durability';
+import { DurabilitySchedule } from 'durability/experimental';
+import { nextCronTime } from './cron';
+
+export class Cron extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly schedule = new DurabilitySchedule({
+    scheduler: this.scheduler,
+    // Durability ships no cron parser: return the first tick after `after`.
+    nextOccurrence: (expression, after) => nextCronTime(expression, after),
+    run: ({ scheduledTime, idempotencyKey, signal }) =>
+      this.env.TARGET.fire({ scheduledTime, idempotencyKey }, { signal }),
+    onOutcome: (run, outcome) => this.env.TARGET.report(run, outcome),
+    maxConcurrentRuns: 20,
+    runTimeoutMs: 15 * 60_000,
+  });
+
+  configure(expression: string, version: number) {
+    return this.schedule.set({ expression, version });
+  }
+
+  remove(version: number) {
+    return this.schedule.cancel(version);
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+```
+
+- **Versions.** `set({ expression, version })` stores the schedule and its next tick only when `version` is higher than the stored one, and resolves `true` when it did. A lower version is ignored. The same version changes nothing but reconciles the physical alarm, so resending it repairs a lost alarm. The expression is opaque; only `nextOccurrence(expression, after)` reads it, and it must return a safe integer after `after`, or `undefined` to stop ticking. `get()` returns `{ expression, version, nextAt }`, or `undefined` when no schedule is live.
+- **Cancel.** `cancel(version?)` stops future ticks and resolves `true` when a schedule was live. Runs already due or running still finish and report. With a version, the cancel is ignored when the stored version is higher, and is otherwise kept as a one-row tombstone so a delayed `set` of that version or lower cannot revive the schedule.
+- **One tick, one run.** A tick inserts its run in the transaction that advances the stored next tick, so a replayed or duplicated alarm finds the cursor already moved and cannot fire the tick again; deduplication needs no finished-run records. When ticks were missed, for example while the object was down, they collapse into one run for the earliest missed time, and the next tick is the first after now. A `nextOccurrence` that throws or returns an invalid time rolls the tick back and fails the alarm run, which is retried at `alarmMinDelayMs` and reported through `onAlarmRetry`.
+- **Runs.** `run({ scheduledTime, idempotencyKey, signal })` starts outside the alarm pass that recorded it, so a long run never delays later ticks. `idempotencyKey` is `<objectId>:<scheduledTime>`. At most `maxConcurrentRuns` (default 10) are in flight; later runs wait durably in tick order. This limit is separate from the scheduler's `alarmConcurrency`. A run that throws, or exceeds `runTimeoutMs` (default 15 minutes, which aborts its `signal`), is `errored`. A run is attempted once and never retried. A timed-out run keeps its slot until its handler actually settles.
+- **Keeping the object alive.** While runs or outcome deliveries are in flight, the alarm pass stays pending, so an alarm invocation stays open and holds the object in memory; it fires the next ticks and outcome retries itself, at their exact times. Before the wall-time limit the scheduler hands off at `alarmHandoffMs`, and the next alarm joins the same loop. A tick started by an in-memory timer is joined by the next physical alarm. Other helpers on the same scheduler still run on each alarm pass, but work of theirs that becomes due during the hold waits for it unless the scheduler uses `liveTimers`.
+- **Interrupted runs.** A run still marked running when no live instance holds it, for example after the object was evicted, reset, or redeployed mid-run, is reported as `errored` with `ScheduledRunInterruptedError` on the next alarm, and is not run again. While a run or outcome delivery is in flight, the physical alarm stays on the next tick, which is its eviction fallback, so an interrupted run is reported by the next tick at the latest, or within `alarmMinDelayMs` when no tick is left.
+- **Outcomes.** `onOutcome(run, outcome)` receives `{ scheduledTime, idempotencyKey, attempt }` and `{ status: 'complete' }` or `{ status: 'errored', error: { name, message } }`. The outcome is persisted before the first delivery, so delivery is at least once with the same outcome, even across a crash. Returning acknowledges it and deletes the run's row; nothing about the run is kept afterwards. Throwing, or exceeding `outcomeTimeoutMs` (default 60 seconds), retries it with `outcomeRetries.delay(attempt)` (default jittered exponential capped at 5 minutes) up to `outcomeRetries.maxAttempts` (default 10) deliveries. After the last, the row is deleted, `durability.schedule.outcome_dead_lettered` is reported, and a `dead_lettered` lifecycle event is emitted.
+- **Storage.** Two rowid tables with no secondary indexes: `durability_schedule` holds the schedule's one row and `durability_schedule_runs` holds one small row per run from its tick until its outcome is delivered. A run writes four rows: the tick's cursor update and run insert, the outcome update, and the delete on delivery. It also arms the physical alarm once, for the next tick, and each `setAlarm()` is billed as a row written. A run that waits for a slot writes one more row, and each failed delivery one more.
+- **Lifecycle events.** `onLifecycleEvent` receives `scheduled_run` events keyed by `idempotencyKey`: `due` (with `queued`), `started`, `settled` (with `outcome`, `error`, and `durationMs`), `outcome_retry`, and `dead_lettered`. Like every lifecycle hook, it is best effort.
+
+One schedule attaches per scheduler; attaching a second throws. Construct it once per object instance, as with every helper. `DurabilitySchedule.migrate(this.ctx, null)` removes its schema.
+
 ## Lifecycle metrics hook
 
 Each helper accepts `onLifecycleEvent`, which receives compact events for registration or scheduling, attempt start and settlement, pre-invocation attempt exhaustion, and purges:
