@@ -1,0 +1,21 @@
+.changeset/experimental-cost-options.md
+  s_17ea3cb760cf53::t_72faf6546d6cc2 1-5
+packages/durability/README.md
+  s_17ea3cb760cf53::t_35acf2c7b254a1 378-451
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7604b684985ce051276d42fe122c41295321cfea",
+  "prompts": {},
+  "sessions": {
+    "s_17ea3cb760cf53": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1738b-c503-720a-8298-88bf2ac03cb3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
