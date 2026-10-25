@@ -1,0 +1,37 @@
+packages/durability/src/durability-alarms.ts
+  s_17ea3cb760cf53::t_0839f6434f16e3 18,146,158-160,276-281,346,358,442,503-512
+packages/durability/src/durability.ts
+  s_17ea3cb760cf53::t_0ec5d35264b859 22,373,384-391,465-472,575,587,818-827
+packages/durability/src/experimental-options.test.ts
+  s_17ea3cb760cf53::t_90d12de914c561 6,11-15,532-738
+packages/durability/src/memoize.ts
+  s_17ea3cb760cf53::t_f25ea98cb01dcc 54-55,112,235
+packages/durability/src/migrations.ts
+  s_17ea3cb760cf53::t_38d972e7e862f2 96-126,205-223,658-665,704-742,749-773,905-906,923-927,949-958,964-966,968-971,1013-1014,1024-1025
+packages/durability/src/scheduler.ts
+  s_17ea3cb760cf53::t_90b77c59bcd54b 18,24,54-61,224,249,306-309,312-313,321-327,332-361,566-568,828,898,947
+packages/durability/tests/lean-worker.ts
+  s_17ea3cb760cf53::t_38b87308907191 1-84
+packages/durability/tests/lean.worker.test.ts
+  s_17ea3cb760cf53::t_f58bbaf5b2e875 1-54
+packages/durability/tests/named-alarm-worker.ts
+  s_17ea3cb760cf53::t_55325db7fd6081 16
+packages/durability/wrangler.test.jsonc
+  s_17ea3cb760cf53::t_0371c0cb8e4ff7 32-35,94-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1d4c78c461ef57225eb836b37bb1ec8af98fb38a",
+  "prompts": {},
+  "sessions": {
+    "s_17ea3cb760cf53": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1738b-c503-720a-8298-88bf2ac03cb3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
