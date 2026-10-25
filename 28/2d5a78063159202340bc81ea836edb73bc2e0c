@@ -1,0 +1,44 @@
+packages/durability/src/errors.ts
+  s_8c81f4f82d7b2d::t_54ba564e297b81 167-193
+packages/durability/src/experimental.ts
+  s_8c81f4f82d7b2d::t_00a7a2f887ae42 68-84
+packages/durability/src/migrations.ts
+  s_8c81f4f82d7b2d::t_c6f7c980fe55c2 637-668,688-689
+packages/durability/src/schedule.test.ts
+  s_8c81f4f82d7b2d::t_8596d366abe88e 1-10,12-38,40-518,520-532
+  s_8c81f4f82d7b2d::t_84949b55aff827 11,39,519
+packages/durability/src/schedule.ts
+  s_8c81f4f82d7b2d::t_b76fa65df00f83 1-938
+packages/durability/src/scheduler.ts
+  s_8c81f4f82d7b2d::t_6372262100545e 121-126,457-462
+  s_8c81f4f82d7b2d::t_5c8410b2eab127 480-483
+packages/durability/tests/named-alarm-worker.ts
+  s_8c81f4f82d7b2d::t_b4212846f75ef1 17
+packages/durability/tests/schedule-worker.ts
+  s_8c81f4f82d7b2d::t_922df5000e0806 1,3-23,30-45,47-175
+  s_8c81f4f82d7b2d::t_b342e5761688ac 2,24-29,46
+packages/durability/tests/schedule.worker.test.ts
+  s_8c81f4f82d7b2d::t_6c5ae7d0493351 1-88
+packages/durability/wrangler.test.jsonc
+  s_8c81f4f82d7b2d::t_3df0b02e1ef85f 36-39,102-105
+.changeset/experimental-schedule.md
+  s_8c81f4f82d7b2d::t_d0a4d14a982a0d 1-7
+packages/durability/README.md
+  s_8c81f4f82d7b2d::t_0445657924c197 380,452-513
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "282d5a78063159202340bc81ea836edb73bc2e0c",
+  "prompts": {},
+  "sessions": {
+    "s_8c81f4f82d7b2d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a17463-2106-720a-8298-88dfc1746928",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
