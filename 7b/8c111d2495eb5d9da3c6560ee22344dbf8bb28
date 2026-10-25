@@ -1,0 +1,43 @@
+packages/durability/README.md
+  s_2e28d10ac35808::t_a8db50a62159ca 445-450,463-464,466-467,470
+packages/durability/tests/schedule.worker.test.ts
+  s_f03890725c090d::t_0c41c692da37f5 50-101
+packages/durability/tests/schedule-worker.ts
+  s_f03890725c090d::t_7f5bef6ab1689c 61-66,99-102,222-232
+  s_f03890725c090d::t_bead2b0589a42f 4-7,59,67,69-71,98,103,168-169,180,188-192,220-221,233-236
+packages/durability/src/schedule.test.ts
+  s_2e28d10ac35808::t_cb6813b634adb9 119,146,152-157,409-414,529,545,554-656,666,670-673,678-681,683,685,689-691,694,696,699,703,706,709,714,718,721,725,729-730,733-734,742-743,749,759-760
+  s_2e28d10ac35808::t_e131a193ef5d9f 657-665,667-669,674-677,682,684,686-688,692-693,695,697-698,700-702,704-705,707-708,710-713,715-717,719-720,722-724,726-728,731-732,735-741,744-748,750-758,761-762
+.changeset/experimental-schedule.md
+  s_2e28d10ac35808::t_9dd8682263d2eb 5
+packages/durability/src/migrations.ts
+  s_f03890725c090d::t_fbbc38d8540306 617-628
+packages/durability/src/schedule.ts
+  s_f03890725c090d::t_a973d5f2cf9ce1 41,48,60-63,82-89,93-101,107,109-113,223,232,236-241,264-274,278-290,412,420-421,428-429,438-443,458,474-479,510-511,534-538,540-542,546,549-550,648-649,689,698-699,710,716-717,720,727-740,742,746-747,755,760,778,781-796,798-801,803-805,841-842,844,913,921,935,940,965
+  s_f03890725c090d::t_d915f19c836bbe 209-221,225-231,245-249
+  s_2e28d10ac35808::t_7f56671da81816 944,950,985,1009,1028
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7b8c111d2495eb5d9da3c6560ee22344dbf8bb28",
+  "prompts": {},
+  "sessions": {
+    "s_2e28d10ac35808": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a174bd-fc27-76fe-9055-7e896fa43d96",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_f03890725c090d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1750a-1f21-7566-9ef0-1a35e481f8df",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
