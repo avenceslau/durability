@@ -1,0 +1,23 @@
+.changeset/experimental-schedule.md
+  s_a956c1209819ca::t_a460e98d3576b7 10-11
+packages/durability/src/index.test.ts
+  s_a956c1209819ca::t_0704217c0f8db8 402-436
+packages/durability/src/migrations.ts
+  s_a956c1209819ca::t_8492cd4e894c1f 869-871
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6b1a05c47d805b4962e40588daf6a3a376ef6c26",
+  "prompts": {},
+  "sessions": {
+    "s_a956c1209819ca": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1749b-e8e2-7566-9ef0-1a118516cb5f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
