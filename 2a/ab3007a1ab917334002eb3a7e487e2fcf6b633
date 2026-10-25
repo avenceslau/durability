@@ -1,0 +1,19 @@
+packages/durability/src/index.test.ts
+  s_6c2d9bde1b68c6::t_7932dd28632a6f 415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2aab3007a1ab917334002eb3a7e487e2fcf6b633",
+  "prompts": {},
+  "sessions": {
+    "s_6c2d9bde1b68c6": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a174d8-31db-76fe-9055-7eae3c2064a0",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
