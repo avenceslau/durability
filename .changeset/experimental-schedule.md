@@ -7,3 +7,5 @@ Add the experimental `DurabilitySchedule` capability, exported from `durability/
 Add an experimental `liveTimers` scheduler option that starts due work from exact in-memory timers and keeps long handlers from delaying newly due work, with the physical alarm kept as the eviction fallback, and an experimental `cancel()` on each named alarm method that deletes its pending occurrence.
 
 Add an `onAlarmRetry` scheduler option, called best effort with the serialized error, the retry delay, and the platform retry count whenever an alarm run fails and the scheduler re-arms its fallback alarm.
+
+A migration applied in a call no longer also rewrites its own stored down script in that call, saving one row written per newly applied migration.

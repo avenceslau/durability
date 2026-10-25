@@ -866,7 +866,9 @@ const migrateScope = (
     .filter(({ name }) => !applied.has(name));
   const toRefresh = migrations
     .slice(0, targetIndex + 1)
-    .filter(({ name, down }) => applied.get(name)?.down !== down);
+    .filter(
+      ({ name, down }) => applied.has(name) && applied.get(name)?.down !== down
+    );
 
   storage.transactionSync(() => {
     for (const migration of toRevert) {

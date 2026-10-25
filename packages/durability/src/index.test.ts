@@ -399,6 +399,41 @@ describe('migrations', () => {
         .toArray()[0]?.['count']
     ).toBe(0);
   });
+
+  it('refreshes stored down scripts only for migrations applied earlier', () => {
+    const storage = new FakeStorage();
+    const migration = {
+      name: 'test_0001',
+      up: 'CREATE TABLE test_one (id TEXT);',
+      down: 'DROP TABLE test_one;',
+    };
+    const exec = vi.spyOn(storage.sql, 'exec');
+    const refreshes = () =>
+      exec.mock.calls.filter(([query]) => query.includes('SET down')).length;
+    const migrateTest = (target: (typeof migration)[]) =>
+      migrateCapability(
+        contextFor(storage).storage,
+        'operations',
+        target,
+        undefined
+      );
+
+    migrateTest([migration]);
+    expect(refreshes()).toBe(0);
+
+    migrateTest([
+      {
+        ...migration,
+        down: 'DROP TABLE IF EXISTS test_one;',
+      },
+    ]);
+    expect(refreshes()).toBe(1);
+    expect(
+      storage.sql
+        .exec("SELECT down FROM durability_migrations WHERE name = 'test_0001'")
+        .toArray()[0]?.['down']
+    ).toBe('DROP TABLE IF EXISTS test_one;');
+  });
 });
 
 describe('migrate', () => {
