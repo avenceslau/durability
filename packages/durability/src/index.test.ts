@@ -1454,7 +1454,9 @@ describe('DurabilityAlarms', () => {
     });
 
     expectTypeOf(alarms.cleanup).toEqualTypeOf<
-      (scheduledTime: number) => Promise<void>
+      ((scheduledTime: number) => Promise<void>) & {
+        cancel: () => Promise<boolean>;
+      }
     >();
 
     const assertInvalidTypes = () => {
