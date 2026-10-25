@@ -1,0 +1,27 @@
+packages/durability/src/durability-alarms.ts
+  s_17ea3cb760cf53::t_966cee27b85644 135-144,276-278,280-287,474-502
+packages/durability/src/experimental-options.test.ts
+  s_17ea3cb760cf53::t_4c51a614954284 739-842
+packages/durability/src/index.test.ts
+  s_17ea3cb760cf53::t_ec7878a67b4614 1457-1459
+packages/durability/tests/lean-worker.ts
+  s_17ea3cb760cf53::t_a189d964019ea0 40-42,80-83,88-99
+packages/durability/tests/lean.worker.test.ts
+  s_17ea3cb760cf53::t_0ace4aad895231 54-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4c1318e0d64cd30488cc5f60e6d800e4d7ad6acd",
+  "prompts": {},
+  "sessions": {
+    "s_17ea3cb760cf53": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1738b-c503-720a-8298-88bf2ac03cb3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
