@@ -1,0 +1,21 @@
+packages/durability/src/durability.ts
+  s_c3ea6546e07096::t_19ae722ee82a1d 642-649,655-683
+packages/durability/src/policy.ts
+  s_c3ea6546e07096::t_3eba4ef978da3b 88-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "76775413d01127dc03515372adc95c09a842c125",
+  "prompts": {},
+  "sessions": {
+    "s_c3ea6546e07096": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a17365-407f-720a-8298-88a4fdddf1b1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
