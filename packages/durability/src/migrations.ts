@@ -584,6 +584,50 @@ export const durabilityTopologyMigrations = [
   },
 ] satisfies DurableMigrations;
 
+/**
+ * Ordered SQLite migrations for the experimental schedule. Applied
+ * automatically on construction.
+ */
+export const durabilityScheduleMigrations = [
+  {
+    name: 'durability_0013_create_schedule',
+    // INTEGER PRIMARY KEY aliases the rowid, so each table is a single b-tree
+    // with no secondary index for per-run writes to maintain.
+    up: `
+      CREATE TABLE IF NOT EXISTS durability_schedule (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL,
+        expression TEXT,
+        next_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS durability_schedule_runs (
+        scheduled_time INTEGER PRIMARY KEY,
+        state TEXT NOT NULL
+          CHECK (state IN ('queued', 'running', 'complete', 'errored')),
+        next_at INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        error TEXT
+      );
+    `,
+    down: `
+      DROP TABLE IF EXISTS durability_schedule_runs;
+      DROP TABLE IF EXISTS durability_schedule;
+    `,
+  },
+  {
+    name: 'durability_0014_add_schedule_jitter',
+    up: `
+      ALTER TABLE durability_schedule ADD COLUMN jitter_ms INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE durability_schedule_runs ADD COLUMN due_at INTEGER;
+      UPDATE durability_schedule_runs SET due_at = scheduled_time;
+    `,
+    down: `
+      ALTER TABLE durability_schedule_runs DROP COLUMN due_at;
+      ALTER TABLE durability_schedule DROP COLUMN jitter_ms;
+    `,
+  },
+] satisfies DurableMigrations;
+
 /** Migration names changed by one migrate call. */
 export type DurabilityMigrationResult = {
   /** Migrations applied in ascending order. */
@@ -603,7 +647,8 @@ export type MigrationCapability =
   | 'outbox'
   | 'semaphore'
   | 'semaphoreQueue'
-  | 'topology';
+  | 'topology'
+  | 'schedule';
 
 /**
  * Newer library versions may leave migrations this one does not know about.
@@ -833,7 +878,9 @@ const migrateScope = (
     .filter(({ name }) => !applied.has(name));
   const toRefresh = migrations
     .slice(0, targetIndex + 1)
-    .filter(({ name, down }) => applied.get(name)?.down !== down);
+    .filter(
+      ({ name, down }) => applied.has(name) && applied.get(name)?.down !== down
+    );
 
   storage.transactionSync(() => {
     for (const migration of toRevert) {

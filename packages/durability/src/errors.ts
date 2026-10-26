@@ -164,6 +164,33 @@ export class OutboxTimeoutError extends Error {
   }
 }
 
+/** Outcome error of a scheduled run that exceeded `runTimeoutMs`. */
+export class ScheduledRunTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Scheduled run timed out after ${timeoutMs}ms`);
+    this.name = 'ScheduledRunTimeoutError';
+  }
+}
+
+/**
+ * Outcome error of a scheduled run that was still marked running when no live
+ * instance was executing it, for example after its object was evicted or reset.
+ */
+export class ScheduledRunInterruptedError extends Error {
+  constructor() {
+    super('Scheduled run was interrupted before it reported an outcome');
+    this.name = 'ScheduledRunInterruptedError';
+  }
+}
+
+/** Error recorded when one `onOutcome` delivery exceeds `outcomeTimeoutMs`. */
+export class ScheduledOutcomeTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Scheduled run outcome delivery timed out after ${timeoutMs}ms`);
+    this.name = 'ScheduledOutcomeTimeoutError';
+  }
+}
+
 /** A definite rejection before the batch was durably accepted. */
 export class FanoutEnqueueError extends Error {
   constructor(message: string) {

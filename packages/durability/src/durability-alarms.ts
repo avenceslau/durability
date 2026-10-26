@@ -131,7 +131,16 @@ export type DurabilityAlarmEvent =
   | Extract<DurabilityLifecycleEvent, { type: 'purged' }>;
 
 /** Schedules (or replaces) the named alarm's pending occurrence. */
-export type DurableNamedAlarm = (scheduledTime: number) => Promise<void>;
+export type DurableNamedAlarm = ((scheduledTime: number) => Promise<void>) & {
+  /**
+   * Experimental. Deletes the alarm's pending occurrence and reconciles the
+   * physical alarm, then aborts a running attempt of it. That attempt can no
+   * longer retry when it settles, but calling the scheduling method again,
+   * including from that handler, schedules a new occurrence. Resolves whether
+   * a pending occurrence was deleted.
+   */
+  cancel: () => Promise<boolean>;
+};
 
 const readAlarm = (sql: SqlStorage, name: string): AlarmRow | undefined =>
   alarmRowSchema
@@ -206,11 +215,18 @@ class DurabilityAlarmsCore<Names extends string> {
       if (reserved.has(name)) {
         throw new Error(`"${name}" is reserved by DurabilityAlarms`);
       }
-      Object.defineProperty(this, name, {
-        value: traceFunction(
-          `DurabilityAlarms.${name}`,
-          (scheduledTime: number) => this.#schedule(name, scheduledTime)
+      const method = Object.assign(
+        traceFunction(`DurabilityAlarms.${name}`, (scheduledTime: number) =>
+          this.#schedule(name, scheduledTime)
         ),
+        {
+          cancel: traceFunction(`DurabilityAlarms.${name}.cancel`, () =>
+            this.#cancel(name)
+          ),
+        }
+      );
+      Object.defineProperty(this, name, {
+        value: method,
         enumerable: true,
       });
     }
@@ -330,8 +346,13 @@ class DurabilityAlarmsCore<Names extends string> {
         )
         .toArray()
     );
+    // With liveTimers a running occurrence re-arms itself when it settles, so
+    // skipping it keeps a long handler from blocking a concurrent alarm pass.
+    const pending = this.#engine.liveTimers
+      ? due.filter((row) => !this.#active.has(row.name))
+      : due;
     const failures: unknown[] = [];
-    await this.#engine.runConcurrent(due, async (row) => {
+    await this.#engine.runConcurrent(pending, async (row) => {
       try {
         await this.#execute(row, info);
       } catch (error) {
@@ -386,6 +407,35 @@ class DurabilityAlarmsCore<Names extends string> {
       attempt: 0,
       scheduledTime,
     });
+  }
+
+  async #cancel(name: string): Promise<boolean> {
+    const cancelled = await this.#engine.transaction((sql) => {
+      const removed =
+        sql
+          .exec(
+            `DELETE FROM durability_alarms
+             WHERE name = ? AND status = 'pending'
+             RETURNING name`,
+            name
+          )
+          .toArray().length > 0;
+      if (removed) {
+        deleteMemos(sql, alarmsTable, name);
+      }
+      return removed;
+    });
+    if (!cancelled) {
+      return false;
+    }
+
+    // Every settlement write is conditional on the deleted row, so a running
+    // attempt can no longer retry; abort it as purging does.
+    this.#active
+      .get(name)
+      ?.controller?.abort(new Error(`Durable alarm "${name}" was cancelled`));
+    this.#engine.notify(alarmsTable, name);
+    return true;
   }
 
   /** One name never has more than one running handler in this instance. */

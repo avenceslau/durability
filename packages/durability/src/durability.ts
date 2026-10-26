@@ -492,7 +492,12 @@ class DurabilityCore<Handlers extends HandlerMap> {
           )
           .toArray()
       );
-    await this.#engine.runConcurrent(due, async ({ id }) => {
+    // With liveTimers an active operation reschedules itself when it settles, so
+    // skipping it keeps a long handler from blocking a concurrent alarm pass.
+    const pending = this.#engine.liveTimers
+      ? due.filter(({ id }) => !this.#active.has(id))
+      : due;
+    await this.#engine.runConcurrent(pending, async ({ id }) => {
       try {
         await this.#execute(id);
       } catch {
