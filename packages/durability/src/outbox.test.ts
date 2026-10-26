@@ -57,6 +57,32 @@ describe('outbox', () => {
     expect(statements.mock.calls.length).toBe(first);
   });
 
+  it('claims each entry and its deadline with one update', async () => {
+    const { storage, scheduler } = fixture();
+    const publish = vi.fn((_entries: OutboxEntry<string>[]) => undefined);
+    const outbox = new DurabilityOutbox<string>({ scheduler, publish });
+    await outbox.stage('a', 'one');
+    await outbox.stage('b', 'two');
+    const exec = vi.spyOn(storage.sql, 'exec');
+
+    await outbox.alarm();
+
+    const updates = exec.mock.calls
+      .map(([query]) => query.replace(/\s+/g, ' ').trim())
+      .filter((query) => query.startsWith('UPDATE durability_outbox SET'));
+    expect(updates).toHaveLength(2);
+    expect(
+      updates.every((query) =>
+        query.includes('attempt = attempt + 1, next_attempt_at = ?')
+      )
+    ).toBe(true);
+    expect(
+      publish.mock.calls.flatMap(([entries]) =>
+        entries.map((entry) => entry.attempt)
+      )
+    ).toEqual([1, 1]);
+  });
+
   it('publishes only the newest staged version of each key', async () => {
     const { scheduler } = fixture();
     const publish = vi.fn(async (_entries: OutboxEntry<string>[]) => {});

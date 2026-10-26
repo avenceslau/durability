@@ -11,7 +11,7 @@ import type { StoredMessage } from './stored-message';
 import type { FanoutTarget } from './fanout';
 import { RoutingLoad } from './load';
 import { RoutingClient } from './routing-client';
-import { FakeStorage } from './test-fakes';
+import { contextFor, FakeStorage } from './test-fakes';
 
 /** A destination is just a write function; this one records what it received. */
 class Sink {
@@ -663,6 +663,47 @@ describe('fanout', () => {
 
     await revived.enqueue({ id: 'd', body: 'd' });
     expect((await revived.load()).outbound.pendingDeliveries).toBe(4);
+  });
+
+  it('claims each delivery and its deadline with one update', async () => {
+    const storage = new FakeStorage();
+    const deliver = vi.fn(
+      (_messages: DurabilityFanoutMessage<string>[]) => undefined
+    );
+    const fanout = new DurabilityFanout<string>({
+      context: contextFor(storage),
+      targets: {
+        one: {
+          ackOnReturn: true,
+          deliver,
+        },
+      },
+    });
+    const exec = vi.spyOn(storage.sql, 'exec');
+    await fanout.enqueue([
+      { id: 'first', body: 'a' },
+      { id: 'second', body: 'b' },
+    ]);
+    await vi.waitFor(async () => {
+      expect((await fanout.load()).outbound.pendingDeliveries).toBe(0);
+    });
+
+    const updates = exec.mock.calls
+      .map(([query]) => query.replace(/\s+/g, ' ').trim())
+      .filter((query) =>
+        query.startsWith('UPDATE durability_fanout_deliveries SET')
+      );
+    expect(updates).toHaveLength(2);
+    expect(
+      updates.every((query) =>
+        query.includes('attempt = attempt + 1, next_attempt_at = ?')
+      )
+    ).toBe(true);
+    expect(
+      deliver.mock.calls.flatMap(([messages]) =>
+        messages.map((message) => message.attempt)
+      )
+    ).toEqual([1, 1]);
   });
 
   it('claims a whole batch in one transaction', async () => {

@@ -558,20 +558,13 @@ export class DurabilityFanout<Body = unknown> {
             deliveriesTable,
             row.id,
             row.generation_id,
-            policy.maxAttempts
+            policy.maxAttempts,
+            deadline
           );
           if (attempt === undefined) {
             continue;
           }
-          const claim = { row: { ...row, attempt }, message };
-          updateAttempt(
-            sql,
-            deliveriesTable,
-            attemptOf(claim.row),
-            'next_attempt_at = ?',
-            deadline
-          );
-          claimed.push(claim);
+          claimed.push({ row: { ...row, attempt }, message });
         }
         return { claims: claimed, terminal: exhausted };
       });
