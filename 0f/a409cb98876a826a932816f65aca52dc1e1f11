@@ -1,0 +1,43 @@
+.changeset/reduce-redundant-storage-work.md
+  s_2e28d10ac35808::t_0c89f651cea93b 1-5
+packages/durability/src/fanout.test.ts
+  s_2e28d10ac35808::t_5d0959a1fefedf 14,668-708
+packages/durability/src/fanout.ts
+  s_4d3efd961176b0::t_a29a2295f368aa 561-562,567
+packages/durability/src/outbox.test.ts
+  s_2e28d10ac35808::t_204b561f914a44 60-85
+packages/durability/src/outbox.ts
+  s_4d3efd961176b0::t_9f0a87301d6281 496,502-503
+packages/durability/src/semaphore-queue-store.test.ts
+  s_2e28d10ac35808::t_42ec85486d1750 1-145
+packages/durability/src/semaphore-queue-store.ts
+  s_4d3efd961176b0::t_41be3a04772052 357-359,387-409
+packages/durability/src/storage.test.ts
+  s_2e28d10ac35808::t_3cea7c59b6bee3 1-93
+packages/durability/src/storage.ts
+  s_4d3efd961176b0::t_94d1beefcb1129 28-31,37-42,46,49,56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0fa409cb98876a826a932816f65aca52dc1e1f11",
+  "prompts": {},
+  "sessions": {
+    "s_2e28d10ac35808": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a174bd-fc27-76fe-9055-7e896fa43d96",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_4d3efd961176b0": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a17511-2b5b-7566-9ef0-1a376626fbf0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
