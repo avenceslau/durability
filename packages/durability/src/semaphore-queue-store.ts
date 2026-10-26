@@ -354,7 +354,9 @@ export class QueueStore {
       `INSERT INTO durability_semaphore_queue_keys (key, next_request_at, queued)
        VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET
-         next_request_at = excluded.next_request_at, queued = excluded.queued`,
+         next_request_at = excluded.next_request_at, queued = excluded.queued
+       WHERE next_request_at != excluded.next_request_at
+          OR queued != excluded.queued`,
       row.key,
       row.next_request_at,
       row.queued
@@ -382,31 +384,29 @@ export class QueueStore {
   }
 
   nextPendingAt(checksFinished: boolean): number | undefined {
-    const candidates = [
-      this.sql
-        .exec(
-          `SELECT next_request_at AS at FROM durability_semaphore_queue_keys
-           WHERE queued > 0 ORDER BY next_request_at ASC LIMIT 1`
-        )
-        .toArray()[0]?.['at'],
-      this.sql
-        .exec(
-          `SELECT next_attempt_at AS at FROM durability_semaphore_queue_items
-           WHERE status = 'admitted' AND (notified = 0 OR ?)
-           ORDER BY next_attempt_at ASC LIMIT 1`,
-          checksFinished ? 1 : 0
-        )
-        .toArray()[0]?.['at'],
-      // An idle lease is due when it stops at its expiry, not before.
-      this.sql
-        .exec(
-          `SELECT MIN(CASE WHEN released < drawn THEN renew_at
-                          ELSE MAX(renew_at, expires_at) END) AS at
-           FROM durability_semaphore_queue_leases WHERE confirmed = 0`
-        )
-        .toArray()[0]?.['at'],
-    ].filter((value): value is number => typeof value === 'number');
-    return candidates.length === 0 ? undefined : Math.min(...candidates);
+    // An idle lease is due when it stops at its expiry, not before.
+    const at = this.sql
+      .exec(
+        `SELECT MIN(at) AS at FROM (
+           SELECT (
+             SELECT next_request_at FROM durability_semaphore_queue_keys
+             WHERE queued > 0 ORDER BY next_request_at ASC LIMIT 1
+           ) AS at
+           UNION ALL
+           SELECT (
+             SELECT next_attempt_at FROM durability_semaphore_queue_items
+             WHERE status = 'admitted' AND (notified = 0 OR ?)
+             ORDER BY next_attempt_at ASC LIMIT 1
+           ) AS at
+           UNION ALL
+           SELECT MIN(CASE WHEN released < drawn THEN renew_at
+                           ELSE MAX(renew_at, expires_at) END) AS at
+           FROM durability_semaphore_queue_leases WHERE confirmed = 0
+         )`,
+        checksFinished ? 1 : 0
+      )
+      .toArray()[0]?.['at'];
+    return typeof at === 'number' ? at : undefined;
   }
 
   private items(query: string, ...bindings: SqlStorageValue[]): QueueItemRow[] {

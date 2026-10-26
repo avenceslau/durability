@@ -493,24 +493,18 @@ export class DurabilityOutbox<Value = unknown> {
       const deadline = Date.now() + this.#attemptTimeoutMs;
       const claimed: OutboxRow[] = [];
       for (const row of due) {
+        // A crash mid-publication leaves the claim due again at the deadline.
         const attempt = claimAttempt(
           sql,
           outboxTable,
           row.id,
           row.generation_id,
-          Number.MAX_SAFE_INTEGER
+          Number.MAX_SAFE_INTEGER,
+          deadline
         );
         if (attempt === undefined) {
           continue;
         }
-        // A crash mid-publication leaves the claim due again at the deadline.
-        updateAttempt(
-          sql,
-          outboxTable,
-          { key: row.id, generation: row.generation_id, attempt },
-          'next_attempt_at = ?',
-          deadline
-        );
         claimed.push({ ...row, attempt });
       }
       return claimed;
