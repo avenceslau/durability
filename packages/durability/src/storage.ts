@@ -25,27 +25,35 @@ const attemptRowSchema = z.object({
 export const pendingGeneration = (table: DurableTable): string =>
   `${table.key} = ? AND generation_id = ? AND status = 'pending'`;
 
-/** Starts the next attempt and returns its number, unless the generation is gone or out of attempts. */
+/**
+ * Starts the next attempt, optionally persisting its deadline in the same write.
+ * Returns undefined when the generation is gone or out of attempts.
+ */
 export const claimAttempt = (
   sql: SqlStorage,
   table: DurableTable,
   key: string,
   generation: string,
-  maxAttempts: number
-): number | undefined =>
-  attemptRowSchema.optional().parse(
+  maxAttempts: number,
+  nextAttemptAt?: number
+): number | undefined => {
+  const deadlineAssignment =
+    nextAttemptAt === undefined ? '' : ', next_attempt_at = ?';
+  return attemptRowSchema.optional().parse(
     sql
       .exec(
         `UPDATE ${table.name}
-         SET attempt = attempt + 1
+         SET attempt = attempt + 1${deadlineAssignment}
          WHERE ${pendingGeneration(table)} AND attempt < ?
          RETURNING attempt`,
+        ...(nextAttemptAt === undefined ? [] : [nextAttemptAt]),
         key,
         generation,
         maxAttempts
       )
       .toArray()[0]
   )?.attempt;
+};
 
 /**
  * Applies `assignments` (a SQL `SET` list) to the record if the attempt still
