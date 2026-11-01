@@ -1,0 +1,18 @@
+:root {
+  --nb-brand: #087f79;
+  --nb-ring: color-mix(in srgb, var(--nb-brand) 40%, transparent);
+}
+
+[data-mode='dark'] {
+  --nb-brand: #74dbcf;
+}
+
+pre.mermaid {
+  overflow-x: auto;
+  padding: 1rem;
+}
+pre.mermaid svg {
+  display: block;
+  min-width: 32rem;
+  margin-inline: auto;
+}

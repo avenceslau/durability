@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "durability-docs",
+  "compatibility_date": "2026-10-30",
+  "main": "./src/worker.ts",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "durability.shirei.dev", "custom_domain": true },
+    { "pattern": "shirei.dev", "custom_domain": true },
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "404-page",
+  },
+}

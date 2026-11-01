@@ -1,0 +1,173 @@
+---
+title: Recurring billing
+description: Run a renewal clock and independently durable invoice charges inside one subscription object.
+tableOfContents: false
+---
+
+A subscription is not one retry loop. It has two durable responsibilities with different
+failure boundaries: decide _when_ a period renews, then make a payment request that may
+need many attempts. This composition puts both responsibilities in the Durable Object
+named for the customer, while preserving a separate durable operation for each charge.
+
+The complete recipe is [`examples/subscription-renewals/worker.ts`](https://github.com/avenceslau/durability/blob/main/examples/subscription-renewals/worker.ts).
+Its Worker binding, Durable Object migration, and `PAYMENTS` service binding are in
+[`examples/subscription-renewals/wrangler.jsonc`](https://github.com/avenceslau/durability/blob/main/examples/subscription-renewals/wrangler.jsonc).
+They are application recipes, not a turnkey billing product.
+
+## Use case and ownership
+
+Use this when a customer has one current recurring subscription and each renewal produces
+one invoice charge. The object name is the `customerId`; its storage owns whether that
+customer remains subscribed. The named `renew` alarm owns the next clock occurrence.
+The durable `chargeInvoice` operation owns retry history for one occurrence. The payment
+receiver remains responsible for idempotency at the final external boundary.
+
+This is deliberately not an account-wide invoicing ledger, a multi-item subscription
+model, or a transaction with the payment service. If those are requirements, add
+application state and reconciliation around this recipe rather than assuming its helpers
+supply them.
+
+## Architecture
+
+<ArchitectureWalkthrough example="billing">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+`DurabilityAlarms` and `Durability` receive the _same_
+[`DurabilityScheduler`](/primitives/scheduler/). A Durable Object has one physical alarm,
+so creating independent alarm owners would be incorrect. The scheduler's concurrency of
+five is a single pool shared by renewal handlers and operation work in this object; it is
+not five concurrent charges for every customer globally.
+
+## Full request and renewal flow
+
+1. The client sends `POST /:customerId/subscribe`. The Worker obtains the Durable Object
+   stub by that same `customerId`, which makes this object the subscription's state and
+   scheduling boundary.
+2. `subscribe(customerId)` writes `customerId` to object storage, then registers `renew`
+   for `Date.now() + 30 days` through [`alarms`](/primitives/alarms/).
+3. A second subscribe is repeatable in the narrow scheduling sense: registering the same
+   named alarm **replaces its pending occurrence** and moves the clock to a new 30-day
+   deadline. It is not “same schedule” deduplication and does not preserve the old due
+   date; define whether that is your desired business policy.
+4. When the physical object alarm fires, `alarm()` delegates to the shared scheduler. The
+   scheduler invokes `renew` with a `scheduledTime` and an occurrence `idempotencyKey`.
+5. `renew` loads `customerId`. If cancel already removed it, the occurrence completes and
+   does not schedule another renewal.
+6. Otherwise it registers `chargeInvoice`, with the occurrence key as the operation `id`
+   and `{ customerId, periodStart: scheduledTime }` as its payload. The operation has up
+   to eight attempts, independent from the renewal clock.
+7. The alarm schedules the next occurrence from `scheduledTime + 30 days` as soon as
+   registration commits. It does **not** wait for the charge result. This preserves the
+   nominal interval instead of adding payment retry time to every renewal.
+8. Independently, the operation calls `PAYMENTS /charge` with `Idempotency-Key: id`. A
+   non-OK response throws, retaining retryable work. A successful response settles it.
+   The fixed interval is 30 days, not a calendar month; overdue renewals can catch up
+   through past-due occurrences unless the application chooses a different policy.
+9. `cancel()` only deletes `customerId`. It cannot recall a `chargeInvoice` operation
+   already registered or interrupt one already in flight; the payment receiver must make
+   a duplicate delivery of the same operation ID harmless.
+10. A separately invoked `purgeHistory()` removes helper history older than 90 days. Its
+    `purgeBefore` calls remove **all statuses** before the cutoff, not completed-only
+    history. Retain enough history for the receiver's idempotency and audit needs first.
+
+The key handoff is compact in the recipe:
+
+```ts
+await this.durability.chargeInvoice({
+  id: idempotencyKey,
+  payload: { customerId, periodStart: scheduledTime },
+});
+await this.alarms.renew(scheduledTime + renewalPeriodMs);
+```
+
+The operation ID is stable when that alarm occurrence retries, while the receiver gets the
+same ID in its HTTP header:
+
+```ts
+const response = await this.env.PAYMENTS.fetch('https://payments/charge', {
+  method: 'POST',
+  headers: { 'Idempotency-Key': id },
+  body: JSON.stringify(payload),
+});
+```
+
+## Why a naive loop loses or duplicates charges
+
+A plausible implementation is a cron callback that reads customers, calls the payment
+API, and then writes “last billed.” It has an ambiguous interval after the external call:
+a crash may lose the completion marker even if the receiver charged successfully. Retrying
+blindly can duplicate the charge; avoiding the retry can lose it. This is a failure mode of
+that design, not a claim about generic competing products.
+
+```mermaid
+sequenceDiagram
+  participant Cron as Naive cron loop
+  participant DB as Customer database
+  participant Pay as Payment receiver
+  Cron->>DB: find customer due now
+  Cron->>Pay: charge invoice
+  Pay-->>Cron: 200 charged
+  Note over Cron: process crashes before lastBilled write
+  Cron->>DB: next run sees customer still due
+  Cron->>Pay: charge again
+  Note over Pay: duplicate unless receiver independently deduplicates
+```
+
+The composition persists the unit of payment work with its occurrence key, so a retry
+uses the same external idempotency key. It still does not turn the two systems into one
+transaction: receiver-side deduplication remains required.
+
+```mermaid
+sequenceDiagram
+  participant A as renew alarm
+  participant O as Durable operation
+  participant P as Payment receiver
+  A->>O: register charge(id = occurrence key)
+  O-->>A: registration persisted, not payment result
+  A->>A: schedule scheduledTime + 30 days
+  O->>P: charge, Idempotency-Key = id
+  P->>P: commit effect and idempotency key
+  Note over O: response lost or operation interrupted
+  O->>O: retry persisted pending operation
+  O->>P: charge, same Idempotency-Key
+  P-->>O: return original outcome without charging again
+  O->>O: persist completion
+```
+
+## Failure and recovery decisions
+
+| Failure or edge                          | What this composition does                                                                 | Application decision still needed                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Alarm invocation retries                 | Reuses its occurrence `idempotencyKey`; the charge operation is registered with that ID.   | Keep the receiver's idempotency window at least as long as possible redelivery.                       |
+| Payment returns non-OK                   | The durable operation throws and retries at most eight times.                              | Classify permanent declines, alert on exhausted attempts, and decide dunning.                         |
+| Response is lost after payment accepts   | The operation can send again with the same ID.                                             | Receiver must atomically deduplicate that ID with charging.                                           |
+| Cancel races with a fired renewal        | A missing stored customer stops a not-yet-registered charge and future scheduling.         | Refund/void or allow a charge already registered or in flight; cancellation cannot stop it.           |
+| Customer data changes after registration | The operation retries its stored payload, including the old `customerId` and period start. | Snapshot immutable billing identity deliberately, or add an explicit cancellation/replacement policy. |
+| History purge runs                       | Old operation and alarm records of every status can be deleted.                            | Do not use it as completed-only cleanup; retain audit and deduplication evidence elsewhere.           |
+
+## Provisioning and security checklist
+
+- Bind `SUBSCRIPTIONS` to the `Subscription` Durable Object and deploy the shown SQLite
+  migration; use stable, authorized customer-to-object naming.
+- Bind `PAYMENTS` to a service that authenticates this Worker. Do not expose its charge
+  endpoint as an unauthenticated internal convention.
+- Authenticate `subscribe` and `cancel`, check that the caller controls `customerId`, and
+  validate plan, currency, amount, tax, and cancellation rules in application code.
+- Make the payment receiver store and enforce `Idempotency-Key` atomically with the charge;
+  log the operation ID in its audit trail.
+- Monitor pending and exhausted operations, alarm lag, and payment outcomes. Eight attempts
+  is a retry limit, not customer communication or operational recovery.
+- Choose a retention period before invoking `purgeHistory`; export required accounting
+  records to an appropriate system of record.
+- Test cancellation and subscription replacement races, including repeated client requests
+  and an external timeout after a receiver has accepted a charge.
+
+## Primitive map
+
+Read the individual contracts for [`operations`](/primitives/operations/),
+[`alarms`](/primitives/alarms/), and the shared
+[`scheduler`](/primitives/scheduler/). This guide combines them around one business object;
+it does not change their individual delivery guarantees.

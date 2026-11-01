@@ -2,6 +2,17 @@
 
 Durable operation tooling for Cloudflare Workers and SQLite-backed Durable Objects.
 
+## Documentation
+
+The documentation site targets **[durability.shirei.dev](https://durability.shirei.dev)**, with **shirei.dev** redirecting there. It is a [deployable Cloudflare Worker](./docs), with a getting-started guide, a separate page and implementation walkthrough for every primitive, illustrated application compositions, and searchable API references.
+
+```sh
+pnpm install
+pnpm --filter durability-docs dev
+```
+
+To build and deploy it, see [docs/README.md](./docs/README.md).
+
 ## Packages
 
 | Package                                           | Description                                                                                                                                                                                                |
@@ -15,7 +26,7 @@ Each package has its own API documentation. Complete example Workers for every p
 
 ## Development
 
-This repository requires Node.js 22 or newer and uses pnpm.
+This repository uses pnpm. Libraries require Node.js 22 or newer; building the docs site requires Node.js 22.23.4 or newer.
 
 ```sh
 pnpm install

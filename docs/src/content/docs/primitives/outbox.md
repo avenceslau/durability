@@ -1,0 +1,88 @@
+---
+title: DurabilityOutbox
+description: DurabilityOutbox API, behavior, and recovery contract.
+---
+
+Import `DurabilityOutbox` from `durability/experimental` and pin an exact version. Use it for latest-state convergence, not delivery of every intermediate change.
+
+## Behind the scenes
+
+**Durable state:** `durability_outbox` holds the newest value per channel/key, with version, generation, attempt, and retry time. `durability_outbox_seq` allocates object-wide monotonically increasing versions, even after acknowledged entries are deleted.
+
+`stage()` replaces the key's pending row. Inside an application storage transaction it commits atomically with the state being described. A new generation fences settlement from an older in-flight publication. The scheduler claims due batches, then calls `publish` outside the transaction.
+
+```mermaid
+flowchart TD
+  Update[Application state transaction] --> Stage[(Stage latest key and version)]
+  Stage --> Publish[Publish claimed batch externally]
+  Stage -->|newer stage before delivery| Replace[(Replace pending value)]
+  Publish -->|return without retry flag| Ack[Delete only matching generation]
+  Publish -->|throw or timeout| Retry[(Persist backoff and retry)]
+  Retry --> Publish
+  Publish -.->|old request arrives late| Guard[Sink must compare versions]
+```
+
+**Recovery:** returning acknowledges entries not marked `retry()`. Throw/timeout retries the whole batch without an attempt limit. A crash can repeat an already-successful external write, and a slow old write can arrive after a new one. Sinks must deduplicate `(key, version)` and reject version regressions; a plain unconditional KV write does not provide that guarantee.
+
+**Lifetime:** superseded pending versions may never publish. Acknowledged rows disappear; detached channels retain/postpone their work. Use [fanout](/primitives/fanout/) when every message matters. The [semaphore queue](/primitives/semaphore-queue/) composes an internal outbox for cumulative accounting.
+
+Implementation: [`outbox.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/outbox.ts) (staging, batch claims, and publication).
+
+## Outbox (experimental)
+
+`DurabilityOutbox` is exported from `durability/experimental` and may change in a minor release; pin an exact version when depending on it.
+
+`DurabilityOutbox` publishes the newest state of a key to something outside the object — a KV namespace, another Durable Object, an API — and keeps retrying until the sink accepts it. Use it when consumers need the latest value, not every change: restaging a key before it is published replaces the pending version, so superseded versions may never be sent. For message delivery where every message matters, use `DurabilityFanout`.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityScheduler } from 'durability';
+import { DurabilityOutbox } from 'durability/experimental';
+
+type Topology = { workflowId: string; steps: string[] };
+
+export class Account extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly topology = new DurabilityOutbox<Topology>({
+    scheduler: this.scheduler,
+    channel: 'topology',
+    // The sink keeps the highest version it has seen per key, so a slow
+    // publication of an older version can never overwrite a newer one.
+    publish: async (entries) => {
+      const results = await this.env.TOPOLOGY_INDEX.replace(
+        entries.map(({ key, version, value }) => ({ key, version, value }))
+      );
+      // Returning acknowledges every entry not marked for retry.
+      for (const [index, result] of results.entries()) {
+        if (!result.ok) {
+          entries[index]!.retry();
+        }
+      }
+    },
+  });
+
+  async saveTopology(topology: Topology) {
+    await this.ctx.storage.transaction(async () => {
+      this.ctx.storage.sql.exec(
+        'INSERT OR REPLACE INTO topologies (id, body) VALUES (?, ?)',
+        topology.workflowId,
+        JSON.stringify(topology)
+      );
+      await this.topology.stage(topology.workflowId, topology);
+    });
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+```
+
+- **Atomic with application state.** `stage()` inside `ctx.storage.transaction()` commits or rolls back with the application's writes.
+- **Versions.** Every `stage()` returns a version that is monotonic across the whole object, including after acknowledged entries are deleted. Sinks must be idempotent on `(key, version)` and keep the highest version they have seen: a slow publication of an older version can land after a newer one. A plain `KV.put` cannot do this; compare versions in a Durable Object, a transactional store, or a conditional write.
+- **Acknowledgement.** `publish` returning acknowledges every entry not marked with `entry.retry(delayMs?)`; throwing or exceeding `attemptTimeoutMs` (default 60 seconds) retries the whole batch. Acknowledging a version deletes the entry only if it is still the newest, so an in-flight publication can never discard a later stage.
+- **Retries never give up.** Dropping the newest state would leave the sink stale forever, so there is no attempt limit or dead-letter queue; `retries.delay(attempt)` controls backoff (default: jittered exponential capped at 5 minutes).
+- **Channels.** Several outboxes share one scheduler and one set of tables, partitioned by `channel` (default `default`); each owns its own `publish`, and the same key in different channels is independent. Attaching two outboxes with the same channel to one scheduler throws. Entries of a channel no outbox attaches are retained and postponed, as fanout does for a removed target.
+- **Batching.** `maxBatchSize` (default 50) bounds one `publish` call. `batchDelayMs` rounds first publication up to the next multiple of the delay, so stages within one window coalesce into a batch; a stage landing exactly on a boundary is due immediately.
+
+`DurabilityOutbox.migrate(this.ctx, null)` removes the outbox schema.

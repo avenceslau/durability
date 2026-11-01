@@ -1,0 +1,19 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/*/README.md",
+        "$TURBO_ROOT$/examples/**/*.ts"
+      ]
+    },
+    "typecheck": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/*/README.md",
+        "$TURBO_ROOT$/examples/**/*.ts"
+      ]
+    }
+  }
+}

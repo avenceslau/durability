@@ -1,0 +1,8 @@
+.astro/
+.nimbus/
+playwright-report/
+test-results/
+src/content/docs/reference/storage.md
+src/content/docs/reference/transforms.md
+src/content/docs/reference/lint.md
+src/content/docs/reference/tanstack-db.md

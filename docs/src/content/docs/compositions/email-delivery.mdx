@@ -1,0 +1,150 @@
+---
+title: Email delivery with an archive
+description: Compose routing, fanout, consumer RPC, and R2 with independent retries and explicit redrive.
+tableOfContents: false
+---
+
+Build an email service that can accept work quickly, retry sending it, keep an archive, and park failed deliveries for inspection. Sending and archiving are **independent obligations**, not steps in an atomic transaction.
+
+This walkthrough follows the complete [email queue Worker](https://github.com/avenceslau/durability/blob/main/examples/email-queue/worker.ts), its [Wrangler config](https://github.com/avenceslau/durability/blob/main/examples/email-queue/wrangler.jsonc), and its [Vite wiring](https://github.com/avenceslau/durability/blob/main/examples/email-queue/vite.config.ts).
+
+## Architecture and ownership
+
+<ArchitectureWalkthrough example="email">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+- `EmailDelivery` owns acceptance, pending delivery state, and one shared scheduler.
+- `EmailConsumer` is an ordinary `WorkerEntrypoint`, not a special queue superclass.
+- `DurabilityRouting` chooses the object and reports advisory load. It does not own the queue's records.
+- R2 stores archives and dead letters under distinct prefixes in the `DEAD_LETTERS` bucket binding.
+- The email provider owns the authoritative deduplication of a sent email.
+
+Nothing here requires archive completion before email delivery. If that ordering is a business requirement, this parallel-target design is not sufficient.
+
+## Follow one request
+
+1. The fronting Worker parses a batch and calls `routing.push()` through caller transforms.
+2. The router picks **one shard for the whole push** and invokes `EmailDelivery.enqueue()`.
+3. Fanout atomically accepts the messages and snapshots their recipient target IDs. The HTTP response can now return `202`.
+4. The scheduler independently drives the `email` and `archive` targets. A successful archive does not wait for the provider; a provider failure does not undo an archive.
+5. `EmailConsumer.consume()` forwards each email to `EMAIL_API`, using `message.id` as the provider's idempotency key.
+6. The consumer awaits `ack()` on success, requests `retry(30_000)` on `429`, and calls `deadLetter()` on `400`. Other unsettled work retries under the configured policy.
+7. After all target obligations settle, the fanout registration is removed. The R2 archive follows its own retention policy.
+
+The helper wiring is the composition, not a generated queue class:
+
+```ts
+private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+private readonly routing = new DurabilityRouting();
+private readonly fanout = new DurabilityFanout<Email>({
+  scheduler: this.scheduler,
+  routing: this.routing,
+  targets: {
+    email: { deliver: (messages) => this.env.EMAIL_CONSUMER.consume(messages) },
+    archive: { storage: (message) => this.writeArchive(message) },
+  },
+  dlq: (message) => this.writeDeadLetter(message),
+});
+
+alarm(info?: AlarmInvocationInfo) {
+  return this.scheduler.alarm(info);
+}
+```
+
+This is a field-level wiring excerpt: `Email`, `writeArchive()`, and `writeDeadLetter()` are application definitions. The complete source inlines the R2 callbacks, sets batches of 25, a 30-second attempt timeout, and five delivery attempts.
+
+## Where a simpler design breaks
+
+Imagine accepting an HTTP request, starting the provider request in memory, and returning success without first persisting delivery intent:
+
+```mermaid
+sequenceDiagram
+  participant Caller
+  participant Worker
+  participant Provider
+  Caller->>Worker: POST email
+  Worker-->>Caller: 202 before durable acceptance
+  Note over Worker: Process stops before send
+  Note over Caller,Provider: Caller believes accepted but provider receives nothing
+```
+
+Persisting intent fixes that loss window, but does **not** make the remote email effect exactly once. A different failure can happen after the provider commits:
+
+```mermaid
+sequenceDiagram
+  participant DB as Delivery SQLite
+  participant Consumer
+  participant Provider
+  DB->>Consumer: Deliver email with stable message ID
+  Consumer->>Provider: Send with Idempotency-Key
+  Provider->>Provider: Commit email and key
+  Note over Consumer: Stops before acknowledgement commits
+  DB->>Consumer: Retry outstanding email target
+  Consumer->>Provider: Send with the same key
+  Provider-->>Consumer: Return prior outcome without another email
+  Consumer->>DB: Await ack for this target
+```
+
+**What repairs it:** persisted target obligations allow retry; the provider's idempotency record collapses a duplicate effect. If the provider ignores the key, the design can still send twice. An HTTP timeout is not proof that sending failed.
+
+Archive writes similarly use a stable stored-delivery identity and a conditional R2 write, refusing to overwrite the prior object. A completed archive target is not redelivered merely because its email sibling retries.
+
+## Submission identity and shard affinity
+
+The demo HTTP handler creates messages as `{ body }`, so fanout generates IDs. It also applies `.with(lane, 'vip')`, which overrides customer-based sharding: that route puts the whole batch on the `vip` shard. It is not a complete production deduplication or tenant-isolation policy.
+
+Before allowing callers to retry submission, assign stable application request IDs:
+
+```ts
+// requestId and email come from authenticated, validated application input.
+await routing.with(timeout, 5_000).push({
+  messages: [{ id: requestId, body: email }],
+});
+```
+
+Keep retries on the same shard. Fanout deduplication lasts only while its registration remains active and is local to that object; it is not permanent or cross-shard. Keep receiver-side deduplication long enough for the actual replay policy.
+
+## Redrive only the failed obligation
+
+The application's `redrive(env, after)` function lists the `email-dlq/` prefix, applies its 30-day replay window, and re-enqueues only the parked target:
+
+```ts
+const result = await routing.push({
+  messages: [
+    { id: entry.messageId, body: entry.body, deduplicationKey: entry.id },
+  ],
+  options: { targets: [entry.target] },
+});
+if (result.success) {
+  await env.DEAD_LETTERS.delete(object.key);
+}
+```
+
+`entry` and `object` come from the redrive scan. The DLQ entry ID distinguishes the new registration from the original message's still-running siblings. Do not replay the archive target merely to retry the email target.
+
+Never delete the parked entry before acceptance or after a transport error. A crash between acceptance and deletion can still cause another redrive: this is at-least-once recovery, not an R2-to-DO transaction.
+
+## Failure and recovery contract
+
+| Failure                                     | Durable state and recovery                                        | Application responsibility                 |
+| ------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------ |
+| Object stops after acceptance               | Pending target obligations survive; a physical alarm resumes them | Wire the shared scheduler's `alarm()`      |
+| Email succeeds but acknowledgement is lost  | Email target retries with the same message ID                     | Provider deduplicates the effect           |
+| Archive succeeds while email fails          | Archive stays settled; email progresses independently             | Do not mistake archiving for delivery      |
+| One target exhausts its attempts            | Only that target is dead-lettered; siblings continue              | Inspect and authorize redrive              |
+| R2 dead-letter write fails                  | Durable terminal intent remains; DLQ writing retries              | Monitor storage availability               |
+| Redrive accepts, then stops before deleting | The same parked entry may be replayed again                       | Keep external effects idempotent           |
+| Original target ID is removed               | Its accepted work remains pending with errors/backoff             | Keep target IDs stable or plan a migration |
+
+## Provisioning and production changes
+
+- Provision the `DEAD_LETTERS` bucket, the `EMAIL_API` service, and the `EMAIL_CONSUMER` service entrypoint binding.
+- Declare `EmailDelivery` as SQLite-backed. Use the Vite `doTransforms` plugin to resolve the routing target, or wire its `exportName`/namespace explicitly when running Wrangler alone.
+- Authenticate callers, validate every email, and choose tenant-aware routing; the source HTTP handler is intentionally a sketch.
+- Protect administrative redrive. The exported `redrive()` function is not exposed as an HTTP route by the demo.
+- Configure an R2 lifecycle rule for the DLQ prefix. Filtering a scan by age does not physically expire objects. Archive retention is independent.
+
+Primitives: [fanout](/primitives/fanout/), [routing](/primitives/routing/), [scheduler](/primitives/scheduler/). Contrast this with a [replayable event stream](/compositions/event-stream/) when consumers need history, not per-message delivery attempts.

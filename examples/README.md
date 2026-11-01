@@ -2,6 +2,8 @@
 
 Source recipes for the durability primitives, typechecked and linted by `pnpm check` against current workspace source.
 
+For a self-contained Worker with no external services, start with [`getting-started`](./getting-started) and follow the [quickstart guide](../docs/src/content/docs/getting-started.md).
+
 | Example                                            | Capabilities                                                                     | Shows                                                                                                                                                                                                                                                                                                                |
 | -------------------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`image-jobs`](./image-jobs)                       | `Durability`                                                                     | Idempotency keys forwarded upstream, permanent failures, persisted outcomes.                                                                                                                                                                                                                                         |

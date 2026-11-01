@@ -1,0 +1,108 @@
+---
+title: DurabilityRouting
+description: Advisory load observation and application-owned shard selection.
+---
+
+Import `DurabilityRouting` from `durability/routing`. It combines an object-side load observer with an application-wired routing client; it is not a durable queue or global shard registry.
+
+## Behind the scenes
+
+**Durable state: none.** `RoutingLoad` maintains rolling in-memory time buckets and instantaneous counters. Backlog values come from the attached capability's durable state; telemetry itself disappears on eviction.
+
+The client selects exactly one shard per push and invokes your `invoke(stub, input)` callback once. Custom sharding can inspect caller context and recent observations; the default compares two candidates within an adaptive in-memory shard width. Observations expire and are bounded to 1,024 entries, not coordinated globally.
+
+```mermaid
+flowchart LR
+  Input[Input and local context] --> Choose[Choose one shard]
+  Cache[In-memory load observations] --> Choose
+  Choose --> RPC[Invoke application RPC once]
+  RPC -->|reply with load| Cache
+  RPC -->|transport failure| Caller[Caller decides whether and where to retry]
+```
+
+**On failure:** no durable retry intent is created, and routing does not silently switch destinations. A timed-out RPC may already have committed work. Retrying on another shard may bypass that object's deduplication record; stable application routing and receiver idempotency remain your responsibility. Context stays caller-local and is not automatically sent to consumers.
+
+See [email delivery](/compositions/email-delivery/) and [partitioned event streams](/compositions/event-stream/) for two different uses of the same routing abstraction.
+
+Implementation: [`routing.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/routing.ts), [`routing-client.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/routing-client.ts), and [`load.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/load.ts).
+
+## Routing and fanout
+
+A queue is a composition, not another exported abstraction. An application owns its DO class and attaches the capabilities it needs:
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import {
+  DurabilityFanout,
+  DurabilityScheduler,
+  type FanoutInput,
+  type StoredMessage,
+} from 'durability';
+import { DurabilityRouting } from 'durability/routing';
+
+export class Mailbox extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly routing = new DurabilityRouting();
+  private readonly fanout = new DurabilityFanout<Job>({
+    scheduler: this.scheduler,
+    routing: this.routing,
+    targets: {
+      consumer: { deliver: (messages) => this.env.CONSUMER.consume(messages) },
+      archive: { storage: (message) => this.store('archive/', message) },
+    },
+    dlq: (message) => this.store('dead-letters/', message),
+  });
+
+  private async store(prefix: string, message: StoredMessage<Job>) {
+    await this.env.ARCHIVE.put(
+      `${prefix}${encodeURIComponent(message.id)}`,
+      JSON.stringify(message),
+      { onlyIf: { etagDoesNotMatch: '*' } }
+    );
+  }
+
+  enqueue(messages: FanoutInput<Job>[]) {
+    return this.fanout.enqueue(messages);
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+
+const routing = DurabilityRouting.client({
+  target: Mailbox,
+  invoke: (stub, messages: FanoutInput<Job>[]) => stub.enqueue(messages),
+  sharding: (messages, context: { tenant?: string } | undefined) => ({
+    shard: context?.tenant ?? messages[0]?.body.customerId ?? 'default',
+    locationHint: 'weur',
+  }),
+});
+
+const result = await routing.push([{ id: 'job:42', body: job }], {
+  tenant: 'acme',
+});
+```
+
+The application chooses the RPC method via `invoke`; routing does not know about messages or fanout. A single push selects one shard for the entire input. Static fanout target IDs identify independent delivery obligations; each accepted message snapshots its recipients. Targets added later do not receive old work, and a removed target's work remains durable with an error and backoff until that ID is restored. Target callbacks/storage references are fixed at capability construction.
+
+### Load and adaptive routing
+
+A snapshot contains `observedAt`, `windowMs: 60000`, and:
+
+- `inbound`: instantaneous `inFlight`, rolling `completed`, and `averageProcessingMs` for enqueue calls through acceptance/rejection.
+- `outbound`: the same metrics for target delivery attempts (one batch to one target is one attempt), plus exact durable `pendingDeliveries` counting outstanding message-target pairs.
+
+Counts and averages share a rolling window with one-second buckets. No samples means `null`, not zero; telemetry resets on eviction while backlog survives. A DO cannot measure requests waiting in the platform before its handler starts. Snapshots are advisory, not capacity reservations or global metrics.
+
+`sharding(input, context, observations)` can inspect recent per-shard snapshots. Caller context can contain arbitrary local values; it is not persisted or sent to consumers. A location hint influences initial shard placement, not existing DO placement.
+
+Without custom sharding, routing starts with one shard, samples two candidate shard keys, and compares backlog followed by in-flight processing pressure. It widens under backlog pressure (`softBacklogLimit`, default 1000) and narrows slowly when observations are shallow. Observations expire and are bounded per isolate; this is a best-effort adaptive router, not a globally coordinated autoscaler. Stable-key sharding gives affinity; random routing does not guarantee ordering between separate pushes.
+
+### Transforms and build-time wiring
+
+Routing uses the actual `@durability/transforms` runtime. For example, `routing.with(timeout, 5000).with(tenant, 'acme').push(input)` composes existing caller transforms. `tenant` is created with `defineTransform<RoutingSession<Input, Value, Context>, Context>().caller(...)`; context contributions shallow-merge, with transform fields overriding matching positional fields. An RPC timeout is not cancellation. Retrying a push may select a new shard, so choose stable keys when retry affinity matters.
+
+`doTransforms` from `@durability/transforms/vite` maps `DurabilityRouting.client({ target: Mailbox, ... })` to its same-module exported class name and validates it against Wrangler. It injects `exportName`, not a generated DO or a magic application method. Without the plugin, set `exportName: 'Mailbox'` explicitly; `namespace: () => env.MAILBOXES` is an escape hatch for explicit or remote bindings.
+
+Loopback namespaces need the application DO declared in Wrangler migrations (or the platform's supported class configuration), but no redundant DO binding block is needed. Consumer transport is explicitly wired by the application, such as a service binding or loopback entrypoint. See the typechecked [email queue composition](https://github.com/avenceslau/durability/blob/main/examples/email-queue).
