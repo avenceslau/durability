@@ -4,8 +4,7 @@ import nimbus, {
   defineConfig as defineNimbusConfig,
 } from '@cloudflare/nimbus-docs';
 import { tableScroll } from '@cloudflare/nimbus-docs/markdown';
-import mermaid from 'astro-mermaid';
-import { mermaidBlocks } from './src/lib/mermaid';
+import react from '@astrojs/react';
 
 const nimbusConfig = defineNimbusConfig({
   site: 'https://durability.shirei.dev',
@@ -97,23 +96,19 @@ export default defineConfig({
     defaultStrategy: 'hover',
   },
   integrations: [
-    // Keep the Mermaid browser renderer for sequence diagrams. The fences
-    // are transformed explicitly inside Nimbus's own Sätteri pipeline below.
-    mermaid({
-      autoTheme: true,
-      enableLog: false,
-      mermaidConfig: { securityLevel: 'strict' },
-    }),
+    // The walkthrough renders the diagram from a plain client script, outside
+    // an island, where fast refresh has no preamble to attach to.
+    react({ exclude: ['**/src/kit/architecture/**'] }),
     nimbus(nimbusConfig, {
       rules: {
         'nimbus/frontmatter-shape': 'error',
         'nimbus/internal-link': 'error',
       },
       markdown: {
-        hastPlugins: [mermaidBlocks(), tableScroll()],
+        hastPlugins: [tableScroll()],
         componentMap: {
           ArchitectureWalkthrough: {
-            revision: 'architecture-walkthrough-v1',
+            revision: 'architecture-walkthrough-v2',
             render: ({ children }) => children,
           },
         },

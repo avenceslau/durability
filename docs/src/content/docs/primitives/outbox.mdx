@@ -5,22 +5,26 @@ description: DurabilityOutbox API, behavior, and recovery contract.
 
 Import `DurabilityOutbox` from `durability/experimental` and pin an exact version. Use it for latest-state convergence, not delivery of every intermediate change.
 
+## How it uses your Durable Object
+
+`DurabilityOutbox` adds no storage or infrastructure of its own. It uses the Durable Object it is constructed in:
+
+- **`ctx.storage.sql`** holds `durability_outbox` and `durability_outbox_seq` next to your own tables, so `stage()` inside `ctx.storage.transaction()` commits or rolls back with the state it describes.
+- **The object's one alarm** is owned by the scheduler the outbox attaches to. Every stage, claim, and retry reconciles it in the same storage transaction. The target is the earliest pending time, but no sooner than `alarmMinDelayMs` from now; an existing alarm between the earliest pending time and the target is kept, otherwise the alarm is set to the target, and it is deleted when nothing is pending. Your class's `alarm()` must delegate to `scheduler.alarm()`.
+- **The live instance** holds the channel's running batch, the `retry()` marks and timeout of a `publish` in flight, and the scheduler's permits and timer. Eviction loses them; the claimed row becomes due again at its publish deadline.
+- **The sink** is outside the object. It can receive a version again after an eviction, or an old timed-out write after a newer one, so it must keep the highest version per key.
+
+<ArchitectureWalkthrough example="outbox">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** `durability_outbox` holds the newest value per channel/key, with version, generation, attempt, and retry time. `durability_outbox_seq` allocates object-wide monotonically increasing versions, even after acknowledged entries are deleted.
 
 `stage()` replaces the key's pending row. Inside an application storage transaction it commits atomically with the state being described. A new generation fences settlement from an older in-flight publication. The scheduler claims due batches, then calls `publish` outside the transaction.
-
-```mermaid
-flowchart TD
-  Update[Application state transaction] --> Stage[(Stage latest key and version)]
-  Stage --> Publish[Publish claimed batch externally]
-  Stage -->|newer stage before delivery| Replace[(Replace pending value)]
-  Publish -->|return without retry flag| Ack[Delete only matching generation]
-  Publish -->|throw or timeout| Retry[(Persist backoff and retry)]
-  Retry --> Publish
-  Publish -.->|old request arrives late| Guard[Sink must compare versions]
-```
 
 **Recovery:** returning acknowledges entries not marked `retry()`. Throw/timeout retries the whole batch without an attempt limit. A crash can repeat an already-successful external write, and a slow old write can arrive after a new one. Sinks must deduplicate `(key, version)` and reject version regressions; a plain unconditional KV write does not provide that guarantee.
 

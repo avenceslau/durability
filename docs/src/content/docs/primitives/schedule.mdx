@@ -5,24 +5,26 @@ description: Recurring ticks, overlapping runs, and durable outcome delivery.
 
 Import `DurabilitySchedule` from `durability/experimental` and pin an exact version. It owns one recurring schedule per scheduler, with independently tracked overlapping runs. It is not an operation retry loop.
 
+## How it uses your Durable Object
+
+`DurabilitySchedule` adds no storage or infrastructure of its own. It uses the Durable Object it is constructed in:
+
+- **`ctx.storage.sql`** holds one schedule row and one row per run from its tick until its outcome is delivered, so each object has exactly one schedule. No finished-run history remains.
+- **The object's one alarm**, owned by the shared `DurabilityScheduler`, is set to the next tick, and your class's `alarm()` must delegate to the scheduler. While runs or outcome deliveries are in flight, the alarm invocation stays open.
+- **The live instance** holds the run slots in use, the deliveries in flight, and that open loop. Eviction discards them; a run left marked running is reported as interrupted, not run again.
+
+<ArchitectureWalkthrough example="schedule">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** `durability_schedule` holds the versioned expression, fixed jitter, and next nominal tick. `durability_schedule_runs` keeps a run from tick creation until outcome acknowledgement or delivery exhaustion.
 
 A due-tick transaction advances the schedule cursor and inserts the run together. A duplicated alarm cannot insert the same tick twice. Missed ticks collapse into one run for the earliest missed nominal time, rather than replaying every missed interval.
 
-```mermaid
-flowchart TD
-  Tick[Due schedule tick] --> Commit[(Advance cursor and insert run atomically)]
-  Commit --> Queue[(Queued run)]
-  Queue --> Run[(Mark running then invoke once)]
-  Run --> Outcome[(Persist complete or errored outcome)]
-  Run -.->|eviction leaves running row| Interrupted[(Record interrupted error without rerunning)]
-  Interrupted --> Outcome
-  Outcome --> Deliver[Deliver onOutcome]
-  Deliver -->|acknowledged or retries exhausted| Delete[Delete run row]
-  Deliver -->|delivery fails with budget left| Outcome
-```
 
 **After eviction:** a previously running row with no live owner becomes `ScheduledRunInterruptedError`; its handler is **not** run again. Its external effects may nevertheless have happened. This differs intentionally from [Durability operations](/primitives/operations/).
 

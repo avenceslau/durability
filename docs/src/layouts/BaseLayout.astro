@@ -96,8 +96,6 @@ const resolvedMarkdownUrl =
           const mode = resolveMode();
           if (mode === "dark") root.setAttribute("data-mode", "dark");
           else root.removeAttribute("data-mode");
-          // astro-mermaid observes data-theme; Nimbus uses data-mode.
-          root.setAttribute("data-theme", mode);
           root.style.colorScheme = mode;
           document.querySelectorAll("[data-nb-theme-toggle]").forEach((b) => {
             b.setAttribute("data-nb-state", mode);

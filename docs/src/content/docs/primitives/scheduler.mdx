@@ -5,24 +5,25 @@ description: Share one physical alarm and concurrency budget across capabilities
 
 Import `DurabilityScheduler` from `durability`. Construct one per object when composing alarm-owning capabilities. A scheduler coordinates that object's work, not work across different objects.
 
+## How it uses your Durable Object
+
+The scheduler owns the parts of the Durable Object that its helpers would otherwise compete for:
+
+- **The object's one alarm** (`ctx.storage.setAlarm`). Helper writes that add or reschedule pending work run in a storage transaction that also sets the alarm to the earliest pending row of every attached table. Your class's `alarm()` must delegate to `scheduler.alarm()`.
+- **`ctx.storage.sql`** stays with the helpers: each creates and registers its own tables, and the scheduler only reads their pending times.
+- **The live instance** holds the concurrency permits and their FIFO waiters, the early timer for work due before the alarm, and the list of attached tables. Eviction discards them; the alarm and the rows bring the work back.
+
+<ArchitectureWalkthrough example="scheduler">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** the scheduler creates no job table of its own. Attached helpers provide their tables and due-work callbacks; the engine consults them to reconcile the object's one physical alarm. A duplicate participant table is rejected.
 
 Engine transactions reconcile that alarm alongside their storage changes. The next physical alarm is bounded by the earliest due work and `now + alarmMinDelayMs`. Near-due work can also start from an in-memory timer; experimental `liveTimers` extends timer scheduling further into the future.
-
-```mermaid
-flowchart TD
-  Calls[(Operation rows)] --> Engine[Shared scheduler engine]
-  Alarms[(Named occurrences)] --> Engine
-  Deliveries[(Fanout and other pending work)] --> Engine
-  Engine --> Physical[One durable physical alarm]
-  Engine --> Timer[In-memory early timer]
-  Physical --> Pool[Shared FIFO permit pool]
-  Timer --> Pool
-  Pool --> Handlers[Invoke attached handlers]
-  Timer -.->|lost on eviction| Physical
-```
 
 **In memory:** timers, active execution locks, promises, and the FIFO concurrency pool. Eager operations and ordinary scheduled work share the default ten permits. Some capabilities, such as recurring schedule runs, explicitly maintain a separate execution limit; a shared scheduler is not a universal limit on all application work.
 

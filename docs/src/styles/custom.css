@@ -6,13 +6,3 @@
 [data-mode='dark'] {
   --nb-brand: #74dbcf;
 }
-
-pre.mermaid {
-  overflow-x: auto;
-  padding: 1rem;
-}
-pre.mermaid svg {
-  display: block;
-  min-width: 32rem;
-  margin-inline: auto;
-}

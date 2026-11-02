@@ -5,24 +5,26 @@ description: DurabilityTracker API, behavior, and recovery contract.
 
 Import `DurabilityTracker` from `durability/experimental` and pin an exact version. Use one query/wait interface over capabilities or your own `TrackedSource` implementations.
 
+## How it uses your Durable Object
+
+`DurabilityTracker` has no context, tables, or alarm of its own. It reads what its sources already keep in the object:
+
+- **`ctx.storage.sql`** belongs to the sources. `Durability` reads `durability_calls`, `DurabilityAlarms` reads `durability_alarms`, and a custom source reads whatever table you give it. A record is never copied into the tracker.
+- **The object's one alarm** is set by the sources' scheduler, not by the tracker. It settles pending work after an eviction, and the tracker needs no delegated method; your class's `alarm()` still delegates to the scheduler or capability.
+- **The live instance** holds every handle, `wait()` timer, and settlement listener. A deploy, eviction, or RPC disconnect discards them; reacquire a handle with `get(source, id)`.
+- **RPC between objects** copies a handle's data and turns `get` and `wait` into stubs that call back into the instance that created them. JSON transports get plain `records()` instead.
+
+<ArchitectureWalkthrough example="tracker">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state: none of its own.** The tracker delegates reads to its named sources. Each source owns its records, transactions, status semantics, and retention. Pagination visits sources in configured order; there is no globally ordered merged timeline.
 
 A handle contains a record snapshot, its generation, and `get()`/`wait()` methods. Later reads compare generations so an old handle cannot accidentally observe a new record reusing the same ID.
-
-```mermaid
-flowchart TD
-  Query[List or get from named source] --> Handle[Snapshot and generation-bound handle]
-  Handle --> Wait[Install optional watch before reading state]
-  Wait --> Settled{Already settled?}
-  Settled -->|yes| Return[Return current state]
-  Settled -->|no| Notify[Wait for notification or timeout]
-  Notify --> Read[Read source again]
-  Read --> Generation{Same generation?}
-  Generation -->|yes| Return
-  Generation -->|no or purged| Missing[Return not_found]
-```
 
 **Waiting is in memory:** installing the watch before the initial read avoids a settlement-between-read-and-subscribe race, but watches and timers do not survive eviction, redeploy, or RPC disconnect. Reacquire a handle by ID and wait again. A custom source without `watch` is read at timeout; the tracker does not poll it continuously.
 

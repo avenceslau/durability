@@ -5,26 +5,26 @@ description: Queue and admit work against a shared semaphore budget.
 
 Import `DurabilitySemaphoreQueue` from `durability/experimental/semaphore` and pin an exact version. It is the durable client-side admission queue for a [semaphore holder](/primitives/semaphore/), not another global budget.
 
+## How it uses your Durable Object
+
+`DurabilitySemaphoreQueue` runs in each client object that queues work, next to the operations it admits, and talks to the holder object only over RPC:
+
+- **`ctx.storage.sql`** holds the queue's items, this object's copy of every grant and lease, per-key request pacing, and pending reports as rows of the shared outbox. Claims and their reports commit in one transaction.
+- **The object's one alarm** is shared with every helper on the scheduler. It drives permit requests for due keys, `admit()` retries, `finished()` checks, lease renewals, and report publishing, so your class's `alarm()` must delegate to the scheduler.
+- **The live instance** holds only the keys with a request in flight, the holder's last blocked reasons, and the running `admit()` and `finished()` calls. Eviction loses an open request; the key is asked again after its deadline.
+- **RPC to the holder** goes through `DurabilitySemaphore.client()`: `request` waits for the holder's round, and `sync` carries cumulative claimed, released, and drawn counts from the outbox. The holder never calls the client.
+
+<ArchitectureWalkthrough example="semaphore-queue">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** queue item, grant, pacing-key, and optional lease tables hold local demand and allocated capacity. An internal [outbox](/primitives/outbox/) channel, `durability.semaphore-queue`, persists cumulative claim/release reports on the same scheduler.
 
 `enqueue()` idempotently inserts items by ID. Demand is aggregated per semaphore key and group. Returned grants are stored transactionally; local claims and their outbound reports commit together. Grant-based work becomes admitted after holder confirmation. Lease-drawn work can be admitted locally because its capacity was already reserved at the holder.
-
-```mermaid
-flowchart TD
-  Enqueue[(Queued item)] --> Ask[Request account capacity]
-  Ask --> Grant[(Persist returned grant)]
-  Grant --> Claim[(Claim item and stage report together)]
-  Claim --> Confirm[Holder confirms cumulative claim]
-  Confirm --> Admitted[(Admitted item)]
-  Admitted --> Callback[Invoke retryable admit callback]
-  Callback --> Operation[Idempotently register actual work]
-  Operation --> Release[Lifecycle release fast path]
-  Operation --> Check[Periodic finished reconciliation]
-  Release --> Return[(Delete item and stage release)]
-  Check --> Return
-```
 
 **After a crash:** `admit()` runs after admission commits and may be called again until it returns. Register actual operations using the same stable item ID so repeat admission is a no-op. Lost report replies are repaired by durable cumulative accounting, not by assuming a failed RPC did nothing.
 
@@ -50,7 +50,8 @@ export class JobShard extends DurableObject<Env> {
   private readonly jobs = new Durability({
     scheduler: this.scheduler,
     handlers: { run: (job: Job) => runJob(this.env, job) },
-    // Return the permit as soon as the operation reaches a terminal state.
+    // Fast path only: a failed final attempt emits attempt_settled with
+    // outcome 'failed', which this skips; finished() releases those.
     onLifecycleEvent: (event) => {
       if (
         event.type === 'terminal' ||

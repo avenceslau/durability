@@ -130,37 +130,17 @@ calling the downstream service. Restarting loses the queue; a crash after the ea
 silently loses the event. This illustrates that design's failure sequence, not a statement
 about generic competing products.
 
-```mermaid
-sequenceDiagram
-  participant Q as Naive worker queue
-  participant C as Consumer
-  participant DB as Offset store
-  participant S as Side-effect service
-  Q->>C: event 41
-  C->>DB: commit offset 42 first
-  Note over C: crash before handling event 41
-  C--xS: no side effect
-  Note over Q,DB: restart begins at 42 and event 41 is lost
-```
+The walkthrough's "An in-memory queue that commits first" scenario steps through that
+design's gaps and the lines of this composition that close them.
 
 The composition persists records and separates cursor movement from read. A failure after
 the external side effect but before commit produces redelivery instead of silent loss, so
 the receiver must deduplicate the record.
 
-```mermaid
-sequenceDiagram
-  participant L as Partition log
-  participant C as Consumer
-  participant S as Idempotent side-effect service
-  participant X as Group cursor
-  L-->>C: page offsets 41..50
-  C->>S: handle 41..50
-  Note over C: crash before commit
-  C->>L: next poll reads 41..50 again
-  C->>S: handle same records
-  Note over S: deduplicates already-applied records
-  C->>X: commit nextOffset 51
-```
+The walkthrough's "Crash after work, before commit" scenario steps through this recovery:
+the poll reads a page, the handler's side effects complete, the request dies before
+`commit()`, the next poll reads the same page from the unchanged cursor, and only the
+receiver can avoid applying it twice.
 
 ## Failure and recovery decisions
 
@@ -173,8 +153,10 @@ sequenceDiagram
 | Hot retention runs               | `trim()` moves eligible records to R2 and periodically re-arms only while hot data exists. | Operate a reconciliation process; retention is not automatic from configuration alone. |
 | R2 lifecycle expires cold data   | The recipe offers `expireCold` to forget matching indexes.                                 | Set external lifecycle policy and coordinate its cutoff with replay commitments.       |
 | `sweeping` scheduling race       | Flag write and alarm registration are not one atomic application transaction.              | Reconcile partitions in production: inspect bounds/flag and schedule a missed sweep.   |
+| Retention sweep keeps failing    | After five failed attempts, or one over the five-minute timeout, the alarm row is failed.  | `sweeping` stays set, so appends stop scheduling sweeps; the same reconciliation applies. |
 
-That last row is an unresolved source gap, not automatic recovery. For example, a deployment
+Those last two rows are unresolved source gaps, not automatic recovery; the walkthrough's
+"Where retention can stop" scenario steps through both. For example, a deployment
 can periodically enumerate known topic/partition names, query bounds, and schedule a sweep
 when retained hot data exists without a valid sweep schedule. Make that repair idempotent
 and observable; it cannot be inferred solely from an in-memory routing observer.

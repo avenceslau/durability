@@ -8,5 +8,10 @@
   "arrowParens": "always",
   "printWidth": 80,
   "experimentalSortPackageJson": false,
-  "ignorePatterns": ["**/dist/**", "**/coverage/**", "**/*.generated.d.ts"]
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/coverage/**",
+    "**/*.generated.d.ts",
+    "docs/src/kit/**"
+  ]
 }

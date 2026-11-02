@@ -5,20 +5,24 @@ description: Browser-side RPC, reconnects, replay, and resynchronization.
 
 Import `DurabilitySocketClient` from `durability/client`. This browser-safe entry point has no Workers runtime import. Connect it to a [DurabilitySocket](/primitives/socket/) server.
 
+## How it uses your Durable Object
+
+`DurabilitySocketClient` runs in the browser and stores nothing. Everything durable lives in the one Durable Object a connection talks to:
+
+- **One object per connection.** `connect(id)` builds the URL for one object; your Worker forwards the upgrade, and the object's `fetch()`, `webSocketMessage()`, and `webSocketClose()` must delegate to its [`DurabilitySocket`](/primitives/socket/). In the example, `alarm()` also delegates to `durability.alarm()` so the durable `createTodo` operations run.
+- **The object's `ctx.storage.sql`** holds the outbound events with their sequence numbers. The client only remembers the last sequence it saw, so a reconnect replays from the object's table. After a gap the client only fires `resync`; your handler must reload a snapshot from your own tables, as the example does with `list()`. The example's `created` events come from a best-effort lifecycle hook: if the hook fails or the object crashes after the operation completes, no event is stored, so there is nothing to replay and no gap to trigger `resync`.
+- **The hibernatable WebSocket** keeps the subscribed names in its attachment, and the runtime answers keep-alive pings itself, so the object can be evicted while the tab stays connected without the client noticing.
+- **The browser tab** holds everything else: pending calls, handlers, timers, and the last sequence. A sent call that loses its connection is rejected, never replayed, and a page reload starts from nothing.
+
+<ArchitectureWalkthrough example="client">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state: none.** A connection keeps its handlers, pending RPCs, subscriptions, and last observed sequence in browser memory. It opens lazily on the first call/subscription, reconnects with jittered backoff, and resubscribes from that in-memory sequence. A page reload loses it.
-
-```mermaid
-flowchart TD
-  Call[RPC call] --> Sent{Already sent?}
-  Sent -->|not yet connected| Queue[Keep unsent call in memory]
-  Queue --> Open[Send after connection opens]
-  Sent -->|sent and connection lost| Reject[Reject ambiguous call without replay]
-  Reconnect[Reconnect and resubscribe] --> History{Continuous history?}
-  History -->|yes| Replay[Deliver replayed events]
-  History -->|no or first subscription| Resync[Emit resync for application snapshot]
-```
 
 **On disconnect:** sent unanswered calls reject with `SocketConnectionLostError` rather than being replayed; the server may already have performed them. Unsent calls can wait for connection until their local timeout. The default RPC timeout is two minutes, not remote cancellation.
 

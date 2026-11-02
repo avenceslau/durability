@@ -5,6 +5,20 @@ description: Persist, retry, and retrieve the result of individually identified 
 
 Import `Durability` from `durability`. Use it for individually identified jobs whose results must survive retries and restarts. See [recurring billing](/compositions/recurring-billing/) for composition with named alarms.
 
+## How it uses your Durable Object
+
+`Durability` adds no storage or infrastructure of its own. It uses the Durable Object it is constructed in:
+
+- **`ctx.storage.sql`** holds its tables, so operations are as durable as the object and belong to it alone. Another object, even of the same class, has its own rows.
+- **The object's one alarm** (`ctx.storage.setAlarm`) brings the object back after eviction. Every write that adds or reschedules pending work sets the alarm in the same storage transaction, and your class's `alarm()` must delegate to `durability.alarm()`.
+- **The live instance** holds everything else: concurrency permits, the running attempts, and a timer for work due before the alarm. It is rebuilt with the helper whenever the runtime creates a new instance of the object.
+
+<ArchitectureWalkthrough example="operations">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** `durability_calls` holds one row per operation ID: handler name, serialized payload, generation, status, attempt count, retry time, error, and result. Shared `durability_memos` holds intermediate memoized results. Pending-time and creation-time indexes support scheduling and purge.
@@ -13,18 +27,6 @@ Import `Durability` from `durability`. Use it for individually identified jobs w
 2. A new operation starts eagerly only if the shared scheduler has an immediately available permit. Otherwise the persisted due row waits for a timer/alarm pass.
 3. Before calling the handler, the engine durably claims and increments its attempt. An in-memory active lock prevents overlapping same-instance execution.
 4. Successful settlement conditionally stores the JSON result. Failure either records the next retry time or a terminal failed state. Generation/attempt checks prevent a late old execution from overwriting a purged-and-reused ID.
-
-```mermaid
-flowchart TD
-  Submit[Register stable ID and payload] --> Pending[(Pending SQLite row and alarm)]
-  Pending --> Claim[Durably claim attempt]
-  Claim --> Handler[Invoke handler outside the transaction]
-  Handler -->|success| Done[(Completed result)]
-  Handler -->|retryable failure| Retry[(Pending with next retry time)]
-  Retry --> Claim
-  Handler -->|terminal failure| Failed[(Failed record)]
-  Handler -.->|effect committed but local settlement lost| Pending
-```
 
 **After eviction:** the row survives, but locks and running promises do not. A pending handler can run again with the same ID. A remote effect may already have committed; receiver-side idempotency is still necessary. Abort is cooperative: a handler that ignores its signal holds the live permit until it actually settles.
 

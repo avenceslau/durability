@@ -102,40 +102,17 @@ a crash may lose the completion marker even if the receiver charged successfully
 blindly can duplicate the charge; avoiding the retry can lose it. This is a failure mode of
 that design, not a claim about generic competing products.
 
-```mermaid
-sequenceDiagram
-  participant Cron as Naive cron loop
-  participant DB as Customer database
-  participant Pay as Payment receiver
-  Cron->>DB: find customer due now
-  Cron->>Pay: charge invoice
-  Pay-->>Cron: 200 charged
-  Note over Cron: process crashes before lastBilled write
-  Cron->>DB: next run sees customer still due
-  Cron->>Pay: charge again
-  Note over Pay: duplicate unless receiver independently deduplicates
-```
+The walkthrough's "Why a naive cron loop double-charges" scenario steps through each gap
+and the line of this composition that closes it.
 
 The composition persists the unit of payment work with its occurrence key, so a retry
 uses the same external idempotency key. It still does not turn the two systems into one
 transaction: receiver-side deduplication remains required.
 
-```mermaid
-sequenceDiagram
-  participant A as renew alarm
-  participant O as Durable operation
-  participant P as Payment receiver
-  A->>O: register charge(id = occurrence key)
-  O-->>A: registration persisted, not payment result
-  A->>A: schedule scheduledTime + 30 days
-  O->>P: charge, Idempotency-Key = id
-  P->>P: commit effect and idempotency key
-  Note over O: response lost or operation interrupted
-  O->>O: retry persisted pending operation
-  O->>P: charge, same Idempotency-Key
-  P-->>O: return original outcome without charging again
-  O->>O: persist completion
-```
+The walkthrough's "Lose the payment acknowledgement" scenario steps through this
+recovery: the alarm brings the evicted object back, the pending charge row is retried with
+the same `Idempotency-Key`, and only the receiver can return the original outcome instead
+of charging again.
 
 ## Failure and recovery decisions
 

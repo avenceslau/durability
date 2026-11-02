@@ -5,28 +5,30 @@ description: DurabilityLog API, behavior, and recovery contract.
 
 Import `DurabilityLog` from `durability`. Use retained records when consumers need independent positions and replay. See the [event-stream composition](/compositions/event-stream/).
 
+## How it uses your Durable Object
+
+`DurabilityLog` adds no stream service of its own. It uses the Durable Object it is constructed in:
+
+- **`ctx.storage.sql`** holds the hot records, the offset sequence, every consumer's cursor, the index of flushed segments, and, with leases, each held range. A partition's history and positions belong to that object alone.
+- **The object's one alarm** is never set by the log. It registers no due work with the scheduler, so retention runs only when your code calls `trim()`, typically from a `DurabilityAlarms` handler whose `alarm()` your class delegates to `scheduler.alarm()`.
+- **RPC from outside:** producers call your object to append and pollers call it to read and commit. Cold segments are the only external I/O, written by `trim()` and read back for consumers behind the hot window.
+- **The live instance** holds only configuration. Lease expiry is a stored timestamp rather than a timer, so eviction loses nothing the log needs. A producer whose reply was lost retries with the same deduplication keys.
+
+<ArchitectureWalkthrough example="log">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** `durability_log_records` holds hot records by offset, with a unique retained deduplication key. Cursor, sequence/byte-count, and cold-segment metadata tables track readers and storage. Optional leasing adds durable lease/allocation tables.
 
 `append()` allocates offsets and inserts the batch atomically. Reading does not acknowledge anything: `commit()` only advances one consumer cursor. Optional `lease()` persists an exclusive range before returning records; fresh batch IDs fence expired or superseded holders, and acknowledgements advance only across contiguous settled ranges.
 
-```mermaid
-flowchart TD
-  Append[Append batch] --> Hot[(Hot SQLite records and offsets)]
-  Hot --> Read[Read or lease records]
-  Read --> Effect[Consumer applies idempotent effects]
-  Effect --> Cursor[(Commit cursor or acknowledge lease)]
-  Effect -.->|crash before commit permits replay| Read
-  Hot --> Trim[Explicit trim]
-  Trim --> Cold[Write cold segment if configured]
-  Cold --> Index[(Record locator then delete hot rows)]
-  Index --> ReadCold[Rehydrate on a later read]
-```
-
 **Not an automatic background loop:** the log can share a scheduler's storage engine but does not register a due-work participant. Nothing periodically calls `trim()` for you. Compose a named alarm when retention needs a clock.
 
-**Cold-storage failure:** the external segment is written before its locator is committed and hot records are removed. A failed write preserves hot data. A crash after the remote write may repeat it or leave an orphan; use idempotent segment keys. The cold store's lifecycle and removal of obsolete locators are application policy.
+**Cold-storage failure:** the external segment is written before its locator is committed and hot records are removed. A failed write preserves hot data. A crash after the remote write may repeat it or leave an orphan. The retry recomputes the run, so it may cover more records than the first write; a key that refuses to overwrite is safe only if retries keep exactly the same segment boundaries. The cold store's lifecycle and removal of obsolete locators are application policy.
 
 **Lifetime:** retention ignores consumer cursors. A slow reader can lose readable history and gets `LogTruncatedError`. Append deduplication ends when the original hot record is flushed or deleted. Processing can repeat after an effect succeeds but before cursor/lease settlement, so effects still need idempotency.
 
@@ -112,11 +114,11 @@ type LogColdStorage<Body> = {
 };
 ```
 
-`write` receives one contiguous run of records, oldest first, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
+`write` receives one contiguous run of records, oldest first, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once. A retried flush recomputes the run and may cover more records than the object already written, so keying segments by first offset and refusing to overwrite is safe only if the retry writes exactly the same records. R2's conditional `put` returns `null` when it refuses, and the example above ignores that result.
 
 `read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
 
-External storage expires on its own schedule, so mirror a lifecycle rule with `forgetColdBefore(offset)` to drop stale index entries. Returning `undefined` from `read` is also honoured: a segment the index outlived surfaces as truncation rather than a silent gap.
+External storage expires on its own schedule, so mirror a lifecycle rule with `forgetColdBefore(offset)` to drop stale index entries. Nothing calls it automatically. Returning `undefined` from `read` is also honoured: a segment the index outlived surfaces as truncation rather than a silent gap.
 
 Retention still **ignores cursors**, exactly as a log should: a consumer slower than everything readable loses records. It learns loudly rather than silently skipping, because reading below the oldest readable offset throws `LogTruncatedError` carrying `requestedOffset` and `oldestOffset`. Leased consumers learn the same way: when a range awaiting redelivery (nacked or expired) was trimmed, `lease()` throws `LogTruncatedError` once, drops the trimmed offsets from the range, and the next call carries on from what is still retained. A leased consumer's cursor moves past offsets trimmed before anyone leased them. Compare `bounds()` against a cursor to detect the risk before it happens.
 
@@ -136,7 +138,7 @@ if (lease) {
 }
 ```
 
-`lease` claims a range of offsets durably **before** returning the records, so a second caller gets `undefined` rather than the same offsets. `undefined` means nothing is available right now — either the consumer is at `maxParallelism` or the log has no unleased records — so treat it as a signal to back off.
+`lease` claims a range of offsets durably **before** returning the records, so a second caller gets the next range or `undefined` rather than the same offsets. That holds for hot ranges only: a cold range is read from external storage between reading the consumer's allocation and writing it, and the allocation is not checked again, so two concurrent cold leases can receive the same range. `undefined` means nothing is available right now — either the consumer is at `maxParallelism` or the log has no unleased records — so treat it as a signal to back off.
 
 A range is held until it is acked, nacked, or its lease expires after `leaseMs`. Redelivery always issues a **fresh `batchId`**, which fences the previous holder: its `ack` throws `LogLeaseError` rather than committing a range someone else now owns. Double settlement throws for the same reason.
 

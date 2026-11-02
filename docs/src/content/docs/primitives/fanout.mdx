@@ -5,24 +5,26 @@ description: Durable acceptance and independently retried message-target deliver
 
 Import `DurabilityFanout` from `durability`. Use it when every accepted message has independently retryable delivery obligations. See the [email delivery composition](/compositions/email-delivery/).
 
+## How it uses your Durable Object
+
+`DurabilityFanout` adds no queue service of its own. It uses the Durable Object it is constructed in:
+
+- **`ctx.storage.sql`** holds every accepted message and one delivery row per target, so the shard that accepted a batch is the only one that delivers it.
+- **The object's one alarm**, owned by the shared `DurabilityScheduler`, is set in the same transaction as every write that adds or reschedules a delivery. Your class's `alarm()` must delegate to `scheduler.alarm()`.
+- **RPC in both directions:** targets are called outside any storage transaction, and each `ack()`, `retry()`, or `deadLetter()` is an RPC back into the object that settles one target's row.
+- **The live instance** holds only the running pass per target, the settlement closures of in-flight messages, and a cached pending count. Eviction loses them; the rows and the alarm bring the work back.
+
+<ArchitectureWalkthrough example="fanout">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** `durability_fanout_messages` stores a manifest per active deduplication key. `durability_fanout_deliveries` stores one obligation per message-target pair, with sequence, phase, attempt, and due time. A sequence table orders first deliveries; retry memos are shared with other capabilities.
 
 `enqueue()` validates the whole batch, then transactionally inserts manifests and the frozen target set and reconciles the alarm. Due delivery runs in bounded batches per target under the scheduler's shared permits. Consumer RPC happens outside the acceptance transaction.
-
-```mermaid
-flowchart TD
-  Enqueue[Validate batch] --> Manifest[(Commit manifests and target rows)]
-  Manifest --> A[Target A batch]
-  Manifest --> B[Target B batch]
-  A -->|ack| RemoveA[Delete only A obligation]
-  B -->|retry| PendingB[(Keep B due state)]
-  PendingB --> B
-  B -->|give up| Intent[(Persist dead-letter intent)]
-  Intent --> DLQ[Write external DLQ]
-  DLQ -->|acknowledged| RemoveB[Delete B obligation]
-```
 
 **Settlement:** `ack()` removes one obligation and its memos. When no obligations remain, the manifest is removed too. A normal consumer return without settlement is not acknowledgement unless `ackOnReturn` is enabled. `retry()` persists another eligibility time. Dead-letter intent is committed before external DLQ writing, so a storage outage retries the DLQ path rather than resending to the consumer.
 

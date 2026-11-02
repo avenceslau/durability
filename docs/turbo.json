@@ -5,14 +5,18 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/packages/*/README.md",
-        "$TURBO_ROOT$/examples/**/*.ts"
+        "$TURBO_ROOT$/examples/**/*.ts",
+        "$TURBO_ROOT$/packages/durability/src/**/*.ts",
+        "$TURBO_ROOT$/packages/durability/tests/**/*.ts"
       ]
     },
     "typecheck": {
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/packages/*/README.md",
-        "$TURBO_ROOT$/examples/**/*.ts"
+        "$TURBO_ROOT$/examples/**/*.ts",
+        "$TURBO_ROOT$/packages/durability/src/**/*.ts",
+        "$TURBO_ROOT$/packages/durability/tests/**/*.ts"
       ]
     }
   }

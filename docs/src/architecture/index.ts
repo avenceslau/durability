@@ -1,15 +1,19 @@
-import { billingWalkthrough } from './billing';
-import { emailWalkthrough } from './email';
-import { dashboardWalkthrough } from './dashboard';
-import { concurrencyWalkthrough } from './concurrency';
-import { eventStreamWalkthrough } from './event-stream';
+import type { ArchitectureWalkthrough } from '../lib/architecture.ts';
 
-export const walkthroughs = {
-  billing: billingWalkthrough,
-  email: emailWalkthrough,
-  dashboard: dashboardWalkthrough,
-  concurrency: concurrencyWalkthrough,
-  'event-stream': eventStreamWalkthrough,
-};
+// One walkthrough per file, named by the `example` the page passes.
+const modules = import.meta.glob<{ walkthrough: ArchitectureWalkthrough }>(
+  './*.ts',
+  { eager: true }
+);
 
-export type WalkthroughExample = keyof typeof walkthroughs;
+export const walkthroughs: Record<string, ArchitectureWalkthrough> =
+  Object.fromEntries(
+    Object.entries(modules)
+      .filter(([path]) => path !== './index.ts')
+      .map(([path, module]) => [
+        path.slice('./'.length, -'.ts'.length),
+        module.walkthrough,
+      ])
+  );
+
+export type WalkthroughExample = string;

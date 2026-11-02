@@ -5,22 +5,26 @@ description: DurabilityTopology API, behavior, and recovery contract.
 
 Import `DurabilityTopology` from `durability/experimental` and pin an exact version. Use one coordinator to own a group's membership and publish it for readers, optionally pushing shared state to members.
 
+## How it uses your Durable Object
+
+`DurabilityTopology` turns one Durable Object into the coordinator of its groups. It uses that object, and only reads or calls the others:
+
+- **`ctx.storage.sql`** holds the membership, state values, and write records in `durability_topology_*` tables, plus every staged publication and delivery as rows in the shared `durability_outbox` table. They commit in one transaction with each change.
+- **The object's one alarm** is set in that same transaction to the earliest pending outbox row, so publication and deliveries resume after eviction. Your class's `alarm()` must delegate to the scheduler the helper is attached to.
+- **The live instance** holds the in-flight store writes, member calls, and their timeouts. An eviction loses them; the outbox rows and write records in storage are what recovery relies on.
+- **Other objects and Workers** never share that storage. Members receive state values over RPC and must check versions themselves; readers use `DurabilityTopology.client`, which reads the published copy and never calls the coordinator.
+
+<ArchitectureWalkthrough example="topology">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** `durability_topology_groups` and `durability_topology_states` hold membership and channel values. `durability_topology_writes` tracks publication requests that could still land after timeout or eviction. Internal [outbox](/primitives/outbox/) channels drive group publication and per-member state delivery.
 
 `update(group, next)` evaluates your synchronous draft inside a transaction. It commits membership changes, changed state values, and staged publication/deliveries together. Membership versions advance on actual membership changes; outbox delivery versions prevent applying stale channel values at members.
-
-```mermaid
-flowchart TD
-  Draft[Coordinator evaluates synchronous update] --> Commit[(Membership and outbox stages commit together)]
-  Commit --> Publish[Publish encoded group snapshot]
-  Commit --> Deliver[Deliver latest channel value to each member]
-  Publish --> Store[(Read store)]
-  Store --> Client[In-memory cached reader]
-  Deliver --> Member[Member transaction checks version before applying]
-  Publish -.->|old write may land late| Repair[Track uncertainty and restage latest]
-```
 
 **Recovery:** a failed member retries independently through its outbox entry; newer values coalesce. An active member participates in writes and reads; draining members remain in the read set. Already in-flight deliveries may still arrive after removal.
 

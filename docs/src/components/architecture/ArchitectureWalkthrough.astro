@@ -1,7 +1,15 @@
 ---
 import { Code } from 'astro:components';
+import { Architecture } from '../../kit/architecture/Architecture.tsx';
 import { walkthroughs, type WalkthroughExample } from '../../architecture';
-import { publicState, sourceFiles, sourceUrl } from '../../lib/architecture';
+import {
+  overviewDiagram,
+  publicState,
+  scenarioDiagram,
+  sourceFiles,
+  sourceUrl,
+  stepNodes,
+} from '../../lib/architecture';
 import './walkthrough.css';
 
 interface Props { example: WalkthroughExample; }
@@ -12,48 +20,19 @@ const state = publicState(model);
 const files = sourceFiles(model);
 const initialScenario = model.scenarios[0]!;
 const initialStep = initialScenario.steps[0]!;
-const firstNode = model.nodes.find((node) => initialStep.nodes.includes(node.id))!;
+const initialDiagram = scenarioDiagram(model, initialScenario);
+const firstNode = stepNodes(initialDiagram, 0)[0]!;
 const firstExcerpt = model.excerpts.find((entry) => entry.id === initialStep.source.excerpt)!;
 const instance = `${model.id}-${crypto.randomUUID()}`;
-const marker = `architecture-arrow-${instance}`;
 const dialogId = `architecture-dialog-${instance}`;
 const titleId = `architecture-title-${instance}`;
-const kindLabel = { compute: 'Application code', durable: 'Durable state', memory: 'In memory', external: 'External system' };
-
-function edgePath(fromId: string, toId: string): string {
-  const from = model.nodes.find((node) => node.id === fromId)!;
-  const to = model.nodes.find((node) => node.id === toId)!;
-  const horizontal = Math.abs(to.x - from.x) > Math.abs(to.y - from.y);
-  const direction = horizontal ? Math.sign(to.x - from.x) : Math.sign(to.y - from.y);
-  const x1 = from.x + (horizontal ? 86 * direction : 0);
-  const y1 = from.y + (horizontal ? 0 : 36 * direction);
-  const x2 = to.x - (horizontal ? 86 * direction : 0);
-  const y2 = to.y - (horizontal ? 0 : 36 * direction);
-  return horizontal
-    ? `M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`
-    : `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`;
-}
-function titleLines(title: string): string[] {
-  const lines = [''];
-  for (const word of title.split(' ')) {
-    const last = lines.length - 1;
-    if (lines[last]!.length + word.length > 18) { lines.push(word); }
-    else { lines[last] += `${lines[last] ? ' ' : ''}${word}`; }
-  }
-  return lines;
-}
 ---
 
-<section class="architecture-walkthrough not-prose" data-architecture data-arrow-marker={marker} data-model={JSON.stringify(state)}>
+<section class="architecture-walkthrough not-prose" data-architecture data-model={JSON.stringify(state)}>
   <button type="button" class="aw-preview" data-open aria-haspopup="dialog" aria-controls={dialogId} aria-expanded="false" aria-label="Explore code and architecture">
-    <svg class="aw-preview-svg" viewBox={`0 0 ${model.width} ${model.height}`} aria-hidden="true">
-      <defs><marker id={`${marker}-preview`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--aw-muted)" /></marker></defs>
-      {model.edges.map((edge) => <path class="aw-preview-edge" d={edgePath(edge.from, edge.to)} marker-end={`url(#${marker}-preview)`} />)}
-      {model.nodes.map((node) => <g>
-        <rect x={node.x - 86} y={node.y - 36} width="172" height="72" rx="8" />
-        <text text-anchor="middle">{titleLines(node.title).map((line, index, lines) => <tspan x={node.x} y={node.y + (index - (lines.length - 1) / 2) * 20 + 6}>{line}</tspan>)}</text>
-      </g>)}
-    </svg>
+    <span class="aw-preview-graph">
+      <Architecture diagram={overviewDiagram(model)} label={model.title} />
+    </span>
     <span class="aw-preview-caption">Explore code & architecture <span aria-hidden="true">↗</span></span>
   </button>
 
@@ -65,25 +44,18 @@ function titleLines(title: string): string[] {
       </header>
       <div class="aw-body">
         <div class="aw-diagram-column">
-          <div class="aw-graph-scroll" tabindex="0" role="region" aria-label="Architecture diagram. Select a component to find its code.">
-            <div class="aw-stage" style={`aspect-ratio:${model.width}/${model.height}`}>
-              <svg viewBox={`0 0 ${model.width} ${model.height}`} aria-hidden="true" class="aw-edges">
-                <defs>{['active', 'muted'].map((tone) => <marker id={`${marker}-${tone}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill={tone === 'active' ? 'var(--aw-accent)' : 'var(--aw-border)'} /></marker>)}</defs>
-                {model.edges.map((edge) => {
-                  const from = model.nodes.find((node) => node.id === edge.from)!;
-                  const to = model.nodes.find((node) => node.id === edge.to)!;
-                  return <g data-edge={edge.id} data-active={initialStep.edges.includes(edge.id) ? 'true' : 'false'}>
-                    <path d={edgePath(edge.from, edge.to)} fill="none" marker-end={`url(#${marker}-${initialStep.edges.includes(edge.id) ? 'active' : 'muted'})`} />
-                    <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 12} text-anchor="middle">{edge.label}</text>
-                  </g>;
-                })}
-              </svg>
-              {model.nodes.map((node) => <button type="button" class="aw-node" data-node={node.id} data-kind={node.kind}
-                data-active={initialStep.nodes.includes(node.id) ? 'true' : 'false'} aria-pressed={node.id === firstNode.id ? 'true' : 'false'}
-                aria-label={`Inspect ${node.title}`} style={`left:${node.x / model.width * 100}%;top:${node.y / model.height * 100}%`}>
-                <span>{kindLabel[node.kind]}</span><strong>{node.title}</strong>
-              </button>)}
+          <div class="aw-graph" data-graph>
+            <Architecture diagram={initialDiagram} stage={0} label={model.title} />
+          </div>
+          <div class="aw-step" data-step-card data-status={initialStep.status}>
+            <div class="aw-step-header">
+              <p class="aw-step-title" data-step-title role="status" aria-live="polite">1/{initialScenario.steps.length} · {initialStep.title}</p>
+              <div class="aw-controls" aria-label="Walkthrough controls">
+                <button type="button" data-previous disabled aria-label="Previous architecture step" aria-keyshortcuts="ArrowLeft" title="Previous step (←)">←</button>
+                <button type="button" data-next aria-label="Next architecture step" aria-keyshortcuts="ArrowRight" title="Next step (→)">→</button>
+              </div>
             </div>
+            <p data-step-description>{initialStep.description}</p>
           </div>
         </div>
         <div class="aw-source-column">
@@ -117,11 +89,7 @@ function titleLines(title: string): string[] {
       </div>
       <div class="aw-footer">
         <div class="aw-caption">
-          <span data-step-title role="status" aria-live="polite">1/{initialScenario.steps.length} · {initialStep.title}</span>
-          <div class="aw-controls" aria-label="Walkthrough controls">
-            <button type="button" data-previous disabled aria-label="Previous architecture step" aria-keyshortcuts="ArrowLeft" title="Previous step (←)">←</button>
-            <button type="button" data-next aria-label="Next architecture step" aria-keyshortcuts="ArrowRight" title="Next step (→)">→</button>
-          </div>
+          <span data-scenario-title>{initialScenario.title}</span>
         </div>
         <details class="aw-details">
           <summary>Details</summary>
@@ -132,11 +100,10 @@ function titleLines(title: string): string[] {
             </div>
             <p data-scenario-description>{initialScenario.description}</p>
             <ol class="aw-steps" aria-label="Architecture steps" data-step-list>{initialScenario.steps.map((step, index) => <li><button type="button" data-step={index} aria-current={index === 0 ? 'step' : undefined}><span>{index + 1}</span>{step.title}</button></li>)}</ol>
-            <div class="aw-explanation" data-status={initialStep.status}>
-              <p data-step-description>{initialStep.description}</p>
+            <div class="aw-explanation">
               <dl><div><dt>Durable state</dt><dd data-durable>{initialStep.durable}</dd></div><div><dt>In-flight / in memory</dt><dd data-volatile>{initialStep.volatile}</dd></div></dl>
             </div>
-            <aside class="aw-inspector" aria-label="Selected component"><strong data-node-title>{firstNode.title}</strong><p data-node-description>{firstNode.description}</p><a data-node-link href={firstNode.href}>Read the relevant contract →</a></aside>
+            <aside class="aw-inspector" aria-label="Selected component"><strong data-node-title>{model.diagram.nodes[firstNode]!.label}</strong><p data-node-description>{model.details[firstNode]!.description}</p><a data-node-link href={model.details[firstNode]!.href}>Read the relevant contract →</a></aside>
             <div class="aw-summary"><slot /></div>
           </div>
         </details>

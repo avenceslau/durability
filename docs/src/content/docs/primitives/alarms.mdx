@@ -5,23 +5,26 @@ description: Persist named reminders and replace their pending occurrences.
 
 Import `DurabilityAlarms` from `durability`. Use it for named, replaceable occurrences rather than retained job histories. See [recurring billing](/compositions/recurring-billing/).
 
+## How it uses your Durable Object
+
+`DurabilityAlarms` adds no storage or infrastructure of its own. It uses the Durable Object it is constructed in:
+
+- **`ctx.storage.sql`** holds one row per alarm name, so occurrences are as durable as the object and belong to it alone. Success deletes the row.
+- **The object's one alarm** serves every name. The scheduler sets it to the earliest pending row of every attached helper in the same transaction that schedules an occurrence, and your class's `alarm()` must delegate to the scheduler (or to `alarms.alarm()` when the helper has a private one).
+- **The live instance** holds the map of running occurrences and their abort signals, plus the scheduler's permits and timer. Eviction discards them; a pending occurrence then runs again with the same `idempotencyKey`.
+- **Other helpers** on the same scheduler, such as `Durability` in the example below, share the alarm and the concurrency permits.
+
+<ArchitectureWalkthrough example="alarms">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** `durability_alarms` holds one current occurrence per handler name, with a generation, scheduled time, attempt, retry time, status, and error. Occurrence-scoped intermediate results live in `durability_memos`.
 
 Scheduling transactionally upserts a fresh generation, resets its attempt counter, removes the previous occurrence's memos, and reconciles the physical alarm. It can replace a failed occurrence as well as a pending one. A currently executing handler is not forcibly stopped; its generation-fenced settlement cannot delete the replacement.
-
-```mermaid
-flowchart TD
-  Schedule[Schedule a name] --> Row[(Upsert fresh occurrence and alarm)]
-  Row --> Claim[Claim due attempt]
-  Claim --> Handler[Run named handler]
-  Handler -->|success| Delete[Delete this occurrence and memos]
-  Handler -->|ordinary failure| Retry[(Persist retry time)]
-  Retry --> Claim
-  Handler -->|timeout by default or terminal failure| Failed[(Keep failed occurrence)]
-  Schedule -.->|same name scheduled again| Row
-```
 
 **After eviction:** a pending occurrence can run again. Its `idempotencyKey` derives from its stored generation and stays stable across retries; the name and attempt number are not a substitute for that key. A replacement occurrence gets a new key.
 

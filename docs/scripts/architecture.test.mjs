@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   publicState,
+  scenarioDiagram,
   sourceExcerpt,
   sourceFocus,
   sourceFiles,
   sourceUrl,
+  stepNodes,
   validateWalkthrough,
 } from '../src/lib/architecture.ts';
 
@@ -24,20 +26,18 @@ const model = {
   id: 'test',
   title: 'Test',
   summary: 'Test',
-  width: 900,
-  height: 420,
-  nodes: [
-    {
-      id: 'store',
-      title: 'Store',
-      kind: 'durable',
-      description: 'State',
-      href: '/',
-      x: 150,
-      y: 80,
+  diagram: {
+    canvas: { width: 900, height: 420 },
+    nodes: {
+      store: { label: 'Store', icon: 'database' },
+      worker: { label: 'Worker' },
     },
-  ],
-  edges: [],
+    edges: [{ from: 'worker', to: 'store', label: 'write' }],
+  },
+  details: {
+    store: { description: 'State', href: '/', source: 'run' },
+    worker: { description: 'Caller', href: '/' },
+  },
   excerpts: [excerpt],
   scenarios: [
     {
@@ -49,8 +49,7 @@ const model = {
           id: 'commit',
           title: 'Commit',
           description: 'Commit',
-          nodes: ['store'],
-          edges: [],
+          stage: ['worker', 'store', 'focus:store'],
           source: focus,
           durable: 'Committed',
           volatile: 'None',
@@ -92,15 +91,38 @@ test('missing or ambiguous source anchors fail rather than showing stale code', 
 
 test('walkthrough references and source ranges are checked at build time', () => {
   assert.equal(validateWalkthrough(model), model);
-  const invalid = structuredClone(model);
-  invalid.scenarios[0].steps[0].nodes = ['missing'];
-  assert.throws(
-    () => validateWalkthrough(invalid),
-    /invalid diagram\/source reference/u
-  );
-  invalid.scenarios[0].steps[0].nodes = ['store'];
-  invalid.scenarios[0].steps[0].source.to = 99;
-  assert.throws(() => validateWalkthrough(invalid), /outside excerpt/u);
+
+  const unknownToken = structuredClone(model);
+  unknownToken.scenarios[0].steps[0].stage = ['missing'];
+  assert.throws(() => validateWalkthrough(unknownToken));
+
+  const noDetails = structuredClone(model);
+  delete noDetails.details.worker;
+  assert.throws(() => validateWalkthrough(noDetails), /has no details/u);
+
+  const outside = structuredClone(model);
+  outside.scenarios[0].steps[0].source.to = 99;
+  assert.throws(() => validateWalkthrough(outside), /outside excerpt/u);
+});
+
+test('every step shows the whole diagram and spotlights what it is about', () => {
+  // A focused node comes first, ahead of the neighbours its spotlight lights.
+  const lit = scenarioDiagram(model, model.scenarios[0]);
+  assert.deepEqual(stepNodes(lit, 0), ['store', 'worker']);
+
+  // A step without a spotlight focuses the node it introduces.
+  const introduced = structuredClone(model);
+  introduced.scenarios[0].steps = [
+    { ...model.scenarios[0].steps[0], id: 'first', stage: ['worker'] },
+    { ...model.scenarios[0].steps[0], id: 'second', stage: ['store'] },
+  ];
+  const diagram = scenarioDiagram(introduced, introduced.scenarios[0]);
+  for (const state of diagram.stages) {
+    assert.ok(state.visible.has('worker') && state.visible.has('store'));
+    assert.ok(state.visible.has('worker->store'));
+  }
+  assert.equal(diagram.stages[0].spotlight.id, 'worker');
+  assert.equal(diagram.stages[1].spotlight.id, 'store');
 });
 
 test('complete source files are deduplicated and cannot silently disagree', () => {

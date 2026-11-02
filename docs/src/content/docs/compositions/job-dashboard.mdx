@@ -34,7 +34,7 @@ There is one named `Pipeline` and one named `Dashboard` per tenant. They are sep
 | ---------------------------- | ------------------------------ | ------------------------------------------------- |
 | Order execution and result   | `Pipeline`                     | `import:<orderId>` operation record               |
 | Tracker source for execution | `Pipeline` `DurabilityTracker` | operation state retained by Durability            |
-| Dashboard delivery           | Pipeline fanout                | `id:generation:status` message until acknowledged |
+| Dashboard delivery           | Pipeline fanout                | `id:generation:status` message until acknowledged or its attempts run out |
 | Browser read model           | `Dashboard` SQL                | tenant dashboard object and SQL upsert            |
 | Connected-browser cache      | Browser                        | reloads from Dashboard `work` snapshot            |
 
@@ -47,9 +47,9 @@ No row in this table turns the cross-object handoff into a transaction. The iden
 3. The operation fetches `ORDERS` using the durable operation ID as `Idempotency-Key`. The external service must honor that key because retries can repeat a request.
 4. The pipeline's `DurabilityTracker` exposes its operations as source `jobs`. `track(orderId)` gets the handle for `import:<orderId>`; the front worker and dashboard can call `wait()` in one pipelined Workers RPC path.
 5. `includeResults: true` puts a completed operation's order summary on its lifecycle event. Lifecycle callbacks publish that `pending`, `completed`, or `failed` `JobEvent`; each fanout message has a stable identity: `id:generation:status`.
-6. Fanout shares the pipeline scheduler and batches for up to 100 ms. It invokes `Dashboard.ingest(messages)` and acknowledges only when that method returns (`ackOnReturn: true`), so a failed call or eviction is redelivered.
+6. Fanout shares the pipeline scheduler and batches for up to 100 ms. It invokes `Dashboard.ingest(messages)` and acknowledges only when that method returns (`ackOnReturn: true`), so a failed call or eviction is redelivered, up to the default five attempts. With no dead-letter queue configured, an exhausted delivery is dropped and only reconciliation can restore its projection.
 7. `Dashboard.ingest` upserts its own `jobs` SQL table, emits a socket `job` event, and wakes local tracker watchers. Its `TrackedSource` is the SQL table plus the in-memory watcher map; it is not the pipeline's source.
-8. On connection or a replay gap, the browser calls socket RPC `work`, pages through `tracker.records()`, and replaces its local map with the Dashboard snapshot. Incremental `job` events then update that map.
+8. On connection or a replay gap, the browser calls socket RPC `work`, pages through `tracker.records()`, and rebuilds its local map from the Dashboard snapshot. Incremental `job` events update the same map, including while the pages load, with no buffering or version check, so a page record read before an event can overwrite it. The reload is not an atomic, race-free resync.
 
 ## The connecting code
 
@@ -92,46 +92,21 @@ WHERE excluded.generation != jobs.generation OR jobs.status = 'pending'
 
 A tempting version sends a WebSocket message directly from the operation's lifecycle callback and treats the client as the state store. It loses updates whenever a browser, object, or network call disappears. Fanout fixes delivery _after enqueue_, and the socket fixes a retained-event replay gap, but there is an earlier gap in this example.
 
-```mermaid
-sequenceDiagram
-  participant O as Operation
-  participant H as lifecycle hook
-  participant P as Pipeline storage
-  participant F as Fanout
-  participant D as Dashboard SQL
-  participant B as Browser
-  O->>P: settle completed
-  P-->>H: invoke best-effort hook
-  Note over H,F: Pipeline is evicted before enqueue commits
-  H-xF: no durable fanout registration
-  B->>D: reconnect and request work
-  D-->>B: old Dashboard snapshot with completed job absent
-```
+The walkthrough's "Why a direct-push dashboard loses updates" scenario steps through the
+lines of this composition that replace each naive step, and its "Lost projection before
+fanout commits" scenario steps through the remaining gap.
 
-The hook is best effort even though `fanout.enqueue` is durable once it commits. An eviction between settling the operation and committing that enqueue can lose the completed projection permanently. Socket replay/resync cannot repair it: `work` reads **Dashboard SQL**, not authoritative `Pipeline` operations. Reconnecting to a stale dashboard only reproduces stale state.
+The hook is best effort even though `fanout.enqueue` is durable once it commits. An eviction between settling the operation and committing that enqueue can lose the completed projection permanently. The `registered` hook published `pending` separately, so the Dashboard then shows the job as absent or stuck at `pending`. Socket replay/resync cannot repair it: `work` reads **Dashboard SQL**, not authoritative `Pipeline` operations. Reconnecting to a stale dashboard only reproduces stale state.
 
 For correctness-sensitive production dashboards, reconcile from an authoritative pipeline/history source: periodically enumerate or query authoritative jobs, compare generations and states with the projection, and idempotently write missing rows. Alternatively, stage the projection handoff from inside the operation handler with an application-owned durable record keyed by operation ID, then drain/reconcile it. Either approach needs defined retention and conflict rules.
 
 ## Recovery boundaries
 
-```mermaid
-sequenceDiagram
-  participant P as Pipeline fanout
-  participant D as Dashboard.ingest
-  participant S as SQL projection
-  participant C as Socket client
-  P->>D: deliver batch
-  D->>S: upsert rows
-  D->>C: publish persisted job event
-  D-->>P: return and acknowledge batch
-  Note over C: connection drops or replay history has a gap
-  C->>D: reconnect
-  D-->>C: resync signal
-  C->>D: RPC work, page snapshot
-  D-->>C: current Dashboard SQL records
-```
+The walkthrough's "Recover a dropped connection" scenario steps through this: the fanout
+retries a batch until `ingest` returns or its attempts run out, the socket stores each event before sending it, and
+a reconnecting client either replays what it missed or rebuilds from the `work` snapshot.
 
-If `ingest` throws before returning, fanout retains and retries the batch. If it returns, that batch is acknowledged. A client that missed socket history receives a resync signal and rebuilds from SQL. These mechanisms recover transport and replay gaps, not the missing lifecycle-to-fanout enqueue shown above.
+If `ingest` throws before returning, fanout retains and retries the batch within its attempt budget (five by default) and then drops it, since no dead-letter queue is configured. If it returns, that batch is acknowledged. A client that missed socket history receives a resync signal and rebuilds from SQL. These mechanisms recover transport and replay gaps, not the missing lifecycle-to-fanout enqueue described above.
 
 ## Failure and semantics table
 
@@ -139,11 +114,11 @@ If `ingest` throws before returning, fanout retains and retries the batch. If it
 | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Duplicate import request                  | Stable `import:<orderId>` ID deduplicates at the Pipeline operation boundary.                                                                                         | Reusing an ID has generation semantics; choose that API deliberately.                                                                   |
 | `ORDERS` call retries                     | Sends the operation ID as `Idempotency-Key`.                                                                                                                          | `ORDERS` must implement idempotency.                                                                                                    |
-| Dashboard call fails or object is evicted | Fanout retries until `ingest` returns.                                                                                                                                | The original lifecycle enqueue must already have committed.                                                                             |
+| Dashboard call fails or object is evicted | Fanout retries until `ingest` returns, up to five attempts by default.                                                                                                | The original lifecycle enqueue must already have committed. An exhausted delivery is dropped without a dead-letter queue and needs reconciliation. |
 | Late `pending` delivery                   | SQL refuses to replace a settled row of the same generation.                                                                                                          | This is not a total ordering protocol.                                                                                                  |
-| Failed attempt followed by retry          | A failed `attempt_settled` event can project `failed` while the operation is still pending retry. The SQL can then reject a later same-generation `completed` update. | This is a concrete recipe limitation: project terminal failure only after checking authoritative state, and add ordered reconciliation. |
+| Failed attempt followed by retry          | A retryable failure emits `attempt_settled` with `outcome: 'retry_scheduled'`, which the hook ignores, so the row stays `pending`. Only a terminal failure (`outcome: 'failed'` or `terminal`) publishes `failed`. | The dashboard shows no retry progress, and a lost final enqueue leaves the row `pending`. |
 | Old generation arrives late               | Any different generation passes the SQL update predicate.                                                                                                             | Add an authoritative generation/version order; inequality alone is not a freshness check.                                               |
-| Browser misses events                     | Socket replay, then `resync` and `work` snapshot recover the Dashboard view.                                                                                          | Snapshot cannot discover a pipeline event never projected.                                                                              |
+| Browser misses events                     | Socket replay, then `resync` and `work` snapshot recover the Dashboard view.                                                                                          | Snapshot cannot discover a pipeline event never projected, and a stale page record can overwrite a live event during the reload. |
 | RPC waiter disconnects or times out       | The operation continues; a later caller can query/wait again.                                                                                                         | `wait()` is an ephemeral request, not a durable subscription.                                                                           |
 
 ## Production work left to the application

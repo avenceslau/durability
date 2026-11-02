@@ -5,9 +5,37 @@
   --aw-text: var(--nb-foreground, #17212d);
   --aw-muted: var(--nb-muted-foreground, #586577);
   --aw-border: var(--nb-border, #d7dde4);
+  /* Tokens the copied slide-kit diagram reads. */
+  --bg: var(--aw-bg);
+  --bg-card: var(--nb-card, #fff);
+  --text: var(--aw-text);
+  --text-muted: var(--aw-muted);
+  --text-subtle: color-mix(in srgb, var(--aw-muted) 75%, var(--aw-bg));
+  --border: var(--nb-border-strong, #c4cbd4);
+  --accent: oklch(0.6 0.19 45);
+  --on-accent: #fff;
+  --success: var(--nb-success, #13795b);
+  --success-bg: var(--nb-success-muted, #e8f6ef);
+  --sans: var(--nb-font-sans, system-ui, sans-serif);
+  --mono: var(--nb-font-mono, ui-monospace, monospace);
+  --flow-blue: oklch(0.5 0.19 262);
+  --flow-orange: oklch(0.56 0.17 50);
+  --flow-green: oklch(0.5 0.13 155);
+  --flow-red: oklch(0.52 0.2 27);
+  --flow-purple: oklch(0.5 0.2 305);
   margin-block: 1.5rem;
   color: var(--aw-text);
   font-size: 0.8rem;
+}
+
+[data-mode='dark'] .architecture-walkthrough {
+  --accent: oklch(0.74 0.16 55);
+  --on-accent: oklch(0.2 0 0);
+  --flow-blue: oklch(0.74 0.13 255);
+  --flow-orange: oklch(0.78 0.14 60);
+  --flow-green: oklch(0.76 0.13 155);
+  --flow-red: oklch(0.72 0.16 25);
+  --flow-purple: oklch(0.75 0.14 305);
 }
 
 .architecture-walkthrough *,
@@ -65,27 +93,10 @@
 .aw-preview:hover {
   border-color: var(--aw-accent);
 }
-.aw-preview-svg {
+.aw-preview-graph {
   display: block;
-  width: 100%;
-  height: 14rem;
+  height: 24rem;
   padding: 0.75rem;
-}
-.aw-preview-edge {
-  stroke: var(--aw-muted);
-  stroke-width: 2;
-  fill: none;
-  opacity: 0.6;
-}
-.aw-preview-svg rect {
-  fill: var(--aw-bg);
-  stroke: var(--aw-border);
-  stroke-width: 2;
-}
-.aw-preview-svg text {
-  fill: var(--aw-text);
-  font-size: 20px;
-  font-family: inherit;
 }
 .aw-preview-caption {
   display: flex;
@@ -149,21 +160,47 @@
   border: 0;
   border-bottom: 1px solid var(--aw-border);
   border-radius: 0;
-  grid-template-rows: minmax(10rem, 35%) minmax(0, 1fr);
+  grid-template-rows: minmax(18rem, 58%) minmax(0, 1fr);
 }
 .aw-dialog .aw-diagram-column {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
 }
-.aw-dialog .aw-graph-scroll {
-  width: 100%;
-  max-height: 100%;
-  padding: 0.5rem;
+.aw-graph {
+  flex: 1;
+  min-height: 0;
+  padding: 1rem;
 }
-.aw-dialog .aw-node strong {
-  font-size: 0.8rem;
+.aw-step {
+  flex-shrink: 0;
+  border-top: 1px solid var(--aw-border);
+  border-left: 3px solid var(--aw-border);
+  padding: 0.6rem 1rem 0.8rem;
+  font-size: 0.85rem;
+  background: var(--aw-bg);
+}
+.aw-step-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.aw-step[data-status='commit'] {
+  border-left-color: var(--flow-blue);
+}
+.aw-step[data-status='failure'],
+.aw-step[data-status='gap'] {
+  border-left-color: var(--flow-red);
+}
+.aw-step[data-status='recovery'] {
+  border-left-color: var(--flow-green);
+}
+.architecture-walkthrough .aw-step-title {
+  margin: 0;
+  color: var(--aw-text);
+  font-weight: 600;
 }
 .aw-dialog .aw-source-column {
   display: flex;
@@ -204,80 +241,6 @@
 .aw-diagram-column,
 .aw-source-column {
   min-width: 0;
-}
-.aw-graph-scroll {
-  overflow: auto;
-  padding: 0.25rem;
-}
-.aw-stage {
-  position: relative;
-  min-width: 26rem;
-  width: 100%;
-}
-.aw-edges {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-.aw-edges g {
-  color: var(--aw-border);
-}
-.aw-edges g[data-edge] path {
-  stroke: currentColor;
-  stroke-width: 2;
-}
-.aw-edges text {
-  fill: var(--aw-muted);
-  font-size: 13px;
-  font-family: inherit;
-  opacity: 0;
-  paint-order: stroke;
-  stroke: var(--aw-bg);
-  stroke-width: 5px;
-  stroke-linejoin: round;
-}
-.aw-edges g[data-active='true'] {
-  color: var(--aw-accent);
-}
-.aw-edges g[data-active='true'] text {
-  opacity: 1;
-}
-.aw-node {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  width: 19%;
-  min-height: 3rem;
-  padding: 0.3rem;
-  border: 1px solid var(--aw-border);
-  border-radius: 0.35rem;
-  background: var(--aw-bg);
-  color: var(--aw-text);
-  cursor: pointer;
-  text-align: center;
-  line-height: 1.25;
-}
-.aw-node span {
-  display: block;
-  color: var(--aw-muted);
-  font-size: 0.56rem;
-}
-.aw-node strong {
-  display: block;
-  margin-top: 0.15rem;
-  font-size: 0.7rem;
-  font-weight: 600;
-}
-.aw-node[data-kind='memory'] {
-  border-style: dashed;
-}
-.aw-node[data-active='true'] {
-  border-color: var(--aw-accent);
-  background: color-mix(in srgb, var(--aw-accent) 6%, var(--aw-bg));
-}
-.aw-node[aria-pressed='true'] {
-  outline: 1px solid var(--aw-accent);
-  outline-offset: 1px;
 }
 .aw-source-column {
   border-top: 1px solid var(--aw-border);
@@ -383,7 +346,13 @@
 }
 .aw-controls {
   display: flex;
-  gap: 0.2rem;
+  flex-shrink: 0;
+  gap: 0.3rem;
+}
+.aw-controls button {
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
 }
 .aw-controls button,
 .aw-toolbar button {
@@ -483,8 +452,76 @@
   padding-top: 0.5rem;
 }
 @media (min-width: 48rem) {
+  /* A popover beside the step's node; walkthrough.client.ts sets its place. */
+  .aw-dialog .aw-diagram-column {
+    position: relative;
+  }
+  .aw-dialog .aw-step {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    left: 0;
+    width: min(19rem, calc(100% - 1.5rem));
+    border: 1px solid var(--aw-border);
+    border-left-width: 3px;
+    border-radius: 0.5rem;
+    box-shadow:
+      0 10px 28px rgb(0 0 0 / 0.14),
+      0 2px 6px rgb(0 0 0 / 0.08);
+    transition:
+      left 420ms ease,
+      top 420ms ease;
+    /* The card can sit over nodes; clicks reach them except on its buttons. */
+    pointer-events: none;
+  }
+  .aw-dialog .aw-step .aw-controls {
+    pointer-events: auto;
+  }
+  .aw-dialog .aw-step[data-status='commit'] {
+    border-left-color: var(--flow-blue);
+  }
+  .aw-dialog .aw-step[data-status='failure'],
+  .aw-dialog .aw-step[data-status='gap'] {
+    border-left-color: var(--flow-red);
+  }
+  .aw-dialog .aw-step[data-status='recovery'] {
+    border-left-color: var(--flow-green);
+  }
+  .aw-dialog .aw-step::after {
+    content: '';
+    position: absolute;
+    width: 0.75rem;
+    height: 0.75rem;
+    background: var(--aw-bg);
+    border: 1px solid var(--aw-border);
+    transform: rotate(45deg);
+  }
+  .aw-dialog .aw-step[data-side='above']::after {
+    bottom: -0.4rem;
+    left: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-top: 0;
+    border-left: 0;
+  }
+  .aw-dialog .aw-step[data-side='below']::after {
+    top: -0.4rem;
+    left: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-right: 0;
+    border-bottom: 0;
+  }
+  .aw-dialog .aw-step[data-side='right']::after {
+    left: -0.45rem;
+    top: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-top: 0;
+    border-right: 0;
+  }
+  .aw-dialog .aw-step[data-side='left']::after {
+    right: -0.4rem;
+    top: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-bottom: 0;
+    border-left: 0;
+  }
   .aw-dialog .aw-body {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 11fr 9fr;
     grid-template-rows: minmax(0, 1fr);
   }
   .aw-source-column {

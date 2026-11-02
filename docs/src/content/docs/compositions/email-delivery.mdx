@@ -58,35 +58,18 @@ This is a field-level wiring excerpt: `Email`, `writeArchive()`, and `writeDeadL
 
 ## Where a simpler design breaks
 
-Imagine accepting an HTTP request, starting the provider request in memory, and returning success without first persisting delivery intent:
+Imagine accepting an HTTP request, starting the provider request in memory, and returning success without first persisting delivery intent: a stop before the send leaves the caller believing in an email the provider never receives.
 
-```mermaid
-sequenceDiagram
-  participant Caller
-  participant Worker
-  participant Provider
-  Caller->>Worker: POST email
-  Worker-->>Caller: 202 before durable acceptance
-  Note over Worker: Process stops before send
-  Note over Caller,Provider: Caller believes accepted but provider receives nothing
-```
+The walkthrough's "Why replying before persisting loses email" scenario steps through this
+and the lines of the composition that close the gap.
 
-Persisting intent fixes that loss window, but does **not** make the remote email effect exactly once. A different failure can happen after the provider commits:
+Persisting intent fixes that loss window, but does **not** make the remote email effect exactly once. A different failure can happen after the provider commits.
 
-```mermaid
-sequenceDiagram
-  participant DB as Delivery SQLite
-  participant Consumer
-  participant Provider
-  DB->>Consumer: Deliver email with stable message ID
-  Consumer->>Provider: Send with Idempotency-Key
-  Provider->>Provider: Commit email and key
-  Note over Consumer: Stops before acknowledgement commits
-  DB->>Consumer: Retry outstanding email target
-  Consumer->>Provider: Send with the same key
-  Provider-->>Consumer: Return prior outcome without another email
-  Consumer->>DB: Await ack for this target
-```
+The walkthrough's "Provider effect before acknowledgement" scenario steps through it. If the
+consume call throws, fanout schedules a retry with backoff, or dead-letters the target once its
+attempts are used. If `EmailDelivery` is evicted instead, the email row stays pending past its
+claim deadline and the object alarm resumes it. Either retry sends the same message ID to the
+provider again.
 
 **What repairs it:** persisted target obligations allow retry; the provider's idempotency record collapses a duplicate effect. If the provider ignores the key, the design can still send twice. An HTTP timeout is not proof that sending failed.
 

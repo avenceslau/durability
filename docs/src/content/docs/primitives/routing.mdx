@@ -5,20 +5,25 @@ description: Advisory load observation and application-owned shard selection.
 
 Import `DurabilityRouting` from `durability/routing`. It combines an object-side load observer with an application-wired routing client; it is not a durable queue or global shard registry.
 
+## How it uses your Durable Object
+
+Routing has two halves, and neither adds storage or infrastructure of its own:
+
+- **The calling Worker** holds the routing client. Recent per-shard load and the adaptive shard width live in that isolate's memory and are never persisted or shared with other isolates.
+- **Your class is the shard.** The client resolves your exported class, calls `getByName(shard)`, and runs only the RPC your `invoke` callback makes. Each shard is an ordinary object with its own SQLite storage and its own deduplication records.
+- **Inside the object**, `DurabilityRouting` owns no table and no alarm. It counts in-flight work and keeps 60 one-second timing buckets in memory, which eviction discards; the backlog it reports is counted from the attached capability's rows.
+
+<ArchitectureWalkthrough example="routing">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state: none.** `RoutingLoad` maintains rolling in-memory time buckets and instantaneous counters. Backlog values come from the attached capability's durable state; telemetry itself disappears on eviction.
 
 The client selects exactly one shard per push and invokes your `invoke(stub, input)` callback once. Custom sharding can inspect caller context and recent observations; the default compares two candidates within an adaptive in-memory shard width. Observations expire and are bounded to 1,024 entries, not coordinated globally.
-
-```mermaid
-flowchart LR
-  Input[Input and local context] --> Choose[Choose one shard]
-  Cache[In-memory load observations] --> Choose
-  Choose --> RPC[Invoke application RPC once]
-  RPC -->|reply with load| Cache
-  RPC -->|transport failure| Caller[Caller decides whether and where to retry]
-```
 
 **On failure:** no durable retry intent is created, and routing does not silently switch destinations. A timed-out RPC may already have committed work. Retrying on another shard may bypass that object's deduplication record; stable application routing and receiver idempotency remain your responsibility. Context stays caller-local and is not automatically sent to consumers.
 

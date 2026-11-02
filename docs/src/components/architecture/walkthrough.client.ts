@@ -1,6 +1,20 @@
 import { lockScroll, unlockScroll } from '@cloudflare/nimbus-docs/client';
+import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Architecture } from '../../kit/architecture/Architecture.tsx';
+import { pointOnPath } from '../../kit/architecture/geometry';
 import {
+  edgeGeometry,
+  labelSize,
+  nodeRect,
+} from '../../kit/architecture/layout';
+import type { ArchitectureDiagram } from '../../kit/architecture/model';
+import {
+  introducedNodes,
+  previewDiagram,
+  scenarioDiagram,
   sourceUrl,
+  stepNodes,
   type ArchitectureScenario,
   type ArchitectureStep,
   type WalkthroughState,
@@ -33,25 +47,196 @@ export function mountWalkthrough(element: Element): () => void {
     }
   };
 
+  const graph = createRoot(query('[data-graph]'));
+  // Laying out a scenario's stages takes a moment, so do it once, when first shown.
+  const diagrams = new Map<number, ArchitectureDiagram>();
+  let selectedNode: string | undefined;
+
   const currentScenario = () => model.scenarios[scenarioIndex]!;
   const currentStep = () => currentScenario().steps[stepIndex]!;
+  const diagramOf = (index: number) => {
+    let diagram = diagrams.get(index);
+    if (!diagram) {
+      diagram = scenarioDiagram(model, model.scenarios[index]!);
+      diagrams.set(index, diagram);
+    }
+    return diagram;
+  };
+  const nodesOf = (scenario: number, step: number) =>
+    stepNodes(
+      diagramOf(scenario),
+      step,
+      introducedNodes(model, model.scenarios[scenario]!.steps[step]!)
+    );
+
+  function draw() {
+    graph.render(
+      createElement(Architecture, {
+        diagram: diagramOf(scenarioIndex),
+        stage: stepIndex,
+        label: model.title,
+        onSelectNode: selectNode,
+        selectedNode,
+      })
+    );
+  }
   const text = (selector: string, value: string) => {
     query(selector).textContent = value;
   };
 
+  const column = query('.aw-diagram-column');
+  const card = query('[data-step-card]');
+
+  /**
+   * Places the step card beside the node the step is about, on the side that
+   * covers the fewest spotlit nodes. Narrow screens keep the card in flow.
+   */
+  function placeCard() {
+    const svg = column.querySelector('[data-graph] svg');
+    if (!svg || getComputedStyle(card).position !== 'absolute') {
+      return;
+    }
+
+    const diagram = diagramOf(scenarioIndex);
+    const state = diagram.stages[stepIndex]!;
+    const anchor = nodesOf(scenarioIndex, stepIndex)[0]!;
+    const canvas = model.diagram.canvas;
+    const bounds = column.getBoundingClientRect();
+    const drawing = svg.getBoundingClientRect();
+    const scale = Math.min(
+      drawing.width / canvas.width,
+      drawing.height / canvas.height
+    );
+    const originX =
+      drawing.left - bounds.left + (drawing.width - canvas.width * scale) / 2;
+    const originY =
+      drawing.top - bounds.top + (drawing.height - canvas.height * scale) / 2;
+    const toScreen = (rect: Box): Box => ({
+      x: originX + rect.x * scale,
+      y: originY + rect.y * scale,
+      width: rect.width * scale,
+      height: rect.height * scale,
+    });
+    const canvasRect = (id: string) =>
+      nodeRect(
+        state.nodes.get(id)!,
+        state.layout.nodes.get(id)!,
+        state.layout.scale
+      );
+    const onScreen = (id: string) => toScreen(canvasRect(id));
+
+    const target = onScreen(anchor);
+    const width = card.offsetWidth;
+    const height = card.offsetHeight;
+    // Centred on the node, or flush with one of its ends, on each side.
+    const across = [
+      target.x + target.width / 2 - width / 2,
+      target.x,
+      target.x + target.width - width,
+    ];
+    const along = [
+      target.y + target.height / 2 - height / 2,
+      target.y,
+      target.y + target.height - height,
+    ];
+    const candidates = [
+      ...across.map((x) => ({
+        side: 'above',
+        x,
+        y: target.y - cardGap - height,
+      })),
+      ...across.map((x) => ({
+        side: 'below',
+        x,
+        y: target.y + target.height + cardGap,
+      })),
+      ...along.map((y) => ({
+        side: 'right',
+        x: target.x + target.width + cardGap,
+        y,
+      })),
+      ...along.map((y) => ({ side: 'left', x: target.x - cardGap - width, y })),
+    ].map((candidate) => ({
+      ...candidate,
+      x: clamp(candidate.x, cardMargin, bounds.width - width - cardMargin),
+      y: clamp(candidate.y, cardMargin, bounds.height - height - cardMargin),
+    }));
+
+    // Covering the step's own node is worst, then what it spotlights: nodes,
+    // edges, and edge labels.
+    const shown = [...state.layout.nodes.keys()].filter((id) =>
+      state.visible.has(id)
+    );
+    const obstacles = shown.map((id) => ({
+      rect: onScreen(id),
+      weight: id === anchor ? 100 : state.lit.has(id) ? 10 : 1,
+    }));
+    for (const edge of diagram.edges) {
+      const route = state.layout.edges.get(edge.id);
+      if (!state.visible.has(edge.id) || !route) {
+        continue;
+      }
+      const [from, to] = state.ends.get(edge.id) ?? [edge.from, edge.to];
+      const geometry = edgeGeometry(
+        edge,
+        route,
+        canvasRect(from),
+        canvasRect(to)
+      );
+      const weight = state.lit.has(edge.id) ? 10 : 1;
+      for (let index = 0; index <= edgeSamples; index += 1) {
+        const [x, y] = pointOnPath(geometry.path, index / edgeSamples);
+        obstacles.push({
+          rect: toScreen({ x: x - 4, y: y - 4, width: 8, height: 8 }),
+          weight,
+        });
+      }
+      if (edge.label !== undefined) {
+        const [labelWidth, labelHeight] = labelSize(edge.label).map(
+          (size) => size * state.layout.scale
+        ) as [number, number];
+        const [x, y] = geometry.labelPoint;
+        obstacles.push({
+          rect: toScreen({
+            x: x - labelWidth / 2,
+            y: y - labelHeight / 2,
+            width: labelWidth,
+            height: labelHeight,
+          }),
+          weight,
+        });
+      }
+    }
+    const cost = (position: { x: number; y: number }) =>
+      obstacles.reduce(
+        (sum, { rect, weight }) =>
+          sum + overlap({ ...position, width, height }, rect) * weight,
+        0
+      );
+    const best = candidates.reduce((chosen, candidate) =>
+      cost(candidate) < cost(chosen) ? candidate : chosen
+    );
+
+    const pointsAcross = best.side === 'above' || best.side === 'below';
+    const caret = pointsAcross
+      ? target.x + target.width / 2 - best.x
+      : target.y + target.height / 2 - best.y;
+    card.dataset.side = best.side;
+    card.style.left = `${best.x}px`;
+    card.style.top = `${best.y}px`;
+    card.style.setProperty(
+      '--aw-caret',
+      `${clamp(caret, cardMargin, (pointsAcross ? width : height) - cardMargin)}px`
+    );
+  }
+
   function inspect(nodeId: string) {
-    const node = model.nodes.find((entry) => entry.id === nodeId)!;
-    text('[data-node-title]', node.title);
-    text('[data-node-description]', node.description);
-    query<HTMLAnchorElement>('[data-node-link]').href = node.href;
-    root
-      .querySelectorAll<HTMLButtonElement>('[data-node]')
-      .forEach((button) => {
-        button.setAttribute(
-          'aria-pressed',
-          String(button.dataset.node === nodeId)
-        );
-      });
+    const detail = model.details[nodeId]!;
+    selectedNode = nodeId;
+    text('[data-node-title]', model.diagram.nodes[nodeId]!.label);
+    text('[data-node-description]', detail.description);
+    query<HTMLAnchorElement>('[data-node-link]').href = detail.href;
+    draw();
   }
 
   function renderSteps(scenario: ArchitectureScenario) {
@@ -81,6 +266,7 @@ export function mountWalkthrough(element: Element): () => void {
     next.disabled = stepIndex === scenario.steps.length - 1;
     root.dataset.activeScenario = scenario.id;
     root.dataset.activeStep = step.id;
+    text('[data-scenario-title]', scenario.title);
     text('[data-scenario-description]', scenario.description);
     text(
       '[data-step-title]',
@@ -99,19 +285,6 @@ export function mountWalkthrough(element: Element): () => void {
           button.removeAttribute('aria-current');
         }
       });
-    root.querySelectorAll<HTMLElement>('[data-node]').forEach((node) => {
-      node.dataset.active = String(step.nodes.includes(node.dataset.node!));
-    });
-    root.querySelectorAll<SVGElement>('[data-edge]').forEach((edge) => {
-      const active = step.edges.includes(edge.dataset.edge!);
-      edge.dataset.active = String(active);
-      edge
-        .querySelector('path')
-        ?.setAttribute(
-          'marker-end',
-          `url(#${root.dataset.arrowMarker}-${active ? 'active' : 'muted'})`
-        );
-    });
     text('[data-source-file]', excerpt.file);
     query<HTMLAnchorElement>('[data-source-link]').href = sourceUrl(
       excerpt.file,
@@ -144,7 +317,8 @@ export function mountWalkthrough(element: Element): () => void {
         }
       }
     });
-    inspect(step.nodes[0]!);
+    inspect(nodesOf(scenarioIndex, stepIndex)[0]!);
+    placeCard();
   }
 
   function goTo(scenario: number, step: number, scrollCode = true) {
@@ -175,22 +349,47 @@ export function mountWalkthrough(element: Element): () => void {
   }
 
   function findStep(
-    predicate: (step: ArchitectureStep) => boolean
+    predicate: (
+      step: ArchitectureStep,
+      scenario: number,
+      index: number
+    ) => boolean
   ): [number, number] | undefined {
-    if (predicate(currentStep())) {
+    if (predicate(currentStep(), scenarioIndex, stepIndex)) {
       return [scenarioIndex, stepIndex];
     }
-    const local = currentScenario().steps.findIndex(predicate);
+    const local = currentScenario().steps.findIndex((step, index) =>
+      predicate(step, scenarioIndex, index)
+    );
     if (local >= 0) {
       return [scenarioIndex, local];
     }
     for (const [index, scenario] of model.scenarios.entries()) {
-      const step = scenario.steps.findIndex(predicate);
+      const step = scenario.steps.findIndex((entry, stepAt) =>
+        predicate(entry, index, stepAt)
+      );
       if (step >= 0) {
         return [index, step];
       }
     }
     return undefined;
+  }
+
+  function selectNode(nodeId: string) {
+    const source = model.details[nodeId]!.source;
+    const shows = (scenario: number, step: number) =>
+      nodesOf(scenario, step).includes(nodeId);
+    const destination =
+      (source &&
+        findStep(
+          (entry, scenario, step) =>
+            entry.source.excerpt === source && shows(scenario, step)
+        )) ||
+      findStep((_entry, scenario, step) => shows(scenario, step));
+    if (destination) {
+      goTo(...destination);
+    }
+    inspect(nodeId);
   }
 
   root.addEventListener(
@@ -200,26 +399,9 @@ export function mountWalkthrough(element: Element): () => void {
         return;
       }
       const step = event.target.closest<HTMLButtonElement>('[data-step]');
-      const node = event.target.closest<HTMLButtonElement>('[data-node]');
       const line = event.target.closest<HTMLElement>('[data-linked-line]');
       if (step) {
         goTo(scenarioIndex, Number(step.dataset.step));
-      } else if (node) {
-        const source = model.nodes.find(
-          (entry) => entry.id === node.dataset.node
-        )!.source;
-        const destination =
-          (source &&
-            findStep(
-              (entry) =>
-                entry.source.excerpt === source &&
-                entry.nodes.includes(node.dataset.node!)
-            )) ||
-          findStep((entry) => entry.nodes.includes(node.dataset.node!));
-        if (destination) {
-          goTo(...destination);
-        }
-        inspect(node.dataset.node!);
       } else if (line) {
         const file =
           line.closest<HTMLElement>('[data-file-panel]')!.dataset.file;
@@ -245,7 +427,7 @@ export function mountWalkthrough(element: Element): () => void {
     (event) => {
       if (
         !(event instanceof KeyboardEvent) ||
-        !(event.target instanceof HTMLElement)
+        !(event.target instanceof Element)
       ) {
         return;
       }
@@ -262,7 +444,8 @@ export function mountWalkthrough(element: Element): () => void {
         event.ctrlKey ||
         event.metaKey ||
         event.shiftKey ||
-        event.target.isContentEditable ||
+        (event.target instanceof HTMLElement &&
+          event.target.isContentEditable) ||
         event.target.closest('input, textarea, select') ||
         (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
       ) {
@@ -342,11 +525,87 @@ export function mountWalkthrough(element: Element): () => void {
     { signal }
   );
   render();
+  const resize = new ResizeObserver(() => placeCard());
+  resize.observe(column);
+  const stopPreview = animatePreview(
+    query('.aw-preview-graph'),
+    model,
+    () => dialog.open
+  );
   return () => {
     if (dialog.open) {
       dialog.close();
     }
     releaseScroll();
     controller.abort();
+    graph.unmount();
+    resize.disconnect();
+    stopPreview();
+  };
+}
+
+const previewStageMs = 3500;
+const cardGap = 14;
+const edgeSamples = 24;
+const cardMargin = 12;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+/** A rectangle in screen pixels, relative to the diagram column. */
+type Box = { x: number; y: number; width: number; height: number };
+
+function overlap(a: Box, b: Box): number {
+  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return width > 0 && height > 0 ? width * height : 0;
+}
+
+/**
+ * Cycles the preview through its flows while it is on screen. Under reduced
+ * motion it keeps the static drawing rendered at build time.
+ */
+function animatePreview(
+  container: HTMLElement,
+  model: WalkthroughState,
+  paused: () => boolean
+): () => void {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    return () => {};
+  }
+  const diagram = previewDiagram(model);
+  if (diagram.stages.length < 2) {
+    return () => {};
+  }
+
+  const preview = createRoot(container);
+  let stage = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const draw = () =>
+    preview.render(
+      createElement(Architecture, { diagram, stage, label: model.title })
+    );
+  const advance = () => {
+    if (paused()) {
+      return;
+    }
+    stage = (stage + 1) % diagram.stages.length;
+    draw();
+  };
+
+  draw();
+  const observer = new IntersectionObserver(([entry]) => {
+    clearInterval(timer);
+    timer = entry?.isIntersecting
+      ? setInterval(advance, previewStageMs)
+      : undefined;
+  });
+  observer.observe(container);
+
+  return () => {
+    observer.disconnect();
+    clearInterval(timer);
+    preview.unmount();
   };
 }

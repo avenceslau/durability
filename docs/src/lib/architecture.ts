@@ -1,19 +1,16 @@
-export type ArchitectureNode = {
-  id: string;
-  title: string;
-  kind: 'compute' | 'durable' | 'memory' | 'external';
+import {
+  defineArchitecture,
+  type ArchitectureDefinition,
+  type ArchitectureDiagram,
+  type StageToken,
+} from '../kit/architecture/model.ts';
+
+/** What the explorer shows for a diagram node when it is selected. */
+export type NodeDetail = {
   description: string;
   href: string;
+  /** The excerpt to jump to when the node is selected. */
   source?: string;
-  x: number;
-  y: number;
-};
-
-export type ArchitectureEdge = {
-  id: string;
-  from: string;
-  to: string;
-  label: string;
 };
 
 export type SourceExcerpt = {
@@ -29,8 +26,12 @@ export type ArchitectureStep = {
   id: string;
   title: string;
   description: string;
-  nodes: string[];
-  edges: string[];
+  /**
+   * `focus:<node>` or `flow:<name>` spotlights what the step is about. `id` or
+   * `+id` marks a node the step introduces: the card points at it, and it is
+   * focused when the step has no spotlight. Every step shows the whole diagram.
+   */
+  stage: StageToken[];
   source: { excerpt: string; from: number; to: number };
   durable: string;
   volatile: string;
@@ -48,10 +49,9 @@ export type ArchitectureWalkthrough = {
   id: string;
   title: string;
   summary: string;
-  width: number;
-  height: number;
-  nodes: ArchitectureNode[];
-  edges: ArchitectureEdge[];
+  /** The whole system; each scenario adds its steps as the diagram's stages. */
+  diagram: Omit<ArchitectureDefinition, 'stages'>;
+  details: Record<string, NodeDetail>;
   excerpts: SourceExcerpt[];
   scenarios: ArchitectureScenario[];
 };
@@ -133,6 +133,94 @@ export function sourceFocus(
   };
 }
 
+/** The nodes a step introduces (`id` or `+id` tokens), in the order written. */
+export function introducedNodes(
+  model: Pick<WalkthroughState, 'diagram'>,
+  step: ArchitectureStep
+): string[] {
+  return step.stage
+    .filter((token): token is string => typeof token === 'string')
+    .map((token) => token.replace(/^\+/u, ''))
+    .filter((id) => id in model.diagram.nodes);
+}
+
+/**
+ * The diagram a scenario steps through: one stage per step, each showing the
+ * whole system with only the step's spotlight lit and everything else dimmed.
+ */
+export function scenarioDiagram(
+  model: Pick<WalkthroughState, 'diagram'>,
+  scenario: ArchitectureScenario
+): ArchitectureDiagram {
+  return defineArchitecture({
+    ...model.diagram,
+    stages: scenario.steps.map((step, index) => {
+      const spotlight = step.stage.find(
+        (token) =>
+          typeof token === 'string' &&
+          (token.startsWith('focus:') || token.startsWith('flow:'))
+      );
+      const focus =
+        spotlight ?? introducedNodes(model, step).map((id) => `focus:${id}`)[0];
+      return [...(index === 0 ? ['*'] : []), ...(focus ? [focus] : [])];
+    }),
+  });
+}
+
+/** The whole system at once, for the preview. */
+export function overviewDiagram(
+  model: Pick<WalkthroughState, 'diagram'>
+): ArchitectureDiagram {
+  return defineArchitecture(model.diagram);
+}
+
+/**
+ * The preview's loop: the whole system, then each flow with edges spotlit in
+ * turn.
+ */
+export function previewDiagram(
+  model: Pick<WalkthroughState, 'diagram'>
+): ArchitectureDiagram {
+  const flows = Object.keys(model.diagram.flows ?? {}).filter((flow) =>
+    model.diagram.edges?.some((edge) => edge.flow === flow)
+  );
+  return defineArchitecture({
+    ...model.diagram,
+    stages: [['*'], ...flows.map((flow) => [`flow:${flow}`])],
+  });
+}
+
+/**
+ * The nodes a step is about: the ones its spotlight lights (a focused node,
+ * or the nodes the step introduces, first), else every node.
+ */
+export function stepNodes(
+  diagram: ArchitectureDiagram,
+  index: number,
+  introduced: string[] = []
+): string[] {
+  const state = diagram.stages[index]!;
+  const shown = diagram.nodes
+    .map((node) => node.id)
+    .filter((id) => state.visible.has(id));
+
+  if (state.spotlight?.kind === 'focus') {
+    const focused = state.spotlight.id;
+    return [
+      focused,
+      ...shown.filter((id) => id !== focused && state.lit.has(id)),
+    ];
+  }
+  if (state.spotlight) {
+    const lit = shown.filter((id) => state.lit.has(id));
+    return [
+      ...lit.filter((id) => introduced.includes(id)),
+      ...lit.filter((id) => !introduced.includes(id)),
+    ];
+  }
+  return shown;
+}
+
 export function validateWalkthrough(
   model: ArchitectureWalkthrough
 ): ArchitectureWalkthrough {
@@ -146,14 +234,6 @@ export function validateWalkthrough(
   };
   unique([model.id], 'walkthrough');
   unique(
-    model.nodes.map((node) => node.id),
-    'node'
-  );
-  unique(
-    model.edges.map((edge) => edge.id),
-    'edge'
-  );
-  unique(
     model.excerpts.map((excerpt) => excerpt.id),
     'excerpt'
   );
@@ -161,29 +241,24 @@ export function validateWalkthrough(
     model.scenarios.map((scenario) => scenario.id),
     'scenario'
   );
-  const nodes = new Set(model.nodes.map((node) => node.id));
-  const edges = new Set(model.edges.map((edge) => edge.id));
+
+  const nodes = Object.keys(model.diagram.nodes);
   const excerpts = new Set(model.excerpts.map((excerpt) => excerpt.id));
-  for (const node of model.nodes) {
-    if (node.source && !excerpts.has(node.source)) {
-      throw new Error(
-        `${model.id}: node ${node.id} references a missing source`
-      );
+  for (const id of nodes) {
+    const detail = model.details[id];
+    if (!detail) {
+      throw new Error(`${model.id}: node ${id} has no details`);
     }
-    if (
-      node.x < 90 ||
-      node.x > model.width - 90 ||
-      node.y < 45 ||
-      node.y > model.height - 45
-    ) {
-      throw new Error(`${model.id}: node ${node.id} falls outside the diagram`);
+    if (detail.source && !excerpts.has(detail.source)) {
+      throw new Error(`${model.id}: node ${id} references a missing source`);
     }
   }
-  for (const edge of model.edges) {
-    if (!nodes.has(edge.from) || !nodes.has(edge.to)) {
-      throw new Error(`${model.id}: edge ${edge.id} references a missing node`);
+  for (const id of Object.keys(model.details)) {
+    if (!nodes.includes(id)) {
+      throw new Error(`${model.id}: details for unknown node ${id}`);
     }
   }
+
   if (!model.scenarios.length || !model.excerpts.length) {
     throw new Error(`${model.id}: a walkthrough needs source and scenarios`);
   }
@@ -198,6 +273,9 @@ export function validateWalkthrough(
       );
     }
   }
+
+  overviewDiagram(model);
+  previewDiagram(model);
   for (const scenario of model.scenarios) {
     if (!scenario.steps.length) {
       throw new Error(`${model.id}: empty scenario ${scenario.id}`);
@@ -206,19 +284,21 @@ export function validateWalkthrough(
       scenario.steps.map((step) => step.id),
       'step'
     );
-    for (const step of scenario.steps) {
+    // Throws on stage tokens that name nothing, so a broken step fails the build.
+    defineArchitecture({
+      ...model.diagram,
+      stages: scenario.steps.map((step) => step.stage),
+    });
+    const diagram = scenarioDiagram(model, scenario);
+    for (const [index, step] of scenario.steps.entries()) {
       const excerpt = model.excerpts.find(
         (entry) => entry.id === step.source.excerpt
       );
-      if (
-        !excerpt ||
-        !step.nodes.length ||
-        step.nodes.some((id) => !nodes.has(id)) ||
-        step.edges.some((id) => !edges.has(id))
-      ) {
-        throw new Error(
-          `${model.id}/${step.id}: invalid diagram/source reference`
-        );
+      if (!excerpt) {
+        throw new Error(`${model.id}/${step.id}: missing source excerpt`);
+      }
+      if (stepNodes(diagram, index).length === 0) {
+        throw new Error(`${model.id}/${step.id}: the step shows no nodes`);
       }
       const last = excerpt.startLine + excerpt.code.split('\n').length - 1;
       if (

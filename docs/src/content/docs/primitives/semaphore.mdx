@@ -5,24 +5,28 @@ description: One shared concurrency budget across client Durable Objects.
 
 Import `DurabilitySemaphore` from `durability/experimental/semaphore` and pin an exact version. This is the holder-side authority for a shared concurrency budget; the [queue](/primitives/semaphore-queue/) is a separate primitive.
 
+## How it uses your Durable Object
+
+`DurabilitySemaphore` runs inside the holder object you define, one per semaphore key, and keeps the whole budget there:
+
+- **`ctx.storage.sql`** holds `durability_semaphore_grants` and `durability_semaphore_leases`. Every round applies reports and writes new grants and leases in one storage transaction, before any client hears back.
+- **The object's one alarm** follows the earliest claim deadline of a grant with unclaimed permits, so unclaimed capacity comes back without another request. Your class's `alarm()` must delegate to the scheduler. Lease expiry is checked when rounds and reports run, not on the alarm.
+- **The live instance** holds the requests waiting for a round, the round timer, and whatever your `limit` and `groupLimit` callbacks read. Eviction fails the waiting RPC calls; clients ask again.
+- **RPC with client objects** goes through `DurabilitySemaphore.client()`, which reaches the holder with `getByName(key)` and calls the method you choose. Clients keep their own copy of grants and leases and report cumulative counts.
+
+<ArchitectureWalkthrough example="semaphore">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
 ## Behind the scenes
 
 **Durable state:** grant tables record client/group ownership, permits, cumulative claimed/released counts, and expiry. Optional lease tables account for locally drawable capacity. The request array awaiting a round is in memory, not a persisted work queue.
 
 An allocation round first applies cumulative reports transactionally, reclaims expired unclaimed grants, and allocates grants in oldest-demand order. High-water marks only move forward and are clamped, so repeated or reordered reports cannot return the same capacity twice.
 
-```mermaid
-flowchart TD
-  Request[Client requests capacity and reports usage] --> Round[Collect an allocation round]
-  Round --> Reports[(Apply cumulative claims and releases)]
-  Reports --> Allocate[(Allocate and persist grants or leases)]
-  Allocate --> Reply[Return allocation to client]
-  Reply -->|response lost| Reserved[Capacity remains reserved]
-  Reserved --> Recover[Reconcile reports or expire unused grant]
-  Recover --> Reports
-```
-
-**After failure:** eviction before allocation loses the waiting RPC; clients must request again. A response lost after allocation does not free capacity. Unclaimed grant permits expire; confirmed claims stay charged until released. Lowering a limit stops new admissions rather than revoking running work.
+**After failure:** eviction before allocation loses the waiting RPC; clients must request again. A response lost after allocation does not free capacity. Unclaimed grant permits expire, but a lease in a lost response stays counted after it expires until its client settles it, which a client that never received it cannot do; nothing reconciles such leases. Confirmed claims stay charged until released. Lowering a limit stops new admissions rather than revoking running work.
 
 **Leases:** the holder durably accounts for capacity that clients may draw locally. Strict provisioning counts grants and lease footprint against one limit. Expiry/retirement must not simply forget potentially running work. A permit is an admission/accounting contract, not a mechanism that can forcibly stop an external task.
 
@@ -79,7 +83,7 @@ const grant = await limits.with(timeout, 5_000).request(accountId, {
 ```
 
 - **Rounds.** `handle()` holds a request for up to `roundWaitMs` (default 1 second) so concurrent requests are allocated together, and runs rounds no closer than `roundPeriodMs` (default 2 seconds). The response's `nextRequestAt` tells the client when it may ask again.
-- **Grants and reports.** Each `(client, group)` that receives permits gets a grant. Clients report `claimed` (permits actually used) and `released` (claimed permits returned) per grant as cumulative high-water marks, piggybacked on requests or sent with a `sync` message. Counts only move forward and are clamped to the grant, so lost, repeated, or reordered reports can never free capacity twice. Permits a client never claims within `grantTimeoutMs` (default 10 seconds) are reclaimed; a later claim is answered with the clamped count and `status: 'expired'`.
+- **Grants and reports.** Each `(client, group)` that receives permits gets a grant. Clients report `claimed` (permits actually used) and `released` (claimed permits returned) per grant as cumulative high-water marks, piggybacked on requests or sent with a `sync` message. Counts only move forward and are clamped to the grant, so lost, repeated, or reordered reports can never free capacity twice. Permits a client never claims within `grantTimeoutMs` (default 10 seconds) are reclaimed; a later claim is answered with the clamped count and `status: 'expired'`, or with `status: 'not_found'` if nothing was claimed and reclaim already deleted the grant.
 - **Blocked attribution.** Demand that stays queued is explained per group: `group_limit`, `limit`, `not_permitted` (`canGrant` returned false), or `limit_resolution_error` (`groupLimit` threw; the group fails closed).
 - **Limits are live.** `limit` and `groupLimit` are resolved once per round. Lowering a limit never evicts running work; it stops new admissions until usage is below the new ceiling.
 - **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`.

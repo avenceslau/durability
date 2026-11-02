@@ -87,42 +87,19 @@ finished: async (ids) => {
 
 Do not keep independent running counters in each job shard. A counter can be incremented independently by several shards and exceed an account's global ceiling; a crash after work settles but before decrement leaks capacity forever.
 
-```mermaid
-sequenceDiagram
-  participant A as Shard A counter
-  participant B as Shard B counter
-  participant X as JOB_API
-  Note over A,B: Account limit is 100, but each shard enforces it locally
-  A->>A: admit 100 jobs under local ceiling
-  B->>B: admit 100 jobs under local ceiling
-  A->>X: run 100 account jobs
-  B->>X: run 100 more account jobs
-  Note over X: 200 jobs admitted against an account budget of 100
-  X-->>A: one job completes
-  Note over A: crash before local decrement
-  A-xA: capacity remains leaked
-```
+The walkthrough's "Per-shard counters versus one account semaphore" scenario steps through
+each gap in that design and the line of this composition that closes it.
 
 The semaphore is the shared capacity mechanism. Strict leases prevent a shard's prefetched lease from silently making grants plus reservations exceed the limit. The queue persists admission and can re-check operation completion, so it has a recovery path for a lost release notification.
 
 ## Lost release recovery
 
-```mermaid
-sequenceDiagram
-  participant Q as Semaphore queue
-  participant O as Durable operation
-  participant H as lifecycle hook
-  participant L as AccountLimit
-  Q->>L: acquire permit for stable job ID
-  L-->>Q: admitted
-  Q->>O: run with same stable ID
-  O-->>H: terminal event
-  Note over H,L: shard is evicted before release commits
-  H-xL: best-effort release lost
-  Q->>O: finished(ids) / getResult(id)
-  O-->>Q: result is not pending
-  Q->>L: release recovered permit
-```
+The walkthrough's "Recover a lost release" scenario steps through this path: the attempt
+completes but the shard is evicted before the hook's release commits, AccountLimit keeps
+counting the permit, and the shard's own alarm later runs `finished()`, which reads the
+stored operation result and releases the item. The same check returns the permit of a job
+whose final attempt fails: that attempt settles as `attempt_settled` with outcome `failed`,
+which the hook does not match.
 
 The recovery only works because admission is retried with stable IDs and the operation result remains inspectable. `getResult(id)` has a retention boundary: once operation history is purged it can be `not_found`/unavailable. Treat that case deliberately in production—do not purge result history before all queue recovery paths have resolved, or retain a separate durable completion record.
 
@@ -137,7 +114,7 @@ The design permits many `JobShard` objects to submit to a shared account key. Th
 | Repeated submit/admit               | Queue item ID equals operation ID, making retries idempotent at both boundaries.            | Clients must choose stable, unique job IDs.                                                                                                         |
 | Several shards submit one account   | All ask one account-keyed semaphore.                                                        | Do not replace it with per-shard counters.                                                                                                          |
 | Fast lifecycle release is lost      | Queue's `finished()` checks the operation and returns non-pending IDs for release.          | Keep operation results long enough; handle `not_found` after purge.                                                                                 |
-| Job API fails                       | Operation has at most three attempts and terminal failure releases capacity.                | API must honor the idempotency key.                                                                                                                 |
+| Job API fails                       | Operation has at most three attempts; the queue's `finished()` check releases a failed job. | API must honor the idempotency key.                                                                                                                 |
 | Workflow limit changes              | `limitWorkflow` changes an in-memory `Map`; it affects later rounds.                        | The group-limit configuration is ephemeral and is lost on object eviction; persist/configure it externally if it matters.                           |
 | Lease holder is idle or disappears  | Strict leases have a 10-minute reporting lifetime and reserve at most 16 permits per lease. | Expired/retired footprint is not blindly forgotten while work may still run; reconcile usage and tune lease size/TTL.                               |
 | Abort is signalled to external work | `signal` is passed to `fetch`.                                                              | An abort-ignoring API may continue running after the operation is no longer active, so the semaphore does not prove universal external concurrency. |

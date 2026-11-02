@@ -100,16 +100,34 @@ for (const primitive of primitives) {
   test(`${primitive} has its own source file and explains its internals`, async () => {
     const source = await readFile(
       new URL(
-        `../src/content/docs/primitives/${primitive}.md`,
+        `../src/content/docs/primitives/${primitive}.mdx`,
         import.meta.url
       ),
       'utf8'
+    );
+    assert.match(source, /^## How it uses your Durable Object$/mu);
+    assert.match(
+      source,
+      new RegExp(`<ArchitectureWalkthrough example="${primitive}">`, 'u')
     );
     assert.match(source, /^## Behind the scenes$/mu);
     assert.match(source, /packages\/durability\/src\//u);
     assert.ok(routes.includes(`primitives/${primitive}`));
   });
 }
+
+test('every diagram is an interactive walkthrough, not Mermaid', async () => {
+  const content = new URL('../src/content/', import.meta.url);
+  const files = (await readdir(content, { recursive: true })).filter((file) =>
+    /\.mdx?$/u.test(file)
+  );
+  await Promise.all(
+    files.map(async (file) => {
+      const source = await readFile(new URL(file, content), 'utf8');
+      assert.doesNotMatch(source, /```mermaid/u, file);
+    })
+  );
+});
 
 test('primitives are no longer bundled into a monolithic reference page', async () => {
   assert.ok(!routes.includes('reference/durability'));
@@ -120,14 +138,15 @@ test('Nimbus publishes readable walkthrough fallbacks for agents', async () => {
   await access(resolve(output, '.well-known/ard.json'));
   await Promise.all(
     [
-      'recurring-billing',
-      'email-delivery',
-      'job-dashboard',
-      'account-concurrency',
-      'event-stream',
+      'compositions/recurring-billing',
+      'compositions/email-delivery',
+      'compositions/job-dashboard',
+      'compositions/account-concurrency',
+      'compositions/event-stream',
+      ...primitives.map((primitive) => `primitives/${primitive}`),
     ].map(async (slug) => {
       const markdown = await readFile(
-        resolve(output, `compositions/${slug}/index.md`),
+        resolve(output, `${slug}/index.md`),
         'utf8'
       );
       assert.match(

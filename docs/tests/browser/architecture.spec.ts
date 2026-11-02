@@ -1,14 +1,33 @@
 /* eslint-disable no-await-in-loop -- These assertions intentionally follow one interactive state machine in order. */
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
-import type { WalkthroughState } from '../../src/lib/architecture';
+import {
+  introducedNodes,
+  scenarioDiagram,
+  stepNodes,
+  type WalkthroughState,
+} from '../../src/lib/architecture';
 
 const pages = [
-  'recurring-billing',
-  'email-delivery',
-  'job-dashboard',
-  'account-concurrency',
-  'event-stream',
+  'compositions/recurring-billing',
+  'compositions/email-delivery',
+  'compositions/job-dashboard',
+  'compositions/account-concurrency',
+  'compositions/event-stream',
+  'primitives/operations',
+  'primitives/alarms',
+  'primitives/scheduler',
+  'primitives/fanout',
+  'primitives/log',
+  'primitives/routing',
+  'primitives/socket',
+  'primitives/client',
+  'primitives/outbox',
+  'primitives/schedule',
+  'primitives/tracker',
+  'primitives/topology',
+  'primitives/semaphore',
+  'primitives/semaphore-queue',
 ];
 
 async function openExplorer(page: Page) {
@@ -26,7 +45,7 @@ for (const slug of pages) {
   }) => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(`/compositions/${slug}/`);
+    await page.goto(`/${slug}/`);
     const root = page.locator('[data-architecture]');
     await expect(root).toHaveAttribute('data-active-step', /.+/u);
     const model: WalkthroughState = JSON.parse(
@@ -35,7 +54,8 @@ for (const slug of pages) {
     // The article gets only a small preview, not an inline control dashboard.
     await expect(root.locator('[data-dialog]')).not.toBeVisible();
     await expect(root.locator('.aw-code-panel').first()).not.toBeVisible();
-    expect((await root.boundingBox())!.height).toBeLessThan(320);
+    await expect(root.locator('.aw-preview svg.architecture')).toBeVisible();
+    expect((await root.boundingBox())!.height).toBeLessThan(480);
     await openExplorer(page);
     const viewport = page.viewportSize()!;
     expect(await root.locator('[data-dialog]').boundingBox()).toEqual({
@@ -61,6 +81,7 @@ for (const slug of pages) {
     }
     await root.locator('.aw-details > summary').click();
     for (const scenario of model.scenarios) {
+      const diagram = scenarioDiagram(model, scenario);
       await root
         .getByLabel('Architecture scenario', { exact: true })
         .selectOption(scenario.id);
@@ -75,18 +96,18 @@ for (const slug of pages) {
           await page.keyboard.press('ArrowRight');
         }
         await expect(root).toHaveAttribute('data-active-step', step.id);
-        await expect(
-          root.locator('[data-node][data-active="true"]')
-        ).toHaveCount(step.nodes.length);
-        await expect(
-          root.locator('[data-edge][data-active="true"]')
-        ).toHaveCount(step.edges.length);
-        for (const node of step.nodes) {
-          await expect(root.locator(`[data-node="${node}"]`)).toHaveAttribute(
-            'data-active',
-            'true'
-          );
+        const spotlit = diagram.stages[index]!.spotlight !== undefined;
+        const nodes = stepNodes(diagram, index, introducedNodes(model, step));
+        for (const node of nodes) {
+          await expect(
+            root.locator(
+              `[data-graph] ${spotlit ? '.is-lit ' : ''}[data-node="${node}"]`
+            )
+          ).toBeVisible();
         }
+        await expect(root.locator('[data-node-title]')).toHaveText(
+          model.diagram.nodes[nodes[0]!]!.label
+        );
         const file = model.excerpts.find(
           (excerpt) => excerpt.id === step.source.excerpt
         )!.file;
@@ -159,47 +180,69 @@ for (const slug of pages) {
 test('clicking code or a component keeps the complete file and moves the highlight', async ({
   page,
 }) => {
-  await page.goto('/compositions/recurring-billing/');
+  await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
   const model: WalkthroughState = JSON.parse(
     (await root.getAttribute('data-model'))!
   );
-  const subscribe = model.scenarios[0]!.steps.find(
-    (step) => step.id === 'subscribe'
-  )!;
-  const schedule = model.scenarios[0]!.steps.find(
-    (step) => step.id === 'schedule'
-  )!;
-  const panel = root.locator('[data-file-panel]');
-  const count = await panel.locator('.line').count();
-  await panel.locator(`[data-source-line="${subscribe.source.from}"]`).focus();
+  const steps = model.scenarios[0]!.steps;
+  const rpc = steps.find((step) => step.id === 'rpc')!;
+  const handler = steps.find((step) => step.id === 'handler')!;
+  const example = root.locator('[data-file="examples/image-jobs/worker.ts"]');
+  const count = await example.locator('.line').count();
+  await example.locator(`[data-source-line="${rpc.source.from}"]`).focus();
   await page.keyboard.press('Enter');
-  await expect(root).toHaveAttribute('data-active-step', 'subscribe');
-  await panel.locator(`[data-source-line="${schedule.source.from}"]`).focus();
+  await expect(root).toHaveAttribute('data-active-step', 'rpc');
+  await example.locator(`[data-source-line="${handler.source.from}"]`).focus();
   await page.keyboard.press('Enter');
-  await expect(root).toHaveAttribute('data-active-step', 'schedule');
-  await expect(root.locator('[data-node="renewal"]')).toHaveAttribute(
-    'data-active',
-    'true'
-  );
+  await expect(root).toHaveAttribute('data-active-step', 'handler');
+  await expect(example.locator('.line')).toHaveCount(count);
   await root
-    .getByRole('button', { name: 'Inspect Payment receiver', exact: true })
+    .getByRole('button', { name: 'Inspect durability_calls', exact: true })
     .click();
-  await expect(root).toHaveAttribute('data-active-step', 'charge');
-  await expect(panel.locator('.line')).toHaveCount(count);
-  await expect(root.locator('[data-node="provider"]')).toHaveAttribute(
+  await expect(root).toHaveAttribute('data-active-step', 'migrate');
+  await expect(root.locator('[data-node="sqlite"]')).toHaveAttribute(
     'aria-pressed',
     'true'
   );
+  const library = root.locator(
+    '[data-file="packages/durability/src/durability.ts"]'
+  );
+  await expect(library).toBeVisible();
   expect(
-    await panel.locator('pre').evaluate((pre) => pre.scrollTop)
+    await library.locator('pre').evaluate((pre) => pre.scrollTop)
   ).toBeGreaterThan(0);
+});
+
+test('arrow keys move the diagram after a node is clicked, and the step card follows', async ({
+  page,
+}) => {
+  await page.goto('/primitives/operations/');
+  const root = await openExplorer(page);
+  const card = root.locator('[data-step-card]');
+  await expect(card).toHaveAttribute('data-side', /.+/u);
+  const placement = () =>
+    card.evaluate((element) => `${element.style.left},${element.style.top}`);
+  const first = await placement();
+
+  await page.keyboard.press('ArrowRight');
+  await root
+    .getByRole('button', { name: 'Inspect durability_calls', exact: true })
+    .click();
+  await expect(root).toHaveAttribute('data-active-step', 'migrate');
+  await page.keyboard.press('ArrowRight');
+  await expect(root).toHaveAttribute('data-active-step', 'rpc');
+  await expect(root.locator('[data-graph] [data-node="caller"]')).toBeVisible();
+  await expect(
+    card.getByRole('button', { name: 'Next architecture step' })
+  ).toBeVisible();
+  expect(await placement()).not.toBe(first);
 });
 
 test('arrow keys keep working when a focused code line belongs to a file that is replaced', async ({
   page,
 }) => {
-  await page.goto('/compositions/job-dashboard/');
+  await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
   const model: WalkthroughState = JSON.parse(
     (await root.getAttribute('data-model'))!
@@ -221,7 +264,7 @@ test('arrow keys keep working when a focused code line belongs to a file that is
 test('arrow shortcuts leave native selectors, modified keys, and source selection alone', async ({
   page,
 }) => {
-  await page.goto('/compositions/job-dashboard/');
+  await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
   const selector = root.getByLabel('Example source file');
   await selector.focus();
@@ -260,32 +303,32 @@ test('arrow shortcuts leave native selectors, modified keys, and source selectio
 test('multi-file diagrams switch to the component’s owning file', async ({
   page,
 }) => {
-  await page.goto('/compositions/job-dashboard/');
+  await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
   await root
     .getByLabel('Example source file')
-    .selectOption('examples/job-dashboard/client.ts');
+    .selectOption('packages/durability/src/scheduler.ts');
   await expect(
-    root.locator('[data-file="examples/job-dashboard/client.ts"]')
+    root.locator('[data-file="packages/durability/src/scheduler.ts"]')
   ).toBeVisible();
   await root
-    .getByRole('button', { name: 'Inspect Dashboard SQL', exact: true })
+    .getByRole('button', { name: 'Inspect Durability', exact: true })
     .click();
   await expect(
-    root.locator('[data-file="examples/job-dashboard/dashboard.ts"]')
+    root.locator('[data-file="packages/durability/src/durability.ts"]')
   ).toBeVisible();
   await root
-    .getByRole('button', { name: 'Inspect Browser client', exact: true })
+    .getByRole('button', { name: 'Inspect ImageJobs', exact: true })
     .click();
   await expect(
-    root.locator('[data-file="examples/job-dashboard/client.ts"]')
+    root.locator('[data-file="examples/image-jobs/worker.ts"]')
   ).toBeVisible();
 });
 
 test('Escape closes the zoom, restores focus, and leaves the guide in place', async ({
   page,
 }) => {
-  await page.goto('/compositions/recurring-billing/');
+  await page.goto('/primitives/operations/');
   const opener = page.getByRole('button', {
     name: 'Explore code and architecture',
     exact: true,
@@ -312,32 +355,33 @@ test('Escape closes the zoom, restores focus, and leaves the guide in place', as
 test('state survives closing, theme changes, and client-side navigation', async ({
   page,
 }) => {
-  await page.goto('/compositions/recurring-billing/');
+  await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
   await root
     .getByRole('button', { name: 'Next architecture step', exact: true })
     .click();
-  await expect(root).toHaveAttribute('data-active-step', 'subscribe');
+  await expect(root).toHaveAttribute('data-active-step', 'migrate');
   await root
     .getByRole('button', { name: 'Close code and architecture', exact: true })
     .click();
   await page.locator('[data-nb-theme-toggle]').first().click();
   await openExplorer(page);
   await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
-  await expect(root).toHaveAttribute('data-active-step', 'subscribe');
+  await expect(root).toHaveAttribute('data-active-step', 'migrate');
   await root
-    .getByRole('button', { name: 'Inspect Shared scheduler', exact: true })
+    .getByRole('button', { name: 'Inspect Durability', exact: true })
     .click();
+  await expect(root).toHaveAttribute('data-active-step', 'insert');
   await root.locator('.aw-details > summary').click();
   await root.locator('[data-node-link]').click();
   await expect(page).toHaveURL(/\/primitives\/scheduler\//u);
   await page.goBack();
   await openExplorer(page);
-  await expect(root).toHaveAttribute('data-active-step', 'pool');
+  await expect(root).toHaveAttribute('data-active-step', 'field');
   await root
     .getByRole('button', { name: 'Next architecture step', exact: true })
     .click();
-  await expect(root).toHaveAttribute('data-active-step', 'subscribe');
+  await expect(root).toHaveAttribute('data-active-step', 'migrate');
 });
 
 test('mobile zoom confines scrolling to the graph and full source', async ({
@@ -345,14 +389,15 @@ test('mobile zoom confines scrolling to the graph and full source', async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/compositions/email-delivery/');
+  await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
   await root
     .getByRole('button', { name: 'Next architecture step', exact: true })
     .click();
   await expect(root.locator('[data-step][aria-current="step"]')).toContainText(
-    'Wire independent destinations'
+    'Create tables in the object’s SQLite'
   );
+  await expect(root.locator('[data-graph] svg.architecture')).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth
@@ -371,7 +416,7 @@ test('the guide has meaningful source links and content without JavaScript', asy
 }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
-  await page.goto('http://localhost:8793/compositions/recurring-billing/');
+  await page.goto('http://localhost:8793/primitives/operations/');
   await expect(page.locator('noscript p').first()).toContainText(
     'complete ordered walkthrough'
   );
@@ -379,7 +424,7 @@ test('the guide has meaningful source links and content without JavaScript', asy
   await expect(
     page
       .locator('noscript li')
-      .filter({ hasText: 'Hand off to payment work' })
+      .filter({ hasText: 'Insert the pending row' })
       .first()
   ).toBeVisible();
   await expect(page.locator('noscript a').first()).toHaveAttribute(
