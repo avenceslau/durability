@@ -1,0 +1,223 @@
+.oxfmtrc.json
+  s_90e7dfc0ce018d::t_eff9d1c60fba60 11-16
+docs/.gitignore
+  s_90e7dfc0ce018d::t_c9dc0400d69757 9
+docs/AGENT.md
+  s_90e7dfc0ce018d::t_cabcaac545b8ca 10-18,35,37-64,66-67,74-79,84-89,92-95,112-113,122-123
+docs/astro.config.ts
+  s_90e7dfc0ce018d::t_be1e73f804620d 7,99-101,108,111
+docs/package.json
+  s_90e7dfc0ce018d::t_2f8b71d4b18b19 17,22,30-31,41-42
+docs/scripts/architecture.test.mjs
+  s_90e7dfc0ce018d::t_4b8a18f9f9bdc4 5,10,29-33,35-40,52,94-125
+docs/scripts/diagram-layout.test.mjs
+  s_90e7dfc0ce018d::t_3331cb62a39b71 1-118
+docs/scripts/raw-imports.mjs
+  s_90e7dfc0ce018d::t_1d707a1f89b2c5 1-18
+docs/scripts/site.test.mjs
+  s_90e7dfc0ce018d::t_c104cac0a13926 103,108-112,119-131,141-146,149
+docs/src/architecture/alarms.ts
+  s_4f5b09997e3d8f::t_e13f98f75051a1 1-609
+docs/src/architecture/billing.ts
+  s_90e7dfc0ce018d::t_d8cad12935db6b 2-4,10,13-17,20-23,25,28-39,49,52-119,122,124,126-278,280,282,284,286-288,290,292,294,296,298-300,302,304-306,308,310-312,314-318,320-324,326-330,332-336,338-352,359,362-383,385-386,389,392,394,398-399,401-402,404-406,408-409,411,415-416,418-419,422-423,425,427-461,464-510,515-516,523,525,532-533,536,539,541-542,548-549,557,560-575,582,584-594,597,599-600,606-608,612-613,615-631,633-644,646,653-655,657,659-786
+docs/src/architecture/client.ts
+  s_90e7dfc0ce018d::t_4c4afc52dc5a89 1-801
+docs/src/architecture/concurrency.ts
+  s_64ebd33c87c1d1::t_b9ea9f5afb1d93 1-3,9,11-13,15-21,23-29,31-37,40-43,47-126,128-150,152-157,159-164,166-172,174-179,181-186,188-193,195-201,203-208,210-216,218-223,226-228,230-232,234-237,239-240,242-246,249,251-253,256-258,261-829
+docs/src/architecture/dashboard.ts
+  s_23d11ee300b96a::t_3e553499ed9122 4-5,11,13-24,27,30,33-40,43,51,57-64,67,81-96,98-120,122-127,129-134,136-182,184-201,203-206,209-213,215,217-221,224-227,229,232-234,236,238,240-241,246-248,250,252,254-256,259-261,264-723
+docs/src/architecture/email.ts
+  s_23d11ee300b96a::t_8ca7156c787459 2,8,11,19,21,24-27,42-99,102,106-116,118-194,196-265,267-269,271,273-275,277,279-281,283,285-287,289-293,295-299,301-305,307-311,313-317,319-323,325-337,344,346-360,363,365-366,369-370,372,374,378-379,381-388,390-406,411,413-419,422-423,426-457,460-473,478-479,482-483,495-516,518-535,544,551,554-555,557-558,562-563,565-566,568-570,573-574,577-604,607,609-610,613,615,621,623-630,632-643,648-712,717,720-721,723-724,726-727,729,733-744,749-750,756-757,764-765,772,774,781-782
+docs/src/architecture/event-stream.ts
+  s_64ebd33c87c1d1::t_83f0bb31e06692 1-4,10,12-15,17-23,25-30,33-44,49-120,122,124,126-134,136-212,214-275,277-279,281,283-285,287,289-291,293,295-297,299,301-303,305-309,311-315,317-321,323-327,329-333,335-351,353-472,475-585,588-654,657,660,662-691,694,696-697,699-701,703-704,709-715,722-723,725-727,729-730,739,743,745-746,748-749,751-752,757,759-767,772,774-781,786,788-789,791-793,795-796,799-813,816,818-819,821-822,824-825,831-832,834,837-838,840-841,843-844,846-848,851-852,854-855,857-859,861-863,866-867,869-870,872-874,876-878,881-882,884-885,887-889,891-893,896-897,899-900,902-904,906-908
+docs/src/architecture/fanout.ts
+  s_13fa5bb685b86c::t_06c7372b10e612 1-620
+docs/src/architecture/index.ts
+  s_90e7dfc0ce018d::t_6ff5d1f4e93141 1,3-7,9-19
+docs/src/architecture/log.ts
+  s_23d11ee300b96a::t_0fdbefd34b5fe2 1-764
+docs/src/architecture/operations.ts
+  s_90e7dfc0ce018d::t_32b4fe7a35c3bb 1-532
+docs/src/architecture/outbox.ts
+  s_90e7dfc0ce018d::t_44b1e728103f2b 1-716
+docs/src/architecture/routing.ts
+  s_90e7dfc0ce018d::t_3110643b9548bf 1-587
+docs/src/architecture/schedule.ts
+  s_13fa5bb685b86c::t_12a2a0039e4994 1-635
+docs/src/architecture/scheduler.ts
+  s_90e7dfc0ce018d::t_213f96cb28c7ab 1-578
+docs/src/architecture/socket.ts
+  s_23d11ee300b96a::t_4b8ab6c7a6fb57 1-622
+docs/src/architecture/topology.ts
+  s_90e7dfc0ce018d::t_aa295e09c55d07 1-738
+docs/src/architecture/tracker.ts
+  s_90e7dfc0ce018d::t_ad35e609103d9e 1-692
+docs/src/components/architecture/ArchitectureWalkthrough.astro
+  s_90e7dfc0ce018d::t_e4eb0793d6e56e 3,5-12,23-24,31,33-35,47-56,58,92,103,106
+docs/src/components/architecture/walkthrough.client.ts
+  s_90e7dfc0ce018d::t_46d91d45d762c3 2-5,7-15,17,50-54,57-82,87-232,234-239,269,320-321,352-356,358,361-363,368-370,378-394,430,447-448,528-534,541-609
+docs/src/components/architecture/walkthrough.css
+  s_90e7dfc0ce018d::t_3555f7b88902e7 8-25,31-40,96,98,163,167,171-174,176-203,349-355,455-522,524
+docs/src/content/docs/compositions/account-concurrency.mdx
+  s_21eab5728e57f6::t_dd8d8097ea05de 90-91,97-102,117
+docs/src/content/docs/compositions/event-stream.mdx
+  s_3a73e37747865a::t_2b564f52f436fc 133-134,140-143,156,158-159
+docs/src/content/docs/compositions/job-dashboard.mdx
+  s_23d11ee300b96a::t_dfad440fa19270 37,50,52,95-97,99,105-107,109,117,119,121
+docs/src/content/docs/compositions/recurring-billing.mdx
+  s_30714fcdc22491::t_ca26b6e982e69a 105-106,112-115
+docs/src/content/docs/primitives/fanout.mdx
+  s_21eab5728e57f6::t_57fed8b613e243 8-22
+docs/src/content/docs/primitives/operations.mdx
+  s_90e7dfc0ce018d::t_9b4dc422ba3209 8-21
+docs/src/content/docs/primitives/routing.mdx
+  s_385253bce60d6d::t_92e7c4893f72d3 8-21
+docs/src/content/docs/primitives/schedule.mdx
+  s_90e7dfc0ce018d::t_f96a46cb3818d5 8-21
+docs/src/content/docs/primitives/scheduler.mdx
+  s_4f5b09997e3d8f::t_030b87890e8293 8-21
+docs/src/content/docs/primitives/topology.mdx
+  s_a3a34245324b60::t_5165ef9a43cd6f 8-22
+docs/src/content/docs/primitives/tracker.mdx
+  s_4f5b09997e3d8f::t_27d08f829363ce 8-22
+docs/src/content/partials/architecture-help.mdx
+  s_90e7dfc0ce018d::t_5eab578c3da240 1
+docs/src/kit/architecture/Architecture.css
+  s_90e7dfc0ce018d::t_a4372712c653fb 1-245
+docs/src/kit/architecture/Architecture.tsx
+  s_90e7dfc0ce018d::t_1910aeea7cc232 1-787
+docs/src/kit/architecture/choreography.test.ts
+  s_90e7dfc0ce018d::t_80f55d1b901ddd 1-398
+docs/src/kit/architecture/choreography.ts
+  s_90e7dfc0ce018d::t_1d789a158a1ac4 1-836
+docs/src/kit/architecture/composite.test.ts
+  s_90e7dfc0ce018d::t_011c1e8618cf3a 1-260
+docs/src/kit/architecture/fixtures.ts
+  s_90e7dfc0ce018d::t_28b069fa29427d 1-453
+docs/src/kit/architecture/geometry.test.ts
+  s_90e7dfc0ce018d::t_d6001355466adc 1-58
+docs/src/kit/architecture/geometry.ts
+  s_90e7dfc0ce018d::t_99809095e80555 1-235
+docs/src/kit/architecture/icons/cloudflare.tsx
+  s_90e7dfc0ce018d::t_b23d492f9d87c2 1-83
+docs/src/kit/architecture/icons/generic.tsx
+  s_90e7dfc0ce018d::t_78f5ea382859c3 1-37
+docs/src/kit/architecture/icons/index.ts
+  s_90e7dfc0ce018d::t_e0c065fd1ed175 1-9
+docs/src/kit/architecture/icons/names.ts
+  s_90e7dfc0ce018d::t_0b19eef573f204 1-24
+docs/src/kit/architecture/layout.test.ts
+  s_90e7dfc0ce018d::t_ef93d9fa981cee 1-397
+docs/src/kit/architecture/layout.ts
+  s_90e7dfc0ce018d::t_e55d18fd51b0b9 1-2037
+docs/src/kit/architecture/model.test.ts
+  s_90e7dfc0ce018d::t_2d70307f66e66c 1-375
+docs/src/kit/architecture/model.ts
+  s_90e7dfc0ce018d::t_e783e698af32e3 1-1062
+docs/src/kit/architecture/routing.test.ts
+  s_90e7dfc0ce018d::t_a9f7388d452558 1-603
+docs/src/kit/architecture/snap.test.ts
+  s_90e7dfc0ce018d::t_440c380dac4f3e 1-111
+docs/src/kit/architecture/snap.ts
+  s_90e7dfc0ce018d::t_f1c1094f254db3 1-140
+docs/src/lib/architecture.ts
+  s_90e7dfc0ce018d::t_2b41c7b06d0df9 1-9,12,29-34,52-54,136-223,244-245,247-250,252-253,256-258,261,276-278,287-293,297-301
+docs/tests/browser/architecture.spec.ts
+  s_90e7dfc0ce018d::t_8a9213cdac43c6 4-9,12-30,48,57-58,84,99-106,108-110,183,188-193,195-196,198-199,201,203-204,208-211,213,217-241,245,267,306,310,312,315,318,321,324,331,358,363,370,372,374,380,384,392,398,400,419,427
+docs/tests/browser/diagrams.spec.ts
+  s_90e7dfc0ce018d::t_05bc245b8f6392 3-22,25-26,36-41,44,49-56,59-73,76
+docs/tsconfig.json
+  s_90e7dfc0ce018d::t_9db860453b3df2 4-5,11
+docs/turbo.json
+  s_90e7dfc0ce018d::t_074513172654d1 8-10,17-19
+pnpm-lock.yaml
+  s_90e7dfc0ce018d::t_dfffd714c5f84e 35-37,40,59-64,87-92,410-422,632,638,644,650,656,662,668,674,680,686,692,698,704,710,716,2304-2311,2328-2343,2651-2652,3694-3702,3850-3852,4779-4805,5030,5079-5080,6260-6267,6280-6284,6657,8049-8055,8373-8374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f35c74af5df0fa064900497f3c81c9d406aa3f8b",
+  "prompts": {},
+  "sessions": {
+    "s_13fa5bb685b86c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19cb6-c853-7249-bdaf-c4e01b6ea6a5",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_21eab5728e57f6": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19ca8-0e62-7249-bdaf-c4db2880af10",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_23d11ee300b96a": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19d1c-b0eb-7249-bdaf-c4ec3b145653",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_30714fcdc22491": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19ca9-8662-7249-bdaf-c4dcb30cef01",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_385253bce60d6d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19ca7-06a7-7249-bdaf-c4d69abb46a6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_3a73e37747865a": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19cb9-48a1-7249-bdaf-c4e2aa6227af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_4f5b09997e3d8f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19ca5-fe54-7249-bdaf-c4d3d8da8cdb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_64ebd33c87c1d1": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19cba-13fb-7249-bdaf-c4e5f5ade0e7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_90e7dfc0ce018d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19bd9-b8ff-7249-bdaf-c4d13cc66b4a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_a3a34245324b60": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a19ca7-87b2-7249-bdaf-c4d802521f77",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
