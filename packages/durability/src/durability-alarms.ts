@@ -40,7 +40,12 @@ import {
   memoizedKeys,
   type DurableMemoize,
 } from './memoize.js';
-import { deleteAttempt, listCreated, type DurableTable } from './storage.js';
+import {
+  deleteAttempt,
+  listCreated,
+  type DurableTable,
+  type KeyFilter,
+} from './storage.js';
 import {
   registerTrackedSource,
   type UntypedRecord,
@@ -142,6 +147,70 @@ export type DurableNamedAlarm = ((scheduledTime: number) => Promise<void>) & {
   cancel: () => Promise<boolean>;
 };
 
+/** Runs one due row with the policy and hooks of the instance that owns its name. */
+type AlarmOwner = {
+  active: Map<string, ActiveExecution>;
+  execute: (
+    row: AlarmRow,
+    platform: AlarmInvocationInfo | undefined
+  ) => Promise<void>;
+};
+
+/**
+ * Every `DurabilityAlarms` on one scheduler shares the `durability_alarms`
+ * table. A row belongs to the instance whose handlers include its name. A row
+ * no instance handles, such as one whose handler a deploy removed, belongs to
+ * the first instance attached, which fails it as having no handler.
+ */
+type SharedAlarms = {
+  firstAttached: AlarmOwner;
+  byName: Map<string, AlarmOwner>;
+};
+
+const sharedByEngine = new WeakMap<Engine, SharedAlarms>();
+
+const ownerOf = (shared: SharedAlarms, name: string): AlarmOwner =>
+  shared.byName.get(name) ?? shared.firstAttached;
+
+const runDueAlarms = async (
+  engine: Engine,
+  shared: SharedAlarms,
+  now: number,
+  info: AlarmInvocationInfo | undefined
+): Promise<void> => {
+  const due = alarmRowSchema.array().parse(
+    engine.sql
+      .exec(
+        `SELECT * FROM durability_alarms
+           WHERE status = 'pending' AND next_attempt_at <= ?
+           ORDER BY next_attempt_at ASC
+           LIMIT 100`,
+        now
+      )
+      .toArray()
+  );
+  const assigned = due.map((row) => ({
+    row,
+    owner: ownerOf(shared, row.name),
+  }));
+  // With liveTimers a running occurrence re-arms itself when it settles, so
+  // skipping it keeps a long handler from blocking a concurrent alarm pass.
+  const pending = engine.liveTimers
+    ? assigned.filter(({ row, owner }) => !owner.active.has(row.name))
+    : assigned;
+  const failures: unknown[] = [];
+  await engine.runConcurrent(pending, async ({ row, owner }) => {
+    try {
+      await owner.execute(row, info);
+    } catch (error) {
+      failures.push(error);
+    }
+  });
+  if (failures.length > 0) {
+    throw failures[0];
+  }
+};
+
 const readAlarm = (sql: SqlStorage, name: string): AlarmRow | undefined =>
   alarmRowSchema
     .optional()
@@ -189,6 +258,11 @@ class DurabilityAlarmsCore<Names extends string> {
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
   readonly #active = new Map<string, ActiveExecution>();
+  readonly #owner: AlarmOwner = {
+    active: this.#active,
+    execute: (row, platform) => this.#execute(row, platform),
+  };
+  readonly #shared: SharedAlarms;
 
   constructor(config: DurabilityAlarmsConfig<Names>) {
     this.#engine = engineFor(config);
@@ -233,10 +307,7 @@ class DurabilityAlarmsCore<Names extends string> {
 
     this.#engine.migrateSchema('namedAlarms', durabilityNamedAlarmMigrations);
     this.#engine.migrateSchema('memos', durabilityMemoMigrations);
-    this.#engine.register({
-      table: alarmsTable,
-      runDue: (now, info) => this.#runDue(now, info),
-    });
+    this.#shared = this.#attach();
     registerTrackedSource(this, this.#trackedSource());
   }
 
@@ -279,7 +350,8 @@ class DurabilityAlarmsCore<Names extends string> {
       alarmsTable,
       before,
       this.#active,
-      'Durable alarm was purged'
+      'Durable alarm was purged',
+      this.#ownedKeys()
     );
     this.#emit({
       type: 'purged',
@@ -296,6 +368,9 @@ class DurabilityAlarmsCore<Names extends string> {
     const sql = this.#engine.sql;
     return {
       get: async (name) => {
+        if (ownerOf(this.#shared, name) !== this.#owner) {
+          return undefined;
+        }
         const row = readAlarm(sql, name);
         return row && alarmRecord(sql, row);
       },
@@ -305,6 +380,7 @@ class DurabilityAlarmsCore<Names extends string> {
           after: cursor,
           status,
           name,
+          keys: this.#ownedKeys(),
         });
         const records = alarmRowSchema
           .array()
@@ -331,37 +407,45 @@ class DurabilityAlarmsCore<Names extends string> {
     };
   }
 
-  async #runDue(
-    now: number,
-    info: AlarmInvocationInfo | undefined
-  ): Promise<void> {
-    const due = alarmRowSchema.array().parse(
-      this.#engine.sql
-        .exec(
-          `SELECT * FROM durability_alarms
-             WHERE status = 'pending' AND next_attempt_at <= ?
-             ORDER BY next_attempt_at ASC
-             LIMIT 100`,
-          now
-        )
-        .toArray()
-    );
-    // With liveTimers a running occurrence re-arms itself when it settles, so
-    // skipping it keeps a long handler from blocking a concurrent alarm pass.
-    const pending = this.#engine.liveTimers
-      ? due.filter((row) => !this.#active.has(row.name))
-      : due;
-    const failures: unknown[] = [];
-    await this.#engine.runConcurrent(pending, async (row) => {
-      try {
-        await this.#execute(row, info);
-      } catch (error) {
-        failures.push(error);
-      }
-    });
-    if (failures.length > 0) {
-      throw failures[0];
+  /** The rows {@link ownerOf} assigns to this instance. */
+  #ownedKeys(): KeyFilter {
+    if (this.#shared.firstAttached !== this.#owner) {
+      return { only: [...this.#handlers.keys()] };
     }
+
+    const handledElsewhere = [...this.#shared.byName]
+      .filter(([, owner]) => owner !== this.#owner)
+      .map(([name]) => name);
+    return { except: handledElsewhere };
+  }
+
+  #attach(): SharedAlarms {
+    const engine = this.#engine;
+    let shared = sharedByEngine.get(engine);
+    if (!shared) {
+      const created: SharedAlarms = {
+        firstAttached: this.#owner,
+        byName: new Map(),
+      };
+      engine.register({
+        table: alarmsTable,
+        runDue: (now, info) => runDueAlarms(engine, created, now, info),
+      });
+      sharedByEngine.set(engine, created);
+      shared = created;
+    }
+
+    for (const name of this.#handlers.keys()) {
+      if (shared.byName.has(name)) {
+        throw new Error(
+          `A named alarm "${name}" is already attached to this scheduler`
+        );
+      }
+    }
+    for (const name of this.#handlers.keys()) {
+      shared.byName.set(name, this.#owner);
+    }
+    return shared;
   }
 
   async #schedule(name: string, scheduledTime: number): Promise<void> {

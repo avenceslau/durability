@@ -24,8 +24,11 @@ import { deleteMemos, deleteStaleMemos } from './memoize.js';
 import {
   claimAttempt,
   exhaustAttempts,
+  keyFilterCondition,
+  keyFilterParams,
   updateAttempt,
   type DurableTable,
+  type KeyFilter,
 } from './storage.js';
 import type { DurableMigrations } from '@durability/storage';
 
@@ -511,7 +514,8 @@ export class Engine {
     table: DurableTable,
     before: number,
     active: Map<string, ActiveExecution>,
-    abortReason: string
+    abortReason: string,
+    keys?: KeyFilter
   ): Promise<number> {
     if (!Number.isSafeInteger(before) || before < 0) {
       throw new RangeError('timestamp must be a non-negative safe integer');
@@ -522,16 +526,18 @@ export class Engine {
       }
     }
 
+    const where = `created_at < ? AND ${keyFilterCondition(table)}`;
+    const params = [before, ...keyFilterParams(keys)];
     const removed = await this.transaction((sql) => {
       const { count } = countRowSchema.parse(
         sql
           .exec(
-            `SELECT COUNT(*) AS count FROM ${table.name} WHERE created_at < ?`,
-            before
+            `SELECT COUNT(*) AS count FROM ${table.name} WHERE ${where}`,
+            ...params
           )
           .toArray()[0]
       );
-      sql.exec(`DELETE FROM ${table.name} WHERE created_at < ?`, before);
+      sql.exec(`DELETE FROM ${table.name} WHERE ${where}`, ...params);
       deleteStaleMemos(sql, table);
       return count;
     });
