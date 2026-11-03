@@ -1,0 +1,41 @@
+.changeset/one-scheduler-per-object.md
+  s_3447221859357a::t_c0f009ccf57d62 1-5
+packages/durability/README.md
+  s_3447221859357a::t_e1d87e35d42784 208-236,408
+packages/durability/src/fanout.test.ts
+  s_0f43801fed34e1::t_77882dbb964954 50-53
+packages/durability/src/index.test.ts
+  s_0f43801fed34e1::t_185c3ac038b108 2284-2392
+packages/durability/src/outbox.test.ts
+  s_0f43801fed34e1::t_d2efeeadc90241 9,428,441
+packages/durability/src/scheduler.ts
+  s_0f43801fed34e1::t_c5b823111e461d 80-82,89-96,225,227-233,236,254-293,295-296,300-301,303-304,310-319,635,1019-1051,1053-1054,1056-1060,1083,1094,1097
+packages/durability/src/test-fakes.ts
+  s_0f43801fed34e1::t_66f2fcf47fc7d3 189-193,195
+packages/durability/src/topology.test.ts
+  s_0f43801fed34e1::t_34293798bfb10c 14,489-492
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "105621daccf5e45c4809351d1b40eea384283de2",
+  "prompts": {},
+  "sessions": {
+    "s_0f43801fed34e1": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1a268-4120-7248-bbd2-7b80dc183d41",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    },
+    "s_3447221859357a": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1a1a9-f05e-75ad-9d7b-0b76b65af763",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "avenceslau <avenceslau@cloudflare.com>"
+    }
+  }
+}
