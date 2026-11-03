@@ -11,7 +11,7 @@ import {
   encodeSnapshot,
   type TopologyMember,
 } from './topology-snapshot';
-import { FakeStorage } from './test-fakes';
+import { contextFor, FakeStorage } from './test-fakes';
 
 type Limits = { max: number };
 type States = { limits: Limits; config: string };
@@ -486,7 +486,10 @@ describe('DurabilityTopology', () => {
 
     // A new instance over the same storage: nothing in memory knows v1's write is outstanding.
     hang = false;
-    const revived = new DurabilityTopology<undefined, States>(config);
+    const revived = new DurabilityTopology<undefined, States>({
+      ...config,
+      context: { ...contextFor(storage), id: coordinatorId } as never,
+    });
     const v2 = await revived.update('acme', ({ members }) => ({
       members: [...members, active('acme-1')],
     }));
