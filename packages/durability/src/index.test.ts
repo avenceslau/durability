@@ -16,6 +16,7 @@ import {
   migrate,
 } from './index';
 import { migrateCapability } from './migrations';
+import { trackedSourceOf } from './tracked-source';
 import { contextFor, FakeStorage } from './test-fakes';
 import { exponential, jitter } from './utils';
 
@@ -2279,6 +2280,117 @@ describe('DurabilityScheduler', () => {
     await alarm;
     expect(calls).toBe(3);
     expect(maxActive).toBe(1);
+  });
+
+  it('runs several named alarm helpers that own different names', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+    });
+    const digest = vi.fn(async () => undefined);
+    const check = vi.fn(async () => {
+      throw new DurabilityNonRetryableError('check failed');
+    });
+    const app = new DurabilityAlarms({ scheduler, handlers: { digest } });
+    const library = new DurabilityAlarms({ scheduler, handlers: { check } });
+
+    await app.digest(Date.now());
+    await library.check(Date.now());
+    storage.alarmAt = null;
+    await scheduler.alarm();
+
+    expect(digest).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledTimes(1);
+    const rows = storage.sql
+      .exec<{ name: string; status: string }>(
+        'SELECT name, status FROM durability_alarms'
+      )
+      .toArray();
+    expect(rows).toEqual([{ name: 'check', status: 'failed' }]);
+  });
+
+  it('rejects a named alarm another helper on the scheduler already owns', () => {
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(new FakeStorage()),
+    });
+    void new DurabilityAlarms({
+      scheduler,
+      handlers: { cleanup: async () => undefined },
+    });
+
+    expect(
+      () =>
+        new DurabilityAlarms({
+          scheduler,
+          handlers: {
+            other: async () => undefined,
+            cleanup: async () => undefined,
+          },
+        })
+    ).toThrow('A named alarm "cleanup" is already attached to this scheduler');
+  });
+
+  it('fails an alarm no helper owns through the first helper', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+    });
+    void new DurabilityAlarms({
+      scheduler,
+      handlers: { first: async () => undefined },
+    });
+    void new DurabilityAlarms({
+      scheduler,
+      handlers: { second: async () => undefined },
+    });
+    storage.sql.exec(
+      `INSERT INTO durability_alarms
+         (name, generation_id, status, scheduled_at, next_attempt_at,
+          attempt, created_at)
+       VALUES ('removed', 'g1', 'pending', 0, 0, 0, 0)`
+    );
+
+    await scheduler.alarm();
+
+    const rows = storage.sql
+      .exec<{ status: string; last_error: string }>(
+        `SELECT status, last_error FROM durability_alarms WHERE name = 'removed'`
+      )
+      .toArray();
+    expect(rows).toEqual([
+      {
+        status: 'failed',
+        last_error: 'No named alarm handler registered for "removed"',
+      },
+    ]);
+  });
+
+  it('purges and lists only the rows a named alarm helper can own', async () => {
+    const storage = new FakeStorage();
+    const context = contextFor(storage);
+    const scheduler = new DurabilityScheduler({ context });
+    const fail = async () => {
+      throw new DurabilityNonRetryableError('failed');
+    };
+    const app = new DurabilityAlarms({ scheduler, handlers: { digest: fail } });
+    const library = new DurabilityAlarms({
+      scheduler,
+      handlers: { check: fail },
+    });
+    await app.digest(Date.now());
+    await library.check(Date.now());
+    storage.alarmAt = null;
+    await scheduler.alarm();
+
+    const listed = await trackedSourceOf(app)!.list({ limit: 10 });
+    expect(listed.records.map((record) => record.name)).toEqual(['digest']);
+    await expect(trackedSourceOf(app)!.get('check')).resolves.toBeUndefined();
+
+    await expect(app.purgeBefore(Date.now() + 1)).resolves.toBe(1);
+    const names = storage.sql
+      .exec<{ name: string }>('SELECT name FROM durability_alarms')
+      .toArray();
+    expect(names).toEqual([{ name: 'check' }]);
   });
 
   it('rejects attaching two helpers of the same kind', () => {

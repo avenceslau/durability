@@ -172,6 +172,18 @@ Each occurrence receives a new internal generation. Its `idempotencyKey` stays s
 
 A timeout aborts the handler's `signal` and is terminal by default because the external outcome is unknown. Set `retryTimeouts: true` only when the handler's side effects use the idempotency key or reconcile their outcome before retrying. Named alarms remain at-least-once across eviction or restart.
 
+Several `DurabilityAlarms` can share one scheduler as long as their names differ, so a library can bring its own named alarms into an object that already has some. They share one table, and each instance runs, lists, and purges only its own names; attaching a name another instance on the scheduler already owns throws. A due alarm whose name no instance owns, such as one whose handler a deploy removed, fails through the first instance attached, as it would with only one. Construct every instance when the object is constructed, so each name has its owner before an alarm runs.
+
+```ts
+private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+private readonly alarms = new DurabilityAlarms({
+  scheduler: this.scheduler,
+  handlers: { renew: () => this.renew() },
+});
+// A library creates its own instance on the same scheduler.
+private readonly alerts = alerts(this.ctx, { scheduler: this.scheduler });
+```
+
 ## Using both in one Durable Object
 
 A Durable Object has one physical alarm. When one object uses both helpers, create a `DurabilityScheduler` and pass it to each so they share the alarm, the storage, and the concurrency pool:

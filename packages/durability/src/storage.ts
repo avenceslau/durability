@@ -127,6 +127,8 @@ export type CreatedQuery = {
   after?: string | undefined;
   status?: string | undefined;
   name?: string | undefined;
+  /** Keys to leave out, such as rows another helper sharing the table owns. */
+  excludeKeys?: readonly string[] | undefined;
 };
 
 export type CreatedPage = {
@@ -161,6 +163,7 @@ export const listCreated = (
       `SELECT * FROM ${table.name}
        WHERE (? IS NULL OR status = ?)
          AND (? IS NULL OR ${nameColumn} = ?)
+         AND ${table.key} NOT IN (SELECT value FROM json_each(?))
          AND (created_at > ? OR (created_at = ? AND ${table.key} > ?))
        ORDER BY created_at ASC, ${table.key} ASC
        LIMIT ?`,
@@ -168,6 +171,7 @@ export const listCreated = (
       status,
       name,
       name,
+      JSON.stringify(query.excludeKeys ?? []),
       createdAt,
       createdAt,
       key,

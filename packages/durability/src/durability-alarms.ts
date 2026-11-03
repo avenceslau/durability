@@ -142,6 +142,67 @@ export type DurableNamedAlarm = ((scheduledTime: number) => Promise<void>) & {
   cancel: () => Promise<boolean>;
 };
 
+/** Runs one due row with the policy and hooks of the instance that owns its name. */
+type AlarmOwner = {
+  active: Map<string, ActiveExecution>;
+  execute: (
+    row: AlarmRow,
+    platform: AlarmInvocationInfo | undefined
+  ) => Promise<void>;
+};
+
+/**
+ * Every `DurabilityAlarms` on one scheduler shares the `durability_alarms`
+ * table, so one participant runs its due rows and hands each row to the
+ * instance that owns the row's name.
+ */
+const ownersByEngine = new WeakMap<Engine, Map<string, AlarmOwner>>();
+
+const runDueAlarms = async (
+  engine: Engine,
+  owners: Map<string, AlarmOwner>,
+  now: number,
+  info: AlarmInvocationInfo | undefined
+): Promise<void> => {
+  const due = alarmRowSchema.array().parse(
+    engine.sql
+      .exec(
+        `SELECT * FROM durability_alarms
+           WHERE status = 'pending' AND next_attempt_at <= ?
+           ORDER BY next_attempt_at ASC
+           LIMIT 100`,
+        now
+      )
+      .toArray()
+  );
+  // A row no instance owns, such as one whose handler a deploy removed, still
+  // runs through the first instance, which fails it as having no handler.
+  const fallback = owners.values().next().value;
+  if (!fallback) {
+    return;
+  }
+  const owned = due.map((row) => ({
+    row,
+    owner: owners.get(row.name) ?? fallback,
+  }));
+  // With liveTimers a running occurrence re-arms itself when it settles, so
+  // skipping it keeps a long handler from blocking a concurrent alarm pass.
+  const pending = engine.liveTimers
+    ? owned.filter(({ row, owner }) => !owner.active.has(row.name))
+    : owned;
+  const failures: unknown[] = [];
+  await engine.runConcurrent(pending, async ({ row, owner }) => {
+    try {
+      await owner.execute(row, info);
+    } catch (error) {
+      failures.push(error);
+    }
+  });
+  if (failures.length > 0) {
+    throw failures[0];
+  }
+};
+
 const readAlarm = (sql: SqlStorage, name: string): AlarmRow | undefined =>
   alarmRowSchema
     .optional()
@@ -233,10 +294,7 @@ class DurabilityAlarmsCore<Names extends string> {
 
     this.#engine.migrateSchema('namedAlarms', durabilityNamedAlarmMigrations);
     this.#engine.migrateSchema('memos', durabilityMemoMigrations);
-    this.#engine.register({
-      table: alarmsTable,
-      runDue: (now, info) => this.#runDue(now, info),
-    });
+    this.#attach();
     registerTrackedSource(this, this.#trackedSource());
   }
 
@@ -279,7 +337,8 @@ class DurabilityAlarmsCore<Names extends string> {
       alarmsTable,
       before,
       this.#active,
-      'Durable alarm was purged'
+      'Durable alarm was purged',
+      this.#othersNames()
     );
     this.#emit({
       type: 'purged',
@@ -296,6 +355,9 @@ class DurabilityAlarmsCore<Names extends string> {
     const sql = this.#engine.sql;
     return {
       get: async (name) => {
+        if (this.#othersNames().includes(name)) {
+          return undefined;
+        }
         const row = readAlarm(sql, name);
         return row && alarmRecord(sql, row);
       },
@@ -305,6 +367,7 @@ class DurabilityAlarmsCore<Names extends string> {
           after: cursor,
           status,
           name,
+          excludeKeys: this.#othersNames(),
         });
         const records = alarmRowSchema
           .array()
@@ -331,36 +394,40 @@ class DurabilityAlarmsCore<Names extends string> {
     };
   }
 
-  async #runDue(
-    now: number,
-    info: AlarmInvocationInfo | undefined
-  ): Promise<void> {
-    const due = alarmRowSchema.array().parse(
-      this.#engine.sql
-        .exec(
-          `SELECT * FROM durability_alarms
-             WHERE status = 'pending' AND next_attempt_at <= ?
-             ORDER BY next_attempt_at ASC
-             LIMIT 100`,
-          now
-        )
-        .toArray()
+  /** Names other instances on this scheduler own, whose rows this one leaves alone. */
+  #othersNames(): string[] {
+    const owners = ownersByEngine.get(this.#engine);
+    return [...(owners?.keys() ?? [])].filter(
+      (name) => !this.#handlers.has(name)
     );
-    // With liveTimers a running occurrence re-arms itself when it settles, so
-    // skipping it keeps a long handler from blocking a concurrent alarm pass.
-    const pending = this.#engine.liveTimers
-      ? due.filter((row) => !this.#active.has(row.name))
-      : due;
-    const failures: unknown[] = [];
-    await this.#engine.runConcurrent(pending, async (row) => {
-      try {
-        await this.#execute(row, info);
-      } catch (error) {
-        failures.push(error);
+  }
+
+  /** Claims this instance's alarm names on the scheduler. */
+  #attach(): void {
+    let owners = ownersByEngine.get(this.#engine);
+    if (!owners) {
+      const created = new Map<string, AlarmOwner>();
+      const engine = this.#engine;
+      engine.register({
+        table: alarmsTable,
+        runDue: (now, info) => runDueAlarms(engine, created, now, info),
+      });
+      ownersByEngine.set(engine, created);
+      owners = created;
+    }
+    for (const name of this.#handlers.keys()) {
+      if (owners.has(name)) {
+        throw new Error(
+          `A named alarm "${name}" is already attached to this scheduler`
+        );
       }
-    });
-    if (failures.length > 0) {
-      throw failures[0];
+    }
+    const owner: AlarmOwner = {
+      active: this.#active,
+      execute: (row, platform) => this.#execute(row, platform),
+    };
+    for (const name of this.#handlers.keys()) {
+      owners.set(name, owner);
     }
   }
 

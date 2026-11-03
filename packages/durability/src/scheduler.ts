@@ -511,7 +511,9 @@ export class Engine {
     table: DurableTable,
     before: number,
     active: Map<string, ActiveExecution>,
-    abortReason: string
+    abortReason: string,
+    /** Keys to keep, such as rows another helper sharing the table owns. */
+    excludeKeys: readonly string[] = []
   ): Promise<number> {
     if (!Number.isSafeInteger(before) || before < 0) {
       throw new RangeError('timestamp must be a non-negative safe integer');
@@ -522,16 +524,19 @@ export class Engine {
       }
     }
 
+    const where = `created_at < ? AND ${table.key} NOT IN (SELECT value FROM json_each(?))`;
+    const excluded = JSON.stringify(excludeKeys);
     const removed = await this.transaction((sql) => {
       const { count } = countRowSchema.parse(
         sql
           .exec(
-            `SELECT COUNT(*) AS count FROM ${table.name} WHERE created_at < ?`,
-            before
+            `SELECT COUNT(*) AS count FROM ${table.name} WHERE ${where}`,
+            before,
+            excluded
           )
           .toArray()[0]
       );
-      sql.exec(`DELETE FROM ${table.name} WHERE created_at < ?`, before);
+      sql.exec(`DELETE FROM ${table.name} WHERE ${where}`, before, excluded);
       deleteStaleMemos(sql, table);
       return count;
     });
