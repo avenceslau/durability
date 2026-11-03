@@ -6,7 +6,7 @@ import {
 } from './index';
 import { DurabilityOutbox, type OutboxEntry } from './experimental';
 import { discardWithin, publishNow, stageWithin } from './outbox';
-import { FakeStorage } from './test-fakes';
+import { contextFor, FakeStorage } from './test-fakes';
 
 type Published = Pick<OutboxEntry<string>, 'key' | 'version' | 'value'>;
 
@@ -425,9 +425,7 @@ describe('outbox', () => {
     await removed.stage('a', 'one');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    const restarted = new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
-    });
+    const restarted = new DurabilityScheduler({ context: contextFor(storage) });
     const publish = vi.fn(() => undefined);
     const kept = new DurabilityOutbox({
       scheduler: restarted,
@@ -440,9 +438,7 @@ describe('outbox', () => {
     expect(storage.alarmAt).toBe(Date.now() + 60_000);
 
     const recovered = vi.fn((_entries: OutboxEntry<string>[]) => undefined);
-    const again = new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
-    });
+    const again = new DurabilityScheduler({ context: contextFor(storage) });
     const reattached = new DurabilityOutbox({
       scheduler: again,
       channel: 'removed',

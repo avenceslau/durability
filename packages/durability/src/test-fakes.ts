@@ -186,6 +186,11 @@ export class FakeStorage {
   }
 }
 
+/**
+ * Each call is a new object instance over the same stored data: the runtime
+ * gives a restarted object a new `storage`, and durability keys the object's
+ * scheduler by it. Share one context between helpers of one instance.
+ */
 export const contextFor = (storage: FakeStorage) => ({
-  storage: storage as unknown as DurableObjectStorage,
+  storage: new Proxy(storage, {}) as unknown as DurableObjectStorage,
 });

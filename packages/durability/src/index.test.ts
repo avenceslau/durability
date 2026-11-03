@@ -2325,6 +2325,115 @@ describe('DurabilityScheduler', () => {
     expect(maxActive).toBe(1);
   });
 
+  it('shares one scheduler between helpers built from the same context', async () => {
+    const storage = new FakeStorage();
+    const context = contextFor(storage);
+    const later = vi.fn(async () => undefined);
+    const alarms = new DurabilityAlarms({ context, handlers: { later } });
+    const durability = new Durability({
+      context,
+      handlers: { work: async () => 'done' },
+    });
+
+    const at = Date.now() + 60_000;
+    await alarms.later(at);
+    await durability.work({ id: 'a', payload: null });
+    await vi.waitFor(async () => {
+      await expect(durability.work.getResult('a')).resolves.toMatchObject({
+        status: 'completed',
+      });
+    });
+    expect(storage.alarmAt).toBe(at);
+
+    vi.setSystemTime(at);
+    await durability.alarm();
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
+  it('joins a second scheduler for the same object to the first', async () => {
+    const storage = new FakeStorage();
+    const context = contextFor(storage);
+    const first = new DurabilityScheduler({ context });
+    const second = new DurabilityScheduler({ context });
+    const later = vi.fn(async () => undefined);
+    const alarms = new DurabilityAlarms({
+      scheduler: first,
+      handlers: { later },
+    });
+    await alarms.later(Date.now());
+
+    expect(
+      () =>
+        new DurabilityAlarms({
+          scheduler: second,
+          handlers: { other: async () => undefined },
+        })
+    ).toThrow('already attached');
+    await second.alarm();
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
+  it('merges scheduler options and rejects a conflicting one', async () => {
+    const storage = new FakeStorage();
+    const context = contextFor(storage);
+    let active = 0;
+    let maxActive = 0;
+    const handler = vi.fn(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await Promise.resolve();
+      active -= 1;
+    });
+    const durability = new Durability({ context, handlers: { work: handler } });
+    const scheduler = new DurabilityScheduler({
+      context,
+      alarmConcurrency: 2,
+      alarmMinDelayMs: 1_000,
+    });
+    void new DurabilityAlarms({
+      scheduler,
+      handlers: { later: async () => undefined },
+    });
+
+    expect(
+      () => new DurabilityScheduler({ context, alarmMinDelayMs: 1_000 })
+    ).not.toThrow();
+    expect(
+      () => new DurabilityScheduler({ context, alarmMinDelayMs: 2_000 })
+    ).toThrow(
+      'Scheduler option "alarmMinDelayMs" is already set to a different value for this Durable Object'
+    );
+
+    for (let index = 0; index < 10; index += 1) {
+      storage.sql.exec(
+        `INSERT INTO durability_calls
+          (id, operation, payload, status, attempt, next_attempt_at)
+          VALUES (?, 'work', ?, 'pending', 0, 0)`,
+        `alarm:${index}`,
+        JSON.stringify({ kind: 'value', value: null })
+      );
+    }
+    await durability.alarm();
+
+    expect(handler).toHaveBeenCalledTimes(10);
+    expect(maxActive).toBe(2);
+  });
+
+  it('rejects a second copy of durability on the same object', () => {
+    const context = contextFor(new FakeStorage());
+    const registry = (globalThis as { [key: symbol]: unknown })[
+      Symbol.for('durability.object-schedulers')
+    ] as WeakMap<object, unknown>;
+    registry.set(context.storage, {
+      engine: {},
+      installation: Symbol('another installation'),
+    });
+
+    expect(() => new DurabilityScheduler({ context })).toThrow(
+      'Another copy of durability is already attached to this Durable Object'
+    );
+  });
+
   it('rejects attaching two helpers of the same kind', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
