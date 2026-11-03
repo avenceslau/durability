@@ -1,0 +1,29 @@
+.changeset/shared-named-alarms.md
+  s_05bc118d6a6c3e::t_d77bd801081a12 1-5
+packages/durability/README.md
+  s_05bc118d6a6c3e::t_7ed94bb0b962e3 175-186
+packages/durability/src/durability-alarms.ts
+  s_05bc118d6a6c3e::t_47671e15b25b30 145-205,297,340-341,358-360,370,397-401,403-422,424-430
+packages/durability/src/index.test.ts
+  s_05bc118d6a6c3e::t_0eb5cb7a2a3b5d 19,2285-2395
+packages/durability/src/scheduler.ts
+  s_05bc118d6a6c3e::t_d5d11896573de3 514-516,527-528,533-535,539
+packages/durability/src/storage.ts
+  s_05bc118d6a6c3e::t_303c04ad0d6050 130-131,166,174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ae75a255a9ef69a9d258d9c18b554ea53c5c775a",
+  "prompts": {},
+  "sessions": {
+    "s_05bc118d6a6c3e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "61c1af2b-7593-4644-baf0-a0370ad96d39",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Thomas Ankcorn <tankcorn@cloudflare.com>"
+    }
+  }
+}
