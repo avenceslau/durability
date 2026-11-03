@@ -15,8 +15,8 @@ import {
   type DurabilityLifecycleEvent,
   migrate,
 } from './index';
+import { DurabilityTracker } from './experimental';
 import { migrateCapability } from './migrations';
-import { trackedSourceOf } from './tracked-source';
 import { contextFor, FakeStorage } from './test-fakes';
 import { exponential, jitter } from './utils';
 
@@ -2365,10 +2365,84 @@ describe('DurabilityScheduler', () => {
     ]);
   });
 
-  it('purges and lists only the rows a named alarm helper can own', async () => {
+  it('fails an unhandled alarm through a first helper with no handlers', async () => {
     const storage = new FakeStorage();
-    const context = contextFor(storage);
-    const scheduler = new DurabilityScheduler({ context });
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+    });
+    void new DurabilityAlarms({ scheduler, handlers: {} });
+    storage.sql.exec(
+      `INSERT INTO durability_alarms
+         (name, generation_id, status, scheduled_at, next_attempt_at,
+          attempt, created_at)
+       VALUES ('removed', 'g1', 'pending', 0, 0, 0, 0)`
+    );
+
+    await scheduler.alarm();
+
+    const rows = storage.sql
+      .exec<{ status: string }>('SELECT status FROM durability_alarms')
+      .toArray();
+    expect(rows).toEqual([{ status: 'failed' }]);
+    expect(storage.alarmAt).toBeNull();
+  });
+
+  it('runs each named alarm with the policy and hooks of its helper', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+    });
+    const appEvents: string[] = [];
+    const libraryEvents: string[] = [];
+    const fail = async () => {
+      throw new Error('unavailable');
+    };
+    const app = new DurabilityAlarms({
+      scheduler,
+      handlers: { digest: fail },
+      retries: { maxAttempts: 1 },
+      onLifecycleEvent(event) {
+        appEvents.push(`${event.type}:${'alarm' in event ? event.alarm : ''}`);
+      },
+    });
+    const library = new DurabilityAlarms({
+      scheduler,
+      handlers: { check: fail },
+      retries: { maxAttempts: 3, delay: () => 60_000 },
+      onLifecycleEvent(event) {
+        libraryEvents.push(
+          `${event.type}:${'alarm' in event ? event.alarm : ''}`
+        );
+      },
+    });
+
+    await app.digest(Date.now());
+    await library.check(Date.now());
+    storage.alarmAt = null;
+    await scheduler.alarm();
+
+    const rows = storage.sql
+      .exec<{ name: string; status: string }>(
+        'SELECT name, status FROM durability_alarms ORDER BY name'
+      )
+      .toArray();
+    expect(rows).toEqual([
+      { name: 'check', status: 'pending' },
+      { name: 'digest', status: 'failed' },
+    ]);
+    await vi.waitFor(() => {
+      expect(appEvents).toContain('attempt_settled:digest');
+      expect(libraryEvents).toContain('attempt_settled:check');
+    });
+    expect(appEvents.every((event) => event.endsWith(':digest'))).toBe(true);
+    expect(libraryEvents.every((event) => event.endsWith(':check'))).toBe(true);
+  });
+
+  it('lists and purges each row through exactly one named alarm helper', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(storage),
+    });
     const fail = async () => {
       throw new DurabilityNonRetryableError('failed');
     };
@@ -2379,18 +2453,31 @@ describe('DurabilityScheduler', () => {
     });
     await app.digest(Date.now());
     await library.check(Date.now());
+    storage.sql.exec(
+      `INSERT INTO durability_alarms
+         (name, generation_id, status, scheduled_at, next_attempt_at,
+          attempt, created_at)
+       VALUES ('removed', 'g1', 'failed', 0, 0, 1, 0)`
+    );
     storage.alarmAt = null;
     await scheduler.alarm();
+    const tracker = new DurabilityTracker({ sources: { app, library } });
 
-    const listed = await trackedSourceOf(app)!.list({ limit: 10 });
-    expect(listed.records.map((record) => record.name)).toEqual(['digest']);
-    await expect(trackedSourceOf(app)!.get('check')).resolves.toBeUndefined();
+    const listed = await tracker.records();
+    expect(listed.records.map(({ source, id }) => [source, id])).toEqual([
+      ['app', 'removed'],
+      ['app', 'digest'],
+      ['library', 'check'],
+    ]);
+    await expect(tracker.get('app', 'check')).resolves.toBeUndefined();
+    await expect(tracker.get('library', 'removed')).resolves.toBeUndefined();
 
-    await expect(app.purgeBefore(Date.now() + 1)).resolves.toBe(1);
-    const names = storage.sql
-      .exec<{ name: string }>('SELECT name FROM durability_alarms')
+    await expect(library.purgeBefore(Date.now() + 1)).resolves.toBe(1);
+    await expect(app.purgeBefore(Date.now() + 1)).resolves.toBe(2);
+    const remaining = storage.sql
+      .exec('SELECT name FROM durability_alarms')
       .toArray();
-    expect(names).toEqual([{ name: 'check' }]);
+    expect(remaining).toEqual([]);
   });
 
   it('rejects attaching two helpers of the same kind', () => {

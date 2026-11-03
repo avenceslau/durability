@@ -9,6 +9,30 @@ export type DurableTable = {
   key: string;
 };
 
+/**
+ * Limits a query to rows whose key is in `only`, or to rows whose key is not in
+ * `except`, so helpers sharing one table each see their own rows.
+ */
+export type KeyFilter =
+  | { only: readonly string[] }
+  | { except: readonly string[] };
+
+/** SQL condition on `table.key`; bind {@link keyFilterParams} to its placeholders. */
+export const keyFilterCondition = (table: DurableTable): string =>
+  `(? IS NULL OR (${table.key} IN (SELECT value FROM json_each(?))) = ?)`;
+
+export const keyFilterParams = (
+  filter: KeyFilter | undefined
+): [string | null, string | null, number] => {
+  if (filter === undefined) {
+    return [null, null, 0];
+  }
+
+  const included = 'only' in filter;
+  const keys = JSON.stringify(included ? filter.only : filter.except);
+  return [keys, keys, included ? 1 : 0];
+};
+
 /** One attempt of one record generation. */
 export type AttemptRef = {
   key: string;
@@ -127,8 +151,7 @@ export type CreatedQuery = {
   after?: string | undefined;
   status?: string | undefined;
   name?: string | undefined;
-  /** Keys to leave out, such as rows another helper sharing the table owns. */
-  excludeKeys?: readonly string[] | undefined;
+  keys?: KeyFilter | undefined;
 };
 
 export type CreatedPage = {
@@ -163,7 +186,7 @@ export const listCreated = (
       `SELECT * FROM ${table.name}
        WHERE (? IS NULL OR status = ?)
          AND (? IS NULL OR ${nameColumn} = ?)
-         AND ${table.key} NOT IN (SELECT value FROM json_each(?))
+         AND ${keyFilterCondition(table)}
          AND (created_at > ? OR (created_at = ? AND ${table.key} > ?))
        ORDER BY created_at ASC, ${table.key} ASC
        LIMIT ?`,
@@ -171,7 +194,7 @@ export const listCreated = (
       status,
       name,
       name,
-      JSON.stringify(query.excludeKeys ?? []),
+      ...keyFilterParams(query.keys),
       createdAt,
       createdAt,
       key,

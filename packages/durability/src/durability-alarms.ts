@@ -40,7 +40,12 @@ import {
   memoizedKeys,
   type DurableMemoize,
 } from './memoize.js';
-import { deleteAttempt, listCreated, type DurableTable } from './storage.js';
+import {
+  deleteAttempt,
+  listCreated,
+  type DurableTable,
+  type KeyFilter,
+} from './storage.js';
 import {
   registerTrackedSource,
   type UntypedRecord,
@@ -153,14 +158,23 @@ type AlarmOwner = {
 
 /**
  * Every `DurabilityAlarms` on one scheduler shares the `durability_alarms`
- * table, so one participant runs its due rows and hands each row to the
- * instance that owns the row's name.
+ * table. A row belongs to the instance whose handlers include its name. A row
+ * no instance handles, such as one whose handler a deploy removed, belongs to
+ * the first instance attached, which fails it as having no handler.
  */
-const ownersByEngine = new WeakMap<Engine, Map<string, AlarmOwner>>();
+type SharedAlarms = {
+  firstAttached: AlarmOwner;
+  byName: Map<string, AlarmOwner>;
+};
+
+const sharedByEngine = new WeakMap<Engine, SharedAlarms>();
+
+const ownerOf = (shared: SharedAlarms, name: string): AlarmOwner =>
+  shared.byName.get(name) ?? shared.firstAttached;
 
 const runDueAlarms = async (
   engine: Engine,
-  owners: Map<string, AlarmOwner>,
+  shared: SharedAlarms,
   now: number,
   info: AlarmInvocationInfo | undefined
 ): Promise<void> => {
@@ -175,21 +189,15 @@ const runDueAlarms = async (
       )
       .toArray()
   );
-  // A row no instance owns, such as one whose handler a deploy removed, still
-  // runs through the first instance, which fails it as having no handler.
-  const fallback = owners.values().next().value;
-  if (!fallback) {
-    return;
-  }
-  const owned = due.map((row) => ({
+  const assigned = due.map((row) => ({
     row,
-    owner: owners.get(row.name) ?? fallback,
+    owner: ownerOf(shared, row.name),
   }));
   // With liveTimers a running occurrence re-arms itself when it settles, so
   // skipping it keeps a long handler from blocking a concurrent alarm pass.
   const pending = engine.liveTimers
-    ? owned.filter(({ row, owner }) => !owner.active.has(row.name))
-    : owned;
+    ? assigned.filter(({ row, owner }) => !owner.active.has(row.name))
+    : assigned;
   const failures: unknown[] = [];
   await engine.runConcurrent(pending, async ({ row, owner }) => {
     try {
@@ -250,6 +258,11 @@ class DurabilityAlarmsCore<Names extends string> {
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
   readonly #active = new Map<string, ActiveExecution>();
+  readonly #owner: AlarmOwner = {
+    active: this.#active,
+    execute: (row, platform) => this.#execute(row, platform),
+  };
+  readonly #shared: SharedAlarms;
 
   constructor(config: DurabilityAlarmsConfig<Names>) {
     this.#engine = engineFor(config);
@@ -294,7 +307,7 @@ class DurabilityAlarmsCore<Names extends string> {
 
     this.#engine.migrateSchema('namedAlarms', durabilityNamedAlarmMigrations);
     this.#engine.migrateSchema('memos', durabilityMemoMigrations);
-    this.#attach();
+    this.#shared = this.#attach();
     registerTrackedSource(this, this.#trackedSource());
   }
 
@@ -338,7 +351,7 @@ class DurabilityAlarmsCore<Names extends string> {
       before,
       this.#active,
       'Durable alarm was purged',
-      this.#othersNames()
+      this.#ownedKeys()
     );
     this.#emit({
       type: 'purged',
@@ -355,7 +368,7 @@ class DurabilityAlarmsCore<Names extends string> {
     const sql = this.#engine.sql;
     return {
       get: async (name) => {
-        if (this.#othersNames().includes(name)) {
+        if (ownerOf(this.#shared, name) !== this.#owner) {
           return undefined;
         }
         const row = readAlarm(sql, name);
@@ -367,7 +380,7 @@ class DurabilityAlarmsCore<Names extends string> {
           after: cursor,
           status,
           name,
-          excludeKeys: this.#othersNames(),
+          keys: this.#ownedKeys(),
         });
         const records = alarmRowSchema
           .array()
@@ -394,41 +407,45 @@ class DurabilityAlarmsCore<Names extends string> {
     };
   }
 
-  /** Names other instances on this scheduler own, whose rows this one leaves alone. */
-  #othersNames(): string[] {
-    const owners = ownersByEngine.get(this.#engine);
-    return [...(owners?.keys() ?? [])].filter(
-      (name) => !this.#handlers.has(name)
-    );
+  /** The rows {@link ownerOf} assigns to this instance. */
+  #ownedKeys(): KeyFilter {
+    if (this.#shared.firstAttached !== this.#owner) {
+      return { only: [...this.#handlers.keys()] };
+    }
+
+    const handledElsewhere = [...this.#shared.byName]
+      .filter(([, owner]) => owner !== this.#owner)
+      .map(([name]) => name);
+    return { except: handledElsewhere };
   }
 
-  /** Claims this instance's alarm names on the scheduler. */
-  #attach(): void {
-    let owners = ownersByEngine.get(this.#engine);
-    if (!owners) {
-      const created = new Map<string, AlarmOwner>();
-      const engine = this.#engine;
+  #attach(): SharedAlarms {
+    const engine = this.#engine;
+    let shared = sharedByEngine.get(engine);
+    if (!shared) {
+      const created: SharedAlarms = {
+        firstAttached: this.#owner,
+        byName: new Map(),
+      };
       engine.register({
         table: alarmsTable,
         runDue: (now, info) => runDueAlarms(engine, created, now, info),
       });
-      ownersByEngine.set(engine, created);
-      owners = created;
+      sharedByEngine.set(engine, created);
+      shared = created;
     }
+
     for (const name of this.#handlers.keys()) {
-      if (owners.has(name)) {
+      if (shared.byName.has(name)) {
         throw new Error(
           `A named alarm "${name}" is already attached to this scheduler`
         );
       }
     }
-    const owner: AlarmOwner = {
-      active: this.#active,
-      execute: (row, platform) => this.#execute(row, platform),
-    };
     for (const name of this.#handlers.keys()) {
-      owners.set(name, owner);
+      shared.byName.set(name, this.#owner);
     }
+    return shared;
   }
 
   async #schedule(name: string, scheduledTime: number): Promise<void> {
