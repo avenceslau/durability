@@ -47,7 +47,10 @@ describe('fanout', () => {
     const storage = new FakeStorage();
     const routing = new RoutingLoad();
     const config = {
-      context: { storage: storage as unknown as DurableObjectStorage },
+      // Each fanout built from the config is a new object instance.
+      get context() {
+        return contextFor(storage);
+      },
       targets,
       routing,
       dlq: sink.write,

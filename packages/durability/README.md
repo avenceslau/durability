@@ -205,7 +205,35 @@ export class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
+A Durable Object has one scheduler. A helper configured with `context` instead of `scheduler`, and any further `DurabilityScheduler` for the same object, joins it, so helpers never reconcile the physical alarm against only their own records. Scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`, and the experimental ones) can be set by whichever attaches; an option left out never conflicts, and a different value for one already set throws. The object's `alarm` method can delegate to the scheduler or to any helper's `alarm`: each runs the due work of every helper on the object.
+
+This lets a library use durability without asking for a scheduler. It builds its helpers from the context it is given, and the application only forwards `alarm`:
+
+```ts
+// In a library
+export const alerts = (ctx: DurableObjectState) => {
+  const alarms = new DurabilityAlarms({
+    context: ctx,
+    handlers: { checkAlerts: () => runChecks(ctx) },
+  });
+  return {
+    start: () => alarms.checkAlerts(Date.now()),
+    alarm: (info?: AlarmInvocationInfo) => alarms.alarm(info),
+  };
+};
+
+// In the application
+export class Billing extends DurableObject<Env> {
+  private readonly jobs = new Durability({ context: this.ctx, handlers });
+  private readonly alerts = alerts(this.ctx);
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.jobs.alarm(info); // also runs the library's alarms
+  }
+}
+```
+
+Install durability once per Worker, as a peer dependency of libraries that use it: a second copy reaching the same object throws instead of fighting the first over its alarm.
 
 ## Memoize
 
@@ -377,7 +405,7 @@ The purge runs in one transaction. It best-effort aborts matching active handler
 
 ## Experimental options
 
-These options, methods, and capabilities are opt-in: none takes effect unless you set, call, or construct it, so leaving them alone keeps every behavior described above. Their names and behavior may change in a minor release. Scheduler options also apply to the private scheduler of a helper configured with `context`.
+These options, methods, and capabilities are opt-in: none takes effect unless you set, call, or construct it, so leaving them alone keeps every behavior described above. Their names and behavior may change in a minor release. Scheduler options can also be passed to a helper configured with `context`.
 
 ```ts
 const scheduler = new DurabilityScheduler({

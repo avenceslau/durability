@@ -77,14 +77,23 @@ export type DurabilitySchedulerConfig = DurabilitySchedulerOptions & {
 };
 
 /**
- * How a helper attaches to a scheduler: an existing shared one, or a private
- * one created from the Durable Object context with the given scheduler options.
+ * How a helper attaches to the object's scheduler: through a
+ * {@link DurabilityScheduler}, or from the Durable Object context, which joins
+ * the scheduler already there or creates it with the given options.
  */
 export type SchedulerAttachment =
   | { scheduler: DurabilityScheduler; context?: never }
   | (DurabilitySchedulerConfig & { scheduler?: never });
 
 const minAlarmDelayMs = 1_000;
+const defaultAlarmConcurrency = 10;
+const schedulerOptionKeys = [
+  'alarmConcurrency',
+  'alarmMinDelayMs',
+  'alarmHandoffMs',
+  'liveTimers',
+  'onAlarmRetry',
+] as const satisfies ReadonlyArray<keyof DurabilitySchedulerOptions>;
 const maxAlarmDelayMs = 15_000;
 // setTimeout treats delays past this as zero, so anything further out can only
 // be served by the physical alarm fallback.
@@ -213,16 +222,18 @@ const decideRetry = (
  */
 export class Engine {
   readonly sql: SqlStorage;
-  private readonly context: DurabilityContext;
+  private context: DurabilityContext;
   private readonly storage: DurableObjectStorage;
-  private readonly alarmConcurrency: number;
-  private readonly alarmMinDelayMs: number;
-  private readonly alarmHandoffMs: number;
-  readonly liveTimers: boolean;
-  private readonly onAlarmRetry: DurabilitySchedulerOptions['onAlarmRetry'];
+  private alarmConcurrency = defaultAlarmConcurrency;
+  private alarmMinDelayMs = 15_000;
+  private alarmHandoffMs = 14 * 60_000;
+  liveTimers = false;
+  private onAlarmRetry: DurabilitySchedulerOptions['onAlarmRetry'];
+  // Only options someone set can conflict; an omitted one takes any value.
+  private explicitOptions: DurabilitySchedulerOptions = {};
   private readonly participants: Participant[] = [];
   private readonly migrated = new Set<MigrationCapability>();
-  private availablePermits: number;
+  private availablePermits = defaultAlarmConcurrency;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
   private earlyAlarm:
@@ -240,29 +251,72 @@ export class Engine {
     this.context = context;
     this.storage = traceStorage(context.storage);
     this.sql = this.storage.sql;
-    this.alarmConcurrency = options.alarmConcurrency ?? 10;
-    this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
-    this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
-    this.liveTimers = options.liveTimers ?? false;
-    this.onAlarmRetry = options.onAlarmRetry;
+    this.configure(options);
+  }
+
+  /**
+   * Joins one more helper or scheduler handle to this object's scheduler. The
+   * first context that can `waitUntil` is kept, so a bare `{ storage }` context
+   * attached first does not hide it from the rest.
+   */
+  attach(
+    context: DurabilityContext,
+    options: DurabilitySchedulerOptions
+  ): void {
     if (
-      this.onAlarmRetry !== undefined &&
-      typeof this.onAlarmRetry !== 'function'
+      this.context.waitUntil === undefined &&
+      context.waitUntil !== undefined
+    ) {
+      this.context = context;
+    }
+    this.configure(options);
+  }
+
+  private configure(options: DurabilitySchedulerOptions): void {
+    const merged: DurabilitySchedulerOptions = { ...this.explicitOptions };
+    for (const key of schedulerOptionKeys) {
+      const value = options[key];
+      if (value === undefined) {
+        continue;
+      }
+      const current = this.explicitOptions[key];
+      if (current !== undefined && current !== value) {
+        throw new Error(
+          `Scheduler option "${key}" is already set to a different value for this Durable Object`
+        );
+      }
+      Object.assign(merged, { [key]: value });
+    }
+
+    const alarmConcurrency = merged.alarmConcurrency ?? defaultAlarmConcurrency;
+    const alarmMinDelayMs = merged.alarmMinDelayMs ?? 15_000;
+    const alarmHandoffMs = merged.alarmHandoffMs ?? 14 * 60_000;
+    if (
+      merged.onAlarmRetry !== undefined &&
+      typeof merged.onAlarmRetry !== 'function'
     ) {
       throw new TypeError('onAlarmRetry must be a function');
     }
-    assertPositiveInteger('alarmConcurrency', this.alarmConcurrency);
-    assertPositiveInteger('alarmMinDelayMs', this.alarmMinDelayMs);
+    assertPositiveInteger('alarmConcurrency', alarmConcurrency);
+    assertPositiveInteger('alarmMinDelayMs', alarmMinDelayMs);
     if (
-      this.alarmMinDelayMs < minAlarmDelayMs ||
-      this.alarmMinDelayMs > maxAlarmDelayMs
+      alarmMinDelayMs < minAlarmDelayMs ||
+      alarmMinDelayMs > maxAlarmDelayMs
     ) {
       throw new RangeError(
         `alarmMinDelayMs must be between ${minAlarmDelayMs} and ${maxAlarmDelayMs}`
       );
     }
-    assertPositiveInteger('alarmHandoffMs', this.alarmHandoffMs);
-    this.availablePermits = this.alarmConcurrency;
+    assertPositiveInteger('alarmHandoffMs', alarmHandoffMs);
+
+    // Permits already handed out stay out; raising the limit frees more now.
+    this.availablePermits += alarmConcurrency - this.alarmConcurrency;
+    this.alarmConcurrency = alarmConcurrency;
+    this.alarmMinDelayMs = alarmMinDelayMs;
+    this.alarmHandoffMs = alarmHandoffMs;
+    this.liveTimers = merged.liveTimers ?? false;
+    this.onAlarmRetry = merged.onAlarmRetry;
+    this.explicitOptions = merged;
   }
 
   register(participant: Participant): void {
@@ -578,7 +632,7 @@ export class Engine {
   }
 
   tryAcquirePermit(): (() => void) | undefined {
-    if (this.availablePermits === 0) {
+    if (this.availablePermits <= 0) {
       return undefined;
     }
     this.availablePermits -= 1;
@@ -962,14 +1016,48 @@ export class Engine {
 
 const engines = new WeakMap<DurabilityScheduler, Engine>();
 
+type ObjectScheduler = { engine: unknown; installation: symbol };
+
+// Every copy of this package in an isolate shares the registry, so a second
+// copy reaching the same object is caught instead of fighting over its alarm.
+const installation = Symbol('durability installation');
+const globalRegistry = globalThis as { [key: symbol]: unknown };
+const registryKey = Symbol.for('durability.object-schedulers');
+globalRegistry[registryKey] ??= new WeakMap<object, ObjectScheduler>();
+const objectSchedulers = globalRegistry[registryKey] as WeakMap<
+  object,
+  ObjectScheduler
+>;
+
+/** The one engine behind every scheduler and helper of a Durable Object. */
+const engineForObject = (config: DurabilitySchedulerConfig): Engine => {
+  const { context } = config;
+  const existing = objectSchedulers.get(context.storage);
+  if (existing === undefined) {
+    const engine = new Engine(context, config);
+    objectSchedulers.set(context.storage, { engine, installation });
+    return engine;
+  }
+  if (existing.installation !== installation) {
+    throw new Error(
+      'Another copy of durability is already attached to this Durable Object; install durability once, for example as a peer dependency'
+    );
+  }
+
+  const engine = existing.engine as Engine;
+  engine.attach(context, config);
+  return engine;
+};
+
 /**
- * Owns the Durable Object's physical alarm, storage, and concurrency
- * pool so {@link Durability} and {@link DurabilityAlarms} can share them.
+ * Owns the Durable Object's physical alarm, storage, and concurrency pool so
+ * every durability helper on the object shares them.
  *
- * Construct one per Durable Object when using both helpers, pass it to each,
- * and delegate the object's `alarm` method to {@link DurabilityScheduler.alarm}.
- * A helper constructed directly from the Durable Object context creates a
- * private scheduler instead.
+ * A Durable Object has one scheduler. Constructing another for the same
+ * object, or a helper from the object's context, joins it; scheduler options
+ * merge, and a different value for an option already set throws. Delegate the
+ * object's `alarm` method to {@link DurabilityScheduler.alarm} or to any
+ * helper's `alarm`: each runs the due work of every helper on the object.
  *
  * @example
  * ```ts
@@ -992,7 +1080,7 @@ const engines = new WeakMap<DurabilityScheduler, Engine>();
  */
 export class DurabilityScheduler {
   constructor(config: DurabilitySchedulerConfig) {
-    engines.set(this, new Engine(config.context, config));
+    engines.set(this, engineForObject(config));
   }
 
   /** Runs due work for every attached helper and re-arms the physical alarm. */
@@ -1003,13 +1091,10 @@ export class DurabilityScheduler {
 
 traceMethods(DurabilityScheduler.prototype, 'DurabilityScheduler');
 
-/**
- * Resolves the engine a helper should attach to: the shared one behind a
- * scheduler, or a private one built from the Durable Object context.
- */
+/** Resolves the engine a helper attaches to: the object's one scheduler. */
 export const engineFor = (attachment: SchedulerAttachment): Engine => {
   if (attachment.scheduler === undefined) {
-    return new Engine(attachment.context, attachment);
+    return engineForObject(attachment);
   }
   const engine = engines.get(attachment.scheduler);
   if (!engine) {
