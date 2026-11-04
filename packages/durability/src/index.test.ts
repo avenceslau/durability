@@ -2317,10 +2317,14 @@ describe('DurabilityScheduler', () => {
       handlers: { later },
     });
     await alarms.later(Date.now());
+    void new Durability({
+      scheduler: first,
+      handlers: { work: async () => undefined },
+    });
 
     expect(
       () =>
-        new DurabilityAlarms({
+        new Durability({
           scheduler: second,
           handlers: { other: async () => undefined },
         })
