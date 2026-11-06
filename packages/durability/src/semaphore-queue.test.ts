@@ -527,6 +527,55 @@ describe('semaphore queue', () => {
     expect(await queue.status('a')).toMatchObject({ state: 'claiming' });
   });
 
+  it('reports a claim inside the grant window when the next write fails', async () => {
+    let grantedAt: number | undefined;
+    const syncs: number[] = [];
+    let writesUntilFault: number | undefined;
+    const { queue, storage } = scripted({
+      request: async () => {
+        grantedAt = Date.now();
+        // Past the write applying this reply and the alarm run's own
+        // reconciliation, the early alarm's outbox claim fails.
+        writesUntilFault = 2;
+        return grantOf('g1', 1);
+      },
+      sync: async (_key, message) => {
+        syncs.push(Date.now());
+        return {
+          type: 'synced',
+          v: 1,
+          grantResults: message.grants.map((grant) => ({
+            grantId: grant.grantId,
+            status: 'ok' as const,
+            claimed: grant.claimed,
+          })),
+        };
+      },
+    });
+    const transaction = storage.transaction.bind(storage);
+    vi.spyOn(storage, 'transaction').mockImplementation((closure) => {
+      if (writesUntilFault === 0) {
+        writesUntilFault = undefined;
+        return Promise.reject(new Error('storage unavailable'));
+      }
+      if (writesUntilFault !== undefined) {
+        writesUntilFault -= 1;
+      }
+      return transaction(closure);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+    await settle(6_000);
+
+    // A holder reclaims claims it has not heard about within grantTimeoutMs
+    // (10 s by default), so one failed write must not push the report to the
+    // 15 s fallback alarm.
+    expect(syncs.length).toBeGreaterThan(0);
+    expect(syncs[0]! - grantedAt!).toBeLessThan(5_000);
+    expect(await queue.status('a')).toMatchObject({ state: 'admitted' });
+  });
+
   it('retries claim reports well inside the holder grant window', async () => {
     const syncs: number[] = [];
     const { queue } = scripted(

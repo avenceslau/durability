@@ -85,6 +85,7 @@ export type SchedulerAttachment =
   | (DurabilitySchedulerConfig & { scheduler?: never });
 
 const minAlarmDelayMs = 1_000;
+const failedRunRetryMs = 1_000;
 const maxAlarmDelayMs = 15_000;
 // setTimeout treats delays past this as zero, so anything further out can only
 // be served by the physical alarm fallback.
@@ -225,6 +226,7 @@ export class Engine {
   private availablePermits: number;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
+  private failedRuns = 0;
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
     | undefined;
@@ -640,6 +642,7 @@ export class Engine {
   async alarm(info?: AlarmInvocationInfo): Promise<void> {
     try {
       await this.runAlarm(info);
+      this.failedRuns = 0;
     } catch (error) {
       // Throwing lets the platform retry, but it gives up after a few failures
       // and drops the alarm, stranding pending work. Keeping our own alarm
@@ -653,7 +656,23 @@ export class Engine {
         error
       );
       this.notifyAlarmRetry(error, info);
+      this.retryFailedRun();
     }
+  }
+
+  /**
+   * A transient storage fault would otherwise leave all due work to the
+   * fallback alarm, up to `alarmMinDelayMs` away: longer than a holder's
+   * grant window, for one. The in-memory timer retries sooner, backing off to
+   * that fallback while runs keep failing.
+   */
+  private retryFailedRun(): void {
+    this.failedRuns += 1;
+    const delay = Math.min(
+      failedRunRetryMs * 2 ** (this.failedRuns - 1),
+      this.alarmMinDelayMs
+    );
+    this.scheduleEarlyAlarm(Date.now() + delay);
   }
 
   private notifyAlarmRetry(
