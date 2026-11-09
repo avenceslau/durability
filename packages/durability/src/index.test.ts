@@ -1098,6 +1098,50 @@ describe('Durability', () => {
     storage.setAlarm = setAlarm;
   });
 
+  it('retries a failed alarm run in memory before the fallback alarm, backing off', async () => {
+    vi.useFakeTimers();
+    const storage = new FakeStorage();
+    const handler = vi.fn(async (_call: DurableCall<null>) => 'done');
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: { work: handler },
+    });
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+        (id, operation, payload, status, attempt, next_attempt_at)
+        VALUES ('due', 'work', ?, 'pending', 0, 0)`,
+      JSON.stringify({ kind: 'value', value: null })
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exec = storage.sql.exec.bind(storage.sql);
+    const runs: number[] = [];
+    let failures = 2;
+    vi.spyOn(storage.sql, 'exec').mockImplementation((query, ...bindings) => {
+      if (/FROM durability_calls\s+WHERE status = 'pending'/.test(query)) {
+        runs.push(Date.now());
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('storage unavailable');
+        }
+      }
+      return exec(query, ...bindings);
+    });
+    const start = Date.now();
+
+    // The first run fails; the fallback alarm is 15 s away by default.
+    await durability.alarm();
+    expect(handler).not.toHaveBeenCalled();
+
+    // Retried after 1 s, which fails again; the next retry waits 2 s.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(runs.map((at) => at - start)).toEqual([0, 1_000]);
+    expect(handler).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(handler).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+  });
+
   it('rejects handler names that collide with instance members', () => {
     expect(
       () =>
