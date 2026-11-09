@@ -145,6 +145,37 @@ const unattachedChannelRetryMs = 60_000;
 
 const channelRowSchema = z.object({ channel: z.string() });
 
+const channelKeySchema = z.tuple([z.string(), z.string()]);
+
+const isChannelKey = (id: string): boolean => {
+  try {
+    return channelKeySchema.safeParse(JSON.parse(id)).success;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The key of a record in a table partitioned by channel. The default channel
+ * keys records by their own ID, as before channels existed; other channels by
+ * the `[channel, id]` pair, so the same ID can name a record on each. A
+ * default-channel ID of that pair's form would name another channel's record,
+ * so it has no key.
+ */
+export const channelRowKey = (
+  channel: string,
+  id: string
+): string | undefined => {
+  if (channel !== defaultChannel) {
+    return JSON.stringify([channel, id]);
+  }
+  return isChannelKey(id) ? undefined : id;
+};
+
+/** The ID a record goes by within its channel. */
+export const idInChannel = (channel: string, key: string): string =>
+  channel === defaultChannel ? key : channelKeySchema.parse(JSON.parse(key))[1];
+
 /** Rejects a channel name a helper would otherwise store rows under. */
 export const assertChannel = (helper: string, channel: unknown): string => {
   if (typeof channel !== 'string' || channel.length === 0) {

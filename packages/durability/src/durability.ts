@@ -33,8 +33,10 @@ import {
 } from './policy.js';
 import {
   assertChannel,
+  channelRowKey,
   defaultChannel,
   engineFor,
+  idInChannel,
   type ActiveExecution,
   type Engine,
   type SchedulerAttachment,
@@ -80,33 +82,7 @@ const readCall = (sql: SqlStorage, key: string): CallRow | undefined =>
       sql.exec('SELECT * FROM durability_calls WHERE id = ?', key).toArray()[0]
     );
 
-const channelKeySchema = z.tuple([z.string(), z.string()]);
-
-const isChannelKey = (id: string): boolean => {
-  try {
-    return channelKeySchema.safeParse(JSON.parse(id)).success;
-  } catch {
-    return false;
-  }
-};
-
-/**
- * The row key of a call. The default channel keys rows by the call's own ID,
- * as before channels existed; other channels by the `[channel, id]` pair, so
- * the same ID can name a call on each. A default-channel ID of that pair's
- * form would name another channel's row, so it has no key.
- */
-const callKey = (channel: string, id: string): string | undefined => {
-  if (channel !== defaultChannel) {
-    return JSON.stringify([channel, id]);
-  }
-  return isChannelKey(id) ? undefined : id;
-};
-
-const callIdOf = (call: CallRow): string =>
-  call.channel === defaultChannel
-    ? call.id
-    : channelKeySchema.parse(JSON.parse(call.id))[1];
+const callIdOf = (call: CallRow): string => idInChannel(call.channel, call.id);
 
 /**
  * The context passed to a durable operation handler for each attempt.
@@ -501,7 +477,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const sql = this.#engine.sql;
     return {
       get: async (id) => {
-        const key = callKey(this.#channel, id);
+        const key = channelRowKey(this.#channel, id);
         const call = key === undefined ? undefined : readCall(sql, key);
         return call && callRecord(sql, call);
       },
@@ -522,7 +498,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
           : { records, cursor: page.next };
       },
       watch: (id, listener) => {
-        const key = callKey(this.#channel, id);
+        const key = channelRowKey(this.#channel, id);
         return key === undefined
           ? () => undefined
           : this.#engine.watch(callsTable, key, () => listener());
@@ -564,7 +540,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string,
     idempotencyKey: string
   ): Promise<DurableOperationResult<unknown>> {
-    const key = callKey(this.#channel, idempotencyKey);
+    const key = channelRowKey(this.#channel, idempotencyKey);
     const call =
       key === undefined ? undefined : readCall(this.#engine.sql, key);
     if (!call) {
@@ -579,7 +555,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string;
     payload: unknown;
   }): Promise<void> {
-    const key = callKey(this.#channel, input.id);
+    const key = channelRowKey(this.#channel, input.id);
     if (key === undefined) {
       throw new TypeError(
         `Durable call ID ${JSON.stringify(input.id)} is reserved: on the default channel it would name a call on another channel`
