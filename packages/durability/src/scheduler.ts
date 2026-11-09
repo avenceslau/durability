@@ -358,6 +358,11 @@ export class Engine {
     this.liveTimers = merged.liveTimers ?? false;
     this.onAlarmRetry = merged.onAlarmRetry;
     this.explicitOptions = merged;
+    while (this.availablePermits > 0 && this.permitWaiters.length > 0) {
+      const waiter = this.permitWaiters.shift()!;
+      this.availablePermits -= 1;
+      waiter(this.createRelease());
+    }
   }
 
   register(participant: Participant): void {
@@ -381,10 +386,10 @@ export class Engine {
       this.register({
         table: { name: table.name, key: table.key },
         runDue: async (now, info) => {
+          await this.postponeUnattachedChannels(table, created);
           await Promise.all(
             [...created.values()].map((attached) => attached.runDue(now, info))
           );
-          await this.postponeUnattachedChannels(table, created);
         },
       });
       this.channelsByTable.set(table.name, created);
@@ -782,11 +787,14 @@ export class Engine {
         return;
       }
       released = true;
+      this.availablePermits += 1;
+      if (this.availablePermits <= 0) {
+        return;
+      }
       const waiter = this.permitWaiters.shift();
       if (waiter) {
+        this.availablePermits -= 1;
         waiter(this.createRelease());
-      } else {
-        this.availablePermits += 1;
       }
     };
   }

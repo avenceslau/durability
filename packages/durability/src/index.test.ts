@@ -548,14 +548,13 @@ describe('Durability', () => {
       handlers: { work: handler },
     });
 
-    await Promise.all([
-      durability.work({ id: 'single-flight', payload: null }),
-      durability.alarm(),
-    ]);
+    const registered = durability.work({ id: 'single-flight', payload: null });
+    const alarm = durability.alarm();
+    await registered;
     await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
 
     finish?.();
-    await pending;
+    await alarm;
     await vi.waitFor(async () => {
       await expect(
         durability.work.getResult('single-flight')
