@@ -33,10 +33,8 @@ import {
 } from './policy.js';
 import {
   assertChannel,
-  channelRowKey,
   defaultChannel,
   engineFor,
-  idInChannel,
   type ActiveExecution,
   type Engine,
   type SchedulerAttachment,
@@ -75,14 +73,22 @@ type CallRow = z.infer<typeof callRowSchema>;
 
 const callsTable: DurableTable = { name: 'durability_calls', key: 'id' };
 
-const readCall = (sql: SqlStorage, key: string): CallRow | undefined =>
+const readCall = (
+  sql: SqlStorage,
+  channel: string,
+  id: string
+): CallRow | undefined =>
   callRowSchema
     .optional()
     .parse(
-      sql.exec('SELECT * FROM durability_calls WHERE id = ?', key).toArray()[0]
+      sql
+        .exec(
+          'SELECT * FROM durability_calls WHERE channel = ? AND id = ?',
+          channel,
+          id
+        )
+        .toArray()[0]
     );
-
-const callIdOf = (call: CallRow): string => idInChannel(call.channel, call.id);
 
 /**
  * The context passed to a durable operation handler for each attempt.
@@ -318,7 +324,7 @@ const callState = (
     };
   }
   if (call.result === null) {
-    throw new Error(`Completed durable call "${callIdOf(call)}" has no result`);
+    throw new Error(`Completed durable call "${call.id}" has no result`);
   }
   return { status: 'completed', result: deserialize(call.result) };
 };
@@ -326,7 +332,7 @@ const callState = (
 const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
   const state = callState(call);
   return {
-    id: callIdOf(call),
+    id: call.id,
     name: call.operation,
     generation: call.generation_id,
     createdAt: call.created_at,
@@ -336,7 +342,7 @@ const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
             ...state,
             memoized: memoizedKeys(
               sql,
-              callsTable,
+              { ...callsTable, channel: call.channel },
               call.id,
               call.generation_id
             ),
@@ -348,13 +354,14 @@ const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
 const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
   entityKind: 'operation',
   operation: call.operation,
-  id: callIdOf(call),
+  id: call.id,
   generation: call.generation_id,
 });
 
 class DurabilityCore<Handlers extends HandlerMap> {
   readonly #engine: Engine;
   readonly #channel: string;
+  readonly #table: DurableTable;
   readonly #handlers: Handlers;
   readonly #policy: PolicyResolver<MethodPolicy>;
   readonly #lifecycle: LifecycleHooks;
@@ -369,6 +376,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       'Durability',
       config.channel ?? defaultChannel
     );
+    this.#table = { ...callsTable, channel: this.#channel };
     this.#engine = engineFor(config);
     this.#handlers = handlers;
     this.#policy = createPolicyResolver(
@@ -413,7 +421,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     this.#engine.migrateSchema('operations', durabilityOperationMigrations);
     this.#engine.migrateSchema('memos', durabilityMemoMigrations);
     this.#engine.registerChannel({
-      table: callsTable,
+      table: this.#table,
       channel: this.#channel,
       helper: 'Durability',
       runDue: (now) => this.#runDue(now),
@@ -457,11 +465,10 @@ class DurabilityCore<Handlers extends HandlerMap> {
    */
   async purgeBefore(before: number): Promise<number> {
     const count = await this.#engine.purge(
-      callsTable,
+      this.#table,
       before,
       this.#active,
-      'Durable operation was purged',
-      this.#channel
+      'Durable operation was purged'
     );
     this.#emit({
       type: 'purged',
@@ -477,17 +484,15 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const sql = this.#engine.sql;
     return {
       get: async (id) => {
-        const key = channelRowKey(this.#channel, id);
-        const call = key === undefined ? undefined : readCall(sql, key);
+        const call = readCall(sql, this.#channel, id);
         return call && callRecord(sql, call);
       },
       list: async ({ limit, cursor, status, name }) => {
-        const page = listCreated(sql, callsTable, 'operation', {
+        const page = listCreated(sql, this.#table, 'operation', {
           limit,
           after: cursor,
           status,
           name,
-          channel: this.#channel,
         });
         const records = callRowSchema
           .array()
@@ -497,12 +502,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
           ? { records }
           : { records, cursor: page.next };
       },
-      watch: (id, listener) => {
-        const key = channelRowKey(this.#channel, id);
-        return key === undefined
-          ? () => undefined
-          : this.#engine.watch(callsTable, key, () => listener());
-      },
+      watch: (id, listener) =>
+        this.#engine.watch(this.#table, id, () => listener()),
     };
   }
 
@@ -540,9 +541,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string,
     idempotencyKey: string
   ): Promise<DurableOperationResult<unknown>> {
-    const key = channelRowKey(this.#channel, idempotencyKey);
-    const call =
-      key === undefined ? undefined : readCall(this.#engine.sql, key);
+    const call = readCall(this.#engine.sql, this.#channel, idempotencyKey);
     if (!call) {
       return { status: 'not_found' };
     }
@@ -555,12 +554,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string;
     payload: unknown;
   }): Promise<void> {
-    const key = channelRowKey(this.#channel, input.id);
-    if (key === undefined) {
-      throw new TypeError(
-        `Durable call ID ${JSON.stringify(input.id)} is reserved: on the default channel it would name a call on another channel`
-      );
-    }
+    const key = input.id;
     const payload = serialize(input.payload);
     const now = Date.now();
     const generation = crypto.randomUUID();
@@ -572,7 +566,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
                (id, channel, operation, payload, status, attempt,
                 next_attempt_at, created_at, generation_id)
              VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-             ON CONFLICT(id) DO NOTHING
+             ON CONFLICT(channel, id) DO NOTHING
              RETURNING id`,
             key,
             this.#channel,
@@ -583,7 +577,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
             generation
           )
           .toArray().length > 0;
-      const current = readCall(sql, key);
+      const current = readCall(sql, this.#channel, key);
       if (!current) {
         throw new Error(`Durable call "${input.id}" was not persisted`);
       }
@@ -638,7 +632,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
     try {
       await previousStart;
-      const call = readCall(this.#engine.sql, key);
+      const call = readCall(this.#engine.sql, this.#channel, key);
       if (!call || call.status !== 'pending') {
         return;
       }
@@ -671,7 +665,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       | undefined;
     return this.#engine.startExecution(
       {
-        table: callsTable,
+        table: this.#table,
         key: call.id,
         row: call,
         label: `operation "${call.operation}"`,
@@ -698,12 +692,12 @@ class DurabilityCore<Handlers extends HandlerMap> {
             );
           }
           return handler({
-            id: callIdOf(call),
+            id: call.id,
             operation: call.operation,
             payload: deserialize(call.payload),
             attempt,
             signal,
-            memoize: createMemoize(this.#engine.sql, callsTable, {
+            memoize: createMemoize(this.#engine.sql, this.#table, {
               key: call.id,
               generation: call.generation_id,
               attempt,
@@ -720,7 +714,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
           const timestamp = Date.now();
           const updated = updateAttempt(
             this.#engine.sql,
-            callsTable,
+            this.#table,
             { key: call.id, generation: call.generation_id, attempt },
             `status = 'completed', result = ?, last_error = NULL,
              last_error_name = NULL, completed_at = ?`,

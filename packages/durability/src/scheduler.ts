@@ -22,8 +22,11 @@ import {
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
 import { deleteMemos, deleteStaleMemos } from './memoize.js';
 import {
+  channelBindings,
+  channelClause,
   claimAttempt,
   exhaustAttempts,
+  tableOwner,
   updateAttempt,
   type DurableTable,
 } from './storage.js';
@@ -102,6 +105,7 @@ const maxTimerMs = 2 ** 31 - 1;
 
 const pendingHeadRowSchema = z.object({
   pk: z.string(),
+  channel: z.string().optional(),
   next_attempt_at: z.number().int().nonnegative(),
 });
 const countRowSchema = z.object({ count: z.number().int().nonnegative() });
@@ -145,36 +149,8 @@ const unattachedChannelRetryMs = 60_000;
 
 const channelRowSchema = z.object({ channel: z.string() });
 
-const channelKeySchema = z.tuple([z.string(), z.string()]);
-
-const isChannelKey = (id: string): boolean => {
-  try {
-    return channelKeySchema.safeParse(JSON.parse(id)).success;
-  } catch {
-    return false;
-  }
-};
-
-/**
- * The key of a record in a table partitioned by channel. The default channel
- * keys records by their own ID, as before channels existed; other channels by
- * the `[channel, id]` pair, so the same ID can name a record on each. A
- * default-channel ID of that pair's form would name another channel's record,
- * so it has no key.
- */
-export const channelRowKey = (
-  channel: string,
-  id: string
-): string | undefined => {
-  if (channel !== defaultChannel) {
-    return JSON.stringify([channel, id]);
-  }
-  return isChannelKey(id) ? undefined : id;
-};
-
-/** The ID a record goes by within its channel. */
-export const idInChannel = (channel: string, key: string): string =>
-  channel === defaultChannel ? key : channelKeySchema.parse(JSON.parse(key))[1];
+const activeKey = (channel: string | undefined, key: string): string =>
+  JSON.stringify([channel ?? null, key]);
 
 /** Rejects a channel name a helper would otherwise store rows under. */
 export const assertChannel = (helper: string, channel: unknown): string => {
@@ -403,7 +379,7 @@ export class Engine {
     if (!channels) {
       const created = new Map<string, ChannelParticipant>();
       this.register({
-        table,
+        table: { name: table.name, key: table.key },
         runDue: async (now, info) => {
           await Promise.all(
             [...created.values()].map((attached) => attached.runDue(now, info))
@@ -581,11 +557,12 @@ export class Engine {
         : { physical: at, timer: at };
     }
     const active = this.activeByTable.get(participant.table.name);
+    const partitioned = this.channelsByTable.has(participant.table.name);
     const limit = this.liveTimers ? (active?.size ?? 0) + 1 : 1;
     const rows = pendingHeadRowSchema.array().parse(
       this.sql
         .exec(
-          `SELECT ${participant.table.key} AS pk, next_attempt_at
+          `SELECT ${participant.table.key} AS pk, next_attempt_at${partitioned ? ', channel' : ''}
            FROM ${participant.table.name}
            WHERE status = 'pending'
            ORDER BY next_attempt_at ASC
@@ -601,7 +578,9 @@ export class Engine {
       }
       return { physical, timer: physical };
     }
-    const eligible = rows.find((row) => !active?.has(row.pk));
+    const eligible = rows.find(
+      (row) => !active?.has(activeKey(row.channel, row.pk))
+    );
     return { physical, timer: eligible?.next_attempt_at };
   }
 
@@ -709,8 +688,7 @@ export class Engine {
     table: DurableTable,
     before: number,
     active: Map<string, ActiveExecution>,
-    abortReason: string,
-    channel?: string
+    abortReason: string
   ): Promise<number> {
     if (!Number.isSafeInteger(before) || before < 0) {
       throw new RangeError('timestamp must be a non-negative safe integer');
@@ -721,12 +699,8 @@ export class Engine {
       }
     }
 
-    // Only a table partitioned by channel has the column.
-    const where =
-      channel === undefined
-        ? 'created_at < ?'
-        : 'created_at < ? AND channel = ?';
-    const params = channel === undefined ? [before] : [before, channel];
+    const where = `created_at < ?${channelClause(table)}`;
+    const params = [before, ...channelBindings(table)];
     const removed = await this.transaction((sql) => {
       const { count } = countRowSchema.parse(
         sql
@@ -742,7 +716,7 @@ export class Engine {
     });
 
     if (removed > 0) {
-      for (const key of this.watchers.get(table.name)?.keys() ?? []) {
+      for (const key of this.watchers.get(tableOwner(table))?.keys() ?? []) {
         this.notify(table, key);
       }
     }
@@ -755,10 +729,10 @@ export class Engine {
     key: string,
     listener: SettlementListener
   ): () => void {
+    const owner = tableOwner(table);
     const byKey =
-      this.watchers.get(table.name) ??
-      new Map<string, Set<SettlementListener>>();
-    this.watchers.set(table.name, byKey);
+      this.watchers.get(owner) ?? new Map<string, Set<SettlementListener>>();
+    this.watchers.set(owner, byKey);
     const listeners = byKey.get(key) ?? new Set<SettlementListener>();
     byKey.set(key, listeners);
     listeners.add(listener);
@@ -777,7 +751,8 @@ export class Engine {
     key: string,
     completed?: ExecutionSpec['row']
   ): void {
-    for (const listener of this.watchers.get(table.name)?.get(key) ?? []) {
+    for (const listener of this.watchers.get(tableOwner(table))?.get(key) ??
+      []) {
       listener(completed);
     }
   }
@@ -989,7 +964,7 @@ export class Engine {
       settled,
     };
     spec.active.set(key, activeExecution);
-    this.trackActive(spec.table.name, key);
+    this.trackActive(spec.table.name, activeKey(spec.table.channel, key));
 
     let releasePermit = eagerPermit;
     let handlerStarted = false;
@@ -1082,7 +1057,7 @@ export class Engine {
       if (spec.active.get(key) === activeExecution) {
         spec.active.delete(key);
       }
-      this.releaseActive(spec.table.name, key);
+      this.releaseActive(spec.table.name, activeKey(spec.table.channel, key));
       // Re-arm the in-memory timer now that this key is eligible again, so work
       // the timer skipped while it executed is picked up at its exact time.
       if (this.liveTimers) {

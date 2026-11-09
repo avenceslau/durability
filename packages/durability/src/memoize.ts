@@ -6,7 +6,9 @@ import {
 } from './errors.js';
 import { deserialize, serialize } from './serialization.js';
 import {
+  channelBindings,
   pendingGeneration,
+  tableOwner,
   type AttemptRef,
   type DurableTable,
 } from './storage.js';
@@ -54,6 +56,7 @@ export const createMemoize = (
   ref: AttemptRef
 ): DurableMemoize => {
   const running = new Set<string>();
+  const owner = tableOwner(table);
 
   /** Serializes, checks, and writes a callback's result, then returns its persisted form. */
   const save = <T>(key: string, value: T): T => {
@@ -82,13 +85,14 @@ export const createMemoize = (
              WHERE ${pendingGeneration(table)} AND attempt = ?
            )
            RETURNING memo_key`,
-          table.name,
+          owner,
           ref.key,
           ref.generation,
           key,
           serialized,
           ref.key,
           ref.generation,
+          ...channelBindings(table),
           ref.attempt
         )
         .toArray().length > 0;
@@ -122,14 +126,15 @@ export const createMemoize = (
              ) AS owned,
              (SELECT COUNT(*) FROM durability_memos
               WHERE owner = ? AND key = ? AND generation_id = ?) AS saved`,
-          table.name,
+          owner,
           ref.key,
           ref.generation,
           key,
           ref.key,
           ref.generation,
+          ...channelBindings(table),
           ref.attempt,
-          table.name,
+          owner,
           ref.key,
           ref.generation
         )
@@ -168,7 +173,7 @@ export const createMemoize = (
 
   return <T>(key: string, callback: () => T | Promise<T>): Promise<T> =>
     traceFunction('memoize', () => run(key, callback), {
-      owner: table.name,
+      owner,
       key: ref.key,
       attempt: ref.attempt,
       memoKey: key,
@@ -192,7 +197,7 @@ export const memoizedKeys = (
           `SELECT memo_key FROM durability_memos
            WHERE owner = ? AND key = ? AND generation_id = ?
            ORDER BY rowid`,
-          table.name,
+          tableOwner(table),
           key,
           generation
         )
@@ -208,7 +213,7 @@ export const deleteMemos = (
 ): void => {
   sql.exec(
     'DELETE FROM durability_memos WHERE owner = ? AND key = ?',
-    table.name,
+    tableOwner(table),
     key
   );
 };
@@ -225,8 +230,10 @@ export const deleteStaleMemos = (
        WHERE record.${table.key} = durability_memos.key
          AND record.generation_id = durability_memos.generation_id
          AND record.status = 'pending'
+         ${table.channel === undefined ? '' : 'AND record.channel = ?'}
      )`,
-    table.name
+    tableOwner(table),
+    ...channelBindings(table)
   );
 };
 
@@ -247,5 +254,10 @@ export const deleteMemosOfDroppedTable = (
   if (!tableExists(sql, 'durability_memos') || tableExists(sql, table.name)) {
     return;
   }
-  sql.exec('DELETE FROM durability_memos WHERE owner = ?', table.name);
+  sql.exec(
+    `DELETE FROM durability_memos
+     WHERE owner = ? OR (json_valid(owner) AND json_extract(owner, '$[0]') = ?)`,
+    table.name,
+    table.name
+  );
 };

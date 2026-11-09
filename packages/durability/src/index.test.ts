@@ -2523,7 +2523,7 @@ describe('DurabilityScheduler', () => {
     storage.sql.exec(
       `INSERT INTO durability_calls
         (id, channel, operation, payload, status, attempt, next_attempt_at)
-        VALUES ('["removed","a"]', 'removed', 'work', ?, 'pending', 0, 0)`,
+        VALUES ('a', 'removed', 'work', ?, 'pending', 0, 0)`,
       JSON.stringify({ kind: 'value', value: null })
     );
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -2562,23 +2562,6 @@ describe('DurabilityScheduler', () => {
         result: 'back',
       });
     });
-  });
-
-  it("reserves default-channel IDs that name another channel's call", async () => {
-    const durability = new Durability({
-      context: contextFor(new FakeStorage()),
-      handlers: { work: async () => undefined },
-    });
-
-    await expect(
-      durability.work({ id: '["library","a"]', payload: null })
-    ).rejects.toThrow('is reserved');
-    await expect(durability.work.getResult('["library","a"]')).resolves.toEqual(
-      { status: 'not_found' }
-    );
-    await expect(
-      durability.work({ id: '["one"]', payload: null })
-    ).resolves.toBeUndefined();
   });
 
   it('rejects attaching two helpers of the same kind', () => {

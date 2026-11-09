@@ -7,7 +7,20 @@ import { z } from 'zod';
 export type DurableTable = {
   name: string;
   key: string;
+  channel?: string;
 };
+
+export const channelClause = (table: DurableTable): string =>
+  table.channel === undefined ? '' : ' AND channel = ?';
+
+export const channelBindings = (table: DurableTable): string[] =>
+  table.channel === undefined ? [] : [table.channel];
+
+// Keep existing memo owners on the default channel, without restricting record IDs.
+export const tableOwner = (table: DurableTable): string =>
+  table.channel === undefined || table.channel === 'default'
+    ? table.name
+    : JSON.stringify([table.name, table.channel]);
 
 /** One attempt of one record generation. */
 export type AttemptRef = {
@@ -23,7 +36,7 @@ const attemptRowSchema = z.object({
 // Every write is conditional on the record's generation and pending status, so a
 // stale execution can never overwrite a replacement or a later attempt.
 export const pendingGeneration = (table: DurableTable): string =>
-  `${table.key} = ? AND generation_id = ? AND status = 'pending'`;
+  `${table.key} = ? AND generation_id = ? AND status = 'pending'${channelClause(table)}`;
 
 /**
  * Starts the next attempt, optionally persisting its deadline in the same write.
@@ -49,6 +62,7 @@ export const claimAttempt = (
         ...(nextAttemptAt === undefined ? [] : [nextAttemptAt]),
         key,
         generation,
+        ...channelBindings(table),
         maxAttempts
       )
       .toArray()[0]
@@ -75,6 +89,7 @@ export const updateAttempt = (
       ...values,
       ref.key,
       ref.generation,
+      ...channelBindings(table),
       ref.attempt
     )
     .toArray().length > 0;
@@ -92,6 +107,7 @@ export const deleteAttempt = (
        RETURNING ${table.key}`,
       ref.key,
       ref.generation,
+      ...channelBindings(table),
       ref.attempt
     )
     .toArray().length > 0;
@@ -116,6 +132,7 @@ export const exhaustAttempts = (
         error.name,
         key,
         generation,
+        ...channelBindings(table),
         maxAttempts
       )
       .toArray()[0]
@@ -127,8 +144,6 @@ export type CreatedQuery = {
   after?: string | undefined;
   status?: string | undefined;
   name?: string | undefined;
-  /** Only for tables partitioned by a `channel` column. */
-  channel?: string | undefined;
 };
 
 export type CreatedPage = {
@@ -158,16 +173,12 @@ export const listCreated = (
       : createdCursorSchema.parse(JSON.parse(query.after));
   const status = query.status ?? null;
   const name = query.name ?? null;
-  const channel =
-    query.channel === undefined
-      ? { clause: '', params: [] }
-      : { clause: 'AND channel = ?', params: [query.channel] };
   const found = sql
     .exec(
       `SELECT * FROM ${table.name}
        WHERE (? IS NULL OR status = ?)
          AND (? IS NULL OR ${nameColumn} = ?)
-         ${channel.clause}
+         ${channelClause(table)}
          AND (created_at > ? OR (created_at = ? AND ${table.key} > ?))
        ORDER BY created_at ASC, ${table.key} ASC
        LIMIT ?`,
@@ -175,7 +186,7 @@ export const listCreated = (
       status,
       name,
       name,
-      ...channel.params,
+      ...channelBindings(table),
       createdAt,
       createdAt,
       key,
