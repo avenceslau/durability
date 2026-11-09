@@ -231,6 +231,20 @@ export const durabilityNamedAlarmMigrations = [
       ON durability_alarms (status, next_attempt_at);
     `,
   },
+  {
+    // Existing alarms join the default channel, whose rows keep their names as keys.
+    name: 'durability_0016_alarms_channel',
+    up: `
+      ALTER TABLE durability_alarms ADD COLUMN channel TEXT NOT NULL DEFAULT 'default';
+      CREATE INDEX durability_alarms_channel_pending_idx
+      ON durability_alarms (channel, status, next_attempt_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_alarms_channel_pending_idx;
+      DELETE FROM durability_alarms WHERE channel <> 'default';
+      ALTER TABLE durability_alarms DROP COLUMN channel;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**
