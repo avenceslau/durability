@@ -32,6 +32,8 @@ import {
   type PolicyResolver,
 } from './policy.js';
 import {
+  assertChannel,
+  defaultChannel,
   engineFor,
   type ActiveExecution,
   type Engine,
@@ -53,6 +55,7 @@ import {
 
 const callRowSchema = z.object({
   id: z.string(),
+  channel: z.string(),
   operation: z.string(),
   payload: z.string(),
   status: z.enum(['pending', 'completed', 'failed']),
@@ -70,12 +73,40 @@ type CallRow = z.infer<typeof callRowSchema>;
 
 const callsTable: DurableTable = { name: 'durability_calls', key: 'id' };
 
-const readCall = (sql: SqlStorage, id: string): CallRow | undefined =>
+const readCall = (sql: SqlStorage, key: string): CallRow | undefined =>
   callRowSchema
     .optional()
     .parse(
-      sql.exec('SELECT * FROM durability_calls WHERE id = ?', id).toArray()[0]
+      sql.exec('SELECT * FROM durability_calls WHERE id = ?', key).toArray()[0]
     );
+
+const channelKeySchema = z.tuple([z.string(), z.string()]);
+
+const isChannelKey = (id: string): boolean => {
+  try {
+    return channelKeySchema.safeParse(JSON.parse(id)).success;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The row key of a call. The default channel keys rows by the call's own ID,
+ * as before channels existed; other channels by the `[channel, id]` pair, so
+ * the same ID can name a call on each. A default-channel ID of that pair's
+ * form would name another channel's row, so it has no key.
+ */
+const callKey = (channel: string, id: string): string | undefined => {
+  if (channel !== defaultChannel) {
+    return JSON.stringify([channel, id]);
+  }
+  return isChannelKey(id) ? undefined : id;
+};
+
+const callIdOf = (call: CallRow): string =>
+  call.channel === defaultChannel
+    ? call.id
+    : channelKeySchema.parse(JSON.parse(call.id))[1];
 
 /**
  * The context passed to a durable operation handler for each attempt.
@@ -265,6 +296,14 @@ export type DurabilityConfig<Handlers extends HandlerMap = HandlerMap> =
     SchedulerAttachment & {
       /** Operation handlers keyed by the method names they become. */
       handlers: Handlers;
+      /**
+       * Stable channel ID. Instances on one scheduler share storage,
+       * partitioned by channel; call IDs are unique within a channel, and
+       * each instance runs, lists and purges only its own. A library should
+       * use its own channel so its calls never meet the application's.
+       * Defaults to `default`.
+       */
+      channel?: string;
     };
 
 const assertOperation = (
@@ -303,7 +342,7 @@ const callState = (
     };
   }
   if (call.result === null) {
-    throw new Error(`Completed durable call "${call.id}" has no result`);
+    throw new Error(`Completed durable call "${callIdOf(call)}" has no result`);
   }
   return { status: 'completed', result: deserialize(call.result) };
 };
@@ -311,7 +350,7 @@ const callState = (
 const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
   const state = callState(call);
   return {
-    id: call.id,
+    id: callIdOf(call),
     name: call.operation,
     generation: call.generation_id,
     createdAt: call.created_at,
@@ -333,12 +372,13 @@ const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
 const operationEntity = (call: CallRow): OperationLifecycleEntity => ({
   entityKind: 'operation',
   operation: call.operation,
-  id: call.id,
+  id: callIdOf(call),
   generation: call.generation_id,
 });
 
 class DurabilityCore<Handlers extends HandlerMap> {
   readonly #engine: Engine;
+  readonly #channel: string;
   readonly #handlers: Handlers;
   readonly #policy: PolicyResolver<MethodPolicy>;
   readonly #lifecycle: LifecycleHooks;
@@ -349,6 +389,10 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
   constructor(config: DurabilityConfig<Handlers>) {
     const { handlers } = config;
+    this.#channel = assertChannel(
+      'Durability',
+      config.channel ?? defaultChannel
+    );
     this.#engine = engineFor(config);
     this.#handlers = handlers;
     this.#policy = createPolicyResolver(
@@ -392,8 +436,10 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
     this.#engine.migrateSchema('operations', durabilityOperationMigrations);
     this.#engine.migrateSchema('memos', durabilityMemoMigrations);
-    this.#engine.register({
+    this.#engine.registerChannel({
       table: callsTable,
+      channel: this.#channel,
+      helper: 'Durability',
       runDue: (now) => this.#runDue(now),
     });
     registerTrackedSource(this, this.#trackedSource());
@@ -438,7 +484,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
       callsTable,
       before,
       this.#active,
-      'Durable operation was purged'
+      'Durable operation was purged',
+      this.#channel
     );
     this.#emit({
       type: 'purged',
@@ -454,7 +501,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const sql = this.#engine.sql;
     return {
       get: async (id) => {
-        const call = readCall(sql, id);
+        const key = callKey(this.#channel, id);
+        const call = key === undefined ? undefined : readCall(sql, key);
         return call && callRecord(sql, call);
       },
       list: async ({ limit, cursor, status, name }) => {
@@ -463,6 +511,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
           after: cursor,
           status,
           name,
+          channel: this.#channel,
         });
         const records = callRowSchema
           .array()
@@ -472,8 +521,12 @@ class DurabilityCore<Handlers extends HandlerMap> {
           ? { records }
           : { records, cursor: page.next };
       },
-      watch: (id, listener) =>
-        this.#engine.watch(callsTable, id, () => listener()),
+      watch: (id, listener) => {
+        const key = callKey(this.#channel, id);
+        return key === undefined
+          ? () => undefined
+          : this.#engine.watch(callsTable, key, () => listener());
+      },
     };
   }
 
@@ -485,9 +538,10 @@ class DurabilityCore<Handlers extends HandlerMap> {
         this.#engine.sql
           .exec(
             `SELECT id FROM durability_calls
-             WHERE status = 'pending' AND next_attempt_at <= ?
+             WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?
              ORDER BY next_attempt_at ASC
              LIMIT 100`,
+            this.#channel,
             now
           )
           .toArray()
@@ -495,11 +549,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
     // With liveTimers an active operation reschedules itself when it settles, so
     // skipping it keeps a long handler from blocking a concurrent alarm pass.
     const pending = this.#engine.liveTimers
-      ? due.filter(({ id }) => !this.#active.has(id))
+      ? due.filter(({ id: key }) => !this.#active.has(key))
       : due;
-    await this.#engine.runConcurrent(pending, async ({ id }) => {
+    await this.#engine.runConcurrent(pending, async ({ id: key }) => {
       try {
-        await this.#execute(id);
+        await this.#execute(key);
       } catch {
         return;
       }
@@ -510,7 +564,9 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string,
     idempotencyKey: string
   ): Promise<DurableOperationResult<unknown>> {
-    const call = readCall(this.#engine.sql, idempotencyKey);
+    const key = callKey(this.#channel, idempotencyKey);
+    const call =
+      key === undefined ? undefined : readCall(this.#engine.sql, key);
     if (!call) {
       return { status: 'not_found' };
     }
@@ -523,6 +579,12 @@ class DurabilityCore<Handlers extends HandlerMap> {
     operation: string;
     payload: unknown;
   }): Promise<void> {
+    const key = callKey(this.#channel, input.id);
+    if (key === undefined) {
+      throw new TypeError(
+        `Durable call ID ${JSON.stringify(input.id)} is reserved: on the default channel it would name a call on another channel`
+      );
+    }
     const payload = serialize(input.payload);
     const now = Date.now();
     const generation = crypto.randomUUID();
@@ -531,12 +593,13 @@ class DurabilityCore<Handlers extends HandlerMap> {
         sql
           .exec(
             `INSERT INTO durability_calls
-               (id, operation, payload, status, attempt, next_attempt_at,
-                created_at, generation_id)
-             VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+               (id, channel, operation, payload, status, attempt,
+                next_attempt_at, created_at, generation_id)
+             VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING
              RETURNING id`,
-            input.id,
+            key,
+            this.#channel,
             input.operation,
             payload,
             now,
@@ -544,7 +607,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
             generation
           )
           .toArray().length > 0;
-      const current = readCall(sql, input.id);
+      const current = readCall(sql, key);
       if (!current) {
         throw new Error(`Durable call "${input.id}" was not persisted`);
       }
@@ -577,33 +640,33 @@ class DurabilityCore<Handlers extends HandlerMap> {
         { operation: input.operation, id: input.id },
         error
       );
-    const background = this.#execute(input.id, eagerPermit)
+    const background = this.#execute(key, eagerPermit)
       .then(() => this.#engine.scheduleNextAlarm())
       .catch(onError);
     this.#engine.waitUntil(background, onError);
   }
 
   /**
-   * Looks up a call and starts it unless the same generation is already
-   * running. Lookups for one ID are serialized so two concurrent callers
-   * cannot both miss the active map while awaiting storage.
+   * Looks up a call by row key and starts it unless the same generation is
+   * already running. Lookups for one key are serialized so two concurrent
+   * callers cannot both miss the active map while awaiting storage.
    */
-  async #execute(id: string, eagerPermit?: () => void): Promise<void> {
-    const previousStart = this.#executionStarts.get(id) ?? Promise.resolve();
+  async #execute(key: string, eagerPermit?: () => void): Promise<void> {
+    const previousStart = this.#executionStarts.get(key) ?? Promise.resolve();
     let releaseStart!: () => void;
     const currentStart = new Promise<void>((resolve) => {
       releaseStart = resolve;
     });
-    this.#executionStarts.set(id, currentStart);
+    this.#executionStarts.set(key, currentStart);
     let permitTransferred = false;
 
     try {
       await previousStart;
-      const call = readCall(this.#engine.sql, id);
+      const call = readCall(this.#engine.sql, key);
       if (!call || call.status !== 'pending') {
         return;
       }
-      const running = this.#active.get(id);
+      const running = this.#active.get(key);
       if (running?.generation === call.generation_id) {
         releaseStart();
         await running.settled;
@@ -616,8 +679,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
       return execution;
     } finally {
       releaseStart();
-      if (this.#executionStarts.get(id) === currentStart) {
-        this.#executionStarts.delete(id);
+      if (this.#executionStarts.get(key) === currentStart) {
+        this.#executionStarts.delete(key);
       }
       if (!permitTransferred) {
         eagerPermit?.();
@@ -659,7 +722,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
             );
           }
           return handler({
-            id: call.id,
+            id: callIdOf(call),
             operation: call.operation,
             payload: deserialize(call.payload),
             attempt,

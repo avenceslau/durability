@@ -125,6 +125,34 @@ export type Participant = {
   holding?(): boolean;
 };
 
+/** The channel every helper uses when it is not given one. */
+export const defaultChannel = 'default';
+
+/**
+ * One helper instance's share of a table that several instances partition by
+ * a `channel` column. Each runs only its own channel's due rows.
+ */
+export type ChannelParticipant = {
+  table: DurableTable;
+  channel: string;
+  /** How errors name the helper, such as `An outbox`. */
+  helper: string;
+  runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
+};
+
+/** How long records of a channel no instance attached wait before they are looked at again. */
+const unattachedChannelRetryMs = 60_000;
+
+const channelRowSchema = z.object({ channel: z.string() });
+
+/** Rejects a channel name a helper would otherwise store rows under. */
+export const assertChannel = (helper: string, channel: unknown): string => {
+  if (typeof channel !== 'string' || channel.length === 0) {
+    throw new TypeError(`${helper} channel must be a non-empty string`);
+  }
+  return channel;
+};
+
 /**
  * Called after a record may have settled. Successful completions pass the
  * executed row because some tables delete it on success; other changes pass
@@ -233,6 +261,10 @@ export class Engine {
   // Only options someone set can conflict; an omitted one takes any value.
   private explicitOptions: DurabilitySchedulerOptions = {};
   private readonly participants: Participant[] = [];
+  private readonly channelsByTable = new Map<
+    string,
+    Map<string, ChannelParticipant>
+  >();
   private readonly migrated = new Set<MigrationCapability>();
   private availablePermits = defaultAlarmConcurrency;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
@@ -327,6 +359,85 @@ export class Engine {
       throw new Error(`A ${name} helper is already attached to this scheduler`);
     }
     this.participants.push(participant);
+  }
+
+  /**
+   * Attaches one channel of a table several helper instances share. The first
+   * attachment registers the table; each run then runs every attached
+   * channel's due rows and retains the rows of channels nothing attached.
+   */
+  registerChannel(participant: ChannelParticipant): void {
+    const { table, channel, helper } = participant;
+    let channels = this.channelsByTable.get(table.name);
+    if (!channels) {
+      const created = new Map<string, ChannelParticipant>();
+      this.register({
+        table,
+        runDue: async (now, info) => {
+          await Promise.all(
+            [...created.values()].map((attached) => attached.runDue(now, info))
+          );
+          await this.postponeUnattachedChannels(table, created);
+        },
+      });
+      this.channelsByTable.set(table.name, created);
+      channels = created;
+    }
+    if (channels.has(channel)) {
+      throw new Error(
+        `${helper} for channel "${channel}" is already attached to this scheduler`
+      );
+    }
+    channels.set(channel, participant);
+  }
+
+  /**
+   * Due rows of a channel no instance attached, such as one a deploy removed
+   * or a library not yet constructed, would keep the alarm awake forever. They
+   * are kept and looked at again later, since their owner may return.
+   */
+  private async postponeUnattachedChannels(
+    table: DurableTable,
+    channels: ReadonlyMap<string, ChannelParticipant>
+  ): Promise<void> {
+    const now = Date.now();
+    const unattached = channelRowSchema
+      .array()
+      .parse(
+        this.sql
+          .exec(
+            `SELECT DISTINCT channel FROM ${table.name}
+             WHERE status = 'pending' AND next_attempt_at <= ?`,
+            now
+          )
+          .toArray()
+      )
+      .map((row) => row.channel)
+      .filter((channel) => !channels.has(channel));
+    if (unattached.length === 0) {
+      return;
+    }
+
+    for (const channel of unattached) {
+      reportFailure(
+        'durability.channel_missing',
+        { table: table.name, channel },
+        new Error(
+          `Channel "${channel}" of ${table.name} has no helper attached; retaining its records`
+        )
+      );
+    }
+    await this.transaction((sql) => {
+      for (const channel of unattached) {
+        sql.exec(
+          `UPDATE ${table.name} SET next_attempt_at = ?
+           WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?`,
+          now + unattachedChannelRetryMs,
+          channel,
+          now
+        );
+      }
+    });
   }
 
   waitUntil(
@@ -567,7 +678,8 @@ export class Engine {
     table: DurableTable,
     before: number,
     active: Map<string, ActiveExecution>,
-    abortReason: string
+    abortReason: string,
+    channel?: string
   ): Promise<number> {
     if (!Number.isSafeInteger(before) || before < 0) {
       throw new RangeError('timestamp must be a non-negative safe integer');
@@ -578,16 +690,22 @@ export class Engine {
       }
     }
 
+    // Only a table partitioned by channel has the column.
+    const where =
+      channel === undefined
+        ? 'created_at < ?'
+        : 'created_at < ? AND channel = ?';
+    const params = channel === undefined ? [before] : [before, channel];
     const removed = await this.transaction((sql) => {
       const { count } = countRowSchema.parse(
         sql
           .exec(
-            `SELECT COUNT(*) AS count FROM ${table.name} WHERE created_at < ?`,
-            before
+            `SELECT COUNT(*) AS count FROM ${table.name} WHERE ${where}`,
+            ...params
           )
           .toArray()[0]
       );
-      sql.exec(`DELETE FROM ${table.name} WHERE created_at < ?`, before);
+      sql.exec(`DELETE FROM ${table.name} WHERE ${where}`, ...params);
       deleteStaleMemos(sql, table);
       return count;
     });

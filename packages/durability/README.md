@@ -235,6 +235,25 @@ export class Billing extends DurableObject<Env> {
 
 Install durability once per Worker, as a peer dependency of libraries that use it: a second copy reaching the same object throws instead of fighting the first over its alarm.
 
+### Channels
+
+A helper attaches to a channel, `default` unless it is given one, and each channel of a helper kind holds one instance. Instances on different channels share the scheduler but not their records: IDs are unique within a channel, and each instance runs, lists, and purges only its own. A library should use a channel of its own, so the application can use the same helper and the same IDs without either seeing the other's work:
+
+```ts
+// In a library
+const jobs = new Durability({
+  context: ctx,
+  channel: 'durable-alerts',
+  handlers: { notify },
+});
+
+// In the application, on the default channel
+const jobs = new Durability({ context: this.ctx, handlers: { charge } });
+// Both can register { id: 'invoice-1' }; they are different calls.
+```
+
+Attaching a second instance to a channel already in use throws `Durability for channel "durable-alerts" is already attached to this scheduler`. Due records of a channel no instance attached, such as one a deploy removed or a library not yet constructed, are kept and looked at again a minute later, with a `durability.channel_missing` report, so they run once their channel's helper attaches again. On the default channel, an ID of the form `["<channel>","<id>"]` is reserved, since it would name another channel's record. `DurabilityOutbox` takes the same `channel` option.
+
 ## Memoize
 
 A retried attempt runs the whole handler again. Wrap work that must not repeat in `memoize(key, callback)`, which operation handlers, named alarm handlers, and [fanout messages](#independent-delivery) all receive. Once a key's callback succeeds, its result is persisted and every later call with that key returns it instead of running the callback:

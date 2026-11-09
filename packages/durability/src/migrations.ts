@@ -91,6 +91,20 @@ export const durabilityOperationMigrations = [
       ON durability_calls (status, next_attempt_at);
     `,
   },
+  {
+    // Existing calls join the default channel, whose rows keep their IDs as keys.
+    name: 'durability_0015_calls_channel',
+    up: `
+      ALTER TABLE durability_calls ADD COLUMN channel TEXT NOT NULL DEFAULT 'default';
+      CREATE INDEX durability_calls_channel_pending_idx
+      ON durability_calls (channel, status, next_attempt_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS durability_calls_channel_pending_idx;
+      DELETE FROM durability_calls WHERE channel <> 'default';
+      ALTER TABLE durability_calls DROP COLUMN channel;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**

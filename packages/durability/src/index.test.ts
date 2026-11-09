@@ -15,6 +15,7 @@ import {
   type DurabilityLifecycleEvent,
   migrate,
 } from './index';
+import { DurabilityTracker } from './experimental';
 import { migrateCapability } from './migrations';
 import { contextFor, FakeStorage } from './test-fakes';
 import { exponential, jitter } from './utils';
@@ -44,6 +45,7 @@ describe('migrations', () => {
         'durability_0001_create_calls',
         'durability_0002_pending_index',
         'durability_0004_calls_generation_and_created_at',
+        'durability_0015_calls_channel',
       ],
       rolledBack: [],
     });
@@ -63,6 +65,7 @@ describe('migrations', () => {
       {
         applied: [],
         rolledBack: [
+          'durability_0015_calls_channel',
           'durability_0004_calls_generation_and_created_at',
           'durability_0002_pending_index',
         ],
@@ -203,7 +206,7 @@ describe('migrations', () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
     // Reproduce what durability 2.x left behind: workers-qb's history table,
-    // the combined v4 schema, and a live record.
+    // the combined v4 schema, and a live record. Channels came later.
     storage.sql.exec(`
       CREATE TABLE durability_migrations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,7 +215,9 @@ describe('migrations', () => {
       )
     `);
     for (const migration of [
-      ...durabilityOperationMigrations,
+      ...durabilityOperationMigrations.filter(
+        ({ name }) => name !== 'durability_0015_calls_channel'
+      ),
       ...durabilityNamedAlarmMigrations,
     ]) {
       storage.sql.exec(migration.up);
@@ -272,6 +277,7 @@ describe('migrations', () => {
         name: 'durability_0004_alarms_generation_and_created_at',
         capability: 'namedAlarms',
       },
+      { name: 'durability_0015_calls_channel', capability: 'operations' },
       { name: 'durability_0012_create_memos', capability: 'memos' },
     ]);
     expect(Durability.migrate(context)).toEqual({
@@ -322,6 +328,7 @@ describe('migrations', () => {
       'durability_0004_alarms_generation_and_created_at',
       'durability_0004_calls_generation_and_created_at',
       'durability_0004_generation_and_created_at',
+      'durability_0015_calls_channel',
     ]);
   });
 
@@ -474,7 +481,7 @@ describe('migrate', () => {
       storage.sql
         .exec('SELECT COUNT(*) AS count FROM durability_migrations')
         .toArray()[0]?.['count']
-    ).toBe(3);
+    ).toBe(4);
   });
 
   it('moves to a target and drops its history table once empty', () => {
@@ -2436,6 +2443,142 @@ describe('DurabilityScheduler', () => {
     expect(() => new DurabilityScheduler({ context })).toThrow(
       'Another copy of durability is already attached to this Durable Object'
     );
+  });
+
+  it('keeps operations on different channels apart on one scheduler', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+    const app = new Durability({
+      scheduler,
+      handlers: { work: async ({ id }: DurableCall<null>) => `app:${id}` },
+    });
+    const library = new Durability({
+      scheduler,
+      channel: 'library',
+      handlers: { work: async ({ id }: DurableCall<null>) => `library:${id}` },
+    });
+    const tracker = new DurabilityTracker({ sources: { app, library } });
+
+    await app.work({ id: 'same', payload: null });
+    await library.work({ id: 'same', payload: null });
+    await vi.waitFor(async () => {
+      await expect(app.work.getResult('same')).resolves.toEqual({
+        status: 'completed',
+        result: 'app:same',
+      });
+      await expect(library.work.getResult('same')).resolves.toEqual({
+        status: 'completed',
+        result: 'library:same',
+      });
+    });
+
+    const listed = await tracker.records();
+    expect(listed.records.map(({ source, id }) => [source, id])).toEqual([
+      ['app', 'same'],
+      ['library', 'same'],
+    ]);
+    await expect(library.purgeBefore(Date.now() + 1)).resolves.toBe(1);
+    await expect(app.work.getResult('same')).resolves.toMatchObject({
+      status: 'completed',
+    });
+    await expect(library.work.getResult('same')).resolves.toEqual({
+      status: 'not_found',
+    });
+  });
+
+  it('rejects a second operations helper on a channel already attached', () => {
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(new FakeStorage()),
+    });
+    void new Durability({
+      scheduler,
+      channel: 'library',
+      handlers: { work: async () => undefined },
+    });
+
+    expect(
+      () =>
+        new Durability({
+          scheduler,
+          channel: 'library',
+          handlers: { other: async () => undefined },
+        })
+    ).toThrow(
+      'Durability for channel "library" is already attached to this scheduler'
+    );
+    expect(
+      () =>
+        new Durability({
+          scheduler,
+          channel: '',
+          handlers: { other: async () => undefined },
+        })
+    ).toThrow('Durability channel must be a non-empty string');
+  });
+
+  it('keeps and postpones calls of a channel no helper attached', async () => {
+    const storage = new FakeStorage();
+    const ran = vi.fn(async () => 'done');
+    Durability.migrate(contextFor(storage));
+    storage.sql.exec(
+      `INSERT INTO durability_calls
+        (id, channel, operation, payload, status, attempt, next_attempt_at)
+        VALUES ('["removed","a"]', 'removed', 'work', ?, 'pending', 0, 0)`,
+      JSON.stringify({ kind: 'value', value: null })
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    // A restarted object whose deploy no longer constructs the removed channel.
+    const restarted = new Durability({
+      context: contextFor(storage),
+      handlers: { work: ran },
+    });
+    await restarted.alarm();
+    expect(ran).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'durability.channel_missing' })
+    );
+    const [row] = storage.sql
+      .exec<{ next_attempt_at: number }>(
+        "SELECT next_attempt_at FROM durability_calls WHERE channel = 'removed'"
+      )
+      .toArray();
+    expect(row?.next_attempt_at).toBeGreaterThanOrEqual(Date.now() + 59_000);
+
+    // The channel's helper comes back and runs it.
+    const returned = vi.fn(async () => 'back');
+    const recovered = new Durability({
+      context: contextFor(storage),
+      channel: 'removed',
+      handlers: { work: returned },
+    });
+    storage.sql.exec(
+      "UPDATE durability_calls SET next_attempt_at = 0 WHERE channel = 'removed'"
+    );
+    await recovered.alarm();
+    await vi.waitFor(async () => {
+      await expect(recovered.work.getResult('a')).resolves.toEqual({
+        status: 'completed',
+        result: 'back',
+      });
+    });
+  });
+
+  it("reserves default-channel IDs that name another channel's call", async () => {
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: { work: async () => undefined },
+    });
+
+    await expect(
+      durability.work({ id: '["library","a"]', payload: null })
+    ).rejects.toThrow('is reserved');
+    await expect(durability.work.getResult('["library","a"]')).resolves.toEqual(
+      { status: 'not_found' }
+    );
+    await expect(
+      durability.work({ id: '["one"]', payload: null })
+    ).resolves.toBeUndefined();
   });
 
   it('rejects attaching two helpers of the same kind', () => {

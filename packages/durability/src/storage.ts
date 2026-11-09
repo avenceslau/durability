@@ -127,6 +127,8 @@ export type CreatedQuery = {
   after?: string | undefined;
   status?: string | undefined;
   name?: string | undefined;
+  /** Only for tables partitioned by a `channel` column. */
+  channel?: string | undefined;
 };
 
 export type CreatedPage = {
@@ -156,11 +158,16 @@ export const listCreated = (
       : createdCursorSchema.parse(JSON.parse(query.after));
   const status = query.status ?? null;
   const name = query.name ?? null;
+  const channel =
+    query.channel === undefined
+      ? { clause: '', params: [] }
+      : { clause: 'AND channel = ?', params: [query.channel] };
   const found = sql
     .exec(
       `SELECT * FROM ${table.name}
        WHERE (? IS NULL OR status = ?)
          AND (? IS NULL OR ${nameColumn} = ?)
+         ${channel.clause}
          AND (created_at > ? OR (created_at = ? AND ${table.key} > ?))
        ORDER BY created_at ASC, ${table.key} ASC
        LIMIT ?`,
@@ -168,6 +175,7 @@ export const listCreated = (
       status,
       name,
       name,
+      ...channel.params,
       createdAt,
       createdAt,
       key,
