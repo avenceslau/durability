@@ -2607,7 +2607,7 @@ describe('DurabilityScheduler', () => {
       .toArray();
     expect(rows).toEqual([
       { channel: 'default', name: 'check', status: 'failed' },
-      { channel: 'library', name: '["library","check"]', status: 'pending' },
+      { channel: 'library', name: 'check', status: 'pending' },
     ]);
     await vi.waitFor(() => {
       expect(appEvents).toContain('failed');
@@ -2655,7 +2655,7 @@ describe('DurabilityScheduler', () => {
     ).toEqual([{ channel: 'default', name: 'check' }]);
   });
 
-  it('rejects a second DurabilityAlarms on a channel, and a default-channel name that names another', () => {
+  it('rejects a second DurabilityAlarms on a channel', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
     });
@@ -2675,13 +2675,6 @@ describe('DurabilityScheduler', () => {
     ).toThrow(
       'DurabilityAlarms for channel "library" is already attached to this scheduler'
     );
-    expect(
-      () =>
-        new DurabilityAlarms({
-          scheduler,
-          handlers: { '["library","check"]': async () => undefined },
-        })
-    ).toThrow('is reserved by DurabilityAlarms');
   });
 
   it('rejects attaching two helpers of the same kind', () => {

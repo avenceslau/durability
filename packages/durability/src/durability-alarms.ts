@@ -29,10 +29,8 @@ import {
 } from './policy.js';
 import {
   assertChannel,
-  channelRowKey,
   defaultChannel,
   engineFor,
-  idInChannel,
   type ActiveExecution,
   type Engine,
   type SchedulerAttachment,
@@ -155,22 +153,26 @@ export type DurableNamedAlarm = ((scheduledTime: number) => Promise<void>) & {
   cancel: () => Promise<boolean>;
 };
 
-const readAlarm = (sql: SqlStorage, key: string): AlarmRow | undefined =>
+const readAlarm = (
+  sql: SqlStorage,
+  channel: string,
+  name: string
+): AlarmRow | undefined =>
   alarmRowSchema
     .optional()
     .parse(
       sql
-        .exec('SELECT * FROM durability_alarms WHERE name = ?', key)
+        .exec(
+          'SELECT * FROM durability_alarms WHERE channel = ? AND name = ?',
+          channel,
+          name
+        )
         .toArray()[0]
     );
 
-/** The `name` column is the row key; this is the name the handler goes by. */
-const alarmNameOf = (row: AlarmRow): string =>
-  idInChannel(row.channel, row.name);
-
 const alarmRecord = (sql: SqlStorage, row: AlarmRow): UntypedRecord => ({
-  id: alarmNameOf(row),
-  name: alarmNameOf(row),
+  id: row.name,
+  name: row.name,
   generation: row.generation_id,
   createdAt: row.created_at,
   state:
@@ -180,7 +182,12 @@ const alarmRecord = (sql: SqlStorage, row: AlarmRow): UntypedRecord => ({
           attempt: row.attempt,
           nextAttemptAt: row.next_attempt_at,
           lastError: row.last_error,
-          memoized: memoizedKeys(sql, alarmsTable, row.name, row.generation_id),
+          memoized: memoizedKeys(
+            sql,
+            { ...alarmsTable, channel: row.channel },
+            row.name,
+            row.generation_id
+          ),
         }
       : {
           status: 'failed',
@@ -194,14 +201,15 @@ const alarmRecord = (sql: SqlStorage, row: AlarmRow): UntypedRecord => ({
 
 const alarmEntity = (row: AlarmRow): AlarmLifecycleEntity => ({
   entityKind: 'named_alarm',
-  alarm: alarmNameOf(row),
-  id: alarmNameOf(row),
+  alarm: row.name,
+  id: row.name,
   generation: row.generation_id,
 });
 
 class DurabilityAlarmsCore<Names extends string> {
   readonly #engine: Engine;
   readonly #channel: string;
+  readonly #table: DurableTable;
   readonly #handlers: Map<string, DurableAlarmHandler>;
   readonly #policy: PolicyResolver<AlarmMethodPolicy>;
   readonly #lifecycle: LifecycleHooks;
@@ -213,6 +221,7 @@ class DurabilityAlarmsCore<Names extends string> {
       'DurabilityAlarms',
       config.channel ?? defaultChannel
     );
+    this.#table = { ...alarmsTable, channel: this.#channel };
     this.#engine = engineFor(config);
     this.#handlers = new Map(
       Object.entries<DurableAlarmHandler>(config.handlers).map(
@@ -234,7 +243,7 @@ class DurabilityAlarmsCore<Names extends string> {
       Object.getOwnPropertyNames(DurabilityAlarmsCore.prototype)
     );
     for (const name of this.#handlers.keys()) {
-      if (reserved.has(name) || this.#keyOf(name) === undefined) {
+      if (reserved.has(name)) {
         throw new Error(`"${name}" is reserved by DurabilityAlarms`);
       }
       const method = Object.assign(
@@ -256,7 +265,7 @@ class DurabilityAlarmsCore<Names extends string> {
     this.#engine.migrateSchema('namedAlarms', durabilityNamedAlarmMigrations);
     this.#engine.migrateSchema('memos', durabilityMemoMigrations);
     this.#engine.registerChannel({
-      table: alarmsTable,
+      table: this.#table,
       channel: this.#channel,
       helper: 'DurabilityAlarms',
       runDue: (now, info) => this.#runDue(now, info),
@@ -300,11 +309,10 @@ class DurabilityAlarmsCore<Names extends string> {
    */
   async purgeBefore(before: number): Promise<number> {
     const count = await this.#engine.purge(
-      alarmsTable,
+      this.#table,
       before,
       this.#active,
-      'Durable alarm was purged',
-      this.#channel
+      'Durable alarm was purged'
     );
     this.#emit({
       type: 'purged',
@@ -321,22 +329,15 @@ class DurabilityAlarmsCore<Names extends string> {
     const sql = this.#engine.sql;
     return {
       get: async (name) => {
-        const key = this.#keyOf(name);
-        const row = key === undefined ? undefined : readAlarm(sql, key);
+        const row = readAlarm(sql, this.#channel, name);
         return row && alarmRecord(sql, row);
       },
       list: async ({ limit, cursor, status, name }) => {
-        // The name column holds row keys, so a name filter matches its key.
-        const key = name === undefined ? undefined : this.#keyOf(name);
-        if (name !== undefined && key === undefined) {
-          return { records: [] };
-        }
-        const page = listCreated(sql, alarmsTable, 'name', {
+        const page = listCreated(sql, this.#table, 'name', {
           limit,
           after: cursor,
           status,
-          name: key,
-          channel: this.#channel,
+          name,
         });
         const records = alarmRowSchema
           .array()
@@ -347,11 +348,7 @@ class DurabilityAlarmsCore<Names extends string> {
           : { records, cursor: page.next };
       },
       watch: (name, listener) => {
-        const key = this.#keyOf(name);
-        if (key === undefined) {
-          return () => undefined;
-        }
-        return this.#engine.watch(alarmsTable, key, (completed) => {
+        return this.#engine.watch(this.#table, name, (completed) => {
           if (!completed) {
             listener();
             return;
@@ -366,10 +363,6 @@ class DurabilityAlarmsCore<Names extends string> {
         });
       },
     };
-  }
-
-  #keyOf(name: string): string | undefined {
-    return channelRowKey(this.#channel, name);
   }
 
   async #runDue(
@@ -411,7 +404,7 @@ class DurabilityAlarmsCore<Names extends string> {
       throw new RangeError('scheduledTime must be a non-negative safe integer');
     }
 
-    const key = this.#keyOf(name)!;
+    const key = name;
     const generation = crypto.randomUUID();
     const createdAt = Date.now();
     await this.#engine.transaction((sql) => {
@@ -420,7 +413,7 @@ class DurabilityAlarmsCore<Names extends string> {
            (name, channel, generation_id, status, scheduled_at,
             next_attempt_at, attempt, last_error, last_error_name, created_at)
          VALUES (?, ?, ?, 'pending', ?, ?, 0, NULL, NULL, ?)
-         ON CONFLICT(name) DO UPDATE SET
+         ON CONFLICT(channel, name) DO UPDATE SET
            generation_id = excluded.generation_id,
            status = excluded.status,
            scheduled_at = excluded.scheduled_at,
@@ -437,10 +430,10 @@ class DurabilityAlarmsCore<Names extends string> {
         createdAt
       );
       // Memoized results belong to the replaced occurrence, never to the new one.
-      deleteMemos(sql, alarmsTable, key);
+      deleteMemos(sql, this.#table, key);
     });
     // A waiter on the replaced occurrence resolves now instead of at its timeout.
-    this.#engine.notify(alarmsTable, key);
+    this.#engine.notify(this.#table, key);
     this.#emit({
       type: 'scheduled',
       entityKind: 'named_alarm',
@@ -454,19 +447,20 @@ class DurabilityAlarmsCore<Names extends string> {
   }
 
   async #cancel(name: string): Promise<boolean> {
-    const key = this.#keyOf(name)!;
+    const key = name;
     const cancelled = await this.#engine.transaction((sql) => {
       const removed =
         sql
           .exec(
             `DELETE FROM durability_alarms
-             WHERE name = ? AND status = 'pending'
+             WHERE channel = ? AND name = ? AND status = 'pending'
              RETURNING name`,
+            this.#channel,
             key
           )
           .toArray().length > 0;
       if (removed) {
-        deleteMemos(sql, alarmsTable, key);
+        deleteMemos(sql, this.#table, key);
       }
       return removed;
     });
@@ -479,7 +473,7 @@ class DurabilityAlarmsCore<Names extends string> {
     this.#active
       .get(key)
       ?.controller?.abort(new Error(`Durable alarm "${name}" was cancelled`));
-    this.#engine.notify(alarmsTable, key);
+    this.#engine.notify(this.#table, key);
     return true;
   }
 
@@ -493,11 +487,11 @@ class DurabilityAlarmsCore<Names extends string> {
       return running.settled;
     }
 
-    const name = alarmNameOf(row);
+    const name = row.name;
     const policy = this.#policy(name);
     const retryTimeouts = policy.method?.retryTimeouts ?? false;
     return this.#engine.startExecution({
-      table: alarmsTable,
+      table: this.#table,
       key: row.name,
       row,
       label: `named alarm "${name}"`,
@@ -528,7 +522,7 @@ class DurabilityAlarmsCore<Names extends string> {
           retryCount: attempt - 1,
           idempotencyKey: `durability-alarm:v1:${row.generation_id}`,
           signal,
-          memoize: createMemoize(this.#engine.sql, alarmsTable, {
+          memoize: createMemoize(this.#engine.sql, this.#table, {
             key: row.name,
             generation: row.generation_id,
             attempt,
@@ -538,7 +532,7 @@ class DurabilityAlarmsCore<Names extends string> {
       },
       complete: (_result, attempt) => {
         const timestamp = Date.now();
-        const removed = deleteAttempt(this.#engine.sql, alarmsTable, {
+        const removed = deleteAttempt(this.#engine.sql, this.#table, {
           key: row.name,
           generation: row.generation_id,
           attempt,
