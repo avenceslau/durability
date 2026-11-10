@@ -1,0 +1,72 @@
+---
+title: DurabilitySocketClient
+description: Browser-side RPC, reconnects, replay, and resynchronization.
+---
+
+Import `DurabilitySocketClient` from `durability/client`. This browser-safe entry point has no Workers runtime import. Connect it to a [DurabilitySocket](/primitives/socket/) server.
+
+## How it uses your Durable Object
+
+`DurabilitySocketClient` runs in the browser and stores nothing. Everything durable lives in the one Durable Object a connection talks to:
+
+- **One object per connection.** `connect(id)` builds the URL for one object; your Worker forwards the upgrade, and the object's `fetch()`, `webSocketMessage()`, and `webSocketClose()` must delegate to its [`DurabilitySocket`](/primitives/socket/). In the example, `alarm()` also delegates to `durability.alarm()` so the durable `createTodo` operations run.
+- **The object's `ctx.storage.sql`** holds the outbound events with their sequence numbers. The client only remembers the last sequence it saw, so a reconnect replays from the object's table. After a gap the client only fires `resync`; your handler must reload a snapshot from your own tables, as the example does with `list()`. The example's `created` events come from a best-effort lifecycle hook: if the hook fails or the object crashes after the operation completes, no event is stored, so there is nothing to replay and no gap to trigger `resync`.
+- **The hibernatable WebSocket** keeps the subscribed names in its attachment, and the runtime answers keep-alive pings itself, so the object can be evicted while the tab stays connected without the client noticing.
+- **The browser tab** holds everything else: pending calls, handlers, timers, and the last sequence. A sent call that loses its connection is rejected, never replayed, and a page reload starts from nothing.
+
+<ArchitectureWalkthrough example="client">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+## Behind the scenes
+
+**Durable state: none.** A connection keeps its handlers, pending RPCs, subscriptions, and last observed sequence in browser memory. It opens lazily on the first call/subscription, reconnects with jittered backoff, and resubscribes from that in-memory sequence. A page reload loses it.
+
+**On disconnect:** sent unanswered calls reject with `SocketConnectionLostError` rather than being replayed; the server may already have performed them. Unsent calls can wait for connection until their local timeout. The default RPC timeout is two minutes, not remote cancellation.
+
+**Recovery belongs to the application:** `on.resync` must rebuild affected state from an authoritative snapshot. A snapshot of an already-stale projection cannot repair an event lost before it reached that projection. Explicit `close()` ends reconnection, removes handlers, and rejects remaining calls.
+
+See [live job dashboards](/compositions/job-dashboard/) for push, replay, snapshots, and the difference between transport recovery and projection reconciliation.
+
+Implementation: [`socket/client.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/socket/client.ts) (`Connection`, `DurabilitySocketClient`).
+
+## Browser client
+
+The browser client derives every method and event type from the socket:
+
+```ts
+import { DurabilitySocketClient, logging } from 'durability/client';
+import type { TodoList } from '../worker'; // type-only: nothing from the Worker is bundled
+
+const client = new DurabilitySocketClient<TodoList['socket']>({
+  url: (listId) => `wss://example.com/lists/${listId}/ws`,
+}).with(logging());
+
+const conn = client.connect('personal');
+const todos = await conn.rpc.list();
+await conn.rpc.createTodo({
+  id: crypto.randomUUID(),
+  payload: { id: 'todo-1', title: 'Ship it', done: false },
+});
+await conn.rpc.toggle('todo-1');
+
+conn.on.updated((todo) => render(todo));
+conn.on.lifecycle((e) => {
+  if (e.entityKind === 'operation' && e.type === 'attempt_settled') {
+    markSettled(e.id);
+  }
+});
+conn.on.resync(({ names }) => reload(names)); // first subscription, and after an unreplayable gap
+conn.on.status((status) => showStatus(status)); // connecting | connected | disconnected | closed
+conn.close();
+```
+
+`on.resync` reports the outbound events whose subscribers have no continuous history: every mapped name on their first subscription, newly added names on a live connection, and all names after an unreplayable gap. Rebuild the affected state from an inbound snapshot call; `@durability/tanstack-db` does this for collections.
+
+Connections open lazily on the first call or subscription and reconnect with jittered exponential backoff. Calls queued before the socket opens are sent once; calls already sent when the connection drops reject with `SocketConnectionLostError` and are never replayed, because the server may have run them. Route retried mutations through `Durability` with a stable idempotency key rather than re-calling. Calls reject with `SocketTimeoutError` after `timeoutMs` (default 2 minutes). Server-side handler failures reject with `SocketRemoteError`, carrying the server error's `name` and `message`. `with(transform)` returns a new client that wraps every call; transforms receive `{ method, input, next }` and may replace the input.
+
+The client has no `channel` option. When an object has [sockets on several channels](/primitives/socket/#channels), a connection talks to the socket whose `fetch` accepted its upgrade, so point `url` at the endpoint your Worker and the object's `fetch()` route to that socket. If no socket on that channel is attached, the object closes the connection with code `1011` and the client reconnects with backoff, as after any drop.
+
+`durability/client` imports nothing from `cloudflare:workers` and is typechecked against DOM types only. The complete, typechecked version of this example lives in [`examples/realtime-todos`](https://github.com/avenceslau/durability/blob/main/examples/realtime-todos).

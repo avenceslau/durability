@@ -1,0 +1,245 @@
+/* Sizes are in canvas units: the drawing scales with its viewBox. Colours and fonts come from template tokens. */
+
+.architecture {
+  --edge-color: var(--text-muted);
+  --arch-node-stroke: var(--text-subtle);
+  /* Edge labels are cut out of the lines beneath them with a stroke in the slide's background colour. */
+  --arch-knockout: var(--bg);
+
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: visible;
+  font-family: var(--sans);
+}
+
+.architecture [data-color="blue"] {
+  --edge-color: var(--flow-blue, var(--accent));
+}
+
+.architecture [data-color="red"] {
+  --edge-color: var(--flow-red, var(--accent));
+}
+
+.architecture [data-color="green"] {
+  --edge-color: var(--flow-green, var(--accent));
+}
+
+.architecture [data-color="orange"] {
+  --edge-color: var(--flow-orange, var(--accent));
+}
+
+.architecture [data-color="purple"] {
+  --edge-color: var(--flow-purple, var(--accent));
+}
+
+/* Stage changes are animated frame by frame from the component; only the spotlight's dimming is a transition. */
+.arch-dim {
+  transition: opacity 320ms ease;
+}
+
+.arch-dim.is-dim {
+  opacity: 0.25;
+}
+
+.arch-node-fill {
+  fill: var(--bg-card);
+}
+
+.arch-node-fill {
+  stroke: var(--arch-node-stroke);
+  stroke-width: 1.5;
+}
+
+.arch-node.is-external {
+  --arch-node-stroke: var(--success);
+}
+
+.arch-node.is-external .arch-node-fill {
+  fill: var(--success-bg);
+}
+
+.arch-node.is-focus {
+  --arch-node-stroke: var(--accent);
+}
+
+.arch-node.is-focus .arch-node-fill {
+  stroke-width: 3;
+}
+
+.arch-node-icon {
+  color: var(--accent);
+}
+
+.arch-node.is-external .arch-node-icon {
+  color: var(--success);
+}
+
+.arch-node-label {
+  fill: var(--text);
+  font-size: 23px;
+  font-weight: 600;
+  dominant-baseline: central;
+}
+
+.arch-node-sublabel {
+  fill: var(--text-muted);
+  font-size: 17px;
+  dominant-baseline: central;
+}
+
+.arch-badge rect {
+  fill: var(--accent);
+}
+
+.arch-badge text {
+  fill: var(--on-accent);
+  font-size: 15px;
+  font-weight: 700;
+  dominant-baseline: central;
+}
+
+/* Composites open and close on a click, or on Enter or Space when focused. */
+.arch-toggle {
+  cursor: pointer;
+  outline: none;
+}
+
+/* An open composite toggles from its title band and outline only, so clicks among its members do nothing. */
+.arch-toggle .arch-group-box {
+  pointer-events: stroke;
+}
+
+/* Selectable nodes, when the diagram is given onSelectNode. */
+.arch-select {
+  cursor: pointer;
+  outline: none;
+}
+
+.arch-select:hover,
+.arch-select:focus-visible,
+.arch-select[aria-pressed="true"] {
+  --arch-node-stroke: var(--accent);
+}
+
+.arch-select:focus-visible .arch-node-fill,
+.arch-select[aria-pressed="true"] .arch-node-fill {
+  stroke-width: 3;
+}
+
+.arch-toggle-hit {
+  fill: transparent;
+}
+
+.arch-toggle:hover,
+.arch-toggle:focus-visible {
+  --arch-node-stroke: var(--accent);
+}
+
+.arch-toggle:hover .arch-group-box,
+.arch-toggle:focus-visible .arch-group-box {
+  stroke: var(--accent);
+}
+
+.arch-composite-badge rect {
+  fill: var(--accent);
+  transition: opacity 160ms ease;
+}
+
+.arch-toggle:hover .arch-composite-badge rect,
+.arch-toggle:focus-visible .arch-composite-badge rect {
+  opacity: 0.8;
+}
+
+.arch-composite-badge circle,
+.arch-composite-badge path {
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.arch-composite-badge text {
+  fill: var(--on-accent);
+  font-size: 15px;
+  font-weight: 700;
+  dominant-baseline: central;
+}
+
+/* The line's pathLength is 1, so its dash offset is the share of it not yet drawn. */
+.arch-edge-line {
+  fill: none;
+  stroke: var(--edge-color);
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-dasharray: 1 1;
+  transition: stroke-width 240ms ease;
+}
+
+.arch-edge.is-lit .arch-edge-line {
+  stroke-width: 3.5;
+}
+
+.arch-edge-head {
+  fill: var(--edge-color);
+}
+
+.arch-edge-label text {
+  fill: var(--edge-color);
+  font-size: 19px;
+  font-weight: 500;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: var(--arch-knockout);
+  stroke-width: 9px;
+  stroke-linejoin: round;
+}
+
+.arch-label-box {
+  fill: var(--arch-knockout);
+}
+
+.arch-packet {
+  fill: var(--edge-color);
+  animation: arch-packet-in 300ms ease 500ms both;
+}
+
+@keyframes arch-packet-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.arch-note text {
+  fill: var(--text-muted);
+  font-size: 19px;
+  font-style: italic;
+  dominant-baseline: central;
+}
+
+.arch-group-box {
+  fill: color-mix(in srgb, var(--accent) 3.5%, transparent);
+  stroke: var(--border);
+  stroke-width: 1.5;
+  stroke-dasharray: 8 7;
+}
+
+.arch-group-label {
+  fill: var(--text-subtle);
+  font-family: var(--mono);
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arch-dim,
+  .arch-edge-line {
+    transition: none;
+  }
+
+  .arch-packet {
+    display: none;
+  }
+}

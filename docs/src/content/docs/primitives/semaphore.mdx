@@ -1,0 +1,123 @@
+---
+title: DurabilitySemaphore
+description: One shared concurrency budget across client Durable Objects.
+---
+
+Import `DurabilitySemaphore` from `durability/experimental/semaphore` and pin an exact version. This is the holder-side authority for a shared concurrency budget; the [queue](/primitives/semaphore-queue/) is a separate primitive.
+
+## How it uses your Durable Object
+
+`DurabilitySemaphore` runs inside the holder object you define, one per semaphore key, and keeps the whole budget there:
+
+- **`ctx.storage.sql`** holds `durability_semaphore_grants` and `durability_semaphore_leases`, keyed by the semaphore's `channel`. Every round applies reports and writes new grants and leases in one storage transaction, before any client hears back.
+- **The object's one alarm** follows the earliest claim deadline of a grant with unclaimed permits, so unclaimed capacity comes back without another request. Your class's `alarm()` must delegate to the scheduler. Lease expiry is checked when rounds and reports run, not on the alarm.
+- **The live instance** holds the requests waiting for a round, the round timer, and whatever your `limit` and `groupLimit` callbacks read. Eviction fails the waiting RPC calls; clients ask again.
+- **RPC with client objects** goes through `DurabilitySemaphore.client()`, which reaches the holder with `getByName(key)` and calls the method you choose. Clients keep their own copy of grants and leases and report cumulative counts.
+
+<ArchitectureWalkthrough example="semaphore">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+## Behind the scenes
+
+**Durable state:** grant tables record the pool channel, the owning client (`clientId` and client channel) and group, permits, cumulative claimed/released counts, and expiry. Optional lease tables account for locally drawable capacity. The request array awaiting a round is in memory, not a persisted work queue.
+
+An allocation round first applies cumulative reports transactionally, reclaims expired unclaimed grants, and allocates grants in oldest-demand order. High-water marks only move forward and are clamped, so repeated or reordered reports cannot return the same capacity twice.
+
+**After failure:** eviction before allocation loses the waiting RPC; clients must request again. A response lost after allocation does not free capacity. Unclaimed grant permits expire, but a lease in a lost response stays counted after it expires until its client settles it, which a client that never received it cannot do; nothing reconciles such leases. Confirmed claims stay charged until released. Lowering a limit stops new admissions rather than revoking running work.
+
+**Leases:** the holder durably accounts for capacity that clients may draw locally. Strict provisioning counts grants and lease footprint against one limit. Expiry/retirement must not simply forget potentially running work. A permit is an admission/accounting contract, not a mechanism that can forcibly stop an external task.
+
+Use the [account concurrency composition](/compositions/account-concurrency/) for claim/release lifecycle, retry-safe admission, and reconciliation after a lost release notification.
+
+Implementation: [`semaphore/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore/index.ts), [`semaphore/server.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore/server.ts), and [`semaphore/store.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore/store.ts).
+
+## Semaphore (experimental)
+
+Everything under `durability/experimental/semaphore` may change or be removed in a minor release; pin an exact version when depending on it. It is a separate entry point from `durability/experimental` because its client resolves Durable Object namespaces through `cloudflare:workers`.
+
+`DurabilitySemaphore` holds one concurrency limit — say, an account's maximum running jobs — inside an application-owned Durable Object, and hands permits to many client Durable Objects that queue work. Requests arriving within a round are allocated together in arrival order, so the oldest queued work across all clients is admitted first. Groups (a workflow, a tenant) may carry their own ceiling under the shared limit.
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { timeout } from '@durability/transforms';
+import { DurabilityScheduler } from 'durability';
+import {
+  DurabilitySemaphore,
+  type SemaphoreRequest,
+} from 'durability/experimental/semaphore';
+
+/** One instance per account; the account id is the semaphore key. */
+export class AccountLimit extends DurableObject<Env> {
+  private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
+  private readonly semaphore = new DurabilitySemaphore({
+    scheduler: this.scheduler,
+    limit: () => this.env.ACCOUNT_CONCURRENCY,
+    groupLimit: (workflowId) => this.workflowLimits.get(workflowId),
+  });
+
+  permits(message: SemaphoreRequest) {
+    return this.semaphore.handle(message);
+  }
+
+  override alarm(info?: AlarmInvocationInfo) {
+    return this.scheduler.alarm(info);
+  }
+}
+
+export const limits = DurabilitySemaphore.client({
+  target: AccountLimit, // Vite injects exportName
+  invoke: (stub, message) => stub.permits(message),
+});
+
+// From a client Durable Object:
+const grant = await limits.with(timeout, 5_000).request(accountId, {
+  type: 'request',
+  v: 1,
+  clientId: this.ctx.id.toString(),
+  demand: [{ group: workflowId, count: queued, oldestAt: oldestEnqueuedAt }],
+  grants: [{ grantId, claimed: 3, released: 1 }], // cumulative reports
+});
+```
+
+- **Rounds.** `handle()` holds a request for up to `roundWaitMs` (default 1 second) so concurrent requests are allocated together, and runs rounds no closer than `roundPeriodMs` (default 2 seconds). The response's `nextRequestAt` tells the client when it may ask again.
+- **Grants and reports.** Each `(client, group)` that receives permits gets a grant. Clients report `claimed` (permits actually used) and `released` (claimed permits returned) per grant as cumulative high-water marks, piggybacked on requests or sent with a `sync` message. Counts only move forward and are clamped to the grant, so lost, repeated, or reordered reports can never free capacity twice. Permits a client never claims within `grantTimeoutMs` (default 10 seconds) are reclaimed; a later claim is answered with the clamped count and `status: 'expired'`, or with `status: 'not_found'` if nothing was claimed and reclaim already deleted the grant.
+- **Blocked attribution.** Demand that stays queued is explained per group: `group_limit`, `limit`, `not_permitted` (`canGrant` returned false), or `limit_resolution_error` (`groupLimit` threw; the group fails closed).
+- **Limits are live.** `limit` and `groupLimit` are resolved once per round. Lowering a limit never evicts running work; it stops new admissions until usage is below the new ceiling.
+- **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`.
+
+`usage()` reports the limit, outstanding permits, lease footprint, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
+
+### Pools and client identity
+
+One object can hold several limits. Give each `DurabilitySemaphore` its own `channel` (default `default`), expose each through its own RPC method, and build one `DurabilitySemaphore.client()` per method. Each pool has its own limit, groups, rounds, grants, and leases; a report for a grant in another pool is answered `not_found` and frees nothing. A second semaphore on a channel already in use on the same object throws. Grants and leases of a pool that no instance attached are kept unchanged until it attaches again.
+
+The holder identifies a client by `clientId` together with `clientChannel`, the channel of the queue that sent the message (`default` when omitted). Two queues on one object can share a `clientId` and a pool without claiming, releasing, or settling each other's grants or leases. Messages without `clientChannel` use `v: 1`; messages with it use `v: 2`, and the holder echoes `v` and `clientChannel` in every response. A holder from before channels accepts only version 1 and rejects version 2 before allocating anything, so upgrade holders before giving queues a channel. `lease_granted`, `lease_retired`, and `grant_reclaimed` lifecycle events carry the client's `clientChannel`.
+
+The schema migration moves existing grants and leases to the default pool and client channel without changing their IDs. Reverting it refuses to run while any grant or lease has another pool or client channel.
+
+### Leases
+
+Rounds cost a round trip per batch of admissions. For bursty arrivals, the holder can hand each `(client, group)` with queued demand a **lease**: a block of permits the client may draw locally, one per item, with no round trip. Where that capacity comes from is the `provisioning` mode:
+
+```ts
+new DurabilitySemaphore({
+  scheduler,
+  limit: 100,
+  leases: {
+    provisioning: { mode: 'strict' }, // leases share the limit with grants
+    // provisioning: { mode: 'under', reserve: 20 },   // 20 of the 100 kept for leases; grants get 80
+    // provisioning: { mode: 'over', extra: { ratio: 0.5 } }, // 50 more above the limit, for leases only
+    permitsPerLease: 64,
+    ttlMs: 30 * 60_000,
+  },
+});
+```
+
+- **`strict`** — "always below": grants are allocated first, then leases from whatever is left; a live lease's footprint (permits not yet released) is reserved from the same pool. Total never exceeds the limit.
+- **`under`** — a reserve inside the limit is kept for leases; grants may use at most `limit - reserve`. Still never exceeds the limit, and leases have guaranteed headroom. The reserve never takes the last permit: with a reserve at or above the limit (including after lowering the limit), grants keep one, so groups excluded from leases and clients without lease support still make progress.
+- **`over`** — leases come from a separate budget above the limit (the original gatekeeper behaviour); the effective ceiling is `limit + extra`.
+
+Leases are issued only to clients that report `leases` (the queue always does), to groups without their own limit unless `limitedGroups: 'withinGroupLimit'`, and only to a client that holds no undrawn permits for that group. Each round shares the remaining lease budget equally among candidates, oldest demand first, up to `permitsPerLease`; with fewer permits left than candidates, the oldest get one each. When a round leaves demand unserved, the holder marks its replies `contended`, and each client returns the undrawn permits of leases in groups where it has nothing queued, so an idle lease cannot keep other clients waiting. A client that stops talking to the holder keeps its lease until `ttlMs`. Reports (`drawn`, `released` high-water marks) heartbeat a lease, and the queue reports a lease with permits in use at half its lifetime even when nothing else is happening, so long-running work keeps its permits counted; a lease unreported for `ttlMs` is retired rather than forgotten: its client may be cut off from the holder with work still running, so, like a claimed grant permit, its footprint stays counted until the client reports what it drew and released. The queue keeps reporting a stopped lease until the holder settles it. A report for a lease the holder never knew is answered retired and its live footprint charged against that round. On the client, a drawn permit is one-shot: releasing the item returns footprint to the holder but never makes the permit drawable again. Lowering a group's eligibility, or the limit, retires leases on the next round. A retired lease stops drawing at once but stays counted in full until its client confirms how much it drew, since it may have drawn after its last report.

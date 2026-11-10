@@ -1,0 +1,38 @@
+{
+  "extends": ["../.oxlintrc.json"],
+  "plugins": ["eslint", "typescript", "vitest", "promise", "node"],
+  "env": { "builtin": true, "browser": true, "es2021": true, "node": true },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "style": "off",
+    "perf": "warn"
+  },
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.wrangler/**",
+    ".astro/**",
+    ".nimbus/**",
+    "test-results/**"
+  ],
+  "overrides": [
+    {
+      "files": ["**/*.astro"],
+      "globals": { "Astro": "readonly" }
+    },
+    {
+      "files": [
+        "src/components/ui/**",
+        "src/layouts/**",
+        "src/components/Render.astro",
+        "src/components/connect-mcp.client.ts"
+      ],
+      "rules": {
+        "curly": "off",
+        "no-underscore-dangle": "off",
+        "no-shadow": "off"
+      }
+    }
+  ]
+}

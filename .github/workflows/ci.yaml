@@ -34,9 +34,15 @@ jobs:
           - name: Package validation
             command: pnpm pack:check
             build: true
+          - name: Docs browser checks
+            command: pnpm --filter durability-docs test:browser
+            build: true
+            browser: true
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -50,8 +56,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Tests and typechecks build their dependencies through Turbo. Publint
-      # needs the published dist files built explicitly on its own runner.
+      - name: Install docs browser
+        if: matrix.browser == true
+        run: pnpm --filter durability-docs exec playwright install --with-deps chromium
+
+      # Tests and typechecks build their dependencies through Turbo. Publint and
+      # the docs browser checks need build output explicitly on their own runner.
       - name: Build packages for validation
         if: matrix.build == true
         run: pnpm build

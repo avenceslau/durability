@@ -1,0 +1,477 @@
+.architecture-walkthrough {
+  --aw-accent: var(--nb-brand, #087f79);
+  --aw-bg: var(--nb-background, #fff);
+  --aw-panel: var(--nb-muted, #f8fafc);
+  --aw-text: var(--nb-foreground, #17212d);
+  --aw-muted: var(--nb-muted-foreground, #586577);
+  --aw-border: var(--nb-border, #d7dde4);
+  /* Tokens the copied slide-kit diagram reads. */
+  --bg: var(--aw-bg);
+  --bg-card: var(--nb-card, #fff);
+  --text: var(--aw-text);
+  --text-muted: var(--aw-muted);
+  --text-subtle: color-mix(in srgb, var(--aw-muted) 75%, var(--aw-bg));
+  --border: var(--nb-border-strong, #c4cbd4);
+  --accent: oklch(0.6 0.19 45);
+  --on-accent: #fff;
+  --success: var(--nb-success, #13795b);
+  --success-bg: var(--nb-success-muted, #e8f6ef);
+  --sans: var(--nb-font-sans, system-ui, sans-serif);
+  --mono: var(--nb-font-mono, ui-monospace, monospace);
+  --flow-blue: oklch(0.5 0.19 262);
+  --flow-orange: oklch(0.56 0.17 50);
+  --flow-green: oklch(0.5 0.13 155);
+  --flow-red: oklch(0.52 0.2 27);
+  --flow-purple: oklch(0.5 0.2 305);
+  margin-block: 1.5rem;
+  color: var(--aw-text);
+  font-size: 0.8rem;
+}
+
+[data-mode='dark'] .architecture-walkthrough {
+  --accent: oklch(0.74 0.16 55);
+  --on-accent: oklch(0.2 0 0);
+  --flow-blue: oklch(0.74 0.13 255);
+  --flow-orange: oklch(0.78 0.14 60);
+  --flow-green: oklch(0.76 0.13 155);
+  --flow-red: oklch(0.72 0.16 25);
+  --flow-purple: oklch(0.75 0.14 305);
+}
+
+.architecture-walkthrough *,
+.architecture-walkthrough *::before {
+  box-sizing: border-box;
+}
+.architecture-walkthrough [hidden] {
+  display: none !important;
+}
+.architecture-walkthrough :focus-visible {
+  outline: 2px solid var(--aw-accent);
+  outline-offset: 2px;
+}
+.aw-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.architecture-walkthrough p {
+  margin: 0.4rem 0;
+  line-height: 1.6;
+}
+.architecture-walkthrough a {
+  color: var(--aw-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.architecture-walkthrough select {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--aw-border);
+  background: var(--aw-bg);
+  color: var(--aw-text);
+  padding: 0.3rem 1.6rem 0.3rem 0.5rem;
+  border-radius: 0.3rem;
+  font: inherit;
+}
+.aw-preview {
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  padding: 0;
+  border: 1px solid var(--aw-border);
+  border-radius: 0.4rem;
+  background: var(--aw-bg);
+  color: var(--aw-text);
+  cursor: zoom-in;
+  overflow: hidden;
+}
+.aw-preview:hover {
+  border-color: var(--aw-accent);
+}
+.aw-preview-graph {
+  display: block;
+  height: 24rem;
+  padding: 0.75rem;
+}
+.aw-preview-caption {
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--aw-border);
+  padding: 0.45rem 0.65rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--aw-muted);
+}
+.architecture-walkthrough .aw-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--aw-bg);
+  color: var(--aw-text);
+  font: inherit;
+  overflow: hidden;
+}
+.aw-dialog::backdrop {
+  background: var(--aw-bg);
+}
+.aw-explorer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+.aw-dialog-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  flex-shrink: 0;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--aw-border);
+}
+.architecture-walkthrough .aw-dialog-header h3 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+/* On its own row under the title until the header is wide enough for both. */
+.aw-dialog-header .aw-scenario {
+  order: 1;
+  flex: 1 0 100%;
+  font-size: 0.8rem;
+}
+.aw-dialog-header button {
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  background: none;
+  color: var(--aw-muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+.aw-dialog .aw-body {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  grid-template-rows: minmax(18rem, 58%) minmax(0, 1fr);
+}
+.aw-dialog .aw-diagram-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.aw-graph {
+  flex: 1;
+  min-height: 0;
+  padding: 1rem;
+}
+.aw-step {
+  flex-shrink: 0;
+  /* In flow under the diagram on narrow screens: leave the diagram half the column. */
+  max-height: 50%;
+  overflow-y: auto;
+  border-top: 1px solid var(--aw-border);
+  border-left: 3px solid var(--aw-border);
+  padding: 0.6rem 1rem 0.8rem;
+  font-size: 0.85rem;
+  background: var(--aw-bg);
+}
+.aw-step-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.aw-step[data-status='commit'] {
+  border-left-color: var(--flow-blue);
+}
+.aw-step[data-status='failure'],
+.aw-step[data-status='gap'] {
+  border-left-color: var(--flow-red);
+}
+.aw-step[data-status='recovery'] {
+  border-left-color: var(--flow-green);
+}
+.architecture-walkthrough .aw-step-title {
+  margin: 0;
+  color: var(--aw-text);
+  font-weight: 600;
+}
+.aw-state {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.55rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--aw-border);
+  color: var(--aw-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+/* Label and note share a line so the card stays short enough to sit beside its node. */
+.aw-state dt {
+  display: inline;
+  margin-right: 0.3em;
+  color: var(--aw-text);
+  font-weight: 600;
+}
+.aw-state dt::after {
+  content: ':';
+}
+.aw-state dd {
+  display: inline;
+  margin: 0;
+}
+.aw-dialog .aw-source-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0.65rem;
+}
+.aw-dialog .aw-source-file {
+  flex-shrink: 0;
+  margin: 0 0 0.45rem;
+}
+.aw-source-file select {
+  flex: 1;
+  font-size: 0.75rem;
+}
+.aw-dialog .aw-code-panel {
+  flex: 1;
+  min-height: 0;
+}
+.aw-dialog .aw-code-panel pre {
+  height: 100%;
+  max-height: none;
+  font-size: 0.76rem;
+}
+.aw-body {
+  display: grid;
+  min-width: 0;
+  border: 1px solid var(--aw-border);
+  border-radius: 0.4rem;
+  overflow: clip;
+}
+.aw-diagram-column,
+.aw-source-column {
+  min-width: 0;
+}
+.aw-source-column {
+  border-top: 1px solid var(--aw-border);
+  padding: 0.6rem;
+}
+.aw-source-label {
+  display: grid;
+}
+.aw-source-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.63rem;
+  margin: 0.4rem 0;
+}
+.aw-source-file span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--aw-muted);
+}
+.aw-source-file a {
+  flex-shrink: 0;
+}
+.aw-code-panel pre {
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  font-size: 0.68rem;
+  line-height: 1.75;
+  border-radius: 0.25rem;
+  padding: 0.4rem 0;
+}
+.aw-code-panel code {
+  display: block;
+  min-width: max-content;
+  font: inherit;
+  white-space: normal;
+}
+.aw-code-panel .line {
+  display: block;
+  white-space: pre;
+  min-height: 1.75em;
+  padding-right: 0.5rem;
+  border-left: 2px solid transparent;
+}
+.aw-code-panel .line::before {
+  content: attr(data-source-line);
+  display: inline-block;
+  width: 2.7rem;
+  padding-right: 0.6rem;
+  text-align: right;
+  color: var(--aw-muted);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.aw-code-panel [data-linked-line] {
+  cursor: pointer;
+  text-decoration: underline dotted
+    color-mix(in srgb, var(--aw-muted) 40%, transparent);
+  text-underline-offset: 3px;
+}
+.aw-code-panel [data-linked-line]:hover {
+  background: color-mix(in srgb, var(--aw-accent) 6%, transparent);
+}
+.aw-code-panel [data-highlighted] {
+  border-left-color: var(--aw-accent);
+  background: color-mix(in srgb, var(--aw-accent) 10%, transparent);
+}
+.aw-code-panel [data-linked-line]:focus-visible {
+  outline-offset: -2px;
+}
+[data-mode='dark'] .aw-code-panel .astro-code {
+  background-color: var(--shiki-dark-bg) !important;
+}
+[data-mode='dark'] .aw-code-panel .astro-code span {
+  color: var(--shiki-dark) !important;
+}
+[data-mode='dark'] .aw-code-panel .astro-code [data-highlighted] {
+  background: color-mix(
+    in srgb,
+    var(--aw-accent) 13%,
+    var(--shiki-dark-bg)
+  ) !important;
+}
+.aw-controls {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.3rem;
+}
+.aw-controls button {
+  border: 1px solid var(--aw-border);
+  border-radius: 0.25rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--aw-bg);
+  color: var(--aw-text);
+  font: inherit;
+  cursor: pointer;
+}
+.aw-controls button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.architecture-walkthrough details {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.architecture-walkthrough noscript {
+  display: block;
+  padding-top: 0.5rem;
+}
+@media (min-width: 48rem) {
+  /* A popover beside the step's node; walkthrough.client.ts sets its place. */
+  .aw-dialog .aw-diagram-column {
+    position: relative;
+  }
+  .aw-dialog-header .aw-scenario {
+    order: 0;
+    flex: 0 1 auto;
+  }
+  .aw-dialog .aw-step {
+    position: absolute;
+    z-index: 2;
+    max-height: none;
+    overflow: visible;
+    top: 0;
+    left: 0;
+    width: min(19rem, calc(100% - 1.5rem));
+    border: 1px solid var(--aw-border);
+    border-left-width: 3px;
+    border-radius: 0.5rem;
+    box-shadow:
+      0 10px 28px rgb(0 0 0 / 0.14),
+      0 2px 6px rgb(0 0 0 / 0.08);
+    transition:
+      left 420ms ease,
+      top 420ms ease;
+    /* The card can sit over nodes; clicks reach them except on its buttons. */
+    pointer-events: none;
+  }
+  .aw-dialog .aw-step .aw-controls {
+    pointer-events: auto;
+  }
+  .aw-dialog .aw-step[data-status='commit'] {
+    border-left-color: var(--flow-blue);
+  }
+  .aw-dialog .aw-step[data-status='failure'],
+  .aw-dialog .aw-step[data-status='gap'] {
+    border-left-color: var(--flow-red);
+  }
+  .aw-dialog .aw-step[data-status='recovery'] {
+    border-left-color: var(--flow-green);
+  }
+  .aw-dialog .aw-step::after {
+    content: '';
+    position: absolute;
+    width: 0.75rem;
+    height: 0.75rem;
+    background: var(--aw-bg);
+    border: 1px solid var(--aw-border);
+    transform: rotate(45deg);
+  }
+  .aw-dialog .aw-step[data-side='above']::after {
+    bottom: -0.4rem;
+    left: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-top: 0;
+    border-left: 0;
+  }
+  .aw-dialog .aw-step[data-side='below']::after {
+    top: -0.4rem;
+    left: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-right: 0;
+    border-bottom: 0;
+  }
+  .aw-dialog .aw-step[data-side='right']::after {
+    left: -0.45rem;
+    top: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-top: 0;
+    border-right: 0;
+  }
+  .aw-dialog .aw-step[data-side='left']::after {
+    right: -0.4rem;
+    top: calc(var(--aw-caret, 50%) - 0.375rem);
+    border-bottom: 0;
+    border-left: 0;
+  }
+  .aw-dialog .aw-body {
+    grid-template-columns: 11fr 9fr;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .aw-source-column {
+    border-top: 0;
+    border-left: 1px solid var(--aw-border);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .architecture-walkthrough * {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

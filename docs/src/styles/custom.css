@@ -1,0 +1,8 @@
+:root {
+  --nb-brand: #087f79;
+  --nb-ring: color-mix(in srgb, var(--nb-brand) 40%, transparent);
+}
+
+[data-mode='dark'] {
+  --nb-brand: #74dbcf;
+}

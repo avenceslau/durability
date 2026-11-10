@@ -1,0 +1,99 @@
+---
+title: DurabilityAlarms
+description: Persist named reminders and replace their pending occurrences.
+---
+
+Import `DurabilityAlarms` from `durability`. Use it for named, replaceable occurrences rather than retained job histories. See [recurring billing](/compositions/recurring-billing/).
+
+## How it uses your Durable Object
+
+`DurabilityAlarms` adds no storage or infrastructure of its own. It uses the Durable Object it is constructed in:
+
+- **`ctx.storage.sql`** holds one row per channel and alarm name, so occurrences are as durable as the object and belong to it alone. Success deletes the row.
+- **The object's one alarm** serves every name. The object's one scheduler sets it to the earliest pending row of every attached helper in the same transaction that schedules an occurrence, and your class's `alarm()` must delegate to the scheduler or to any helper's `alarm()`, including `alarms.alarm()`; each runs the due work of every helper on the object.
+- **The live instance** holds the map of running occurrences and their abort signals, plus the scheduler's permits and timer. Eviction discards them; a pending occurrence then runs again with the same `idempotencyKey`.
+- **Other helpers** on the same scheduler, such as `Durability` in the example below, share the alarm and the concurrency permits.
+
+<ArchitectureWalkthrough example="alarms">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+## Behind the scenes
+
+**Durable state:** `durability_alarms` holds one current occurrence per channel and handler name, with primary key `(channel, name)`, a generation, scheduled time, attempt, retry time, status, and error. Occurrence-scoped intermediate results live in `durability_memos`.
+
+Scheduling transactionally upserts a fresh generation, resets its attempt counter, removes the previous occurrence's memos, and reconciles the physical alarm. It can replace a failed occurrence as well as a pending one. A currently executing handler is not forcibly stopped; its generation-fenced settlement cannot delete the replacement.
+
+**After eviction:** a pending occurrence can run again. Its `idempotencyKey` derives from its stored generation and stays stable across retries; the name and attempt number are not a substitute for that key. A replacement occurrence gets a new key.
+
+**Cancellation and lifetime:** success deletes the occurrence; no permanent result history remains. Failed rows remain until replacement or purge. Experimental `cancel()` deletes a pending occurrence and memos transactionally, then best-effort aborts a running attempt. It cannot undo an external effect or stop that handler from explicitly scheduling new work.
+
+Implementation: [`alarms/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/alarms/index.ts) (`DurabilityAlarmsCore`) and [`scheduler/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/scheduler/index.ts) (`Engine.startExecution`).
+
+## Named alarms
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityAlarms } from 'durability';
+
+export class Subscription extends DurableObject<Env> {
+  private readonly alarms = new DurabilityAlarms({
+    context: this.ctx,
+    handlers: {
+      renew: async ({ idempotencyKey, signal }) => {
+        await this.env.BILLING.fetch('https://billing.internal/renew', {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey },
+          signal,
+        });
+      },
+    },
+    methods: { renew: { retryTimeouts: true, retries: { maxAttempts: 5 } } },
+  });
+
+  scheduleRenewal(at: number) {
+    return this.alarms.renew(at);
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.alarms.alarm(info);
+  }
+}
+```
+
+Scheduling a name again replaces its pending occurrence. If that name is already running, the current handler continues and the replacement runs afterward. Different names may run concurrently, but one name never has more than one active handler in the same instance.
+
+Named alarms inside the scheduler's `alarmMinDelayMs` window start from an in-memory timer at their requested time. The option accepts 1 to 15 seconds and defaults to 15 seconds; the scheduler never sets the physical alarm sooner than that delay; the physical alarm remains as a durable fallback for restarts. If concurrency capacity is full when the timer fires, execution waits in the shared FIFO queue. The scheduling method resolves after persistence and never waits for the handler to finish.
+
+Each occurrence receives a new internal generation. Its `idempotencyKey` stays stable across retries, while `attempt` records which attempt the handler is running. The ordinal advances each time an attempt is claimed and is retry context, not a unique per-handler-entry token (see [Identity and attempt numbers](/reference/identity/#identity-and-attempt-numbers)). A successful handler removes only the occurrence it executed, so it cannot delete a replacement scheduled while it was running.
+
+A timeout aborts the handler's `signal` and is terminal by default because the external outcome is unknown. Set `retryTimeouts: true` only when the handler's side effects use the idempotency key or reconcile their outcome before retrying. Named alarms remain at-least-once across eviction or restart.
+
+## `cancel` (named alarm method)
+
+`alarms.<name>.cancel(): Promise<boolean>`. This deletes the alarm's pending occurrence and its memos and reconciles the physical alarm in one transaction, then aborts the `signal` of a running attempt of it. That attempt's settlement can no longer retry it. It resolves `true` when a pending occurrence was deleted. Failed occurrences are left for `purgeBefore`.
+
+Gives up: cancelling does not stop later scheduling. A call to the scheduling method after `cancel`, including one from the running handler before it returns, schedules a new occurrence.
+
+## Channels
+
+`channel` (default `default`) lets several `DurabilityAlarms` instances share one object and its scheduler. Alarm names are unique within a channel, so an application and a library can both have an alarm called `check`, each with its own handler, policy, and lifecycle hook. Each instance schedules, cancels, runs, lists, and purges only its own channel's alarms:
+
+```ts
+const reminders = new DurabilityAlarms({
+  context: this.ctx,
+  handlers: { check },
+});
+const alerts = new DurabilityAlarms({
+  context: this.ctx,
+  channel: 'durable-alerts',
+  retries: { maxAttempts: 5 },
+  handlers: { check: () => runChecks(this.ctx) },
+});
+```
+
+Each channel holds one instance per object: constructing a second on a channel already attached throws. Within a channel, a due alarm whose name has no handler, such as one a deploy removed, fails through that channel's instance. Due alarms of a channel no instance attached are kept, postponed one minute at a time, and reported as `durability.channel_missing` until that channel's instance attaches again.
+
+The `durability_0016_alarms_channel` migration moves existing alarms and their memoized results to `default` without changing their names, so their `idempotencyKey` values stay the same. Reverting it refuses to run while alarms on other channels exist; drain or purge those channels first.

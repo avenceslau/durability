@@ -1,0 +1,108 @@
+---
+import { Code } from 'astro:components';
+import { Architecture } from '../../kit/architecture/Architecture.tsx';
+import { walkthroughs, type WalkthroughExample } from '../../architecture';
+import {
+  overviewDiagram,
+  publicState,
+  scenarioDiagram,
+  sourceFiles,
+  sourceUrl,
+} from '../../lib/architecture';
+import './walkthrough.css';
+
+interface Props { example: WalkthroughExample; }
+const { example } = Astro.props;
+const model = walkthroughs[example];
+if (!model) { throw new Error(`Unknown architecture walkthrough: ${example}`); }
+const state = publicState(model);
+const files = sourceFiles(model);
+const initialScenario = model.scenarios[0]!;
+const initialStep = initialScenario.steps[0]!;
+const initialDiagram = scenarioDiagram(model, initialScenario);
+const firstExcerpt = model.excerpts.find((entry) => entry.id === initialStep.source.excerpt)!;
+const instance = `${model.id}-${crypto.randomUUID()}`;
+const dialogId = `architecture-dialog-${instance}`;
+const titleId = `architecture-title-${instance}`;
+---
+
+<section class="architecture-walkthrough not-prose" data-architecture data-model={JSON.stringify(state)}>
+  <button type="button" class="aw-preview" data-open aria-haspopup="dialog" aria-controls={dialogId} aria-expanded="false" aria-label="Explore code and architecture">
+    <span class="aw-preview-graph">
+      <Architecture diagram={overviewDiagram(model)} label={model.title} />
+    </span>
+    <span class="aw-preview-caption">Explore code & architecture <span aria-hidden="true">↗</span></span>
+  </button>
+
+  <dialog id={dialogId} class="aw-dialog" data-dialog aria-labelledby={titleId}>
+    <div class="aw-explorer">
+      <header class="aw-dialog-header">
+        <h3 id={titleId}>{model.title}</h3>
+        <select class="aw-scenario" data-scenario aria-label="Architecture scenario" hidden={model.scenarios.length === 1}>
+          {model.scenarios.map((scenario) => <option value={scenario.id}>{scenario.title}</option>)}
+        </select>
+        <button type="button" data-close autofocus aria-label="Close code and architecture">×</button>
+      </header>
+      <div class="aw-body">
+        <div class="aw-diagram-column">
+          <div class="aw-graph" data-graph>
+            <Architecture diagram={initialDiagram} stage={0} label={model.title} />
+          </div>
+          <div class="aw-step" data-step-card data-status={initialStep.status}>
+            <div class="aw-step-header">
+              <p class="aw-step-title" data-step-title role="status" aria-live="polite">1/{initialScenario.steps.length} · {initialStep.title}</p>
+              <div class="aw-controls" aria-label="Walkthrough controls">
+                <button type="button" data-previous disabled aria-label="Previous architecture step" aria-keyshortcuts="ArrowLeft" title="Previous step (←)">←</button>
+                <button type="button" data-next aria-label="Next architecture step" aria-keyshortcuts="ArrowRight" title="Next step (→)">→</button>
+              </div>
+            </div>
+            <p data-step-description>{initialStep.description}</p>
+            <dl class="aw-state">
+              <div><dt>Durable state</dt><dd data-durable>{initialStep.durable}</dd></div>
+              <div><dt>In memory</dt><dd data-volatile>{initialStep.volatile}</dd></div>
+            </dl>
+          </div>
+        </div>
+        <div class="aw-source-column">
+          <div class="aw-source-file">
+            <select data-source-select aria-label="Example source file" hidden={files.length === 1}>
+              {files.map((file) => <option value={file.file} selected={file.file === firstExcerpt.file}>{file.file}</option>)}
+            </select>
+            <span data-source-file hidden={files.length > 1}>{firstExcerpt.file}</span>
+            <a data-source-link href={sourceUrl(firstExcerpt.file, initialStep.source.from, initialStep.source.to)} target="_blank" rel="noopener noreferrer">Open source ↗</a>
+          </div>
+          {files.map((file) => {
+            const ids = new Set(model.excerpts.filter((excerpt) => excerpt.file === file.file).map((excerpt) => excerpt.id));
+            const mappedSteps = model.scenarios.flatMap((scenario) => scenario.steps.filter((step) => ids.has(step.source.excerpt)));
+            return <div class="aw-code-panel" data-file-panel data-file={file.file} hidden={file.file !== firstExcerpt.file}>
+              <Code code={file.code} lang="ts" aria-label={`Complete source: ${file.file}`} themes={{ light: 'github-light', dark: 'github-dark' }} transformers={[{
+                line(node, number) {
+                  const steps = mappedSteps.filter((step) => number >= step.source.from && number <= step.source.to);
+                  node.properties['data-source-line'] = number;
+                  if (steps.length) {
+                    node.properties['data-linked-line'] = '';
+                    node.properties.role = 'button';
+                    node.properties.tabIndex = steps.some((step) => step.source.from === number) ? 0 : -1;
+                    node.properties['aria-label'] = `Trace source line ${number}: ${steps[0]!.title}`;
+                  }
+                  if (file.file === firstExcerpt.file && number >= initialStep.source.from && number <= initialStep.source.to) { node.properties['data-highlighted'] = ''; }
+                },
+              }]} />
+            </div>;
+          })}
+        </div>
+      </div>
+    </div>
+  </dialog>
+  <noscript>
+    <p>JavaScript is disabled. Read the complete example source or follow the complete ordered walkthrough below.</p>
+    <ul>{files.map((file) => <li><a href={sourceUrl(file.file, 1)}>{file.file}</a></li>)}</ul>
+    {model.scenarios.map((scenario) => <details><summary>{scenario.title}</summary><ol>{scenario.steps.map((step) => <li><strong>{step.title}.</strong> {step.description} <a href={sourceUrl(model.excerpts.find((excerpt) => excerpt.id === step.source.excerpt)!.file, step.source.from, step.source.to)}>Read these source lines</a>. Durable state: {step.durable} In memory: {step.volatile}</li>)}</ol></details>)}
+  </noscript>
+</section>
+
+<script>
+  import { mount } from '@cloudflare/nimbus-docs/client';
+  import { mountWalkthrough } from './walkthrough.client';
+  mount('[data-architecture]', mountWalkthrough);
+</script>

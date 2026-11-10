@@ -1,0 +1,191 @@
+---
+title: Replayable event stream
+description: Partition retained events, move cold segments to R2, and advance consumer cursors only after work succeeds.
+tableOfContents: false
+---
+
+This recipe builds a topic from Durable Object partitions rather than treating a topic as
+a global queue. A partition accepts ordered appends, holds a bounded hot log, writes older
+segments to R2, and stores an independent cursor for each consumer group. Producers route
+batches to one partition; consumers read, perform side effects, then commit the cursor.
+
+Read the complete implementation at
+[`examples/event-topics/worker.ts`](https://github.com/avenceslau/durability/blob/main/examples/event-topics/worker.ts)
+and deploy its Durable Object and R2 bindings from
+[`examples/event-topics/wrangler.jsonc`](https://github.com/avenceslau/durability/blob/main/examples/event-topics/wrangler.jsonc).
+These sources are recipes, not a hosted event-stream product: authentication, leases,
+reconciliation, and external retention policy are application responsibilities.
+
+## Use case and boundaries
+
+Use this shape when events need replay within a topic partition, multiple consumer groups
+need independent progress, and a finite hot window should spill to cheaper cold storage.
+It provides ordering within one `topic:partition` object only. It has **no global ordering**,
+**no cross-partition atomicity**, and **no distributed transaction** between the log, an
+external consumer side effect, and R2.
+
+There are a fixed eight partitions per topic. The shard name is `topic:partition`, where a
+stable FNV-style hash of `partitionKey` selects the partition. Topics are created by
+writing to those object names; there is no partition registry or rebalance. Changing the
+partition count or hash is therefore an application data-migration decision, not a safe
+configuration tweak.
+
+## Architecture
+
+<ArchitectureWalkthrough example="event-stream">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+The `DurabilityRouting` observer is in memory. It helps route a live producer request and
+report load; it is not a durable routing table. The `DurabilityLog` and named retention
+alarm share one [`scheduler`](/primitives/scheduler/) in each `Partition`: a Durable Object
+has one scheduler, which every helper built for it joins, and one physical alarm. The log
+registers no timed work, so only the retention alarm sets that alarm. Different partitions
+are independent objects, not members of one scheduler or transaction.
+
+## Producer path: one batch, one shard
+
+1. A producer POST supplies events with a `partitionKey`, encoded `payload`, and optionally
+   a producer `key` used as a log `deduplicationKey`. The demo endpoint must be replaced
+   with real authentication, authorization, size limits, and schema validation.
+2. The Worker selects the topic and calculates the fixed partition for every event.
+3. It groups events by `topic:partition`. This is essential: the routing client's shard
+   function uses the first event, so each `push` contains events for exactly one shard.
+4. It makes one routed `push` for each group, with a five-second timeout. Every group is
+   accepted or rejected separately; a POST spanning partitions has no atomic outcome.
+5. In the partition, `log.append()` persists the batch. A return with `success: false` is
+   a definite rejection. A thrown/timeout result is uncertain and a producer may retry.
+6. On a successful append, the partition sets a `sweeping` flag and registers a named
+   retention alarm only when one is not already pending. It does not re-arm on every
+   append, because replacing a named alarm continually would defer trimming forever under
+   constant traffic.
+7. The append response exposes acceptance and load. Acceptance means the log persisted
+   the input, not that every consumer handled it or a cold object has later expired.
+
+The grouping and single-shard push are the crucial producer-side constraint:
+
+```ts
+byPartition.set(shard, [...(byPartition.get(shard) ?? []), input]);
+const accepted = await Promise.all(
+  [...byPartition.values()].map((events) => topics.push({ events }))
+);
+```
+
+Give retries the same `deduplicationKey` when the producer can safely identify one logical
+event. A timeout alone cannot prove whether an append was accepted, so keys must be stable
+across a retry and their retention must match the producer's retry horizon.
+
+## Retention, hot storage, and cold storage
+
+The log's configured hot bounds are seven days, 50,000 records, and 256 MiB. Those settings
+define what `trim()` may move out of the hot window; they do **not** automatically schedule
+retention. The `enforceRetention` alarm calls `log.trim()` every 60 seconds while records
+remain hot. If no hot records remain, it removes `sweeping` and lets the object hibernate.
+
+When trimming flushes records, the cold writer stores JSON in R2 under
+`segments/<object-id>/<firstOffset>`. Its `etagDoesNotMatch: '*'` conditional write makes a
+repeat flush for that first offset non-destructive. A reader can serve a cursor below the
+hot window from the stored segment, so lagging groups can replay it.
+
+The key leaves out the segment's `channel`. That is safe because each `Partition` has one
+log, on the default channel. A second log on the same object, on its own channel, would
+flush segments with overlapping offsets, so a writer shared between them must include
+`channel` in the key; see [log channels](/primitives/log/#channels).
+
+The alarm compares `hotOffset` with `nextOffset`, not `oldestOffset`. The latter includes
+cold-readable records and can remain low indefinitely; using it would keep scheduling an
+empty retention sweep forever.
+
+R2 object expiration is external policy. Configure and monitor a bucket lifecycle rule
+(or another application process), then call `expireCold(before)` / `log.forgetColdBefore`
+to remove matching index entries. Expiring R2 objects alone leaves locators that reads may
+follow to missing data; forgetting first makes retained data unreachable prematurely.
+
+## Consumer path: read, handle, commit
+
+1. A poller chooses a consumer `group` and polls every one of the topic's eight object
+   names independently. A slow partition or group does not block the others.
+2. `consume(group, limit)` uses that group's cursor, or `oldestOffset` for a new group.
+   It reads from hot storage or a cold segment as needed.
+3. The poller calls its business handler for the returned page in offset order within that
+   partition.
+4. Only after the handler succeeds does it call `commit(group, page.nextOffset)`.
+5. A crash before commit causes the next poll to read the same page. The handler must
+   tolerate duplicate records, normally with an idempotency key or an inbox record.
+6. Each group has its own cursor, so one group can replay or lag without advancing another.
+
+The source deliberately places commit after side effects:
+
+```ts
+const page = await stub.consume(group, 100);
+await handle(page.records);
+await stub.commit(group, page.nextOffset);
+```
+
+Do not run two uncoordinated pollers for the same `(topic, partition, group)`. Both can read
+the same cursor before either commit, perform side effects, and race to advance it. Use a
+lease/fencing-token protocol, a single assigned poller, or an idempotent handler designed
+for concurrent duplicate delivery.
+
+## Naive failure: commit first or rely on memory
+
+A plausible naive worker keeps an in-memory queue and advances a consumer offset before
+calling the downstream service. Restarting loses the queue; a crash after the early commit
+silently loses the event. This illustrates that design's failure sequence, not a statement
+about generic competing products.
+
+The walkthrough's "An in-memory queue that commits first" scenario steps through that
+design's gaps and the lines of this composition that close them.
+
+The composition persists records and separates cursor movement from read. A failure after
+the external side effect but before commit produces redelivery instead of silent loss, so
+the receiver must deduplicate the record.
+
+The walkthrough's "Crash after work, before commit" scenario steps through this recovery:
+the poll reads a page, the handler's side effects complete, the request dies before
+`commit()`, the next poll reads the same page from the unchanged cursor, and only the
+receiver can avoid applying it twice.
+
+## Failure and recovery decisions
+
+| Failure or edge                  | What this composition does                                                                 | Application decision still needed                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| Producer timeout                 | The acceptance result is uncertain; retry can reach the same partition.                    | Supply stable `deduplicationKey` values and decide producer retry limits.              |
+| Batch spans partitions           | Groups and pushes separately; there is no cross-partition atomicity.                       | Design compensations or a single partition for work needing one atomic boundary.       |
+| Consumer crashes before commit   | It re-reads the page from its independent cursor.                                          | Make side effects idempotent and add leases if pollers can overlap.                    |
+| Consumer commits before handling | Not done by this recipe; doing so makes delivery at-most-once.                             | Preserve handle-then-commit ordering and monitor handler failures.                     |
+| Hot retention runs               | `trim()` moves eligible records to R2 and periodically re-arms only while hot data exists. | Operate a reconciliation process; retention is not automatic from configuration alone. |
+| R2 lifecycle expires cold data   | The recipe offers `expireCold` to forget matching indexes.                                 | Set external lifecycle policy and coordinate its cutoff with replay commitments.       |
+| `sweeping` scheduling race       | Flag write and alarm registration are not one atomic application transaction.              | Reconcile partitions in production: inspect bounds/flag and schedule a missed sweep.   |
+| Retention sweep keeps failing    | After five failed attempts, or one over the five-minute timeout, the alarm row is failed.  | `sweeping` stays set, so appends stop scheduling sweeps; the same reconciliation applies. |
+
+Those last two rows are unresolved source gaps, not automatic recovery; the walkthrough's
+"Where retention can stop" scenario steps through both. For example, a deployment
+can periodically enumerate known topic/partition names, query bounds, and schedule a sweep
+when retained hot data exists without a valid sweep schedule. Make that repair idempotent
+and observable; it cannot be inferred solely from an in-memory routing observer.
+
+## Provisioning and security checklist
+
+- Bind and migrate the `Partition` Durable Object, and bind the `COLD` R2 bucket exactly
+  as shown in the Wrangler config. Restrict access to both bindings.
+- Authenticate producers and consumers; authorize topic and consumer-group names rather
+  than letting request parameters become unrestricted Durable Object names.
+- Enforce event schemas, encoded-byte limits, per-topic quotas, and safe payload logging.
+- Keep partition count and hash algorithm versioned. A change requires a read/write
+  migration plan because it changes ordering and ownership.
+- Use stable producer keys, an idempotent consumer inbox/effect key, and a lease or fencing
+  token for same-group pollers.
+- Configure R2 lifecycle retention independently, run cold-index expiration, and document
+  the maximum replay window promised to each group.
+- Monitor append rejections/timeouts, per-group lag, hot/cold bounds, trim failures, R2
+  conditional-write conflicts, cursor age, and reconciliation repairs.
+
+## Primitive map
+
+This design composes [`routing`](/primitives/routing/), [`log`](/primitives/log/),
+[`alarms`](/primitives/alarms/), and the shared [`scheduler`](/primitives/scheduler/).
+Those primitives provide durable local boundaries; they do not create a global ordered log
+or distributed transaction across partitions and external services.
