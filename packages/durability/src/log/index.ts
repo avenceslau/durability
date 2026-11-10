@@ -15,8 +15,8 @@ import {
 import {
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
-  migrateCapability,
-} from '../migrations.js';
+} from './migrations.js';
+import { migrateCapability } from '../migrations.js';
 import { assertPositiveInteger } from '../policy.js';
 import {
   assertChannel,

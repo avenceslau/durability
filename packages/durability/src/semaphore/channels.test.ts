@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DurabilityScheduler } from '../index';
+import { durabilityOutboxMigrations } from '../outbox/migrations';
 import {
-  durabilityOutboxMigrations,
   durabilitySemaphoreMigrations,
   durabilitySemaphoreQueueMigrations,
-  migrateCapability,
-} from '../migrations';
+} from './migrations';
+import { migrateCapability } from '../migrations';
 import { DurabilityOutbox } from '../outbox';
 import {
   DurabilitySemaphoreQueue,

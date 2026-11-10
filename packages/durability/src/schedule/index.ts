@@ -8,8 +8,8 @@ import {
   serializeError,
   type SerializedError,
 } from '../errors.js';
+import { durabilityScheduleMigrations } from './migrations.js';
 import {
-  durabilityScheduleMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from '../migrations.js';

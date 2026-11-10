@@ -1,7 +1,7 @@
 import { traceLifecycle, traceMethods } from '../dev.js';
 import { SemaphoreProtocolError, reportFailure } from '../errors.js';
+import { durabilitySemaphoreMigrations } from './migrations.js';
 import {
-  durabilitySemaphoreMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from '../migrations.js';

@@ -11,7 +11,8 @@ import type { StoredMessage } from './stored-message';
 import type { FanoutTarget } from './index';
 import { RoutingLoad } from '../routing/load';
 import { RoutingClient } from '../routing/client';
-import { durabilityMemoMigrations, migrateCapability } from '../migrations';
+import { durabilityMemoMigrations } from '../memoize/migrations';
+import { migrateCapability } from '../migrations';
 import { serialize } from '../serialization';
 import { contextFor, FakeStorage } from '../test-fakes';
 

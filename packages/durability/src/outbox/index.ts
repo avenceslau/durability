@@ -11,8 +11,8 @@ import type {
   LifecycleHook,
   OutboxLifecycleEntity,
 } from '../lifecycle.js';
+import { durabilityOutboxMigrations } from './migrations.js';
 import {
-  durabilityOutboxMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from '../migrations.js';

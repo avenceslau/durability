@@ -737,8 +737,8 @@ describe('semaphore schema upgrades', () => {
     const {
       durabilitySemaphoreMigrations,
       durabilitySemaphoreQueueMigrations,
-      migrateCapability,
-    } = await import('../migrations');
+    } = await import('./migrations');
+    const { migrateCapability } = await import('../migrations');
     const storage = new FakeStorage();
     migrateCapability(
       storage,

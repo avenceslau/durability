@@ -29,7 +29,7 @@ export { SemaphoreProtocolError } from '../errors.js';
 export {
   durabilitySemaphoreMigrations,
   durabilitySemaphoreQueueMigrations,
-} from '../migrations.js';
+} from './migrations.js';
 
 export type {
   GrantReport,

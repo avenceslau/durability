@@ -6,7 +6,8 @@ import {
   maxLogBytes,
 } from '../index';
 import type { LogColdStorage, LogRecord, LogSegment } from './index';
-import { durabilityLogLeaseMigrations, migrateCapability } from '../migrations';
+import { durabilityLogLeaseMigrations } from './migrations';
+import { migrateCapability } from '../migrations';
 import { serialize } from '../serialization';
 import { contextFor, FakeStorage } from '../test-fakes';
 

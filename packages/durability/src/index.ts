@@ -84,13 +84,15 @@ export {
   RoutingError,
 } from './errors.js';
 export type { DurabilityLifecycleEvent, LifecycleHook } from './lifecycle.js';
+export { durabilityNamedAlarmMigrations } from './alarms/migrations.js';
+export { durabilityOperationMigrations } from './operations/migrations.js';
+export { durabilityFanoutMigrations } from './fanout/migrations.js';
 export {
-  durabilityNamedAlarmMigrations,
-  durabilityOperationMigrations,
-  durabilityFanoutMigrations,
   durabilityLogLeaseMigrations,
   durabilityLogMigrations,
-  durabilityMemoMigrations,
+} from './log/migrations.js';
+export { durabilityMemoMigrations } from './memoize/migrations.js';
+export {
   migrate,
   type DurabilityMigrationResult,
   type MigrateOptions,

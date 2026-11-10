@@ -17,9 +17,9 @@ import {
   type LifecycleHooks,
   type OperationLifecycleEntity,
 } from '../lifecycle.js';
+import { durabilityOperationMigrations } from './migrations.js';
+import { durabilityMemoMigrations } from '../memoize/migrations.js';
 import {
-  durabilityOperationMigrations,
-  durabilityMemoMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from '../migrations.js';

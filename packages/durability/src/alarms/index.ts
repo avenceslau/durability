@@ -13,9 +13,9 @@ import {
   type LifecycleHook,
   type LifecycleHooks,
 } from '../lifecycle.js';
+import { durabilityNamedAlarmMigrations } from './migrations.js';
+import { durabilityMemoMigrations } from '../memoize/migrations.js';
 import {
-  durabilityNamedAlarmMigrations,
-  durabilityMemoMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from '../migrations.js';

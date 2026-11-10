@@ -1,10 +1,8 @@
 import { z } from 'zod';
 import { reportFailure, TopologyError } from '../errors.js';
 import type { LifecycleHook } from '../lifecycle.js';
-import {
-  durabilityTopologyMigrations,
-  migrateCapability,
-} from '../migrations.js';
+import { durabilityTopologyMigrations } from './migrations.js';
+import { migrateCapability } from '../migrations.js';
 import {
   DurabilityOutbox,
   discardWithin,

@@ -4,8 +4,8 @@ import {
   reportFailure,
   serializeError,
 } from '../errors.js';
+import { durabilitySemaphoreQueueMigrations } from './migrations.js';
 import {
-  durabilitySemaphoreQueueMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from '../migrations.js';

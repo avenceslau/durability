@@ -28,11 +28,9 @@ import {
   deleteMemosOfDroppedTable,
   type DurableMemoize,
 } from '../memoize/index.js';
-import {
-  durabilityFanoutMigrations,
-  durabilityMemoMigrations,
-  migrateCapability,
-} from '../migrations.js';
+import { durabilityFanoutMigrations } from './migrations.js';
+import { durabilityMemoMigrations } from '../memoize/migrations.js';
+import { migrateCapability } from '../migrations.js';
 import {
   assertPositiveInteger,
   createPolicyResolver,

@@ -34,7 +34,7 @@ export {
   type OutboxEntry,
 } from './outbox/index.js';
 export { OutboxTimeoutError } from './errors.js';
-export { durabilityOutboxMigrations } from './migrations.js';
+export { durabilityOutboxMigrations } from './outbox/migrations.js';
 export {
   DurabilityTopology,
   type DurabilityTopologyConfig,
@@ -64,7 +64,7 @@ export {
   TopologyUnavailableError,
   type TopologyFallbackReason,
 } from './errors.js';
-export { durabilityTopologyMigrations } from './migrations.js';
+export { durabilityTopologyMigrations } from './topology/migrations.js';
 export {
   DurabilitySchedule,
   type DurabilityScheduleConfig,
@@ -81,4 +81,4 @@ export {
   ScheduledRunInterruptedError,
   ScheduledRunTimeoutError,
 } from './errors.js';
-export { durabilityScheduleMigrations } from './migrations.js';
+export { durabilityScheduleMigrations } from './schedule/migrations.js';

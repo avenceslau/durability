@@ -1,8 +1,8 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { trace, traceFunction, traceMethods, traceStorage } from '../dev.js';
 import { reportFailure, serializeError } from '../errors.js';
+import { durabilitySocketMigrations } from './migrations.js';
 import {
-  durabilitySocketMigrations,
   migrateCapability,
   type DurabilityMigrationResult,
 } from '../migrations.js';
@@ -594,7 +594,7 @@ traceMethods(DurabilitySocketCore.prototype, 'DurabilitySocket');
 export const DurabilitySocket =
   DurabilitySocketCore as unknown as DurabilitySocketConstructor;
 
-export { durabilitySocketMigrations } from '../migrations.js';
+export { durabilitySocketMigrations } from './migrations.js';
 export {
   event,
   type SocketCall,
