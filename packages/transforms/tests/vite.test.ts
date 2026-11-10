@@ -36,7 +36,7 @@ const readConfig = vi.hoisted(() =>
           tag: 'v1',
         },
       ],
-      main: 'tests/test-worker.ts',
+      main: 'tests/worker.ts',
       name: 'do-transforms-test',
       services: migrationOnly
         ? []

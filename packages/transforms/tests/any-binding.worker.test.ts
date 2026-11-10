@@ -8,7 +8,7 @@ import {
   retry,
   timeout,
 } from '../src/index';
-import type { ContextService, PipelineDO } from './test-worker';
+import type { ContextService, PipelineDO } from './worker';
 
 type Call = { method: string; args: unknown[] };
 
