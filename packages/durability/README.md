@@ -1383,8 +1383,8 @@ export class Partition extends DurableObject<Env> {
     // Flushed records stay readable: `write` returns a locator the log keeps,
     // and `read` hands the segment back when a consumer asks for it.
     cold: {
-      write: async ({ records, firstOffset }) => {
-        const locator = `segment/${this.ctx.id}/${firstOffset}`;
+      write: async ({ channel, records, firstOffset }) => {
+        const locator = `segment/${this.ctx.id}/${encodeURIComponent(channel)}/${firstOffset}`;
         await this.env.COLD.put(locator, JSON.stringify(records), {
           onlyIf: { etagDoesNotMatch: '*' },
         });
@@ -1444,7 +1444,7 @@ type LogColdStorage<Body> = {
 };
 ```
 
-`write` receives one contiguous run of records, oldest first, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
+`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
 
 `read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
 
@@ -1477,6 +1477,24 @@ A range is held until it is acked, nacked, or its lease expires after `leaseMs`.
 A range that keeps failing would be redelivered forever. `maxAttempts` bounds that, but only together with `onPoison`: without somewhere to send the records, blocking the consumer beats silently dropping them. With both set, an exhausted range is marked skipped — durably, before the callback runs, so a failing handler cannot resurrect it — and the commit then runs over it like an acked one.
 
 Leases are opt-in. Without the `leases` option no lease tables are created, `read`/`commit` behave exactly as before, and the lease methods throw.
+
+### Channels
+
+A log attaches to a channel, `default` unless given one, and each channel holds one `DurabilityLog` per scheduler; a second instance on a channel in use throws `DurabilityLog for channel "events" is already attached to this scheduler`. Channels share the object but nothing else: each counts its own offsets from 0, and deduplication keys, consumer cursors, retention, byte budgets, cold segments, leases, batch ids, and `load()` are all scoped to the channel. A library can keep a log next to the application's, using the same keys and consumer names, and a `trim()` or lease on one never touches the other:
+
+```ts
+const events = new DurabilityLog<Event>({ scheduler, cold });
+const audit = new DurabilityLog<AuditEntry>({
+  scheduler,
+  channel: 'audit',
+  retention: { maxRecords: 10_000 },
+  cold,
+});
+```
+
+Because two channels both flush a segment starting at offset 0, cold storage shared between them must include `segment.channel` in the location it writes to, as in the example above; otherwise one channel's segment overwrites or refuses the other's. The stored locator stays opaque and is read back only by the channel that wrote it, so locators written before channels existed keep working on `default`.
+
+Records use composite keys such as `(channel, offset)` and `(channel, consumer)`; existing records, cursors, segments, leases, and allocations migrate to `default` unchanged. A log whose channel no instance attaches keeps its data and runs nothing, since a log schedules no work of its own. A schema downgrade refuses to discard a non-default channel's records, cursors, segments, offset counter, leases, or allocations.
 
 ### What it is not
 

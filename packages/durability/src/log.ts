@@ -15,6 +15,8 @@ import {
 } from './migrations.js';
 import { assertPositiveInteger } from './policy.js';
 import {
+  assertChannel,
+  defaultChannel,
   engineFor,
   type Engine,
   type SchedulerAttachment,
@@ -104,6 +106,7 @@ export type LogBounds = {
  */
 const appendRecords = (
   sql: SqlStorage,
+  channel: string,
   records: readonly Pick<LogRecordRow, 'dedup_key' | 'payload' | 'bytes'>[],
   appendedAt: number
 ): number[] => {
@@ -113,7 +116,8 @@ const appendRecords = (
       sql
         .exec(
           `SELECT "offset" FROM durability_log_records
-           WHERE dedup_key = ? LIMIT 1`,
+           WHERE channel = ? AND dedup_key = ? LIMIT 1`,
+          channel,
           record.dedup_key
         )
         .toArray()[0]
@@ -129,13 +133,16 @@ const appendRecords = (
     return records.map((record) => assigned.get(record.dedup_key)!);
   }
 
+  // A channel's counter row is created by its first append.
   const first = seqRowSchema.parse(
     sql
       .exec(
-        `UPDATE durability_log_seq
-         SET next_offset = next_offset + ?
-         WHERE id = 1
+        `INSERT INTO durability_log_seq (channel, next_offset, total_bytes)
+         VALUES (?, ?, 0)
+         ON CONFLICT(channel) DO UPDATE
+           SET next_offset = durability_log_seq.next_offset + excluded.next_offset
          RETURNING next_offset - ? AS seq`,
+        channel,
         distinct.length,
         distinct.length
       )
@@ -148,9 +155,10 @@ const appendRecords = (
     added += row.bytes;
     sql.exec(
       `INSERT INTO durability_log_records
-         ("offset", dedup_key, payload, bytes, appended_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(dedup_key) DO NOTHING`,
+         (channel, "offset", dedup_key, payload, bytes, appended_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(channel, dedup_key) DO NOTHING`,
+      channel,
       offset,
       dedupKey,
       row.payload,
@@ -160,8 +168,9 @@ const appendRecords = (
   });
   sql.exec(
     `UPDATE durability_log_seq SET total_bytes = total_bytes + ?
-     WHERE id = 1`,
-    added
+     WHERE channel = ?`,
+    added,
+    channel
   );
 
   return records.map((record) => assigned.get(record.dedup_key)!);
@@ -169,6 +178,7 @@ const appendRecords = (
 
 const readRecords = (
   sql: SqlStorage,
+  channel: string,
   from: number,
   limit: number
 ): LogRecordRow[] =>
@@ -176,24 +186,30 @@ const readRecords = (
     sql
       .exec(
         `SELECT * FROM durability_log_records
-         WHERE "offset" >= ?
+         WHERE channel = ? AND "offset" >= ?
          ORDER BY "offset" ASC
          LIMIT ?`,
+        channel,
         from,
         limit
       )
       .toArray()
   );
 
-const readBounds = (sql: SqlStorage): LogBounds => {
+const readBounds = (sql: SqlStorage, channel: string): LogBounds => {
   const row = boundsRowSchema.parse(
     sql
       .exec(
         `SELECT
-           (SELECT MIN("offset") FROM durability_log_records) AS hot,
-           (SELECT MIN(first_offset) FROM durability_log_segments) AS cold,
-           next_offset
-         FROM durability_log_seq WHERE id = 1`
+           (SELECT MIN("offset") FROM durability_log_records
+            WHERE channel = ?1) AS hot,
+           (SELECT MIN(first_offset) FROM durability_log_segments
+            WHERE channel = ?1) AS cold,
+           COALESCE(
+             (SELECT next_offset FROM durability_log_seq WHERE channel = ?1),
+             0
+           ) AS next_offset`,
+        channel
       )
       .toArray()[0]
   );
@@ -205,29 +221,44 @@ const readBounds = (sql: SqlStorage): LogBounds => {
   };
 };
 
-const countRecords = (sql: SqlStorage): number =>
+const countRecords = (sql: SqlStorage, channel: string): number =>
   countRowSchema.parse(
     sql
-      .exec('SELECT COUNT(*) AS count FROM durability_log_records')
+      .exec(
+        'SELECT COUNT(*) AS count FROM durability_log_records WHERE channel = ?',
+        channel
+      )
       .toArray()[0]
   ).count;
 
 /** Bytes of record payloads held in the object, excluding flushed segments. */
-const totalBytes = (sql: SqlStorage): number =>
+const totalBytes = (sql: SqlStorage, channel: string): number =>
   totalBytesRowSchema.parse(
     sql
-      .exec('SELECT total_bytes FROM durability_log_seq WHERE id = 1')
+      .exec(
+        `SELECT COALESCE(
+           (SELECT total_bytes FROM durability_log_seq WHERE channel = ?),
+           0
+         ) AS total_bytes`,
+        channel
+      )
       .toArray()[0]
   ).total_bytes;
 
 /** Oldest retained records in offset order, for flush-or-delete decisions. */
-const listOldest = (sql: SqlStorage, limit: number): LogRecordRow[] =>
+const listOldest = (
+  sql: SqlStorage,
+  channel: string,
+  limit: number
+): LogRecordRow[] =>
   logRecordRowSchema.array().parse(
     sql
       .exec(
         `SELECT * FROM durability_log_records
+         WHERE channel = ?
          ORDER BY "offset" ASC
          LIMIT ?`,
+        channel,
         limit
       )
       .toArray()
@@ -239,6 +270,7 @@ const listOldest = (sql: SqlStorage, limit: number): LogRecordRow[] =>
  */
 const trimThrough = (
   sql: SqlStorage,
+  channel: string,
   through: number,
   limit: number
 ): number => {
@@ -246,13 +278,14 @@ const trimThrough = (
     sql
       .exec(
         `DELETE FROM durability_log_records
-         WHERE "offset" IN (
+         WHERE channel = ?1 AND "offset" IN (
            SELECT "offset" FROM durability_log_records
-           WHERE "offset" < ?
+           WHERE channel = ?1 AND "offset" < ?2
            ORDER BY "offset" ASC
-           LIMIT ?
+           LIMIT ?3
          )
          RETURNING *`,
+        channel,
         through,
         limit
       )
@@ -263,23 +296,29 @@ const trimThrough = (
   }
   sql.exec(
     `UPDATE durability_log_seq SET total_bytes = MAX(0, total_bytes - ?)
-     WHERE id = 1`,
-    removed.reduce((total, row) => total + row.bytes, 0)
+     WHERE channel = ?`,
+    removed.reduce((total, row) => total + row.bytes, 0),
+    channel
   );
   return removed.length;
 };
 
 /** Records where a flushed run now lives, so a read can rehydrate it. */
-const insertSegment = (sql: SqlStorage, row: LogSegmentRow): void => {
+const insertSegment = (
+  sql: SqlStorage,
+  channel: string,
+  row: LogSegmentRow
+): void => {
   sql.exec(
     `INSERT INTO durability_log_segments
-       (first_offset, last_offset, locator, bytes, flushed_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(first_offset) DO UPDATE SET
+       (channel, first_offset, last_offset, locator, bytes, flushed_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(channel, first_offset) DO UPDATE SET
        last_offset = excluded.last_offset,
        locator = excluded.locator,
        bytes = excluded.bytes,
        flushed_at = excluded.flushed_at`,
+    channel,
     row.first_offset,
     row.last_offset,
     row.locator,
@@ -291,35 +330,44 @@ const insertSegment = (sql: SqlStorage, row: LogSegmentRow): void => {
 /** The segment holding an offset, if that offset was flushed. */
 const findSegment = (
   sql: SqlStorage,
+  channel: string,
   offset: number
 ): LogSegmentRow | undefined =>
   logSegmentRowSchema.optional().parse(
     sql
       .exec(
         `SELECT * FROM durability_log_segments
-         WHERE first_offset <= ? AND last_offset >= ?
+         WHERE channel = ?1 AND first_offset <= ?2 AND last_offset >= ?2
          LIMIT 1`,
-        offset,
+        channel,
         offset
       )
       .toArray()[0]
   );
 
-const readCursors = (sql: SqlStorage) =>
-  logCursorRowSchema
-    .array()
-    .parse(
-      sql
-        .exec('SELECT * FROM durability_log_cursors ORDER BY consumer')
-        .toArray()
-    );
+const readCursors = (sql: SqlStorage, channel: string) =>
+  logCursorRowSchema.array().parse(
+    sql
+      .exec(
+        `SELECT * FROM durability_log_cursors
+         WHERE channel = ?
+         ORDER BY consumer`,
+        channel
+      )
+      .toArray()
+  );
 
-const readCursor = (sql: SqlStorage, consumer: string): number | undefined =>
+const readCursor = (
+  sql: SqlStorage,
+  channel: string,
+  consumer: string
+): number | undefined =>
   offsetRowSchema.optional().parse(
     sql
       .exec(
         `SELECT "offset" FROM durability_log_cursors
-           WHERE consumer = ? LIMIT 1`,
+           WHERE channel = ? AND consumer = ? LIMIT 1`,
+        channel,
         consumer
       )
       .toArray()[0]
@@ -328,16 +376,19 @@ const readCursor = (sql: SqlStorage, consumer: string): number | undefined =>
 /** Advances a cursor, ignoring regressions so a late commit cannot rewind it. */
 const commitCursor = (
   sql: SqlStorage,
+  channel: string,
   consumer: string,
   offset: number,
   committedAt: number
 ): void => {
   sql.exec(
-    `INSERT INTO durability_log_cursors (consumer, "offset", committed_at)
-     VALUES (?, ?, ?)
-     ON CONFLICT(consumer) DO UPDATE
+    `INSERT INTO durability_log_cursors
+       (channel, consumer, "offset", committed_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(channel, consumer) DO UPDATE
        SET "offset" = excluded."offset", committed_at = excluded.committed_at
        WHERE excluded."offset" > durability_log_cursors."offset"`,
+    channel,
     consumer,
     offset,
     committedAt
@@ -347,13 +398,15 @@ const commitCursor = (
 /** Highest offset handed to a lease, which runs ahead of the commit. */
 const readAllocation = (
   sql: SqlStorage,
+  channel: string,
   consumer: string
 ): number | undefined =>
   allocationRowSchema.optional().parse(
     sql
       .exec(
         `SELECT allocated_offset FROM durability_log_allocations
-           WHERE consumer = ? LIMIT 1`,
+           WHERE channel = ? AND consumer = ? LIMIT 1`,
+        channel,
         consumer
       )
       .toArray()[0]
@@ -361,24 +414,33 @@ const readAllocation = (
 
 const setAllocation = (
   sql: SqlStorage,
+  channel: string,
   consumer: string,
   offset: number
 ): void => {
   sql.exec(
-    `INSERT INTO durability_log_allocations (consumer, allocated_offset)
-     VALUES (?, ?)
-     ON CONFLICT(consumer) DO UPDATE SET allocated_offset = excluded.allocated_offset`,
+    `INSERT INTO durability_log_allocations
+       (channel, consumer, allocated_offset)
+     VALUES (?, ?, ?)
+     ON CONFLICT(channel, consumer) DO UPDATE
+       SET allocated_offset = excluded.allocated_offset`,
+    channel,
     consumer,
     offset
   );
 };
 
-const insertLease = (sql: SqlStorage, row: LogLeaseRow): void => {
+const insertLease = (
+  sql: SqlStorage,
+  channel: string,
+  row: LogLeaseRow
+): void => {
   sql.exec(
     `INSERT INTO durability_log_leases
-       (batch_id, consumer, first_offset, last_offset, state, attempt,
+       (channel, batch_id, consumer, first_offset, last_offset, state, attempt,
         expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    channel,
     row.batch_id,
     row.consumer,
     row.first_offset,
@@ -396,6 +458,7 @@ const insertLease = (sql: SqlStorage, row: LogLeaseRow): void => {
  */
 const claimExpired = (
   sql: SqlStorage,
+  channel: string,
   consumer: string,
   now: number,
   batchId: string,
@@ -405,19 +468,21 @@ const claimExpired = (
     sql
       .exec(
         `UPDATE durability_log_leases
-         SET batch_id = ?, state = 'active', attempt = attempt + 1,
-             expires_at = ?
-         WHERE batch_id = (
+         SET batch_id = ?1, state = 'active', attempt = attempt + 1,
+             expires_at = ?2
+         WHERE channel = ?3 AND batch_id = (
            SELECT batch_id FROM durability_log_leases
-           WHERE consumer = ?
+           WHERE channel = ?3
+             AND consumer = ?4
              AND (state = 'pending'
-                  OR (state = 'active' AND expires_at <= ?))
+                  OR (state = 'active' AND expires_at <= ?5))
            ORDER BY first_offset ASC
            LIMIT 1
          )
          RETURNING *`,
         batchId,
         expiresAt,
+        channel,
         consumer,
         now
       )
@@ -425,13 +490,20 @@ const claimExpired = (
   );
 
 /** Ranges still held, so parallelism can be bounded per consumer. */
-const countHeld = (sql: SqlStorage, consumer: string, now: number): number =>
+const countHeld = (
+  sql: SqlStorage,
+  channel: string,
+  consumer: string,
+  now: number
+): number =>
   countRowSchema.parse(
     sql
       .exec(
         `SELECT COUNT(*) AS count FROM durability_log_leases
-         WHERE consumer = ?
+         WHERE channel = ?
+           AND consumer = ?
            AND (state = 'pending' OR (state = 'active' AND expires_at > ?))`,
+        channel,
         consumer,
         now
       )
@@ -441,6 +513,7 @@ const countHeld = (sql: SqlStorage, consumer: string, now: number): number =>
 /** Settles one range, failing when the batch was fenced or already settled. */
 const settleLease = (
   sql: SqlStorage,
+  channel: string,
   batchId: string,
   state: LogLeaseState,
   expiresAt: number
@@ -449,10 +522,11 @@ const settleLease = (
     .exec(
       `UPDATE durability_log_leases
        SET state = ?, expires_at = ?
-       WHERE batch_id = ? AND state = 'active'
+       WHERE channel = ? AND batch_id = ? AND state = 'active'
        RETURNING batch_id`,
       state,
       expiresAt,
+      channel,
       batchId
     )
     .toArray().length > 0;
@@ -463,6 +537,7 @@ const settleLease = (
  */
 const leasesFrom = (
   sql: SqlStorage,
+  channel: string,
   consumer: string,
   from: number,
   limit: number
@@ -471,9 +546,10 @@ const leasesFrom = (
     sql
       .exec(
         `SELECT * FROM durability_log_leases
-         WHERE consumer = ? AND last_offset >= ?
+         WHERE channel = ? AND consumer = ? AND last_offset >= ?
          ORDER BY first_offset ASC
          LIMIT ?`,
+        channel,
         consumer,
         from,
         limit
@@ -481,13 +557,19 @@ const leasesFrom = (
       .toArray()
   );
 
-const deleteLeases = (sql: SqlStorage, batchIds: readonly string[]): void => {
+const deleteLeases = (
+  sql: SqlStorage,
+  channel: string,
+  batchIds: readonly string[]
+): void => {
   if (batchIds.length === 0) {
     return;
   }
   sql.exec(
     `DELETE FROM durability_log_leases
-     WHERE batch_id IN (${batchIds.map(() => '?').join(', ')})`,
+     WHERE channel = ?
+       AND batch_id IN (${batchIds.map(() => '?').join(', ')})`,
+    channel,
     ...batchIds
   );
 };
@@ -523,6 +605,11 @@ export type LogReadOptions = {
 
 /** One contiguous run of records leaving the object, oldest first. */
 export type LogSegment<Body = unknown> = {
+  /**
+   * The log's channel. Offsets are counted per channel, so logs sharing
+   * external storage must include it in the location they write to.
+   */
+  channel: string;
   firstOffset: number;
   lastOffset: number;
   records: LogRecord<Body>[];
@@ -577,6 +664,12 @@ export type LogRetention = {
 };
 
 export type DurabilityLogConfig<Body = unknown> = SchedulerAttachment & {
+  /**
+   * Partitions records, offsets, cursors, cold segments, and leases, so
+   * several logs share one object without seeing each other. Defaults to
+   * `default`; one instance per channel may attach to a scheduler.
+   */
+  channel?: string;
   /** Without retention the log grows until the object's storage limit. */
   retention?: LogRetention;
   cold?: LogColdStorage<Body>;
@@ -604,6 +697,7 @@ export const maxLogBytes = 1_073_741_824;
  */
 export class DurabilityLog<Body = unknown> {
   readonly #engine: Engine;
+  readonly #channel: string;
   readonly #routing: RoutingLoad;
   readonly #retention: LogRetention | undefined;
   readonly #cold: LogColdStorage<Body> | undefined;
@@ -614,6 +708,10 @@ export class DurabilityLog<Body = unknown> {
   readonly #encoder = new TextEncoder();
 
   constructor(config: DurabilityLogConfig<Body>) {
+    this.#channel = assertChannel(
+      'DurabilityLog',
+      config.channel ?? defaultChannel
+    );
     this.#maxBatchSize = config.maxBatchSize ?? 100;
     assertPositiveInteger('maxBatchSize', this.#maxBatchSize);
     if (config.retention?.maxAgeMs !== undefined) {
@@ -633,7 +731,6 @@ export class DurabilityLog<Body = unknown> {
         );
       }
     }
-    this.#engine = engineFor(config);
     this.#routing = config.routing ?? new RoutingLoad();
     this.#retention = config.retention;
     this.#cold = config.cold;
@@ -646,9 +743,18 @@ export class DurabilityLog<Body = unknown> {
       if (this.#leases.maxAttempts !== undefined) {
         assertPositiveInteger('leases.maxAttempts', this.#leases.maxAttempts);
       }
+    }
+
+    this.#engine = engineFor(config);
+    this.#engine.claimChannel(
+      'durability_log_records',
+      this.#channel,
+      'DurabilityLog'
+    );
+    this.#engine.migrateSchema('log', durabilityLogMigrations);
+    if (this.#leases) {
       this.#engine.migrateSchema('logLeases', durabilityLogLeaseMigrations);
     }
-    this.#engine.migrateSchema('log', durabilityLogMigrations);
   }
 
   static migrate(
@@ -710,7 +816,7 @@ export class DurabilityLog<Body = unknown> {
 
       const appendedAt = Date.now();
       const offsets = this.#engine.transactionSync((sql) =>
-        appendRecords(sql, rows, appendedAt)
+        appendRecords(sql, this.#channel, rows, appendedAt)
       );
       return { success: true, value: offsets, load: await this.load() };
     } finally {
@@ -729,7 +835,7 @@ export class DurabilityLog<Body = unknown> {
     if (!Number.isInteger(options.from) || options.from < 0) {
       throw new LogAppendError('Read offset must be a non-negative integer');
     }
-    const bounds = readBounds(this.#engine.sql);
+    const bounds = readBounds(this.#engine.sql, this.#channel);
     if (options.from < bounds.oldestOffset) {
       throw new LogTruncatedError(options.from, bounds.oldestOffset);
     }
@@ -737,9 +843,12 @@ export class DurabilityLog<Body = unknown> {
     const records =
       options.from < bounds.hotOffset
         ? await this.#rehydrate(options.from, capped, bounds)
-        : readRecords(this.#engine.sql, options.from, capped).map((row) =>
-            this.#record(row)
-          );
+        : readRecords(
+            this.#engine.sql,
+            this.#channel,
+            options.from,
+            capped
+          ).map((row) => this.#record(row));
     const nextOffset =
       records.length === 0
         ? Math.max(options.from, bounds.nextOffset)
@@ -760,7 +869,7 @@ export class DurabilityLog<Body = unknown> {
     limit: number,
     bounds: LogBounds
   ): Promise<LogRecord<Body>[]> {
-    const segment = findSegment(this.#engine.sql, from);
+    const segment = findSegment(this.#engine.sql, this.#channel, from);
     const records = segment
       ? await this.#cold?.read(segment.locator)
       : undefined;
@@ -785,12 +894,12 @@ export class DurabilityLog<Body = unknown> {
 
   /** The retained window. `oldestOffset` equals `nextOffset` when empty. */
   async bounds(): Promise<LogBounds> {
-    return readBounds(this.#engine.sql);
+    return readBounds(this.#engine.sql, this.#channel);
   }
 
   /** Undefined until the consumer commits, so callers choose their own start. */
   async cursor(consumer: string): Promise<number | undefined> {
-    return readCursor(this.#engine.sql, consumer);
+    return readCursor(this.#engine.sql, this.#channel, consumer);
   }
 
   /** Records progress. Regressions are ignored, so a late commit cannot rewind. */
@@ -798,12 +907,15 @@ export class DurabilityLog<Body = unknown> {
     if (!Number.isInteger(offset) || offset < 0) {
       throw new LogAppendError('Commit offset must be a non-negative integer');
     }
-    commitCursor(this.#engine.sql, consumer, offset, Date.now());
+    commitCursor(this.#engine.sql, this.#channel, consumer, offset, Date.now());
   }
 
   async cursors(): Promise<Record<string, number>> {
     return Object.fromEntries(
-      readCursors(this.#engine.sql).map((row) => [row.consumer, row.offset])
+      readCursors(this.#engine.sql, this.#channel).map((row) => [
+        row.consumer,
+        row.offset,
+      ])
     );
   }
 
@@ -824,16 +936,25 @@ export class DurabilityLog<Body = unknown> {
     const cutoff = maxAgeMs === undefined ? undefined : Date.now() - maxAgeMs;
     let removed = 0;
     for (;;) {
-      const oldest = listOldest(this.#engine.sql, this.#maxBatchSize);
+      const oldest = listOldest(
+        this.#engine.sql,
+        this.#channel,
+        this.#maxBatchSize
+      );
       if (oldest.length === 0) {
         return removed;
       }
       const excess =
         maxRecords === undefined
           ? 0
-          : Math.max(0, countRecords(this.#engine.sql) - maxRecords);
+          : Math.max(
+              0,
+              countRecords(this.#engine.sql, this.#channel) - maxRecords
+            );
       const heldBytes =
-        maxBytes === undefined ? 0 : totalBytes(this.#engine.sql);
+        maxBytes === undefined
+          ? 0
+          : totalBytes(this.#engine.sql, this.#channel);
       let overBytes = Math.max(0, heldBytes - (maxBytes ?? 0));
       const expiring = takeWhile(oldest, (row, index) => {
         const reclaiming = overBytes > 0;
@@ -853,6 +974,7 @@ export class DurabilityLog<Body = unknown> {
         const records = expiring.map((row) => this.#record(row));
         // eslint-disable-next-line no-await-in-loop
         const locator = await this.#cold.write({
+          channel: this.#channel,
           firstOffset: first.offset,
           lastOffset: last.offset,
           records,
@@ -862,7 +984,7 @@ export class DurabilityLog<Body = unknown> {
         }
         // Indexed before deletion: a crash in between leaves the segment
         // written and readable, never records that point nowhere.
-        insertSegment(this.#engine.sql, {
+        insertSegment(this.#engine.sql, this.#channel, {
           first_offset: first.offset,
           last_offset: last.offset,
           locator,
@@ -871,7 +993,7 @@ export class DurabilityLog<Body = unknown> {
         });
       }
       const deleted = this.#engine.transactionSync((sql) =>
-        trimThrough(sql, last.offset + 1, expiring.length)
+        trimThrough(sql, this.#channel, last.offset + 1, expiring.length)
       );
       removed += deleted;
       // Records are flushed before deletion, so stopping on partial progress
@@ -893,8 +1015,9 @@ export class DurabilityLog<Body = unknown> {
     return this.#engine.sql
       .exec(
         `DELETE FROM durability_log_segments
-         WHERE last_offset < ?
+         WHERE channel = ? AND last_offset < ?
          RETURNING first_offset`,
+        this.#channel,
         offset
       )
       .toArray().length;
@@ -924,13 +1047,14 @@ export class DurabilityLog<Body = unknown> {
 
     const reclaimed = claimExpired(
       sql,
+      this.#channel,
       consumer,
       now,
       crypto.randomUUID(),
       now + this.#leaseMs
     );
     if (reclaimed) {
-      const { oldestOffset } = readBounds(sql);
+      const { oldestOffset } = readBounds(sql, this.#channel);
       if (reclaimed.first_offset < oldestOffset) {
         this.#dropTrimmed(consumer, reclaimed, oldestOffset);
         throw new LogTruncatedError(reclaimed.first_offset, oldestOffset);
@@ -966,20 +1090,20 @@ export class DurabilityLog<Body = unknown> {
       } catch (error) {
         reportFailure(
           'durability.log.poison_handler.failed',
-          { consumer },
+          { channel: this.#channel, consumer },
           error
         );
       }
       return undefined;
     }
 
-    if (countHeld(sql, consumer, now) >= this.#maxParallelism) {
+    if (countHeld(sql, this.#channel, consumer, now) >= this.#maxParallelism) {
       return undefined;
     }
 
-    const bounds = readBounds(sql);
-    const committed = readCursor(sql, consumer);
-    const allocated = readAllocation(sql, consumer);
+    const bounds = readBounds(sql, this.#channel);
+    const committed = readCursor(sql, this.#channel, consumer);
+    const allocated = readAllocation(sql, this.#channel, consumer);
     const from = Math.max(bounds.oldestOffset, committed ?? 0, allocated ?? 0);
     const records = await this.#readFrom(from, size, bounds);
     if (records.length === 0) {
@@ -990,7 +1114,7 @@ export class DurabilityLog<Body = unknown> {
     const last = records[records.length - 1]!.offset;
     const batchId = crypto.randomUUID();
     this.#engine.transactionSync((transaction) => {
-      insertLease(transaction, {
+      insertLease(transaction, this.#channel, {
         batch_id: batchId,
         consumer,
         first_offset: first,
@@ -1000,7 +1124,7 @@ export class DurabilityLog<Body = unknown> {
         expires_at: now + this.#leaseMs,
         created_at: now,
       });
-      setAllocation(transaction, consumer, last + 1);
+      setAllocation(transaction, this.#channel, consumer, last + 1);
     });
     return {
       batchId,
@@ -1039,8 +1163,9 @@ export class DurabilityLog<Body = unknown> {
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_log_leases
-           WHERE consumer = ?
+           WHERE channel = ? AND consumer = ?
            ORDER BY first_offset ASC`,
+          this.#channel,
           consumer
         )
         .toArray()
@@ -1051,6 +1176,7 @@ export class DurabilityLog<Body = unknown> {
     // Pending ranges are immediately claimable, so their expiry is in the past.
     const settled = settleLease(
       this.#engine.sql,
+      this.#channel,
       batchId,
       state,
       state === 'pending' ? 0 : Date.now()
@@ -1077,14 +1203,15 @@ export class DurabilityLog<Body = unknown> {
   ): void {
     this.#engine.transactionSync((sql) => {
       if (lease.last_offset < oldestOffset) {
-        deleteLeases(sql, [lease.batch_id]);
+        deleteLeases(sql, this.#channel, [lease.batch_id]);
       } else {
         sql.exec(
           `UPDATE durability_log_leases
            SET first_offset = ?, state = 'pending', attempt = attempt - 1,
                expires_at = 0
-           WHERE batch_id = ?`,
+           WHERE channel = ? AND batch_id = ?`,
           oldestOffset,
+          this.#channel,
           lease.batch_id
         );
       }
@@ -1098,15 +1225,21 @@ export class DurabilityLog<Body = unknown> {
     // Offsets below the retained window are gone for everyone; a cursor
     // stranded there could never meet the ranges leased after them.
     const from = Math.max(
-      readCursor(sql, consumer) ?? 0,
-      readBounds(sql).oldestOffset
+      readCursor(sql, this.#channel, consumer) ?? 0,
+      readBounds(sql, this.#channel).oldestOffset
     );
     let cursor = from;
     const settled: string[] = [];
     // Ranges settled while an earlier one was outstanding wait behind it; when
     // it settles the cursor must pass all of them, however many pages that is.
     for (let page = true; page; ) {
-      const candidates = leasesFrom(sql, consumer, cursor, this.#maxBatchSize);
+      const candidates = leasesFrom(
+        sql,
+        this.#channel,
+        consumer,
+        cursor,
+        this.#maxBatchSize
+      );
       page = candidates.length === this.#maxBatchSize;
       for (const row of candidates) {
         const contiguous = row.first_offset <= cursor;
@@ -1122,13 +1255,13 @@ export class DurabilityLog<Body = unknown> {
     if (settled.length === 0) {
       return;
     }
-    commitCursor(sql, consumer, cursor, Date.now());
-    deleteLeases(sql, settled);
+    commitCursor(sql, this.#channel, consumer, cursor, Date.now());
+    deleteLeases(sql, this.#channel, settled);
   }
 
   /** Reads a stored range, rehydrating it when retention already flushed it. */
   async #between(first: number, last: number): Promise<LogRecord<Body>[]> {
-    const bounds = readBounds(this.#engine.sql);
+    const bounds = readBounds(this.#engine.sql, this.#channel);
     // One read stops at the end of a cold segment, and a range redelivered
     // after a flush can span several segments and the hot window.
     const records: LogRecord<Body>[] = [];
@@ -1154,8 +1287,8 @@ export class DurabilityLog<Body = unknown> {
     if (from < bounds.hotOffset && from < bounds.nextOffset) {
       return this.#rehydrate(from, limit, bounds);
     }
-    return readRecords(this.#engine.sql, from, limit).map((row) =>
-      this.#record(row)
+    return readRecords(this.#engine.sql, this.#channel, from, limit).map(
+      (row) => this.#record(row)
     );
   }
 
@@ -1171,8 +1304,10 @@ export class DurabilityLog<Body = unknown> {
    * partitions by consumer lag. Without cursors there is no backlog to report.
    */
   async load(): Promise<LoadSnapshot> {
-    const bounds = readBounds(this.#engine.sql);
-    const slowest = readCursors(this.#engine.sql).reduce<number | undefined>(
+    const bounds = readBounds(this.#engine.sql, this.#channel);
+    const slowest = readCursors(this.#engine.sql, this.#channel).reduce<
+      number | undefined
+    >(
       (lowest, row) =>
         lowest === undefined ? row.offset : Math.min(lowest, row.offset),
       undefined
