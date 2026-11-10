@@ -1,5 +1,11 @@
 # @durability/transforms
 
+## 0.6.1
+
+### Patch Changes
+
+- 7ee249e: Remove the unused `jsonc-parser` dependency. Nothing in the package imported it, so installs are smaller and behavior is unchanged.
+
 ## 0.6.0
 
 ### Minor Changes
