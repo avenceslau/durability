@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "do-transforms-test",
-  "main": "tests/test-worker.ts",
+  "main": "tests/worker.ts",
   "compatibility_date": "2026-07-07",
   "services": [
     {

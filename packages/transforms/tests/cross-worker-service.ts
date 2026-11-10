@@ -5,7 +5,7 @@ import {
   defineTransform,
   registerTransform,
 } from '@durability/transforms';
-import type { TestContext } from './test-worker';
+import type { TestContext } from './worker';
 
 export class CrossWorkerContextService extends WorkerEntrypoint {
   setContext(context: TestContext) {

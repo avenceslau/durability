@@ -16,29 +16,29 @@ type TransformDurableObjectNamespace<
 declare global {
   interface Env {
     CONTEXT_DO: TransformDurableObjectNamespace<
-      import("./test-worker").ContextDO
+      import("./worker").ContextDO
     >;
     PIPELINE_DO: TransformDurableObjectNamespace<
-      import("./test-worker").PipelineDO
+      import("./worker").PipelineDO
     >;
-    WORKFLOW: TransformStub<Workflow<Parameters<import("./test-worker").EchoWorkflow['run']>[0]['payload']>>;
+    WORKFLOW: TransformStub<Workflow<Parameters<import("./worker").EchoWorkflow['run']>[0]['payload']>>;
     KV: TransformStub<KVNamespace>;
     BUCKET: TransformStub<R2Bucket>;
-    CONTEXT_SERVICE: TransformStub<Service<typeof import("./test-worker").ContextService>>;
+    CONTEXT_SERVICE: TransformStub<Service<typeof import("./worker").ContextService>>;
   }
 
   namespace Cloudflare {
     interface Env {
       CONTEXT_DO: TransformDurableObjectNamespace<
-        import("./test-worker").ContextDO
+        import("./worker").ContextDO
       >;
       PIPELINE_DO: TransformDurableObjectNamespace<
-        import("./test-worker").PipelineDO
+        import("./worker").PipelineDO
       >;
-      WORKFLOW: TransformStub<Workflow<Parameters<import("./test-worker").EchoWorkflow['run']>[0]['payload']>>;
+      WORKFLOW: TransformStub<Workflow<Parameters<import("./worker").EchoWorkflow['run']>[0]['payload']>>;
       KV: TransformStub<KVNamespace>;
       BUCKET: TransformStub<R2Bucket>;
-      CONTEXT_SERVICE: TransformStub<Service<typeof import("./test-worker").ContextService>>;
+      CONTEXT_SERVICE: TransformStub<Service<typeof import("./worker").ContextService>>;
     }
   }
 }

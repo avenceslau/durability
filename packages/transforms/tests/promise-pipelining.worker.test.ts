@@ -7,7 +7,7 @@ import {
   largeObjectStream,
 } from '../src/index';
 import { crossWorkerObservability } from './cross-worker-service';
-import { observability, serviceObservability } from './test-worker';
+import { observability, serviceObservability } from './worker';
 
 describe('Durable Object context promise pipelining', () => {
   it('passes caller context to callee transforms without explicit wrapping', async () => {
