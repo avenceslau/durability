@@ -133,17 +133,26 @@
 }
 .aw-dialog-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.5rem 1rem;
   flex-shrink: 0;
   padding: 0.65rem 1rem;
   border-bottom: 1px solid var(--aw-border);
 }
 .architecture-walkthrough .aw-dialog-header h3 {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
+}
+/* On its own row under the title until the header is wide enough for both. */
+.aw-dialog-header .aw-scenario {
+  order: 1;
+  flex: 1 0 100%;
+  font-size: 0.8rem;
 }
 .aw-dialog-header button {
   width: 2rem;
@@ -158,7 +167,6 @@
   flex: 1;
   min-height: 0;
   border: 0;
-  border-bottom: 1px solid var(--aw-border);
   border-radius: 0;
   grid-template-rows: minmax(18rem, 58%) minmax(0, 1fr);
 }
@@ -175,6 +183,9 @@
 }
 .aw-step {
   flex-shrink: 0;
+  /* In flow under the diagram on narrow screens: leave the diagram half the column. */
+  max-height: 50%;
+  overflow-y: auto;
   border-top: 1px solid var(--aw-border);
   border-left: 3px solid var(--aw-border);
   padding: 0.6rem 1rem 0.8rem;
@@ -202,6 +213,30 @@
   color: var(--aw-text);
   font-weight: 600;
 }
+.aw-state {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.55rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--aw-border);
+  color: var(--aw-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+/* Label and note share a line so the card stays short enough to sit beside its node. */
+.aw-state dt {
+  display: inline;
+  margin-right: 0.3em;
+  color: var(--aw-text);
+  font-weight: 600;
+}
+.aw-state dt::after {
+  content: ':';
+}
+.aw-state dd {
+  display: inline;
+  margin: 0;
+}
 .aw-dialog .aw-source-column {
   display: flex;
   flex-direction: column;
@@ -224,12 +259,6 @@
   height: 100%;
   max-height: none;
   font-size: 0.76rem;
-}
-.aw-dialog .aw-footer {
-  flex-shrink: 0;
-  max-height: 40dvh;
-  overflow: auto;
-  padding: 0.5rem 0.85rem;
 }
 .aw-body {
   display: grid;
@@ -328,34 +357,12 @@
     var(--shiki-dark-bg)
   ) !important;
 }
-.aw-footer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 0.4rem 0.8rem;
-  padding-top: 0.35rem;
-  color: var(--aw-muted);
-  font-size: 0.72rem;
-}
-.aw-caption {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  min-width: 0;
-}
 .aw-controls {
   display: flex;
   flex-shrink: 0;
   gap: 0.3rem;
 }
 .aw-controls button {
-  font-size: 1rem;
-  line-height: 1;
-  padding: 0.3rem 0.55rem;
-}
-.aw-controls button,
-.aw-toolbar button {
   border: 1px solid var(--aw-border);
   border-radius: 0.25rem;
   padding: 0.15rem 0.4rem;
@@ -374,79 +381,6 @@
   border: 0;
   background: none;
 }
-.aw-details summary {
-  padding: 0.15rem 0;
-  cursor: pointer;
-  font-size: 0.72rem;
-}
-.aw-details[open] {
-  grid-column: 1 / -1;
-}
-.aw-detail-content {
-  padding: 0.7rem 0;
-  color: var(--aw-muted);
-}
-.aw-toolbar {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-.aw-toolbar label {
-  display: grid;
-  gap: 0.25rem;
-}
-.aw-steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  list-style: none;
-  padding: 0.5rem 0;
-  margin: 0;
-}
-.aw-steps li {
-  margin: 0;
-}
-.aw-steps button {
-  background: none;
-  color: var(--aw-muted);
-  border: 1px solid var(--aw-border);
-  border-radius: 0.25rem;
-  padding: 0.3rem 0.4rem;
-  font: inherit;
-  cursor: pointer;
-  text-align: start;
-}
-.aw-steps button span {
-  margin-right: 0.35rem;
-}
-.aw-steps button[aria-current='step'] {
-  color: var(--aw-accent);
-  border-color: var(--aw-accent);
-}
-.aw-explanation dl {
-  display: grid;
-  gap: 0.5rem;
-  margin-block: 0.6rem;
-}
-.aw-explanation dt {
-  color: var(--aw-text);
-  font-weight: 600;
-}
-.aw-explanation dd {
-  margin: 0.15rem 0 0;
-  line-height: 1.5;
-}
-.aw-inspector {
-  border-top: 1px solid var(--aw-border);
-  padding-top: 0.6rem;
-}
-.aw-inspector strong {
-  color: var(--aw-text);
-}
-.aw-summary {
-  margin-top: 0.6rem;
-}
 .architecture-walkthrough noscript {
   display: block;
   padding-top: 0.5rem;
@@ -456,9 +390,15 @@
   .aw-dialog .aw-diagram-column {
     position: relative;
   }
+  .aw-dialog-header .aw-scenario {
+    order: 0;
+    flex: 0 1 auto;
+  }
   .aw-dialog .aw-step {
     position: absolute;
     z-index: 2;
+    max-height: none;
+    overflow: visible;
     top: 0;
     left: 0;
     width: min(19rem, calc(100% - 1.5rem));
@@ -527,9 +467,6 @@
   .aw-source-column {
     border-top: 0;
     border-left: 1px solid var(--aw-border);
-  }
-  .aw-explanation dl {
-    grid-template-columns: 1fr 1fr;
   }
 }
 @media (prefers-reduced-motion: reduce) {

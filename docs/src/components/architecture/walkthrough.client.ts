@@ -15,7 +15,6 @@ import {
   scenarioDiagram,
   sourceUrl,
   stepNodes,
-  type ArchitectureScenario,
   type ArchitectureStep,
   type WalkthroughState,
 } from '../../lib/architecture';
@@ -34,7 +33,6 @@ export function mountWalkthrough(element: Element): () => void {
     root.querySelector<T>(selector)!;
   const scenarioSelect = query<HTMLSelectElement>('[data-scenario]');
   const sourceSelect = query<HTMLSelectElement>('[data-source-select]');
-  const stepsList = query<HTMLOListElement>('[data-step-list]');
   const previous = query<HTMLButtonElement>('[data-previous]');
   const next = query<HTMLButtonElement>('[data-next]');
   const dialog = query<HTMLDialogElement>('[data-dialog]');
@@ -230,30 +228,6 @@ export function mountWalkthrough(element: Element): () => void {
     );
   }
 
-  function inspect(nodeId: string) {
-    const detail = model.details[nodeId]!;
-    selectedNode = nodeId;
-    text('[data-node-title]', model.diagram.nodes[nodeId]!.label);
-    text('[data-node-description]', detail.description);
-    query<HTMLAnchorElement>('[data-node-link]').href = detail.href;
-    draw();
-  }
-
-  function renderSteps(scenario: ArchitectureScenario) {
-    const items = scenario.steps.map((step, index) => {
-      const item = document.createElement('li');
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.dataset.step = String(index);
-      const number = document.createElement('span');
-      number.textContent = String(index + 1);
-      button.append(number, document.createTextNode(step.title));
-      item.append(button);
-      return item;
-    });
-    stepsList.replaceChildren(...items);
-  }
-
   function render(scrollCode = false) {
     const scenario = currentScenario();
     const step = currentStep();
@@ -266,8 +240,6 @@ export function mountWalkthrough(element: Element): () => void {
     next.disabled = stepIndex === scenario.steps.length - 1;
     root.dataset.activeScenario = scenario.id;
     root.dataset.activeStep = step.id;
-    text('[data-scenario-title]', scenario.title);
-    text('[data-scenario-description]', scenario.description);
     text(
       '[data-step-title]',
       `${stepIndex + 1}/${scenario.steps.length} · ${step.title}`
@@ -276,15 +248,6 @@ export function mountWalkthrough(element: Element): () => void {
     text('[data-durable]', step.durable);
     text('[data-volatile]', step.volatile);
     query('[data-status]').setAttribute('data-status', step.status);
-    stepsList
-      .querySelectorAll<HTMLButtonElement>('[data-step]')
-      .forEach((button, index) => {
-        if (index === stepIndex) {
-          button.setAttribute('aria-current', 'step');
-        } else {
-          button.removeAttribute('aria-current');
-        }
-      });
     text('[data-source-file]', excerpt.file);
     query<HTMLAnchorElement>('[data-source-link]').href = sourceUrl(
       excerpt.file,
@@ -317,15 +280,13 @@ export function mountWalkthrough(element: Element): () => void {
         }
       }
     });
-    inspect(nodesOf(scenarioIndex, stepIndex)[0]!);
+    selectedNode = nodesOf(scenarioIndex, stepIndex)[0]!;
+    draw();
     placeCard();
   }
 
   function goTo(scenario: number, step: number, scrollCode = true) {
-    if (scenario !== scenarioIndex) {
-      scenarioIndex = scenario;
-      renderSteps(currentScenario());
-    }
+    scenarioIndex = scenario;
     stepIndex = step;
     render(scrollCode);
   }
@@ -389,7 +350,8 @@ export function mountWalkthrough(element: Element): () => void {
     if (destination) {
       goTo(...destination);
     }
-    inspect(nodeId);
+    selectedNode = nodeId;
+    draw();
   }
 
   root.addEventListener(
@@ -398,25 +360,21 @@ export function mountWalkthrough(element: Element): () => void {
       if (!(event.target instanceof Element)) {
         return;
       }
-      const step = event.target.closest<HTMLButtonElement>('[data-step]');
       const line = event.target.closest<HTMLElement>('[data-linked-line]');
-      if (step) {
-        goTo(scenarioIndex, Number(step.dataset.step));
-      } else if (line) {
-        const file =
-          line.closest<HTMLElement>('[data-file-panel]')!.dataset.file;
-        const number = Number(line.dataset.sourceLine);
-        const destination = findStep(
-          (entry) =>
-            model.excerpts.find(
-              (excerpt) => excerpt.id === entry.source.excerpt
-            )!.file === file &&
-            number >= entry.source.from &&
-            number <= entry.source.to
-        );
-        if (destination) {
-          goTo(...destination, false);
-        }
+      if (!line) {
+        return;
+      }
+      const file = line.closest<HTMLElement>('[data-file-panel]')!.dataset.file;
+      const number = Number(line.dataset.sourceLine);
+      const destination = findStep(
+        (entry) =>
+          model.excerpts.find((excerpt) => excerpt.id === entry.source.excerpt)!
+            .file === file &&
+          number >= entry.source.from &&
+          number <= entry.source.to
+      );
+      if (destination) {
+        goTo(...destination, false);
       }
     },
     { signal }
@@ -491,11 +449,6 @@ export function mountWalkthrough(element: Element): () => void {
   );
   previous.addEventListener('click', () => moveStep(-1), { signal });
   next.addEventListener('click', () => moveStep(1), { signal });
-  query('[data-reset]').addEventListener(
-    'click',
-    () => goTo(scenarioIndex, 0),
-    { signal }
-  );
   openButton.addEventListener(
     'click',
     () => {

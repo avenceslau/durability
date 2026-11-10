@@ -64,8 +64,6 @@ for (const slug of pages) {
       width: viewport.width,
       height: viewport.height,
     });
-    await expect(root.locator('.aw-details')).not.toHaveAttribute('open');
-    await expect(root.locator('.aw-inspector')).not.toBeVisible();
 
     const files = [...new Set(model.excerpts.map((excerpt) => excerpt.file))];
     await expect(root.locator('[data-file-panel]')).toHaveCount(files.length);
@@ -79,7 +77,6 @@ for (const slug of pages) {
         .allTextContents();
       expect(rendered.join('\n').trimEnd()).toBe(original.trimEnd());
     }
-    await root.locator('.aw-details > summary').click();
     for (const scenario of model.scenarios) {
       const diagram = scenarioDiagram(model, scenario);
       await root
@@ -105,9 +102,9 @@ for (const slug of pages) {
             )
           ).toBeVisible();
         }
-        await expect(root.locator('[data-node-title]')).toHaveText(
-          model.diagram.nodes[nodes[0]!]!.label
-        );
+        await expect(
+          root.locator(`[data-graph] [data-node="${nodes[0]}"]`)
+        ).toHaveAttribute('aria-pressed', 'true');
         const file = model.excerpts.find(
           (excerpt) => excerpt.id === step.source.excerpt
         )!.file;
@@ -154,9 +151,9 @@ for (const slug of pages) {
         'data-active-step',
         scenario.steps.at(-2)!.id
       );
-      await root
-        .getByRole('button', { name: 'Reset architecture walkthrough' })
-        .click();
+      for (let index = scenario.steps.length - 2; index > 0; index -= 1) {
+        await page.keyboard.press('ArrowLeft');
+      }
       await expect(root).toHaveAttribute(
         'data-active-step',
         scenario.steps[0]!.id
@@ -223,20 +220,20 @@ test('arrow keys move the diagram after a node is clicked, and the step card fol
   await expect(card).toHaveAttribute('data-side', /.+/u);
   const placement = () =>
     card.evaluate((element) => `${element.style.left},${element.style.top}`);
-  const first = await placement();
 
   await page.keyboard.press('ArrowRight');
   await root
     .getByRole('button', { name: 'Inspect durability_calls', exact: true })
     .click();
   await expect(root).toHaveAttribute('data-active-step', 'migrate');
+  const beside = await placement();
   await page.keyboard.press('ArrowRight');
   await expect(root).toHaveAttribute('data-active-step', 'rpc');
   await expect(root.locator('[data-graph] [data-node="caller"]')).toBeVisible();
   await expect(
     card.getByRole('button', { name: 'Next architecture step' })
   ).toBeVisible();
-  expect(await placement()).not.toBe(first);
+  expect(await placement()).not.toBe(beside);
 });
 
 test('arrow keys keep working when a focused code line belongs to a file that is replaced', async ({
@@ -372,8 +369,10 @@ test('state survives closing, theme changes, and client-side navigation', async 
     .getByRole('button', { name: 'Inspect Durability', exact: true })
     .click();
   await expect(root).toHaveAttribute('data-active-step', 'insert');
-  await root.locator('.aw-details > summary').click();
-  await root.locator('[data-node-link]').click();
+  await root
+    .getByRole('button', { name: 'Close code and architecture', exact: true })
+    .click();
+  await page.locator('a[href="/primitives/scheduler/"]').first().click();
   await expect(page).toHaveURL(/\/primitives\/scheduler\//u);
   await page.goBack();
   await openExplorer(page);
@@ -394,7 +393,7 @@ test('mobile zoom confines scrolling to the graph and full source', async ({
   await root
     .getByRole('button', { name: 'Next architecture step', exact: true })
     .click();
-  await expect(root.locator('[data-step][aria-current="step"]')).toContainText(
+  await expect(root.locator('[data-step-title]')).toContainText(
     'Create tables in the object’s SQLite'
   );
   await expect(root.locator('[data-graph] svg.architecture')).toBeVisible();

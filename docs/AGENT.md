@@ -53,7 +53,8 @@ whole diagram, like the preview, and dims what it is not about: give each step a
 `focus:<node>` or `flow:<name>` spotlight. An `id` or `+id` token marks a node the step
 introduces; the step card points at it, and it is focused when the step has no
 spotlight. Other visibility tokens are validated but have no effect. `details`
-holds every node's inspector text, contract link, and the excerpt to jump to.
+holds, for every node, the excerpt to jump to when the node is selected. Its
+`description` and `href` are not shown in the explorer at present.
 
 Diagram conventions: `direction: 'down'`, `routing: 'auto'`, a canvas near
 1000×900, one group box per Durable Object around what lives in it, external systems
@@ -81,12 +82,11 @@ Keep the guide lightweight: show only a diagram preview. Open a full-screen nati
 dialog for the linked diagram and complete source files. Use anchors for highlighting,
 not for truncating displayed code. Selecting a node must switch/scroll to its code.
 Escape/close must restore focus and release the page scroll lock, including on navigation.
-The step title, description, and ← / → buttons are a card placed beside the node the
-step is about (the focused node, else the nodes the step adds), on the side that covers
-the least of what the step spotlights; on narrow screens the card sits under the
-diagram. Scenario selection, the step list, durable/volatile notes, and the inspector
-stay behind Details. Do not restore an
-inline dashboard.
+The step title, description, durable and in-memory notes, and ← / → buttons are a card
+placed beside the node the step is about (the focused node, else the nodes the step
+adds), on the side that covers the least of what the step spotlights; on narrow screens
+the card sits under the diagram and scrolls. The scenario menu is in the dialog header.
+The explorer has no other controls. Do not restore an inline dashboard.
 
 Keep semantic buttons, focus indicators, source-line keyboard activation, durable/volatile
 text notes, reduced-motion support, and no-JavaScript fallback. The preview loops through

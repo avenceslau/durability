@@ -8,7 +8,6 @@ import {
   scenarioDiagram,
   sourceFiles,
   sourceUrl,
-  stepNodes,
 } from '../../lib/architecture';
 import './walkthrough.css';
 
@@ -21,7 +20,6 @@ const files = sourceFiles(model);
 const initialScenario = model.scenarios[0]!;
 const initialStep = initialScenario.steps[0]!;
 const initialDiagram = scenarioDiagram(model, initialScenario);
-const firstNode = stepNodes(initialDiagram, 0)[0]!;
 const firstExcerpt = model.excerpts.find((entry) => entry.id === initialStep.source.excerpt)!;
 const instance = `${model.id}-${crypto.randomUUID()}`;
 const dialogId = `architecture-dialog-${instance}`;
@@ -40,6 +38,9 @@ const titleId = `architecture-title-${instance}`;
     <div class="aw-explorer">
       <header class="aw-dialog-header">
         <h3 id={titleId}>{model.title}</h3>
+        <select class="aw-scenario" data-scenario aria-label="Architecture scenario" hidden={model.scenarios.length === 1}>
+          {model.scenarios.map((scenario) => <option value={scenario.id}>{scenario.title}</option>)}
+        </select>
         <button type="button" data-close autofocus aria-label="Close code and architecture">×</button>
       </header>
       <div class="aw-body">
@@ -56,6 +57,10 @@ const titleId = `architecture-title-${instance}`;
               </div>
             </div>
             <p data-step-description>{initialStep.description}</p>
+            <dl class="aw-state">
+              <div><dt>Durable state</dt><dd data-durable>{initialStep.durable}</dd></div>
+              <div><dt>In memory</dt><dd data-volatile>{initialStep.volatile}</dd></div>
+            </dl>
           </div>
         </div>
         <div class="aw-source-column">
@@ -86,27 +91,6 @@ const titleId = `architecture-title-${instance}`;
             </div>;
           })}
         </div>
-      </div>
-      <div class="aw-footer">
-        <div class="aw-caption">
-          <span data-scenario-title>{initialScenario.title}</span>
-        </div>
-        <details class="aw-details">
-          <summary>Details</summary>
-          <div class="aw-detail-content">
-            <div class="aw-toolbar">
-              <label>Scenario<select data-scenario aria-label="Architecture scenario">{model.scenarios.map((scenario) => <option value={scenario.id}>{scenario.title}</option>)}</select></label>
-              <button type="button" data-reset aria-label="Reset architecture walkthrough">Reset</button>
-            </div>
-            <p data-scenario-description>{initialScenario.description}</p>
-            <ol class="aw-steps" aria-label="Architecture steps" data-step-list>{initialScenario.steps.map((step, index) => <li><button type="button" data-step={index} aria-current={index === 0 ? 'step' : undefined}><span>{index + 1}</span>{step.title}</button></li>)}</ol>
-            <div class="aw-explanation">
-              <dl><div><dt>Durable state</dt><dd data-durable>{initialStep.durable}</dd></div><div><dt>In-flight / in memory</dt><dd data-volatile>{initialStep.volatile}</dd></div></dl>
-            </div>
-            <aside class="aw-inspector" aria-label="Selected component"><strong data-node-title>{model.diagram.nodes[firstNode]!.label}</strong><p data-node-description>{model.details[firstNode]!.description}</p><a data-node-link href={model.details[firstNode]!.href}>Read the relevant contract →</a></aside>
-            <div class="aw-summary"><slot /></div>
-          </div>
-        </details>
       </div>
     </div>
   </dialog>
