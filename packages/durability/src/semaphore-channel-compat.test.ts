@@ -72,7 +72,13 @@ it('does not leak leases when a previously acknowledged holder downgrades while 
     },
   });
 
-  await queue.enqueue([{ id: 'first', key: 'holder', body: 'one' }]);
+  await queue.enqueue([
+    {
+      id: 'first',
+      key: 'holder',
+      body: 'one',
+    },
+  ]);
   await vi.advanceTimersByTimeAsync(100);
   expect(admitted).toEqual(['first']);
   await queue.release('first');
@@ -82,7 +88,13 @@ it('does not leak leases when a previously acknowledged holder downgrades while 
   // There is now spare lease capacity, but the peer no longer understands channels.
   oldPeer = true;
   limit = 4;
-  await queue.enqueue([{ id: 'second', key: 'holder', body: 'two' }]);
+  await queue.enqueue([
+    {
+      id: 'second',
+      key: 'holder',
+      body: 'two',
+    },
+  ]);
   await vi.advanceTimersByTimeAsync(10_000);
   expect(await holder.usage()).toMatchObject({ granted: 0, leased: 0 });
   expect(await queue.status('second')).toMatchObject({ state: 'queued' });
@@ -121,7 +133,13 @@ it('requires both the response version and the channel to match', async () => {
     },
     admit: vi.fn(),
   });
-  await queue.enqueue([{ id: 'a', key: 'holder', body: null }]);
+  await queue.enqueue([
+    {
+      id: 'a',
+      key: 'holder',
+      body: null,
+    },
+  ]);
   await vi.advanceTimersByTimeAsync(100);
   expect(await queue.status('a')).toMatchObject({ state: 'queued' });
   expect(sync).not.toHaveBeenCalled();

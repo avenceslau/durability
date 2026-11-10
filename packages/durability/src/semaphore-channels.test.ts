@@ -99,7 +99,6 @@ const sync = (
     ...message,
   }) as Promise<PermitSyncResult>;
 
-/** What a holder that predates client channels sees and answers. */
 const withoutChannel = <
   Message extends { clientChannel?: string | undefined },
 >({

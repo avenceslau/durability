@@ -614,8 +614,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       }
       if (!this.#acknowledged(key, grant)) {
         // Unclaimed grants return to the holder's pool at its grant timeout;
-        // asking only at the request deadline limits how much a holder that
-        // ignores channels holds back from other clients meanwhile.
+        // delay another request when a holder answers with a mismatched
+        // version or channel instead of repeatedly reserving more capacity.
         await this.#retryAfter(key, queued.length, this.#attemptTimeoutMs);
         return;
       }

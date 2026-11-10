@@ -167,15 +167,17 @@ const clientOf = (message: SemaphoreRequest): SemaphoreClientIdentity => ({
 });
 
 /**
- * Echoes a sent `clientChannel` so the client knows it was counted under it.
- * Messages without one get the response shape older clients expect.
+ * Echoes the protocol identity so the client can verify which queue was counted.
+ * Version 1 retains the response shape older clients expect.
  */
 const acknowledgement = (
   message: SemaphoreRequest
-): { clientChannel?: string } =>
-  message.clientChannel === undefined
+): Pick<SemaphoreResponse, 'v' | 'clientChannel'> => ({
+  v: message.v,
+  ...(message.clientChannel === undefined
     ? {}
-    : { clientChannel: message.clientChannel };
+    : { clientChannel: message.clientChannel }),
+});
 
 /** Permits left queued per (group, reason) across one round's allocations. */
 const blockedCounts = (
@@ -426,13 +428,12 @@ export class DurabilitySemaphoreServer {
       const { leases, ...rest } = allocation;
       entry.resolve({
         type: 'grant',
-        v: entry.request.v,
+        ...acknowledgement(entry.request),
         ...rest,
         nextRequestAt,
         ...(entry.request.leases === undefined
           ? {}
           : { leases, ...(round.contended ? { contended: true } : {}) }),
-        ...acknowledgement(entry.request),
       });
     }
     for (const event of [...round.reclaimed, ...round.leaseEvents]) {
@@ -677,7 +678,7 @@ export class DurabilitySemaphoreServer {
     });
     return {
       type: 'synced',
-      v: message.v,
+      ...acknowledgement(message),
       grantResults: result.grantResults,
       ...(result.leaseEchoes === undefined
         ? {}
@@ -685,7 +686,6 @@ export class DurabilitySemaphoreServer {
             leases: result.leaseEchoes,
             ...(this.#contended ? { contended: true } : {}),
           }),
-      ...acknowledgement(message),
     };
   }
 
