@@ -523,6 +523,33 @@ const storedEvents = (context: SocketContext) =>
     .toArray();
 
 describe('DurabilitySocket channels', () => {
+  it.each(['default', 'library'])(
+    'leaves %s available after a migration failure',
+    (channel) => {
+      const context = socketContextFor(new FakeStorage());
+      vi.spyOn(context.storage, 'transactionSync').mockImplementationOnce(
+        () => {
+          throw new Error('migration unavailable');
+        }
+      );
+      expect(() => createChannelSocket(context, channel)).toThrow(
+        'migration unavailable'
+      );
+      expect(() => createChannelSocket(context, channel)).not.toThrow();
+      expect(() => createChannelSocket(context, channel)).toThrow(
+        'already attached'
+      );
+    }
+  );
+
+  it('checks the socket schema once per object, not once per channel', () => {
+    const context = socketContextFor(new FakeStorage());
+    createChannelSocket(context, undefined);
+    const statements = vi.spyOn(context.storage.sql, 'exec');
+    createChannelSocket(context, 'library');
+    expect(statements).not.toHaveBeenCalled();
+  });
+
   it('routes each connection to its own channel, whichever socket receives the frame', async () => {
     const context = socketContextFor(new FakeStorage());
     const calls: string[] = [];

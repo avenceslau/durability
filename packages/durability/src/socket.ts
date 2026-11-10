@@ -210,16 +210,11 @@ class DurabilitySocketCore<
     }
 
     const engine = engineFor({ context: config.context });
+    engine.migrateSchema('socket', durabilitySocketMigrations);
     engine.claimChannel(
       'durability_socket_events',
       this.#channel,
       'DurabilitySocket'
-    );
-    migrateCapability(
-      this.#storage,
-      'socket',
-      durabilitySocketMigrations,
-      undefined
     );
     const frameHandlers =
       frameHandlersByObject.get(engine) ?? new Map<string, FrameHandler>();
