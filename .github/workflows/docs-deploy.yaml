@@ -1,0 +1,85 @@
+name: Docs deploy
+
+# Deploys the site to durability.shirei.dev. Called by the release workflow
+# after packages are published, and run by hand for a docs-only fix.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: docs-deploy
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy docs
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    environment:
+      name: docs-production
+      url: https://durability.shirei.dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and test the site
+        run: |
+          pnpm --filter durability-docs build
+          pnpm --filter durability-docs test
+
+      # Uploading a version does not send it traffic, so its bindings can be
+      # checked before it is deployed.
+      - name: Upload a version
+        id: upload
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.ndjson
+        run: |
+          pnpm exec wrangler versions upload --message "$GITHUB_SHA"
+          version="$(jq --exit-status --raw-output 'select(.type == "version-upload") | .version_id' "$WRANGLER_OUTPUT_FILE_PATH")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the version has no binding but its assets
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION: ${{ steps.upload.outputs.version }}
+        run: |
+          pnpm exec wrangler versions view "$VERSION" --json > version.json
+          if ! jq --exit-status '[.resources.bindings[] | select(.name != "ASSETS" or .type != "assets")] | length == 0' version.json; then
+            jq '.resources.bindings' version.json
+            echo "::error::Version $VERSION has bindings other than ASSETS and was not deployed."
+            exit 1
+          fi
+
+      - name: Deploy the version
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION: ${{ steps.upload.outputs.version }}
+        run: pnpm exec wrangler versions deploy "$VERSION@100%" --yes --message "$GITHUB_SHA"
+
+      - name: Check the live site
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --output /dev/null https://durability.shirei.dev/
+          curl --fail --silent --show-error --output /dev/null https://durability.shirei.dev/primitives/operations/
+          location="$(curl --silent --show-error --output /dev/null --write-out '%{redirect_url}' https://shirei.dev/concepts/)"
+          test "$location" = "https://durability.shirei.dev/concepts/"

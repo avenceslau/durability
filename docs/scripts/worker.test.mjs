@@ -79,3 +79,32 @@ test('Wrangler routes both domains through the Worker before matching assets', a
     { pattern: 'shirei.dev', custom_domain: true },
   ]);
 });
+
+// A token that can deploy this Worker can attach any KV namespace, R2 bucket,
+// or D1 database in the account to it. Listing every allowed key means a
+// binding, variable, or environment cannot be added without changing this test.
+test('Wrangler config gives the Worker its assets and no other binding', async () => {
+  const source = await readFile(
+    new URL('../wrangler.jsonc', import.meta.url),
+    'utf8'
+  );
+  const { config } = ts.parseConfigFileTextToJson('wrangler.jsonc', source);
+
+  assert.deepEqual(Object.keys(config).sort(), [
+    '$schema',
+    'assets',
+    'compatibility_date',
+    'main',
+    'name',
+    'previews',
+    'routes',
+    'workers_dev',
+  ]);
+  assert.deepEqual(Object.keys(config.assets).sort(), [
+    'binding',
+    'directory',
+    'not_found_handling',
+    'run_worker_first',
+  ]);
+  assert.deepEqual(config.previews, {});
+});

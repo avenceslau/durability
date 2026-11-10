@@ -1,0 +1,150 @@
+name: Docs preview
+
+# Holds the Cloudflare token, so it never runs code from a pull request. Both
+# triggers run this file as it is on the default branch. The Worker script and
+# wrangler.jsonc come from that checkout; a pull request supplies only the
+# static files built by the "Docs" workflow.
+on:
+  workflow_run:
+    workflows:
+      - Docs
+    types:
+      - completed
+  pull_request_target:
+    types:
+      - closed
+    paths:
+      - docs/**
+      - examples/**
+      - packages/*/README.md
+      - packages/durability/src/**
+      - packages/durability/tests/**
+      - pnpm-lock.yaml
+      - .github/workflows/docs.yaml
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Create preview
+    # Only branches of this repository, which only collaborators can push.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.pull_requests[0].base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    environment: docs-preview
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: docs-preview-${{ github.event.workflow_run.pull_requests[0].number }}
+    env:
+      PREVIEW_NAME: pr-${{ github.event.workflow_run.pull_requests[0].number }}
+      PULL_REQUEST: ${{ github.event.workflow_run.pull_requests[0].number }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Wrangler
+        run: pnpm install --frozen-lockfile --filter durability-docs
+
+      - name: Download the built site
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: docs-dist
+          path: docs/dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      # --ignore-base-config keeps settings made in the Cloudflare dashboard,
+      # which could add bindings, out of the preview.
+      - name: Create or update the preview
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm exec wrangler preview \
+            --name "$PREVIEW_NAME" \
+            --message "$HEAD_SHA" \
+            --ignore-base-config \
+            --json > preview.json
+
+      - name: Check the preview has no binding but its assets
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if ! jq --exit-status '.deployment.env | keys == ["ASSETS"] and .ASSETS.type == "assets"' preview.json; then
+            jq '.deployment.env' preview.json
+            pnpm exec wrangler preview delete --name "$PREVIEW_NAME" --skip-confirmation
+            echo "::error::The preview had bindings other than ASSETS and was deleted."
+            exit 1
+          fi
+
+      - name: Comment the preview URL
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url="$(jq --exit-status --raw-output '.preview.urls[0]' preview.json)"
+          gh pr comment "$PULL_REQUEST" \
+            --repo "$GITHUB_REPOSITORY" \
+            --edit-last \
+            --create-if-none \
+            --body "Docs preview for ${HEAD_SHA}: ${url}"
+
+  cleanup:
+    name: Delete preview
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    environment: docs-preview
+    permissions:
+      contents: read
+    env:
+      PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+    steps:
+      # pull_request_target checks out the base branch, not the pull request.
+      - name: Checkout the default branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Wrangler
+        run: pnpm install --frozen-lockfile --filter durability-docs
+
+      # A pull request whose build never passed has no preview to delete.
+      - name: Delete the preview
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if ! pnpm exec wrangler preview delete --name "$PREVIEW_NAME" --skip-confirmation; then
+            echo "::warning::Could not delete preview $PREVIEW_NAME. It may never have been created."
+          fi
