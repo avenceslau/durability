@@ -14,6 +14,16 @@ const namespaceFor = <T extends Rpc.DurableObjectBranded>(name: string) =>
 
 export const topologyKey = (group: string) => `topology/${group}`;
 
+export const secondaryKey = (group: string) => `topology-secondary/${group}`;
+
+const deliverLimits = (
+  member: { id: string },
+  update: TopologyStateUpdate<Limits>
+) =>
+  namespaceFor<TopologyShard>('TopologyShard')
+    .getByName(member.id)
+    .applyLimits(update);
+
 export class TopologyCoordinator extends DurableObject<Env> {
   private readonly scheduler = new DurabilityScheduler({ context: this.ctx });
   private readonly topology = new DurabilityTopology({
@@ -23,14 +33,17 @@ export class TopologyCoordinator extends DurableObject<Env> {
         this.env.TOPOLOGY.put(topologyKey(snapshot.group), encoded),
       delete: (group) => this.env.TOPOLOGY.delete(topologyKey(group)),
     },
-    states: {
-      limits: {
-        deliver: (member, update: TopologyStateUpdate<Limits>) =>
-          namespaceFor<TopologyShard>('TopologyShard')
-            .getByName(member.id)
-            .applyLimits(update),
-      },
+    states: { limits: { deliver: deliverLimits } },
+  });
+  private readonly secondary = new DurabilityTopology({
+    scheduler: this.scheduler,
+    channel: 'secondary',
+    publish: {
+      write: (snapshot, encoded) =>
+        this.env.TOPOLOGY.put(secondaryKey(snapshot.group), encoded),
+      delete: (group) => this.env.TOPOLOGY.delete(secondaryKey(group)),
     },
+    states: { limits: { deliver: deliverLimits } },
   });
 
   create(group: string, shards: number, limits: Limits) {
@@ -62,6 +75,17 @@ export class TopologyCoordinator extends DurableObject<Env> {
 
   remove(group: string) {
     return this.topology.delete(group);
+  }
+
+  createSecondary(group: string, shard: string, limits: Limits) {
+    return this.secondary.update(group, () => ({
+      members: [{ id: shard, state: 'active' }],
+      states: { limits },
+    }));
+  }
+
+  removeSecondary(group: string) {
+    return this.secondary.delete(group);
   }
 
   override alarm(info?: AlarmInvocationInfo) {

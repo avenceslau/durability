@@ -15,6 +15,8 @@ import {
 } from './outbox.js';
 import { assertPositiveInteger } from './policy.js';
 import {
+  assertChannel,
+  defaultChannel,
   DurabilityScheduler,
   engineFor,
   type Engine,
@@ -72,8 +74,11 @@ export type TopologyChannel<Value, Meta> = TopologyRetryOptions & {
 };
 
 /**
- * Publication and sync run on outbox channels: `durability.topology` keyed by
- * group, and `durability.topology.<channel>` keyed by `[group, member]`.
+ * Publication and sync run on outbox channels keyed by group and by
+ * `[group, member]`. On the default instance channel these are
+ * `durability.topology` and `durability.topology.<state>`; on another instance
+ * channel they are JSON arrays: `["durability.topology", <channel>,
+ * "publication"]` and `["durability.topology", <channel>, "state", <state>]`.
  */
 export type DurabilityTopologyEvent = DurabilityOutboxEvent;
 
@@ -82,6 +87,13 @@ export type DurabilityTopologyConfig<
   States extends Record<string, unknown>,
 > = SchedulerAttachment &
   TopologyRetryOptions & {
+    /**
+     * Stable instance ID. Topologies on one scheduler share storage,
+     * partitioned by channel; each owns its groups, states, publisher, and
+     * deliveries, so the same group name in two channels is two groups.
+     * Defaults to `default`.
+     */
+    channel?: string;
     /** Without a publisher, membership is only visible inside this object. */
     publish?: TopologyPublisher<Meta>;
     states?: { [Name in keyof States]: TopologyChannel<States[Name], Meta> };
@@ -116,7 +128,19 @@ type Channel<Meta> = {
   role: TopologyRole;
 };
 
-const publicationChannel = 'durability.topology';
+const outboxChannelPrefix = 'durability.topology';
+
+// The default instance keeps the names it used before instance channels
+// existed, so outbox rows staged by an older version are still delivered.
+const publicationChannelFor = (ownerChannel: string): string =>
+  ownerChannel === defaultChannel
+    ? outboxChannelPrefix
+    : JSON.stringify([outboxChannelPrefix, ownerChannel, 'publication']);
+
+const stateChannelFor = (ownerChannel: string, state: string): string =>
+  ownerChannel === defaultChannel
+    ? `${outboxChannelPrefix}.${state}`
+    : JSON.stringify([outboxChannelPrefix, ownerChannel, 'state', state]);
 
 const groupRowSchema = z.object({
   group_id: z.string(),
@@ -198,18 +222,29 @@ const outboxOptions = (
  */
 const landingWindowMs = 5 * 60_000;
 
-const forgetWrite = (sql: SqlStorage, id: string): void => {
-  sql.exec('DELETE FROM durability_topology_writes WHERE id = ?', id);
+const forgetWrite = (
+  sql: SqlStorage,
+  ownerChannel: string,
+  id: string
+): void => {
+  sql.exec(
+    'DELETE FROM durability_topology_writes WHERE owner_channel = ? AND id = ?',
+    ownerChannel,
+    id
+  );
 };
 
 /** Drops expired records and returns when the group's last outstanding write can no longer land. */
 const outstandingWritesUntil = (
   sql: SqlStorage,
+  ownerChannel: string,
   group: string,
   now: number
 ): number | undefined => {
   sql.exec(
-    'DELETE FROM durability_topology_writes WHERE group_id = ? AND land_by <= ?',
+    `DELETE FROM durability_topology_writes
+     WHERE owner_channel = ? AND group_id = ? AND land_by <= ?`,
+    ownerChannel,
     group,
     now
   );
@@ -217,7 +252,8 @@ const outstandingWritesUntil = (
     sql
       .exec(
         `SELECT MAX(land_by) AS until FROM durability_topology_writes
-           WHERE group_id = ?`,
+           WHERE owner_channel = ? AND group_id = ?`,
+        ownerChannel,
         group
       )
       .toArray()[0]
@@ -239,23 +275,30 @@ const isThenable = (value: unknown): boolean =>
   typeof value === 'object' &&
   typeof Reflect.get(value, 'then') === 'function';
 
-const readGroup = (sql: SqlStorage, group: string): GroupRow | undefined =>
+const readGroup = (
+  sql: SqlStorage,
+  ownerChannel: string,
+  group: string
+): GroupRow | undefined =>
   groupRowSchema.optional().parse(
     sql
       .exec(
         `SELECT group_id, version, members, deleted
-           FROM durability_topology_groups WHERE group_id = ?`,
+           FROM durability_topology_groups
+           WHERE owner_channel = ? AND group_id = ?`,
+        ownerChannel,
         group
       )
       .toArray()[0]
   );
 
-const readStates = (sql: SqlStorage, group: string) =>
+const readStates = (sql: SqlStorage, ownerChannel: string, group: string) =>
   stateRowSchema.array().parse(
     sql
       .exec(
         `SELECT channel, value FROM durability_topology_states
-           WHERE group_id = ?`,
+           WHERE owner_channel = ? AND group_id = ?`,
+        ownerChannel,
         group
       )
       .toArray()
@@ -280,11 +323,16 @@ export class DurabilityTopology<
   States extends Record<string, unknown> = Record<string, never>,
 > {
   readonly #engine: Engine;
+  readonly #ownerChannel: string;
   readonly #coordinator: string;
   readonly #publication: DurabilityOutbox<Publication<Meta>> | undefined;
   readonly #channels = new Map<string, Channel<Meta>>();
 
   constructor(config: DurabilityTopologyConfig<Meta, States>) {
+    const ownerChannel = assertChannel(
+      'DurabilityTopology',
+      config.channel ?? defaultChannel
+    );
     // The outboxes must share this helper's engine, so a private scheduler is
     // created explicitly instead of letting each attach its own.
     const scheduler = config.scheduler ?? new DurabilityScheduler(config);
@@ -295,8 +343,42 @@ export class DurabilityTopology<
         'DurabilityTopology needs the Durable Object context, which carries its ID'
       );
     }
+    this.#ownerChannel = ownerChannel;
     this.#coordinator = coordinator;
     this.#engine.migrateSchema('topology', durabilityTopologyMigrations);
+
+    const publisher = config.publish;
+    if (
+      publisher !== undefined &&
+      (typeof publisher.write !== 'function' ||
+        typeof publisher.delete !== 'function')
+    ) {
+      throw new TopologyError('publish needs write and delete functions');
+    }
+    const publication =
+      publisher === undefined
+        ? undefined
+        : { publisher, timeoutMs: timeoutOf(publisher, config) };
+
+    const states: Record<
+      string,
+      TopologyChannel<unknown, Meta>
+    > = config.states ?? {};
+    const channels = Object.entries(states).map(([name, channel]) => {
+      if (!name || typeof channel.deliver !== 'function') {
+        throw new TopologyError(`Invalid topology channel "${name}"`);
+      }
+      return { name, channel, timeoutMs: timeoutOf(channel, config) };
+    });
+
+    // Claimed only once the config is valid, so a rejected config leaves the
+    // channel free, and claimed even without a publisher or states, so two
+    // instances cannot share one channel's groups.
+    this.#engine.claimChannel(
+      'durability_topology_groups',
+      ownerChannel,
+      'DurabilityTopology'
+    );
 
     // The outbox only emits outbox events, which is all this hook accepts.
     const onLifecycleEvent = config.onLifecycleEvent as
@@ -305,39 +387,24 @@ export class DurabilityTopology<
     const lifecycle =
       onLifecycleEvent === undefined ? {} : { onLifecycleEvent };
 
-    const publisher = config.publish;
-    if (publisher !== undefined) {
-      if (
-        typeof publisher.write !== 'function' ||
-        typeof publisher.delete !== 'function'
-      ) {
-        throw new TopologyError('publish needs write and delete functions');
-      }
-      const timeoutMs = timeoutOf(publisher, config);
+    if (publication !== undefined) {
+      const { timeoutMs } = publication;
       this.#publication = new DurabilityOutbox<Publication<Meta>>({
         scheduler,
-        channel: publicationChannel,
-        ...outboxOptions(timeoutMs, publisher, config),
+        channel: publicationChannelFor(ownerChannel),
+        ...outboxOptions(timeoutMs, publication.publisher, config),
         ...lifecycle,
         publish: (entries) =>
-          this.#publishSnapshots(publisher, entries, timeoutMs),
+          this.#publishSnapshots(publication.publisher, entries, timeoutMs),
       });
     }
 
-    const channels: Record<
-      string,
-      TopologyChannel<unknown, Meta>
-    > = config.states ?? {};
-    for (const [name, channel] of Object.entries(channels)) {
-      if (!name || typeof channel.deliver !== 'function') {
-        throw new TopologyError(`Invalid topology channel "${name}"`);
-      }
-      const timeoutMs = timeoutOf(channel, config);
+    for (const { name, channel, timeoutMs } of channels) {
       this.#channels.set(name, {
         role: channel.members ?? 'write',
         outbox: new DurabilityOutbox<Delivery<Meta>>({
           scheduler,
-          channel: `${publicationChannel}.${name}`,
+          channel: stateChannelFor(ownerChannel, name),
           ...outboxOptions(timeoutMs, channel, config),
           ...lifecycle,
           publish: (entries) =>
@@ -387,10 +454,10 @@ export class DurabilityTopology<
   ): Promise<{ snapshot: TopologySnapshot<Meta>; published: boolean }> {
     assertGroup(group);
     const snapshot = await this.#engine.transaction((sql) => {
-      const row = readGroup(sql, group);
+      const row = readGroup(sql, this.#ownerChannel, group);
       const live = row?.deleted === 0 ? row : undefined;
       const before = live ? parseMembers<Meta>(live) : [];
-      const stateRows = readStates(sql, group);
+      const stateRows = readStates(sql, this.#ownerChannel, group);
       const states = Object.fromEntries(
         stateRows.map((state) => [state.channel, deserialize(state.value)])
       ) as Partial<States>;
@@ -423,13 +490,14 @@ export class DurabilityTopology<
       if (changed) {
         sql.exec(
           `INSERT INTO durability_topology_groups
-             (group_id, version, members, deleted, updated_at)
-           VALUES (?, ?, ?, 0, ?)
-           ON CONFLICT(group_id) DO UPDATE SET
+             (owner_channel, group_id, version, members, deleted, updated_at)
+           VALUES (?, ?, ?, ?, 0, ?)
+           ON CONFLICT(owner_channel, group_id) DO UPDATE SET
              version = excluded.version,
              members = excluded.members,
              deleted = 0,
              updated_at = excluded.updated_at`,
+          this.#ownerChannel,
           group,
           version,
           JSON.stringify(after),
@@ -462,7 +530,7 @@ export class DurabilityTopology<
   async delete(group: string): Promise<{ published: boolean }> {
     assertGroup(group);
     await this.#engine.transaction((sql) => {
-      const row = readGroup(sql, group);
+      const row = readGroup(sql, this.#ownerChannel, group);
       if (row?.deleted !== 0) {
         return;
       }
@@ -470,13 +538,16 @@ export class DurabilityTopology<
       sql.exec(
         `UPDATE durability_topology_groups
          SET version = ?, members = '[]', deleted = 1, updated_at = ?
-         WHERE group_id = ?`,
+         WHERE owner_channel = ? AND group_id = ?`,
         version,
         Date.now(),
+        this.#ownerChannel,
         group
       );
       sql.exec(
-        'DELETE FROM durability_topology_states WHERE group_id = ?',
+        `DELETE FROM durability_topology_states
+         WHERE owner_channel = ? AND group_id = ?`,
+        this.#ownerChannel,
         group
       );
       for (const member of parseMembers<Meta>(row)) {
@@ -492,7 +563,7 @@ export class DurabilityTopology<
   /** Coordinator-local read. Readers elsewhere use the published copy. */
   snapshot(group: string): TopologySnapshot<Meta> | undefined {
     assertGroup(group);
-    const row = readGroup(this.#engine.sql, group);
+    const row = readGroup(this.#engine.sql, this.#ownerChannel, group);
     if (row?.deleted !== 0) {
       return undefined;
     }
@@ -540,8 +611,10 @@ export class DurabilityTopology<
     await this.#engine.transaction((sql) => {
       for (const { entry, id } of writes) {
         sql.exec(
-          `INSERT INTO durability_topology_writes (id, group_id, land_by)
-           VALUES (?, ?, ?)`,
+          `INSERT INTO durability_topology_writes
+             (owner_channel, id, group_id, land_by)
+           VALUES (?, ?, ?, ?)`,
+          this.#ownerChannel,
           id,
           entry.key,
           landBy
@@ -570,7 +643,9 @@ export class DurabilityTopology<
             this.#settleLate(entry.key, id, write);
           } else {
             // A rejected write settled before any newer write of this group started.
-            await this.#engine.transaction((sql) => forgetWrite(sql, id));
+            await this.#engine.transaction((sql) =>
+              forgetWrite(sql, this.#ownerChannel, id)
+            );
           }
           reportFailure(
             'durability.topology.publish_failed',
@@ -582,8 +657,13 @@ export class DurabilityTopology<
         }
 
         const outstandingUntil = await this.#engine.transaction((sql) => {
-          forgetWrite(sql, id);
-          return outstandingWritesUntil(sql, entry.key, Date.now());
+          forgetWrite(sql, this.#ownerChannel, id);
+          return outstandingWritesUntil(
+            sql,
+            this.#ownerChannel,
+            entry.key,
+            Date.now()
+          );
         });
         if (outstandingUntil !== undefined) {
           entry.retry(Math.min(outstandingUntil - Date.now(), maxTimeoutMs));
@@ -607,7 +687,7 @@ export class DurabilityTopology<
       )
       .then(() =>
         this.#engine.transaction((sql) => {
-          forgetWrite(sql, id);
+          forgetWrite(sql, this.#ownerChannel, id);
           this.#stageLatest(sql, group);
         })
       )
@@ -617,7 +697,7 @@ export class DurabilityTopology<
 
   /** A fresh version fences any in-flight publication, so the latest snapshot is written again. */
   #stageLatest(sql: SqlStorage, group: string): void {
-    const row = readGroup(sql, group);
+    const row = readGroup(sql, this.#ownerChannel, group);
     if (!row) {
       return;
     }
@@ -754,9 +834,12 @@ export class DurabilityTopology<
         continue;
       }
       sql.exec(
-        `INSERT INTO durability_topology_states (group_id, channel, value)
-         VALUES (?, ?, ?)
-         ON CONFLICT(group_id, channel) DO UPDATE SET value = excluded.value`,
+        `INSERT INTO durability_topology_states
+           (owner_channel, group_id, channel, value)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(owner_channel, group_id, channel) DO UPDATE SET
+           value = excluded.value`,
+        this.#ownerChannel,
         group,
         channel,
         stored
@@ -780,7 +863,10 @@ export class DurabilityTopology<
     changed: ReadonlySet<string>
   ): void {
     const values = new Map(
-      readStates(sql, group).map((row) => [row.channel, row.value])
+      readStates(sql, this.#ownerChannel, group).map((row) => [
+        row.channel,
+        row.value,
+      ])
     );
     for (const [name, channel] of this.#channels) {
       const previous = new Set(
