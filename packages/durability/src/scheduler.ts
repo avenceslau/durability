@@ -22,8 +22,11 @@ import {
 import { assertPositiveInteger, type AttemptPolicy } from './policy.js';
 import { deleteMemos, deleteStaleMemos } from './memoize.js';
 import {
+  channelBindings,
+  channelClause,
   claimAttempt,
   exhaustAttempts,
+  tableOwner,
   updateAttempt,
   type DurableTable,
 } from './storage.js';
@@ -77,8 +80,9 @@ export type DurabilitySchedulerConfig = DurabilitySchedulerOptions & {
 };
 
 /**
- * How a helper attaches to a scheduler: an existing shared one, or a private
- * one created from the Durable Object context with the given scheduler options.
+ * How a helper attaches to the object's scheduler: through a
+ * {@link DurabilityScheduler}, or from the Durable Object context, which joins
+ * the scheduler already there or creates it with the given options.
  */
 export type SchedulerAttachment =
   | { scheduler: DurabilityScheduler; context?: never }
@@ -86,6 +90,14 @@ export type SchedulerAttachment =
 
 const minAlarmDelayMs = 1_000;
 const failedRunRetryMs = 1_000;
+const defaultAlarmConcurrency = 10;
+const schedulerOptionKeys = [
+  'alarmConcurrency',
+  'alarmMinDelayMs',
+  'alarmHandoffMs',
+  'liveTimers',
+  'onAlarmRetry',
+] as const satisfies ReadonlyArray<keyof DurabilitySchedulerOptions>;
 const maxAlarmDelayMs = 15_000;
 // setTimeout treats delays past this as zero, so anything further out can only
 // be served by the physical alarm fallback.
@@ -93,6 +105,7 @@ const maxTimerMs = 2 ** 31 - 1;
 
 const pendingHeadRowSchema = z.object({
   pk: z.string(),
+  channel: z.string().optional(),
   next_attempt_at: z.number().int().nonnegative(),
 });
 const countRowSchema = z.object({ count: z.number().int().nonnegative() });
@@ -114,6 +127,37 @@ export type Participant = {
    * arms the physical alarm as the eviction fallback.
    */
   holding?(): boolean;
+};
+
+/** The channel every helper uses when it is not given one. */
+export const defaultChannel = 'default';
+
+/**
+ * One helper instance's share of a table that several instances partition by
+ * a `channel` column. Each runs only its own channel's due rows.
+ */
+export type ChannelParticipant = {
+  table: DurableTable;
+  channel: string;
+  /** How errors name the helper, such as `An outbox`. */
+  helper: string;
+  runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
+};
+
+/** How long records of a channel no instance attached wait before they are looked at again. */
+const unattachedChannelRetryMs = 60_000;
+
+const channelRowSchema = z.object({ channel: z.string() });
+
+const activeKey = (channel: string | undefined, key: string): string =>
+  JSON.stringify([channel ?? null, key]);
+
+/** Rejects a channel name a helper would otherwise store rows under. */
+export const assertChannel = (helper: string, channel: unknown): string => {
+  if (typeof channel !== 'string' || channel.length === 0) {
+    throw new TypeError(`${helper} channel must be a non-empty string`);
+  }
+  return channel;
 };
 
 /**
@@ -214,16 +258,22 @@ const decideRetry = (
  */
 export class Engine {
   readonly sql: SqlStorage;
-  private readonly context: DurabilityContext;
+  private context: DurabilityContext;
   private readonly storage: DurableObjectStorage;
-  private readonly alarmConcurrency: number;
-  private readonly alarmMinDelayMs: number;
-  private readonly alarmHandoffMs: number;
-  readonly liveTimers: boolean;
-  private readonly onAlarmRetry: DurabilitySchedulerOptions['onAlarmRetry'];
+  private alarmConcurrency = defaultAlarmConcurrency;
+  private alarmMinDelayMs = 15_000;
+  private alarmHandoffMs = 14 * 60_000;
+  liveTimers = false;
+  private onAlarmRetry: DurabilitySchedulerOptions['onAlarmRetry'];
+  // Only options someone set can conflict; an omitted one takes any value.
+  private explicitOptions: DurabilitySchedulerOptions = {};
   private readonly participants: Participant[] = [];
+  private readonly channelsByTable = new Map<
+    string,
+    Map<string, ChannelParticipant>
+  >();
   private readonly migrated = new Set<MigrationCapability>();
-  private availablePermits: number;
+  private availablePermits = defaultAlarmConcurrency;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
   private failedRuns = 0;
@@ -242,29 +292,77 @@ export class Engine {
     this.context = context;
     this.storage = traceStorage(context.storage);
     this.sql = this.storage.sql;
-    this.alarmConcurrency = options.alarmConcurrency ?? 10;
-    this.alarmMinDelayMs = options.alarmMinDelayMs ?? 15_000;
-    this.alarmHandoffMs = options.alarmHandoffMs ?? 14 * 60_000;
-    this.liveTimers = options.liveTimers ?? false;
-    this.onAlarmRetry = options.onAlarmRetry;
+    this.configure(options);
+  }
+
+  /**
+   * Joins one more helper or scheduler handle to this object's scheduler. The
+   * first context that can `waitUntil` is kept, so a bare `{ storage }` context
+   * attached first does not hide it from the rest.
+   */
+  attach(
+    context: DurabilityContext,
+    options: DurabilitySchedulerOptions
+  ): void {
     if (
-      this.onAlarmRetry !== undefined &&
-      typeof this.onAlarmRetry !== 'function'
+      this.context.waitUntil === undefined &&
+      context.waitUntil !== undefined
+    ) {
+      this.context = context;
+    }
+    this.configure(options);
+  }
+
+  private configure(options: DurabilitySchedulerOptions): void {
+    const merged: DurabilitySchedulerOptions = { ...this.explicitOptions };
+    for (const key of schedulerOptionKeys) {
+      const value = options[key];
+      if (value === undefined) {
+        continue;
+      }
+      const current = this.explicitOptions[key];
+      if (current !== undefined && current !== value) {
+        throw new Error(
+          `Scheduler option "${key}" is already set to a different value for this Durable Object`
+        );
+      }
+      Object.assign(merged, { [key]: value });
+    }
+
+    const alarmConcurrency = merged.alarmConcurrency ?? defaultAlarmConcurrency;
+    const alarmMinDelayMs = merged.alarmMinDelayMs ?? 15_000;
+    const alarmHandoffMs = merged.alarmHandoffMs ?? 14 * 60_000;
+    if (
+      merged.onAlarmRetry !== undefined &&
+      typeof merged.onAlarmRetry !== 'function'
     ) {
       throw new TypeError('onAlarmRetry must be a function');
     }
-    assertPositiveInteger('alarmConcurrency', this.alarmConcurrency);
-    assertPositiveInteger('alarmMinDelayMs', this.alarmMinDelayMs);
+    assertPositiveInteger('alarmConcurrency', alarmConcurrency);
+    assertPositiveInteger('alarmMinDelayMs', alarmMinDelayMs);
     if (
-      this.alarmMinDelayMs < minAlarmDelayMs ||
-      this.alarmMinDelayMs > maxAlarmDelayMs
+      alarmMinDelayMs < minAlarmDelayMs ||
+      alarmMinDelayMs > maxAlarmDelayMs
     ) {
       throw new RangeError(
         `alarmMinDelayMs must be between ${minAlarmDelayMs} and ${maxAlarmDelayMs}`
       );
     }
-    assertPositiveInteger('alarmHandoffMs', this.alarmHandoffMs);
-    this.availablePermits = this.alarmConcurrency;
+    assertPositiveInteger('alarmHandoffMs', alarmHandoffMs);
+
+    // Permits already handed out stay out; raising the limit frees more now.
+    this.availablePermits += alarmConcurrency - this.alarmConcurrency;
+    this.alarmConcurrency = alarmConcurrency;
+    this.alarmMinDelayMs = alarmMinDelayMs;
+    this.alarmHandoffMs = alarmHandoffMs;
+    this.liveTimers = merged.liveTimers ?? false;
+    this.onAlarmRetry = merged.onAlarmRetry;
+    this.explicitOptions = merged;
+    while (this.availablePermits > 0 && this.permitWaiters.length > 0) {
+      const waiter = this.permitWaiters.shift()!;
+      this.availablePermits -= 1;
+      waiter(this.createRelease());
+    }
   }
 
   register(participant: Participant): void {
@@ -273,6 +371,85 @@ export class Engine {
       throw new Error(`A ${name} helper is already attached to this scheduler`);
     }
     this.participants.push(participant);
+  }
+
+  /**
+   * Attaches one channel of a table several helper instances share. The first
+   * attachment registers the table; each run then runs every attached
+   * channel's due rows and retains the rows of channels nothing attached.
+   */
+  registerChannel(participant: ChannelParticipant): void {
+    const { table, channel, helper } = participant;
+    let channels = this.channelsByTable.get(table.name);
+    if (!channels) {
+      const created = new Map<string, ChannelParticipant>();
+      this.register({
+        table: { name: table.name, key: table.key },
+        runDue: async (now, info) => {
+          await this.postponeUnattachedChannels(table, created);
+          await Promise.all(
+            [...created.values()].map((attached) => attached.runDue(now, info))
+          );
+        },
+      });
+      this.channelsByTable.set(table.name, created);
+      channels = created;
+    }
+    if (channels.has(channel)) {
+      throw new Error(
+        `${helper} for channel "${channel}" is already attached to this scheduler`
+      );
+    }
+    channels.set(channel, participant);
+  }
+
+  /**
+   * Due rows of a channel no instance attached, such as one a deploy removed
+   * or a library not yet constructed, would keep the alarm awake forever. They
+   * are kept and looked at again later, since their owner may return.
+   */
+  private async postponeUnattachedChannels(
+    table: DurableTable,
+    channels: ReadonlyMap<string, ChannelParticipant>
+  ): Promise<void> {
+    const now = Date.now();
+    const unattached = channelRowSchema
+      .array()
+      .parse(
+        this.sql
+          .exec(
+            `SELECT DISTINCT channel FROM ${table.name}
+             WHERE status = 'pending' AND next_attempt_at <= ?`,
+            now
+          )
+          .toArray()
+      )
+      .map((row) => row.channel)
+      .filter((channel) => !channels.has(channel));
+    if (unattached.length === 0) {
+      return;
+    }
+
+    for (const channel of unattached) {
+      reportFailure(
+        'durability.channel_missing',
+        { table: table.name, channel },
+        new Error(
+          `Channel "${channel}" of ${table.name} has no helper attached; retaining its records`
+        )
+      );
+    }
+    await this.transaction((sql) => {
+      for (const channel of unattached) {
+        sql.exec(
+          `UPDATE ${table.name} SET next_attempt_at = ?
+           WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?`,
+          now + unattachedChannelRetryMs,
+          channel,
+          now
+        );
+      }
+    });
   }
 
   waitUntil(
@@ -385,11 +562,12 @@ export class Engine {
         : { physical: at, timer: at };
     }
     const active = this.activeByTable.get(participant.table.name);
+    const partitioned = this.channelsByTable.has(participant.table.name);
     const limit = this.liveTimers ? (active?.size ?? 0) + 1 : 1;
     const rows = pendingHeadRowSchema.array().parse(
       this.sql
         .exec(
-          `SELECT ${participant.table.key} AS pk, next_attempt_at
+          `SELECT ${participant.table.key} AS pk, next_attempt_at${partitioned ? ', channel' : ''}
            FROM ${participant.table.name}
            WHERE status = 'pending'
            ORDER BY next_attempt_at ASC
@@ -405,7 +583,9 @@ export class Engine {
       }
       return { physical, timer: physical };
     }
-    const eligible = rows.find((row) => !active?.has(row.pk));
+    const eligible = rows.find(
+      (row) => !active?.has(activeKey(row.channel, row.pk))
+    );
     return { physical, timer: eligible?.next_attempt_at };
   }
 
@@ -524,22 +704,24 @@ export class Engine {
       }
     }
 
+    const where = `created_at < ?${channelClause(table)}`;
+    const params = [before, ...channelBindings(table)];
     const removed = await this.transaction((sql) => {
       const { count } = countRowSchema.parse(
         sql
           .exec(
-            `SELECT COUNT(*) AS count FROM ${table.name} WHERE created_at < ?`,
-            before
+            `SELECT COUNT(*) AS count FROM ${table.name} WHERE ${where}`,
+            ...params
           )
           .toArray()[0]
       );
-      sql.exec(`DELETE FROM ${table.name} WHERE created_at < ?`, before);
+      sql.exec(`DELETE FROM ${table.name} WHERE ${where}`, ...params);
       deleteStaleMemos(sql, table);
       return count;
     });
 
     if (removed > 0) {
-      for (const key of this.watchers.get(table.name)?.keys() ?? []) {
+      for (const key of this.watchers.get(tableOwner(table))?.keys() ?? []) {
         this.notify(table, key);
       }
     }
@@ -552,10 +734,10 @@ export class Engine {
     key: string,
     listener: SettlementListener
   ): () => void {
+    const owner = tableOwner(table);
     const byKey =
-      this.watchers.get(table.name) ??
-      new Map<string, Set<SettlementListener>>();
-    this.watchers.set(table.name, byKey);
+      this.watchers.get(owner) ?? new Map<string, Set<SettlementListener>>();
+    this.watchers.set(owner, byKey);
     const listeners = byKey.get(key) ?? new Set<SettlementListener>();
     byKey.set(key, listeners);
     listeners.add(listener);
@@ -574,13 +756,14 @@ export class Engine {
     key: string,
     completed?: ExecutionSpec['row']
   ): void {
-    for (const listener of this.watchers.get(table.name)?.get(key) ?? []) {
+    for (const listener of this.watchers.get(tableOwner(table))?.get(key) ??
+      []) {
       listener(completed);
     }
   }
 
   tryAcquirePermit(): (() => void) | undefined {
-    if (this.availablePermits === 0) {
+    if (this.availablePermits <= 0) {
       return undefined;
     }
     this.availablePermits -= 1;
@@ -604,11 +787,14 @@ export class Engine {
         return;
       }
       released = true;
+      this.availablePermits += 1;
+      if (this.availablePermits <= 0) {
+        return;
+      }
       const waiter = this.permitWaiters.shift();
       if (waiter) {
+        this.availablePermits -= 1;
         waiter(this.createRelease());
-      } else {
-        this.availablePermits += 1;
       }
     };
   }
@@ -786,7 +972,7 @@ export class Engine {
       settled,
     };
     spec.active.set(key, activeExecution);
-    this.trackActive(spec.table.name, key);
+    this.trackActive(spec.table.name, activeKey(spec.table.channel, key));
 
     let releasePermit = eagerPermit;
     let handlerStarted = false;
@@ -879,7 +1065,7 @@ export class Engine {
       if (spec.active.get(key) === activeExecution) {
         spec.active.delete(key);
       }
-      this.releaseActive(spec.table.name, key);
+      this.releaseActive(spec.table.name, activeKey(spec.table.channel, key));
       // Re-arm the in-memory timer now that this key is eligible again, so work
       // the timer skipped while it executed is picked up at its exact time.
       if (this.liveTimers) {
@@ -981,14 +1167,48 @@ export class Engine {
 
 const engines = new WeakMap<DurabilityScheduler, Engine>();
 
+type ObjectScheduler = { engine: unknown; installation: symbol };
+
+// Every copy of this package in an isolate shares the registry, so a second
+// copy reaching the same object is caught instead of fighting over its alarm.
+const installation = Symbol('durability installation');
+const globalRegistry = globalThis as { [key: symbol]: unknown };
+const registryKey = Symbol.for('durability.object-schedulers');
+globalRegistry[registryKey] ??= new WeakMap<object, ObjectScheduler>();
+const objectSchedulers = globalRegistry[registryKey] as WeakMap<
+  object,
+  ObjectScheduler
+>;
+
+/** The one engine behind every scheduler and helper of a Durable Object. */
+const engineForObject = (config: DurabilitySchedulerConfig): Engine => {
+  const { context } = config;
+  const existing = objectSchedulers.get(context.storage);
+  if (existing === undefined) {
+    const engine = new Engine(context, config);
+    objectSchedulers.set(context.storage, { engine, installation });
+    return engine;
+  }
+  if (existing.installation !== installation) {
+    throw new Error(
+      'Another copy of durability is already attached to this Durable Object; install durability once, for example as a peer dependency'
+    );
+  }
+
+  const engine = existing.engine as Engine;
+  engine.attach(context, config);
+  return engine;
+};
+
 /**
- * Owns the Durable Object's physical alarm, storage, and concurrency
- * pool so {@link Durability} and {@link DurabilityAlarms} can share them.
+ * Owns the Durable Object's physical alarm, storage, and concurrency pool so
+ * every durability helper on the object shares them.
  *
- * Construct one per Durable Object when using both helpers, pass it to each,
- * and delegate the object's `alarm` method to {@link DurabilityScheduler.alarm}.
- * A helper constructed directly from the Durable Object context creates a
- * private scheduler instead.
+ * A Durable Object has one scheduler. Constructing another for the same
+ * object, or a helper from the object's context, joins it; scheduler options
+ * merge, and a different value for an option already set throws. Delegate the
+ * object's `alarm` method to {@link DurabilityScheduler.alarm} or to any
+ * helper's `alarm`: each runs the due work of every helper on the object.
  *
  * @example
  * ```ts
@@ -1011,7 +1231,7 @@ const engines = new WeakMap<DurabilityScheduler, Engine>();
  */
 export class DurabilityScheduler {
   constructor(config: DurabilitySchedulerConfig) {
-    engines.set(this, new Engine(config.context, config));
+    engines.set(this, engineForObject(config));
   }
 
   /** Runs due work for every attached helper and re-arms the physical alarm. */
@@ -1022,13 +1242,10 @@ export class DurabilityScheduler {
 
 traceMethods(DurabilityScheduler.prototype, 'DurabilityScheduler');
 
-/**
- * Resolves the engine a helper should attach to: the shared one behind a
- * scheduler, or a private one built from the Durable Object context.
- */
+/** Resolves the engine a helper attaches to: the object's one scheduler. */
 export const engineFor = (attachment: SchedulerAttachment): Engine => {
   if (attachment.scheduler === undefined) {
-    return new Engine(attachment.context, attachment);
+    return engineForObject(attachment);
   }
   const engine = engines.get(attachment.scheduler);
   if (!engine) {

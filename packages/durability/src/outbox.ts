@@ -21,6 +21,8 @@ import {
   type DurabilityRetryOptions,
 } from './policy.js';
 import {
+  assertChannel,
+  defaultChannel,
   engineFor,
   type Engine,
   type SchedulerAttachment,
@@ -55,7 +57,6 @@ const outboxRowSchema = z.object({
 type OutboxRow = z.infer<typeof outboxRowSchema>;
 
 const versionRowSchema = z.object({ version: z.number().int().positive() });
-const channelRowSchema = z.object({ channel: z.string() });
 
 const listDueForChannel = (
   sql: SqlStorage,
@@ -147,8 +148,6 @@ export type DurabilityOutboxEvent = Extract<
   { entityKind: 'outbox_entry' }
 >;
 
-type Channels = Map<string, () => Promise<void>>;
-
 /**
  * Package-internal: stages inside a transaction another helper already holds,
  * so its reports commit atomically with that helper's own rows. Assigned by
@@ -187,8 +186,6 @@ const infrastructureRetryMs = 60_000;
 // setTimeout overflows past 2^31 - 1 ms, and it keeps every derived timestamp
 // far inside the safe-integer range the storage indexes accept.
 const maxDelayMs = 2 ** 31 - 1;
-const orphanBatchSize = 50;
-const channelsByEngine = new WeakMap<Engine, Channels>();
 
 const rowId = (channel: string, key: string): string =>
   JSON.stringify([channel, key]);
@@ -199,57 +196,6 @@ const entity = (row: OutboxRow): OutboxLifecycleEntity => ({
   id: row.entry_key,
   generation: row.generation_id,
 });
-
-/**
- * Rows of a channel no outbox registers would stay due forever and keep the
- * alarm awake, so they are postponed like a removed fanout target's work.
- */
-const postponeOrphans = async (
-  engine: Engine,
-  channels: Channels
-): Promise<void> => {
-  const orphans = channelRowSchema
-    .array()
-    .parse(
-      engine.sql
-        .exec('SELECT DISTINCT channel FROM durability_outbox ORDER BY channel')
-        .toArray()
-    )
-    .map((row) => row.channel)
-    .filter((channel) => !channels.has(channel));
-  for (const channel of orphans) {
-    const due = listDueForChannel(
-      engine.sql,
-      channel,
-      Date.now(),
-      orphanBatchSize
-    );
-    if (due.length === 0) {
-      continue;
-    }
-
-    reportFailure(
-      'durability.outbox.channel_missing',
-      { channel },
-      new Error(
-        `Outbox channel "${channel}" is no longer configured; retaining entries`
-      )
-    );
-    // eslint-disable-next-line no-await-in-loop
-    await engine.transaction((sql) => {
-      const postponedTo = Date.now() + infrastructureRetryMs;
-      for (const row of due) {
-        updateAttempt(
-          sql,
-          outboxTable,
-          { key: row.id, generation: row.generation_id, attempt: row.attempt },
-          'next_attempt_at = ?',
-          postponedTo
-        );
-      }
-    });
-  }
-};
 
 /**
  * A composable DO capability: keyed latest-state publication. Stage the
@@ -270,10 +216,7 @@ export class DurabilityOutbox<Value = unknown> {
   #running: Promise<void> | undefined;
 
   constructor(config: DurabilityOutboxConfig<Value>) {
-    this.#channel = config.channel ?? 'default';
-    if (typeof this.#channel !== 'string' || this.#channel.length === 0) {
-      throw new TypeError('Outbox channel must be a non-empty string');
-    }
+    this.#channel = assertChannel('Outbox', config.channel ?? defaultChannel);
     if (typeof config.publish !== 'function') {
       throw new TypeError('Outbox requires a publish function');
     }
@@ -395,26 +338,12 @@ export class DurabilityOutbox<Value = unknown> {
   }
 
   #attach(): void {
-    let channels = channelsByEngine.get(this.#engine);
-    if (!channels) {
-      const created: Channels = new Map();
-      const engine = this.#engine;
-      engine.register({
-        table: outboxTable,
-        runDue: async () => {
-          await Promise.all([...created.values()].map((run) => run()));
-          await postponeOrphans(engine, created);
-        },
-      });
-      channelsByEngine.set(engine, created);
-      channels = created;
-    }
-    if (channels.has(this.#channel)) {
-      throw new Error(
-        `An outbox for channel "${this.#channel}" is already attached to this scheduler`
-      );
-    }
-    channels.set(this.#channel, () => this.#runDue());
+    this.#engine.registerChannel({
+      table: outboxTable,
+      channel: this.#channel,
+      helper: 'An outbox',
+      runDue: () => this.#runDue(),
+    });
   }
 
   // Rounding up to a shared boundary makes every stage in the window due together.
