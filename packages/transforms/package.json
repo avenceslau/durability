@@ -19,7 +19,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./vite": "./src/vite.ts"
+    "./vite": "./src/vite/index.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -30,8 +30,8 @@
         "import": "./dist/index.js"
       },
       "./vite": {
-        "types": "./dist/vite.d.ts",
-        "import": "./dist/vite.js"
+        "types": "./dist/vite/index.d.ts",
+        "import": "./dist/vite/index.js"
       }
     }
   },
