@@ -5,7 +5,7 @@ import type {
   ContextService,
   EchoWorkflow,
   PipelineDO,
-} from './test-worker';
+} from './worker';
 
 interface __BaseEnv_Env {
   CONTEXT_DO: DurableObjectNamespace<ContextDO>;
