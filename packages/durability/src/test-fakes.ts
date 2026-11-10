@@ -194,3 +194,13 @@ export class FakeStorage {
 export const contextFor = (storage: FakeStorage) => ({
   storage: new Proxy(storage, {}) as unknown as DurableObjectStorage,
 });
+
+export const waitUntilContext = (
+  storage: FakeStorage,
+  sink: Promise<unknown>[]
+) => ({
+  ...contextFor(storage),
+  waitUntil(promise: Promise<unknown>) {
+    sink.push(promise);
+  },
+});

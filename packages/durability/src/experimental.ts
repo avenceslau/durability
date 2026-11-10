@@ -16,7 +16,7 @@ export {
   type TrackerQuery,
   type TrackerRecord,
   type TrackerRecordPage,
-} from './tracker.js';
+} from './tracker/index.js';
 export type {
   TrackedEntry,
   TrackedPage,
@@ -26,15 +26,15 @@ export type {
   TrackedSource,
   TrackedState,
   TrackedStatus,
-} from './tracked-source.js';
+} from './tracker/source.js';
 export {
   DurabilityOutbox,
   type DurabilityOutboxConfig,
   type DurabilityOutboxEvent,
   type OutboxEntry,
-} from './outbox.js';
+} from './outbox/index.js';
 export { OutboxTimeoutError } from './errors.js';
-export { durabilityOutboxMigrations } from './migrations.js';
+export { durabilityOutboxMigrations } from './outbox/migrations.js';
 export {
   DurabilityTopology,
   type DurabilityTopologyConfig,
@@ -46,25 +46,25 @@ export {
   type TopologyRetryOptions,
   type TopologyRole,
   type TopologyStateUpdate,
-} from './topology.js';
+} from './topology/index.js';
 export type {
   TopologyClient,
   TopologyClientConfig,
   TopologySource,
   TopologyView,
-} from './topology-client.js';
+} from './topology/client.js';
 export type {
   TopologyMember,
   TopologyMemberInput,
   TopologyMemberState,
   TopologySnapshot,
-} from './topology-snapshot.js';
+} from './topology/snapshot.js';
 export {
   TopologyError,
   TopologyUnavailableError,
   type TopologyFallbackReason,
 } from './errors.js';
-export { durabilityTopologyMigrations } from './migrations.js';
+export { durabilityTopologyMigrations } from './topology/migrations.js';
 export {
   DurabilitySchedule,
   type DurabilityScheduleConfig,
@@ -75,10 +75,10 @@ export {
   type ScheduledRunContext,
   type ScheduledRunOutcome,
   type ScheduleState,
-} from './schedule.js';
+} from './schedule/index.js';
 export {
   ScheduledOutcomeTimeoutError,
   ScheduledRunInterruptedError,
   ScheduledRunTimeoutError,
 } from './errors.js';
-export { durabilityScheduleMigrations } from './migrations.js';
+export { durabilityScheduleMigrations } from './schedule/migrations.js';
