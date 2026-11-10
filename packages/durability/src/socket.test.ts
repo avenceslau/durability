@@ -543,7 +543,11 @@ describe('DurabilitySocket channels', () => {
     });
 
     for (const receiver of [app, library]) {
-      await send(receiver, appWs, { type: 'call', id: 'w', method: 'whoami' });
+      await send(receiver, appWs, {
+        type: 'call',
+        id: 'w',
+        method: 'whoami',
+      });
       await send(receiver, libraryWs, {
         type: 'call',
         id: 'w',
@@ -575,14 +579,46 @@ describe('DurabilitySocket channels', () => {
       'library',
     ]);
     expect(appWs.frames()).toEqual([
-      { v: 1, type: 'result', id: 'w', output: 'default:default/alice' },
-      { v: 1, type: 'result', id: 'w', output: 'default:default/alice' },
-      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'default:default/alice',
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'default:default/alice',
+      },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 0,
+        replayed: false,
+      },
     ]);
     expect(libraryWs.frames()).toEqual([
-      { v: 1, type: 'result', id: 'w', output: 'library:library/alice' },
-      { v: 1, type: 'result', id: 'w', output: 'library:library/alice' },
-      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'library:library/alice',
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'library:library/alice',
+      },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 0,
+        replayed: false,
+      },
       {
         v: 1,
         type: 'event',
@@ -590,7 +626,12 @@ describe('DurabilitySocket channels', () => {
         name: 'changed',
         payload: 'from library',
       },
-      { v: 1, type: 'result', id: 'p', output: 'from library' },
+      {
+        v: 1,
+        type: 'result',
+        id: 'p',
+        output: 'from library',
+      },
     ]);
     expect(libraryWs.deserializeAttachment()).toEqual({
       metadata: { user: 'library/alice' },
@@ -638,9 +679,27 @@ describe('DurabilitySocket channels', () => {
       since: 1,
     });
     expect(libraryWs.frames()).toEqual([
-      { v: 1, type: 'event', seq: 2, name: 'changed', payload: 'l2' },
-      { v: 1, type: 'event', seq: 3, name: 'changed', payload: 'l3' },
-      { v: 1, type: 'subscribed', id: 's', seq: 3, replayed: true },
+      {
+        v: 1,
+        type: 'event',
+        seq: 2,
+        name: 'changed',
+        payload: 'l2',
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 3,
+        name: 'changed',
+        payload: 'l3',
+      },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 3,
+        replayed: true,
+      },
     ]);
 
     const appWs = await connectServer(app, context);
@@ -651,7 +710,13 @@ describe('DurabilitySocket channels', () => {
       since: 3,
     });
     expect(appWs.frames()).toEqual([
-      { v: 1, type: 'subscribed', id: 's', seq: 8, replayed: false },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 8,
+        replayed: false,
+      },
     ]);
 
     library.changed('l4');
@@ -679,7 +744,11 @@ describe('DurabilitySocket channels', () => {
     legacy.serializeAttachment({ metadata: { user: 'old' }, names: [] });
     context.acceptWebSocket(legacy as unknown as WebSocket);
 
-    await send(library, legacy, { type: 'call', id: 'w', method: 'whoami' });
+    await send(library, legacy, {
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
     await send(library, legacy, {
       type: 'subscribe',
       id: 's',
@@ -690,9 +759,26 @@ describe('DurabilitySocket channels', () => {
 
     expect(calls).toEqual(['default']);
     expect(legacy.frames()).toEqual([
-      { v: 1, type: 'result', id: 'w', output: 'default:old' },
-      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
-      { v: 1, type: 'event', seq: 1, name: 'changed', payload: 'app event' },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'default:old',
+      },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 0,
+        replayed: false,
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 1,
+        name: 'changed',
+        payload: 'app event',
+      },
     ]);
     expect(legacy.deserializeAttachment()).toEqual({
       metadata: { user: 'old' },
@@ -709,7 +795,11 @@ describe('DurabilitySocket channels', () => {
     const appWs = await connectServer(app, first);
     const libraryWs = await connectServer(library, first);
     for (const ws of [appWs, libraryWs]) {
-      await send(app, ws, { type: 'subscribe', id: 's', names: ['changed'] });
+      await send(app, ws, {
+        type: 'subscribe',
+        id: 's',
+        names: ['changed'],
+      });
     }
     library.changed('before');
 
@@ -736,12 +826,34 @@ describe('DurabilitySocket channels', () => {
     expect(firstCalls).toEqual([]);
     expect(secondCalls).toEqual(['library', 'default']);
     expect(libraryWs.frames().slice(1)).toEqual([
-      { v: 1, type: 'event', seq: 1, name: 'changed', payload: 'before' },
-      { v: 1, type: 'result', id: 'w', output: 'library:library/alice' },
-      { v: 1, type: 'event', seq: 2, name: 'changed', payload: 'after' },
+      {
+        v: 1,
+        type: 'event',
+        seq: 1,
+        name: 'changed',
+        payload: 'before',
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'library:library/alice',
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 2,
+        name: 'changed',
+        payload: 'after',
+      },
     ]);
     expect(appWs.frames().slice(1)).toEqual([
-      { v: 1, type: 'result', id: 'w', output: 'default:default/alice' },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'default:default/alice',
+      },
     ]);
   });
 
@@ -777,7 +889,11 @@ describe('DurabilitySocket channels', () => {
     const second = restart(first);
     const calls: string[] = [];
     const app = createChannelSocket(second, undefined, calls);
-    await send(app, libraryWs, { type: 'call', id: 'w', method: 'whoami' });
+    await send(app, libraryWs, {
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
 
     expect(calls).toEqual([]);
     expect(libraryWs.sent).toEqual([]);
@@ -803,8 +919,20 @@ describe('DurabilitySocket channels', () => {
       since: 0,
     });
     expect(reconnected.frames()).toEqual([
-      { v: 1, type: 'event', seq: 1, name: 'changed', payload: 'kept' },
-      { v: 1, type: 'subscribed', id: 's', seq: 1, replayed: true },
+      {
+        v: 1,
+        type: 'event',
+        seq: 1,
+        name: 'changed',
+        payload: 'kept',
+      },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 1,
+        replayed: true,
+      },
     ]);
   });
 
@@ -855,10 +983,34 @@ describe('DurabilitySocket channels', () => {
       since: 1,
     });
     expect(ws.frames()).toEqual([
-      { v: 1, type: 'event', seq: 2, name: 'changed', payload: 'two' },
-      { v: 1, type: 'event', seq: 3, name: 'changed', payload: 'three' },
-      { v: 1, type: 'event', seq: 4, name: 'changed', payload: 'four' },
-      { v: 1, type: 'subscribed', id: 's', seq: 4, replayed: true },
+      {
+        v: 1,
+        type: 'event',
+        seq: 2,
+        name: 'changed',
+        payload: 'two',
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 3,
+        name: 'changed',
+        payload: 'three',
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 4,
+        name: 'changed',
+        payload: 'four',
+      },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 4,
+        replayed: true,
+      },
     ]);
 
     expect(

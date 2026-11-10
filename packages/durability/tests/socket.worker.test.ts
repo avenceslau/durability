@@ -298,30 +298,100 @@ describe('DurabilitySocket channels in workerd', () => {
     const id = 'channels-hibernate';
     const app = await openRaw(id);
     const library = await openRaw(id, '?channel=library');
-    app.send({ type: 'subscribe', id: 's', names: ['updated'] });
-    library.send({ type: 'subscribe', id: 's', names: ['updated'] });
-    library.send({ type: 'call', id: 't1', method: 'toggle', input: 'before' });
+    app.send({
+      type: 'subscribe',
+      id: 's',
+      names: ['updated'],
+    });
+    library.send({
+      type: 'subscribe',
+      id: 's',
+      names: ['updated'],
+    });
+    library.send({
+      type: 'call',
+      id: 't1',
+      method: 'toggle',
+      input: 'before',
+    });
     await waitFor(() => expect(app.frames).toHaveLength(1));
     await waitFor(() => expect(library.frames).toHaveLength(3));
 
     await evictDurableObject(env.SOCKET_TEST.getByName(id));
 
-    library.send({ type: 'call', id: 'w', method: 'whoami' });
-    library.send({ type: 'call', id: 't2', method: 'toggle', input: 'after' });
-    app.send({ type: 'call', id: 'w', method: 'whoami' });
+    library.send({
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
+    library.send({
+      type: 'call',
+      id: 't2',
+      method: 'toggle',
+      input: 'after',
+    });
+    app.send({
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
     await waitFor(() => expect(library.frames).toHaveLength(6));
     await waitFor(() => expect(app.frames).toHaveLength(2));
     expect(library.frames).toEqual([
-      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
-      { v: 1, type: 'event', seq: 1, name: 'updated', payload: 'before' },
-      { v: 1, type: 'result', id: 't1', output: 'before' },
-      { v: 1, type: 'result', id: 'w', output: '"library":library-alice' },
-      { v: 1, type: 'event', seq: 2, name: 'updated', payload: 'after' },
-      { v: 1, type: 'result', id: 't2', output: 'after' },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 0,
+        replayed: false,
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 1,
+        name: 'updated',
+        payload: 'before',
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 't1',
+        output: 'before',
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: '"library":library-alice',
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 2,
+        name: 'updated',
+        payload: 'after',
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 't2',
+        output: 'after',
+      },
     ]);
     expect(app.frames).toEqual([
-      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
-      { v: 1, type: 'result', id: 'w', output: 'alice' },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 0,
+        replayed: false,
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 'w',
+        output: 'alice',
+      },
     ]);
 
     app.close();
@@ -333,7 +403,12 @@ describe('DurabilitySocket channels in workerd', () => {
     const stub = env.SOCKET_TEST.getByName(id);
     const app = await openRaw(id);
     const library = await openRaw(id, '?channel=library');
-    library.send({ type: 'call', id: 't', method: 'toggle', input: 'kept' });
+    library.send({
+      type: 'call',
+      id: 't',
+      method: 'toggle',
+      input: 'kept',
+    });
     await waitFor(() => expect(library.frames).toHaveLength(1));
 
     await runInDurableObject(stub, (_instance, state) => {
@@ -341,7 +416,11 @@ describe('DurabilitySocket channels in workerd', () => {
     });
     await evictDurableObject(stub);
 
-    library.send({ type: 'call', id: 'w', method: 'whoami' });
+    library.send({
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
     await waitFor(() =>
       expect(library.closed()).toEqual({
         code: 1011,
@@ -349,10 +428,19 @@ describe('DurabilitySocket channels in workerd', () => {
       })
     );
     expect(library.frames).toHaveLength(1);
-    app.send({ type: 'call', id: 'w', method: 'whoami' });
+    app.send({
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
     await waitFor(() =>
       expect(app.frames).toEqual([
-        { v: 1, type: 'result', id: 'w', output: 'alice' },
+        {
+          v: 1,
+          type: 'result',
+          id: 'w',
+          output: 'alice',
+        },
       ])
     );
     expect(
@@ -370,13 +458,41 @@ describe('DurabilitySocket channels in workerd', () => {
       names: ['updated'],
       since: 0,
     });
-    restored.send({ type: 'call', id: 't', method: 'toggle', input: 'again' });
+    restored.send({
+      type: 'call',
+      id: 't',
+      method: 'toggle',
+      input: 'again',
+    });
     await waitFor(() => expect(restored.frames).toHaveLength(4));
     expect(restored.frames).toEqual([
-      { v: 1, type: 'event', seq: 1, name: 'updated', payload: 'kept' },
-      { v: 1, type: 'subscribed', id: 's', seq: 1, replayed: true },
-      { v: 1, type: 'event', seq: 2, name: 'updated', payload: 'again' },
-      { v: 1, type: 'result', id: 't', output: 'again' },
+      {
+        v: 1,
+        type: 'event',
+        seq: 1,
+        name: 'updated',
+        payload: 'kept',
+      },
+      {
+        v: 1,
+        type: 'subscribed',
+        id: 's',
+        seq: 1,
+        replayed: true,
+      },
+      {
+        v: 1,
+        type: 'event',
+        seq: 2,
+        name: 'updated',
+        payload: 'again',
+      },
+      {
+        v: 1,
+        type: 'result',
+        id: 't',
+        output: 'again',
+      },
     ]);
 
     app.close();
@@ -387,13 +503,25 @@ describe('DurabilitySocket channels in workerd', () => {
     const id = 'channels-migrate';
     const stub = env.SOCKET_TEST.getByName(id);
     const app = await openRaw(id);
-    app.send({ type: 'subscribe', id: 's', names: ['updated'] });
+    app.send({
+      type: 'subscribe',
+      id: 's',
+      names: ['updated'],
+    });
     await waitFor(() => expect(app.frames).toHaveLength(1));
     app.close();
 
     const sequences = await runInDurableObject(stub, (instance, state) => {
-      instance.socket.updated({ id: 't1', title: 'one', done: false });
-      instance.socket.updated({ id: 't1', title: 'two', done: false });
+      instance.socket.updated({
+        id: 't1',
+        title: 'one',
+        done: false,
+      });
+      instance.socket.updated({
+        id: 't1',
+        title: 'two',
+        done: false,
+      });
       expect(
         DurabilitySocket.migrate(state, 'durability_0006_create_socket_events')
       ).toEqual({
@@ -411,7 +539,11 @@ describe('DurabilitySocket channels in workerd', () => {
 
     await evictDurableObject(stub);
     const rows = await runInDurableObject(stub, (instance, state) => {
-      instance.socket.updated({ id: 't1', title: 'four', done: false });
+      instance.socket.updated({
+        id: 't1',
+        title: 'four',
+        done: false,
+      });
       return state.storage.sql
         .exec<{ channel: string; seq: number }>(
           'SELECT channel, seq FROM durability_socket_events ORDER BY seq'
