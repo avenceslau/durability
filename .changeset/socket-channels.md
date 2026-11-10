@@ -1,5 +1,0 @@
----
-'durability': minor
----
-
-`DurabilitySocket` takes a `channel` option, so several sockets share one Durable Object: each channel holds one socket, and a library can bring its own even with the same method and event names. A connection belongs to the channel whose `fetch` accepted it; the channel is stored in its WebSocket attachment, so it survives hibernation, and any socket's `webSocketMessage` routes its frames to that channel's handlers. Outbound events reach only their channel's subscribers, and each channel numbers, retains, and replays its events independently. Connections accepted before this version belong to the default channel. A frame from a connection whose channel no socket attached closes it with code `1011` and a `durability.socket.channel_missing` report, and that channel's events are kept. A migration changes the event key to `(channel, seq)`; existing events stay on the default channel with their sequence numbers. Downgrading refuses to discard events on non-default channels. The wire protocol and browser client are unchanged.
