@@ -9,6 +9,12 @@ import { z } from 'zod';
 const nonNegative = z.number().int().nonnegative();
 const nonEmpty = z.string().min(1);
 
+/**
+ * Which queue of the client object sent the message. Omitted means the
+ * default queue, so older clients keep their identity.
+ */
+const clientChannel = nonEmpty.optional();
+
 /** Bounds one message's work so a client cannot monopolize the holder. */
 export const maxDemandEntries = 100;
 export const maxGrantReports = 200;
@@ -48,6 +54,7 @@ export const permitRequestSchema = z.object({
   type: z.literal('request'),
   v: z.literal(1),
   clientId: nonEmpty,
+  clientChannel,
   /** Sparse demand per group with the oldest queued time, for FIFO allocation. */
   demand: z
     .object({
@@ -66,6 +73,7 @@ export const permitSyncSchema = z.object({
   type: z.literal('sync'),
   v: z.literal(1),
   clientId: nonEmpty,
+  clientChannel,
   grants: grantReportSchema.array().max(maxGrantReports),
   leases: leaseReportSchema.array().max(maxGrantReports).optional(),
 });
@@ -114,6 +122,12 @@ export const permitGrantSchema = z.object({
   leases: leaseGrantSchema.array().optional(),
   /** Demand went unserved: return undrawn lease permits in groups with nothing queued. */
   contended: z.boolean().optional(),
+  /**
+   * Echoes the request's `clientChannel`. A holder that predates client
+   * channels drops the field, so its absence tells a named queue that the
+   * holder counted it under the bare `clientId`.
+   */
+  clientChannel,
 });
 export type PermitGrant = z.infer<typeof permitGrantSchema>;
 
@@ -123,6 +137,8 @@ export const permitSyncResultSchema = z.object({
   grantResults: grantResultSchema.array(),
   leases: leaseGrantSchema.array().optional(),
   contended: z.boolean().optional(),
+  /** Echoes the sync's `clientChannel`, as for a grant. */
+  clientChannel,
 });
 export type PermitSyncResult = z.infer<typeof permitSyncResultSchema>;
 

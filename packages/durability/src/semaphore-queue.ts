@@ -1,5 +1,9 @@
 import { traceLifecycle, traceMethods } from './dev.js';
-import { reportFailure, serializeError } from './errors.js';
+import {
+  SemaphoreProtocolError,
+  reportFailure,
+  serializeError,
+} from './errors.js';
 import {
   durabilitySemaphoreQueueMigrations,
   migrateCapability,
@@ -12,6 +16,8 @@ import {
 } from './policy.js';
 import {
   DurabilityScheduler,
+  assertChannel,
+  defaultChannel,
   engineFor,
   type Engine,
   type SchedulerAttachment,
@@ -75,6 +81,16 @@ export type SemaphoreHolder = {
 };
 
 export type DurabilitySemaphoreQueueConfig<Body> = SchedulerAttachment & {
+  /**
+   * Stable queue ID. Queues on one object share storage, partitioned by
+   * channel, and may reuse item IDs and keys. The holder counts a named
+   * queue's permits under `clientId` and this channel, so queues sharing a
+   * `clientId` never see each other's grants or leases; a named queue admits
+   * nothing through a holder too old to acknowledge its channel. Which holder
+   * pool a key reaches is decided by `server`, not by this channel. Defaults
+   * to `default`.
+   */
+  channel?: string;
   /** The holder, from `DurabilitySemaphore.client()`; caller transforms apply. */
   server: SemaphoreHolder;
   /** Stable identity of this client Durable Object, e.g. `ctx.id.toString()`. */
@@ -136,12 +152,21 @@ type Report =
   | { kind: 'grant'; claimed: number; released: number }
   | { kind: 'lease'; drawn: number; released: number; retired?: boolean };
 
-const outboxChannel = 'durability.semaphore-queue';
+/**
+ * The internal outbox channel carrying a queue's reports. The default queue
+ * keeps the name earlier versions staged reports under; a named queue's is a
+ * JSON tuple, so no user string can make two queues share one.
+ */
+const outboxChannelFor = (channel: string): string =>
+  channel === defaultChannel
+    ? 'durability.semaphore-queue'
+    : JSON.stringify(['durability.semaphore-queue', channel]);
 /** Half the holder's default grantTimeoutMs. */
 const maxReportRetryMs = 5_000;
 /** Queued items read per key when building a request's demand. */
 const demandScanLimit = 200;
 const maxDelayMs = 2 ** 31 - 1;
+const maxAcknowledgedKeys = 1_024;
 
 const pairKey = (key: string, second: string): string =>
   JSON.stringify([key, second]);
@@ -199,6 +224,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   readonly #store: QueueStore;
   readonly #server: SemaphoreHolder;
   readonly #clientId: string;
+  /** Sent to the holder only by named queues, so the default wire shape is unchanged. */
+  readonly #clientChannel: string | undefined;
   readonly #admit: DurabilitySemaphoreQueueConfig<Body>['admit'];
   readonly #finished: DurabilitySemaphoreQueueConfig<Body>['finished'];
   readonly #finishedCheckMs: number;
@@ -209,10 +236,16 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   readonly #outbox: DurabilityOutbox<Report>;
   readonly #requesting = new Set<string>();
   readonly #blocked = new Map<string, SemaphoreBlockedReason>();
+  /** Keys whose holder acknowledged this queue's channel since construction. */
+  readonly #acknowledgedKeys = new Set<string>();
   #notifying: Promise<void> | undefined;
   #checking: Promise<void> | undefined;
 
   constructor(config: DurabilitySemaphoreQueueConfig<Body>) {
+    const channel = assertChannel(
+      'Semaphore queue',
+      config.channel ?? defaultChannel
+    );
     if (typeof config.clientId !== 'string' || config.clientId.length === 0) {
       throw new TypeError('clientId must be a non-empty string');
     }
@@ -221,6 +254,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     }
     this.#server = config.server;
     this.#clientId = config.clientId;
+    this.#clientChannel = channel === defaultChannel ? undefined : channel;
     this.#admit = config.admit;
     if (
       config.finished !== undefined &&
@@ -248,7 +282,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     // scheduler is created explicitly instead of letting each attach its own.
     const scheduler = config.scheduler ?? new DurabilityScheduler(config);
     this.#engine = engineFor({ scheduler });
-    this.#store = new QueueStore(this.#engine.sql);
+    this.#store = new QueueStore(this.#engine.sql, channel);
     this.#emit = traceLifecycle(
       this.#engine.emitter<DurabilitySemaphoreQueueEvent>(
         config.onLifecycleEvent
@@ -260,7 +294,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     );
     this.#outbox = new DurabilityOutbox<Report>({
       scheduler,
-      channel: outboxChannel,
+      channel: outboxChannelFor(channel),
       publish: (entries) => this.#publishReports(entries),
       // A claim the holder has not heard about within its grant window is
       // reclaimed, so reports retry well inside it instead of backing off for minutes.
@@ -269,8 +303,10 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           Math.min(this.#retryDelay(attempt), maxReportRetryMs),
       },
     });
-    this.#engine.register({
+    this.#engine.registerChannel({
       table: queueItemsTable,
+      channel,
+      helper: 'A semaphore queue',
       runDue: (now) => this.#runDue(now),
       nextPendingAt: () =>
         this.#store.nextPendingAt(this.#finished !== undefined),
@@ -483,17 +519,51 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   /** Best effort: if this write fails too, the request deadline still applies. */
-  async #retrySoon(key: string, queued: number): Promise<void> {
+  async #retryAfter(key: string, queued: number, delay: number): Promise<void> {
     await this.#engine
       .transaction(() => {
         const current = this.#store.getKey(key);
         this.#store.upsertKey({
           key,
           queued: current?.queued ?? queued,
-          next_request_at: Date.now() + this.#retryDelay(1),
+          next_request_at: Date.now() + delay,
         });
       })
       .catch(() => undefined);
+  }
+
+  /**
+   * A named queue applies nothing a holder sends without echoing its channel:
+   * such a holder counted the permits under the bare `clientId`, which the
+   * default queue of this object may share.
+   */
+  #acknowledged(
+    key: string,
+    response: { clientChannel?: string | undefined }
+  ): boolean {
+    if (this.#clientChannel === undefined) {
+      return true;
+    }
+    this.#acknowledgedKeys.delete(key);
+    if (response.clientChannel === this.#clientChannel) {
+      this.#acknowledgedKeys.add(key);
+      // A forgotten key only costs one request without leases.
+      if (this.#acknowledgedKeys.size > maxAcknowledgedKeys) {
+        const oldest = this.#acknowledgedKeys.values().next().value;
+        if (oldest !== undefined) {
+          this.#acknowledgedKeys.delete(oldest);
+        }
+      }
+      return true;
+    }
+    reportFailure(
+      'durability.semaphore_queue.channel_not_acknowledged',
+      { key, channel: this.#clientChannel },
+      new SemaphoreProtocolError(
+        `The holder of "${key}" did not acknowledge semaphore queue channel "${this.#clientChannel}"; it may predate queue channels`
+      )
+    );
+    return false;
   }
 
   /** Asks the holder for permits covering this key's queued items. */
@@ -521,14 +591,22 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         entry.oldestAt = Math.min(entry.oldestAt, item.created_at);
         demand.set(item.grp, entry);
       }
+      // A holder that ignores the channel would lease to the bare clientId,
+      // and a lease nobody reports stays counted, so a named queue opts into
+      // leases only once the holder has acknowledged its channel.
+      const offersLeases =
+        this.#clientChannel === undefined || this.#acknowledgedKeys.has(key);
       const message: PermitRequest = {
         type: 'request',
         v: 1,
         clientId: this.#clientId,
+        ...(this.#clientChannel === undefined
+          ? {}
+          : { clientChannel: this.#clientChannel }),
         demand: [...demand].map(([group, entry]) => ({ group, ...entry })),
         grants: grants.map(grantReport),
-        // Always present: it opts this client into leases when the holder offers them.
-        leases: leases.map(leaseReport),
+        // Present opts this client into leases when the holder offers them.
+        ...(offersLeases ? { leases: leases.map(leaseReport) } : {}),
       };
 
       // While the holder holds the request for its round, the key must not
@@ -553,7 +631,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           { key },
           error
         );
-        await this.#retrySoon(key, queued.length);
+        await this.#retryAfter(key, queued.length, this.#retryDelay(1));
+        return;
+      }
+      if (!this.#acknowledged(key, grant)) {
+        // Unclaimed grants return to the holder's pool at its grant timeout;
+        // asking only at the request deadline limits how much a holder that
+        // ignores channels holds back from other clients meanwhile.
+        await this.#retryAfter(key, queued.length, this.#attemptTimeoutMs);
         return;
       }
 
@@ -590,7 +675,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       } catch (error) {
         // The grant is lost with the transaction; ask again soon rather than
         // at the request deadline, which only covers a crash.
-        await this.#retrySoon(key, queued.length);
+        await this.#retryAfter(key, queued.length, this.#retryDelay(1));
         throw error;
       }
 
@@ -937,6 +1022,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
               type: 'sync',
               v: 1,
               clientId: this.#clientId,
+              ...(this.#clientChannel === undefined
+                ? {}
+                : { clientChannel: this.#clientChannel }),
               grants,
               leases,
             })
@@ -947,6 +1035,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
             { key },
             error
           );
+          for (const entry of keyEntries) {
+            entry.retry();
+          }
+          return;
+        }
+        if (!this.#acknowledged(key, synced)) {
+          // The reports stay pending: claims stay unconfirmed and items stay
+          // stored until a holder that knows the channel answers.
           for (const entry of keyEntries) {
             entry.retry();
           }

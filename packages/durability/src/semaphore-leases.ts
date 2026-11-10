@@ -47,9 +47,27 @@ export type LeaseEvent = {
   timestamp: number;
   leaseId: string;
   clientId: string;
+  clientChannel: string;
   group: string;
   permits: number;
 };
+
+/** A client is its object's `clientId` together with the queue channel on that object. */
+export type SemaphoreClientIdentity = {
+  clientId: string;
+  clientChannel: string;
+};
+
+/** Map key for a client identity; JSON keeps raw IDs and channels unambiguous. */
+export const clientKey = (clientId: string, clientChannel: string): string =>
+  JSON.stringify([clientId, clientChannel]);
+
+export const ownedBy = (
+  row: { client_id: string; client_channel: string },
+  client: SemaphoreClientIdentity
+): boolean =>
+  row.client_id === client.clientId &&
+  row.client_channel === client.clientChannel;
 
 type GroupPolicy = { limit?: number; blocked?: SemaphoreBlockedReason };
 
@@ -155,7 +173,7 @@ export type LeaseReportOutcome = {
 export const applyLeaseReports = (
   store: HolderStore,
   policy: LeasePolicy,
-  clientId: string,
+  client: SemaphoreClientIdentity,
   reports: LeaseReport[],
   now: number
 ): LeaseReportOutcome => {
@@ -166,7 +184,7 @@ export const applyLeaseReports = (
   };
   for (const report of reports) {
     const lease = store.getLease(report.leaseId);
-    if (!lease || lease.client_id !== clientId) {
+    if (!lease || !ownedBy(lease, client)) {
       outcome.echoes.push({
         leaseId: report.leaseId,
         group: lease?.grp ?? '',
@@ -215,14 +233,13 @@ export const applyLeaseReports = (
   return outcome;
 };
 
-export type LeaseCandidate = {
-  clientId: string;
+export type LeaseCandidate = SemaphoreClientIdentity & {
   group: string;
   oldestAt: number;
 };
 
 export type LeaseAllocation = {
-  /** New and retired leases per client. */
+  /** New and retired leases per client, keyed by {@link clientKey}. */
   grants: Map<string, LeaseGrant[]>;
   footprint: number;
   events: LeaseEvent[];
@@ -252,8 +269,9 @@ export const allocateLeases = (
   const { now } = input;
   const grants = new Map<string, LeaseGrant[]>();
   const events: LeaseEvent[] = [];
-  const echo = (clientId: string, grant: LeaseGrant): void => {
-    grants.set(clientId, [...(grants.get(clientId) ?? []), grant]);
+  const echo = (lease: LeaseRow, grant: LeaseGrant): void => {
+    const key = clientKey(lease.client_id, lease.client_channel);
+    grants.set(key, [...(grants.get(key) ?? []), grant]);
   };
 
   let footprint = 0;
@@ -272,13 +290,14 @@ export const allocateLeases = (
       // Stop draws now; the full footprint stays until the client confirms.
       current = { ...lease, retired: 1 };
       store.updateLease(current);
-      echo(lease.client_id, toLeaseGrant(current, now));
+      echo(lease, toLeaseGrant(current, now));
       events.push({
         entityKind: 'semaphore',
         type: 'lease_retired',
         timestamp: now,
         leaseId: lease.lease_id,
         clientId: lease.client_id,
+        clientChannel: lease.client_channel,
         group: lease.grp,
         permits:
           lease.permits - (input.drawn.get(lease.lease_id) ?? lease.permits),
@@ -293,7 +312,9 @@ export const allocateLeases = (
       !current.retired &&
       (input.drawn.get(lease.lease_id) ?? lease.permits) < lease.permits
     ) {
-      usable.add(JSON.stringify([lease.client_id, lease.grp]));
+      usable.add(
+        JSON.stringify([lease.client_id, lease.client_channel, lease.grp])
+      );
     }
   }
 
@@ -301,12 +322,22 @@ export const allocateLeases = (
   for (const candidate of input.candidates) {
     if (
       !leaseEligible(policy, input.policies.get(candidate.group) ?? {}) ||
-      usable.has(JSON.stringify([candidate.clientId, candidate.group]))
+      usable.has(
+        JSON.stringify([
+          candidate.clientId,
+          candidate.clientChannel,
+          candidate.group,
+        ])
+      )
     ) {
       continue;
     }
     const existing = byGroup.get(candidate.group) ?? [];
-    const prior = existing.find((c) => c.clientId === candidate.clientId);
+    const prior = existing.find(
+      (c) =>
+        c.clientId === candidate.clientId &&
+        c.clientChannel === candidate.clientChannel
+    );
     if (prior) {
       prior.oldestAt = Math.min(prior.oldestAt, candidate.oldestAt);
     } else {
@@ -320,7 +351,9 @@ export const allocateLeases = (
       clients: clients
         .sort(
           (a, b) =>
-            a.oldestAt - b.oldestAt || a.clientId.localeCompare(b.clientId)
+            a.oldestAt - b.oldestAt ||
+            a.clientId.localeCompare(b.clientId) ||
+            a.clientChannel.localeCompare(b.clientChannel)
         )
         .slice(0, policy.maxClientsPerGroup),
       oldestAt: Math.min(...clients.map((c) => c.oldestAt)),
@@ -349,13 +382,14 @@ export const allocateLeases = (
       const retired: LeaseRow = { ...lease, retired: 1 };
       store.updateLease(retired);
       excess -= lease.permits - drawn;
-      echo(lease.client_id, toLeaseGrant(retired, now));
+      echo(lease, toLeaseGrant(retired, now));
       events.push({
         entityKind: 'semaphore',
         type: 'lease_retired',
         timestamp: now,
         leaseId: lease.lease_id,
         clientId: lease.client_id,
+        clientChannel: lease.client_channel,
         group: lease.grp,
         permits: lease.permits - drawn,
       });
@@ -395,6 +429,7 @@ export const allocateLeases = (
     const lease: LeaseRow = {
       lease_id: crypto.randomUUID(),
       client_id: candidate.clientId,
+      client_channel: candidate.clientChannel,
       grp: candidate.group,
       permits,
       released: 0,
@@ -408,13 +443,14 @@ export const allocateLeases = (
       candidate.group,
       (groupFootprint.get(candidate.group) ?? 0) + permits
     );
-    echo(candidate.clientId, toLeaseGrant(lease, now));
+    echo(lease, toLeaseGrant(lease, now));
     events.push({
       entityKind: 'semaphore',
       type: 'lease_granted',
       timestamp: now,
       leaseId: lease.lease_id,
       clientId: lease.client_id,
+      clientChannel: lease.client_channel,
       group: lease.grp,
       permits,
     });
