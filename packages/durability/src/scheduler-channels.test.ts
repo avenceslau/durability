@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Durability, DurabilityScheduler } from './index';
 import { engineFor } from './scheduler';
 import { contextFor, FakeStorage } from './test-fakes';
+import { DurabilitySemaphoreServer } from './semaphore-server';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -9,6 +10,37 @@ afterEach(() => {
 });
 
 describe('shared scheduler channels', () => {
+  it.each([false, true])(
+    'does not repeatedly time active operations with liveTimers=%s',
+    async (liveTimers) => {
+      vi.useFakeTimers();
+      const storage = new FakeStorage();
+      const context = contextFor(storage);
+      const scheduler = new DurabilityScheduler({ context, liveTimers });
+      new DurabilitySemaphoreServer({ scheduler, limit: 1 });
+      const work = new Durability({
+        scheduler,
+        handlers: {
+          slow: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            return 'done';
+          },
+        },
+      });
+      const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
+      await work.slow({ id: 'a', payload: null });
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(alarms.mock.calls.length).toBeLessThan(10);
+      expect(storage.alarmAt).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await work.slow.getResult('a')).toMatchObject({
+        status: 'completed',
+      });
+      expect(storage.alarmAt).toBeNull();
+    }
+  );
+
   it('drains existing permits before granting waiters after lowering an omitted limit', async () => {
     const context = contextFor(new FakeStorage());
     const scheduler = new DurabilityScheduler({ context });

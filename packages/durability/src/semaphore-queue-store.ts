@@ -414,7 +414,13 @@ export class QueueStore {
     );
   }
 
-  nextPendingAt(checksFinished: boolean): number | undefined {
+  nextPendingAt({
+    unnotified,
+    notified,
+  }: {
+    unnotified: boolean;
+    notified: boolean;
+  }): number | undefined {
     // An idle lease is due when it stops at its expiry, not before.
     const at = this.sql
       .exec(
@@ -427,7 +433,8 @@ export class QueueStore {
            UNION ALL
            SELECT (
              SELECT next_attempt_at FROM durability_semaphore_queue_items
-             WHERE channel = ? AND status = 'admitted' AND (notified = 0 OR ?)
+             WHERE channel = ? AND status = 'admitted'
+               AND ((notified = 0 AND ?) OR (notified = 1 AND ?))
              ORDER BY next_attempt_at ASC LIMIT 1
            ) AS at
            UNION ALL
@@ -438,7 +445,8 @@ export class QueueStore {
          )`,
         this.channel,
         this.channel,
-        checksFinished ? 1 : 0,
+        unnotified ? 1 : 0,
+        notified ? 1 : 0,
         this.channel
       )
       .toArray()[0]?.['at'];

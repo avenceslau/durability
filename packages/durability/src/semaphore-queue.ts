@@ -315,7 +315,16 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       helper: 'A semaphore queue',
       runDue: (now) => this.#runDue(now),
       nextPendingAt: () =>
-        this.#store.nextPendingAt(this.#finished !== undefined),
+        this.#store.nextPendingAt({
+          unnotified: true,
+          notified: this.#finished !== undefined,
+        }),
+      nextTimerAt: () =>
+        this.#store.nextPendingAt({
+          unnotified: this.#notifying === undefined,
+          notified:
+            this.#finished !== undefined && this.#checking === undefined,
+        }),
     });
   }
 
@@ -516,12 +525,10 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       this.#notify(),
       this.#releaseFinished(now),
       this.#renewLeases(now),
-    ]);
-    await Promise.all(
-      keys
+      ...keys
         .filter(({ key }) => !this.#requesting.has(key))
-        .map(({ key }) => this.#request(key))
-    );
+        .map(({ key }) => this.#request(key)),
+    ]);
   }
 
   /** Best effort: if this write fails too, the request deadline still applies. */
@@ -1043,19 +1050,28 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   /** Releases admitted items `finished` reports done, one check at a time. */
-  #releaseFinished(now: number): Promise<void> {
-    this.#checking ??= this.#checkFinished(now).finally(() => {
-      this.#checking = undefined;
-    });
-    return this.#checking;
-  }
+  async #releaseFinished(now: number): Promise<void> {
+    if (this.#checking) {
+      return this.#checking;
+    }
 
-  async #checkFinished(now: number): Promise<void> {
     const finished = this.#finished;
-    // An idle run must not write: every transaction reconciles the alarm.
     if (!finished || this.#store.listCheckDue(now, 1).length === 0) {
       return;
     }
+
+    this.#checking = this.#checkFinished(now, finished).finally(() => {
+      this.#checking = undefined;
+      return this.#engine.scheduleNextAlarm();
+    });
+
+    return this.#checking;
+  }
+
+  async #checkFinished(
+    now: number,
+    finished: NonNullable<DurabilitySemaphoreQueueConfig<Body>['finished']>
+  ): Promise<void> {
     // Schedule the next check before asking, as admit() claims its batch: rows
     // left due while finished() runs would re-arm the alarm at once.
     const later = now + this.#finishedCheckMs;
@@ -1091,19 +1107,25 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   /** Hands admitted, unnotified items to `admit()`, one batch at a time. */
-  #notify(): Promise<void> {
-    this.#notifying ??= this.#notifyBatch().finally(() => {
-      this.#notifying = undefined;
-    });
-    return this.#notifying;
-  }
+  async #notify(): Promise<void> {
+    if (this.#notifying) {
+      return this.#notifying;
+    }
 
-  async #notifyBatch(): Promise<void> {
-    const store = this.#store;
-    const due = store.listUnnotified(Date.now(), this.#maxAdmitBatch);
+    const due = this.#store.listUnnotified(Date.now(), this.#maxAdmitBatch);
     if (due.length === 0) {
       return;
     }
+
+    this.#notifying = this.#notifyBatch(due).finally(() => {
+      this.#notifying = undefined;
+      return this.#engine.scheduleNextAlarm();
+    });
+
+    return this.#notifying;
+  }
+
+  async #notifyBatch(due: QueueItemRow[]): Promise<void> {
     const release = await this.#engine.acquirePermit();
     try {
       const deadline = Date.now() + this.#attemptTimeoutMs;

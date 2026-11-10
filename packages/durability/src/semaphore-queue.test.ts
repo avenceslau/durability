@@ -12,6 +12,7 @@ import {
 } from './semaphore-server';
 import type { PermitGrant, PermitSync } from './semaphore-protocol';
 import { FakeStorage } from './test-fakes';
+import { engineFor } from './scheduler';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -95,6 +96,95 @@ describe('semaphore queue', () => {
       events,
     };
   };
+
+  it('keeps requesting queued permits while admission is slow without spinning', async () => {
+    const { queue, scheduler, calls } = fixture(
+      {
+        limit: 1,
+        roundWaitMs: 1,
+        roundPeriodMs: 20,
+      },
+      { admit: () => new Promise((resolve) => setTimeout(resolve, 1_000)) }
+    );
+    new DurabilitySemaphoreServer({ scheduler, limit: 1 });
+    const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
+    await queue.enqueue([
+      {
+        id: 'a',
+        key: 'acct',
+        body: 'A',
+      },
+      {
+        id: 'b',
+        key: 'acct',
+        body: 'B',
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(alarms.mock.calls.length).toBeLessThan(20);
+    expect(calls.request).toBeGreaterThan(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+  });
+
+  it('does not spin on unnotified items behind an active admission batch', async () => {
+    const batches: string[][] = [];
+    const { queue, scheduler } = fixture(
+      { limit: 4, roundWaitMs: 1 },
+      {
+        maxAdmitBatch: 1,
+        admit: async (items) => {
+          batches.push(items.map((item) => item.id));
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        },
+      }
+    );
+    new DurabilitySemaphoreServer({ scheduler, limit: 1 });
+    const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
+    await queue.enqueue(
+      ['a', 'b', 'c', 'd'].map((id) => ({
+        id,
+        key: 'acct',
+        body: id,
+      }))
+    );
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(alarms.mock.calls.length).toBeLessThan(20);
+    await vi.advanceTimersByTimeAsync(4_100);
+    expect(batches).toEqual([['a'], ['b'], ['c'], ['d']]);
+  });
+
+  it('does not spin while a finished check outlives its next check time', async () => {
+    const { queue, scheduler } = fixture(
+      { roundWaitMs: 1 },
+      {
+        finishedCheckMs: 20,
+        finished: async (ids) => {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          return [...ids];
+        },
+      }
+    );
+    new DurabilitySemaphoreServer({ scheduler, limit: 1 });
+    const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
+    await queue.enqueue([
+      {
+        id: 'a',
+        key: 'acct',
+        body: 'A',
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(alarms.mock.calls.length).toBeLessThan(20);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(await queue.usage()).toEqual({
+      queued: 0,
+      claiming: 0,
+      admitted: 0,
+    });
+  });
 
   it('admits in arrival order once the holder confirms, and frees permits on release', async () => {
     const { queue, holderFor, admitted, events } = fixture();
