@@ -205,7 +205,69 @@ export class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
+A Durable Object has one scheduler. A helper configured with `context` instead of `scheduler`, and any further `DurabilityScheduler` for the same object, joins it, so helpers never reconcile the physical alarm against only their own records. Scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`, and the experimental ones) can be set by whichever attaches; an option left out never conflicts, and a different value for one already set throws. The object's `alarm` method can delegate to the scheduler or to any helper's `alarm`: each runs the due work of every helper on the object.
+
+This lets a library use durability without asking for a scheduler. It builds its helpers from the context it is given, and the application only forwards `alarm`:
+
+```ts
+// In a library
+export const alerts = (ctx: DurableObjectState) => {
+  const alarms = new DurabilityAlarms({
+    context: ctx,
+    handlers: { checkAlerts: () => runChecks(ctx) },
+  });
+  return {
+    start: () => alarms.checkAlerts(Date.now()),
+    alarm: (info?: AlarmInvocationInfo) => alarms.alarm(info),
+  };
+};
+
+// In the application
+export class Billing extends DurableObject<Env> {
+  private readonly jobs = new Durability({ context: this.ctx, handlers });
+  private readonly alerts = alerts(this.ctx);
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.jobs.alarm(info); // also runs the library's alarms
+  }
+}
+```
+
+Install durability once per Worker, as a peer dependency of libraries that use it: a second copy reaching the same object throws instead of fighting the first over its alarm.
+
+### Channels
+
+`Durability`, `DurabilityAlarms`, `DurabilityFanout`, `DurabilityOutbox`, `DurabilitySchedule`, `DurabilityLog`, `DurabilitySemaphore`, `DurabilitySemaphoreQueue`, `DurabilityTopology`, and `DurabilitySocket` accept `channel`, defaulting to `default`. Each channel of a helper kind holds one instance. Instances on different channels share the scheduler but not their records: IDs and names are scoped to a channel, and each instance's operations affect only its own state. A library should use a channel of its own, so the application can use the same helper and the same IDs without either seeing the other's work:
+
+```ts
+// In a library
+const jobs = new Durability({
+  context: ctx,
+  channel: 'durable-alerts',
+  handlers: { notify },
+});
+
+// In the application, on the default channel
+const jobs = new Durability({ context: this.ctx, handlers: { charge } });
+// Both can register { id: 'invoice-1' }; they are different calls.
+```
+
+Attaching a second instance to a channel already in use throws `Durability for channel "durable-alerts" is already attached to this scheduler`. Due operations, alarms, fanout deliveries and outbox entries of a channel no instance attached are retained and postponed a minute, with a `durability.channel_missing` report. Custom-timed schedule and semaphore state is retained unchanged while its owner is absent; reattaching it reconciles any pending work. Data-only log and socket history remains stored. Channel identity is part of persisted keys; existing records and memoized results migrate to `default` without changing their IDs or names. Schema downgrades refuse to discard non-default-channel state. Deliberately remove that state before rolling back: draining or cancelling work may still leave counters or tombstones. `DurabilityAlarms` and `DurabilityOutbox` take the same `channel` option: an application and a library can both have an alarm called `check`, each with its own handler, policy, and lifecycle hook:
+
+```ts
+const reminders = new DurabilityAlarms({
+  context: this.ctx,
+  handlers: { check },
+});
+const alerts = new DurabilityAlarms({
+  context: this.ctx,
+  channel: 'durable-alerts',
+  retries: { maxAttempts: 5 },
+  handlers: { check: () => runChecks(this.ctx) },
+});
+```
+
+Within a channel, a due alarm whose name has no handler, such as one a deploy removed, fails through that channel's instance.
 
 ## Memoize
 
@@ -377,7 +439,7 @@ The purge runs in one transaction. It best-effort aborts matching active handler
 
 ## Experimental options
 
-These options, methods, and capabilities are opt-in: none takes effect unless you set, call, or construct it, so leaving them alone keeps every behavior described above. Their names and behavior may change in a minor release. Scheduler options also apply to the private scheduler of a helper configured with `context`.
+These options, methods, and capabilities are opt-in: none takes effect unless you set, call, or construct it, so leaving them alone keeps every behavior described above. Their names and behavior may change in a minor release. Scheduler options can also be passed to a helper configured with `context`.
 
 ```ts
 const scheduler = new DurabilityScheduler({
@@ -420,7 +482,7 @@ const scheduler = new DurabilityScheduler({
 
 ### `DurabilitySchedule`
 
-`DurabilitySchedule` is exported from `durability/experimental`. It runs one recurring schedule per Durable Object: each tick starts a run, runs overlap, every run is tracked on its own, and its outcome is reported once and then forgotten. It replaces a `DurabilityAlarms` tick that registers a `Durability` operation per run, which needs retained records to deduplicate and keeps them until purged.
+`DurabilitySchedule` is exported from `durability/experimental`. It runs one recurring schedule per channel of a Durable Object: each tick starts a run, runs overlap, every run is tracked on its own, and its outcome is reported once and then forgotten. It replaces a `DurabilityAlarms` tick that registers a `Durability` operation per run, which needs retained records to deduplicate and keeps them until purged.
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
@@ -464,14 +526,16 @@ export class Cron extends DurableObject<Env> {
 - **Jitter.** `set({ expression, version, jitterMs })` delays every tick by one fixed offset, so many objects sharing a popular expression do not all fire at the same instant. `jitterMs` is either a non-negative integer, the offset itself, or `{ maxMs }`, which picks an offset uniformly in `[0, maxMs]` when the version is stored. It defaults to 0, and both forms are at most 2^31 - 1 ms. The offset is stored in the schedule's row, so it costs no write per run, and resending the same version keeps it; only a new version picks a new one. A tick's nominal time `scheduledTime` is what `nextOccurrence` returned, and it fires at `dueAt`, which is `scheduledTime + jitterMs`. `idempotencyKey` derives from `scheduledTime`, and the next tick is always searched from nominal times, so the offset never drifts. Keep `jitterMs` below the expression's interval; durability cannot know the interval of an opaque expression. A larger offset is allowed: every tick still fires once, in nominal order, each `jitterMs` after its nominal time, even when that is after the next tick's nominal time.
 - **Cancel.** `cancel(version?)` stops future ticks and resolves `true` when a schedule was live. Runs already due or running still finish and report. With a version, the cancel is ignored when the stored version is higher, and is otherwise kept as a one-row tombstone so a delayed `set` of that version or lower cannot revive the schedule.
 - **One tick, one run.** A tick inserts its run in the transaction that advances the stored next tick, so a replayed or duplicated alarm finds the cursor already moved and cannot fire the tick again; deduplication needs no finished-run records. When ticks were missed, for example while the object was down, they collapse into one run for the earliest missed time, and the next tick is the first whose `dueAt` is after now. A `nextOccurrence` that throws or returns an invalid time rolls the tick back and fails the alarm run, which is retried at `alarmMinDelayMs` and reported through `onAlarmRetry`.
-- **Runs.** `run({ scheduledTime, dueAt, idempotencyKey, signal })` starts outside the alarm pass that recorded it, so a long run never delays later ticks. `idempotencyKey` is `<objectId>:<scheduledTime>`. At most `maxConcurrentRuns` (default 10) are in flight; later runs wait durably in tick order. This limit is separate from the scheduler's `alarmConcurrency`. A run that throws, or exceeds `runTimeoutMs` (default 15 minutes, which aborts its `signal`), is `errored`. A run is attempted once and never retried. A timed-out run keeps its slot until its handler actually settles.
+- **Runs.** `run({ scheduledTime, dueAt, idempotencyKey, signal })` starts outside the alarm pass that recorded it, so a long run never delays later ticks. `idempotencyKey` is `<objectId>:<scheduledTime>`; on a named channel it ends with `:` and the JSON-encoded channel name, such as `<objectId>:<scheduledTime>:"library"`, so it never equals a default-channel key or another channel's. At most `maxConcurrentRuns` (default 10) are in flight; later runs wait durably in tick order. This limit is separate from the scheduler's `alarmConcurrency`. A run that throws, or exceeds `runTimeoutMs` (default 15 minutes, which aborts its `signal`), is `errored`. A run is attempted once and never retried. A timed-out run keeps its slot until its handler actually settles.
 - **Keeping the object alive.** While runs or outcome deliveries are in flight, the alarm pass stays pending, so an alarm invocation stays open and holds the object in memory; it fires the next ticks and outcome retries itself, at their exact times. Before the wall-time limit the scheduler hands off at `alarmHandoffMs`, and the next alarm joins the same loop. A tick started by an in-memory timer is joined by the next physical alarm. Other helpers on the same scheduler still run on each alarm pass, but work of theirs that becomes due during the hold waits for it unless the scheduler uses `liveTimers`.
 - **Interrupted runs.** A run still marked running when no live instance holds it, for example after the object was evicted, reset, or redeployed mid-run, is reported as `errored` with `ScheduledRunInterruptedError` on the next alarm, and is not run again. While a run or outcome delivery is in flight, the physical alarm stays on the next tick, which is its eviction fallback, so an interrupted run is reported by the next tick at the latest, or within `alarmMinDelayMs` when no tick is left.
 - **Outcomes.** `onOutcome(run, outcome)` receives `{ scheduledTime, dueAt, idempotencyKey, attempt }` and `{ status: 'complete' }` or `{ status: 'errored', error: { name, message } }`. The outcome is persisted before the first delivery, so delivery is at least once with the same outcome, even across a crash. Returning acknowledges it and deletes the run's row; nothing about the run is kept afterwards. Throwing, or exceeding `outcomeTimeoutMs` (default 60 seconds), retries it with `outcomeRetries.delay(attempt)` (default jittered exponential capped at 5 minutes) up to `outcomeRetries.maxAttempts` (default 10) deliveries. After the last, the row is deleted, `durability.schedule.outcome_dead_lettered` is reported, and a `dead_lettered` lifecycle event is emitted.
-- **Storage.** Two rowid tables with no secondary indexes: `durability_schedule` holds the schedule's one row and `durability_schedule_runs` holds one small row per run from its tick until its outcome is delivered. A run writes four rows: the tick's cursor update and run insert, the outcome update, and the delete on delivery. It also arms the physical alarm once, for the next tick, and each `setAlarm()` is billed as a row written. A run that waits for a slot writes one more row, and each failed delivery one more.
+- **Storage.** Two tables keyed by channel with no secondary indexes: `durability_schedule` holds one row per channel's schedule and `durability_schedule_runs` holds one small row per run from its tick until its outcome is delivered. A run writes four rows: the tick's cursor update and run insert, the outcome update, and the delete on delivery. It also arms the physical alarm once, for the next tick, and each `setAlarm()` is billed as a row written. A run that waits for a slot writes one more row, and each failed delivery one more.
 - **Lifecycle events.** `onLifecycleEvent` receives `scheduled_run` events keyed by `idempotencyKey`: `due` (with `queued`), `started`, `settled` (with `outcome`, `error`, and `durationMs`), `outcome_retry`, and `dead_lettered`. Like every lifecycle hook, it is best effort.
 
-One schedule attaches per scheduler; attaching a second throws. Construct it once per object instance, as with every helper. `DurabilitySchedule.migrate(this.ctx, null)` removes its schema.
+- **Channels.** `channel` (default `default`) gives each instance its own schedule, versions, cancels, runs, outcome deliveries, and hooks, so a library can keep a schedule of its own in an object whose application has one; both may tick at the same scheduled time. One instance attaches per channel; attaching a second throws `DurabilitySchedule for channel "library" is already attached to this scheduler`. A channel whose runs hold the alarm invocation open does not delay another channel's ticks. Interrupted-run recovery only looks at the instance's own channel. The schedule and runs of a channel no instance attached, such as one a deploy removed, are kept unchanged and do not arm the alarm, with a `durability.channel_missing` report; reattaching that channel restores its alarm without requiring another application write, and its next alarm pass reports interrupted runs and fires missed ticks under the rules above. The `durability_0018_schedule_channels` migration moves an existing schedule and its runs to the default channel without changing their idempotency keys. Downgrading refuses to discard the schedules, including cancelled ones, and runs of named channels; let their outcomes deliver and remove their rows before rolling back.
+
+Construct each channel's schedule once per object instance, as with every helper. `DurabilitySchedule.migrate(this.ctx, null)` removes its schema.
 
 ## Lifecycle metrics hook
 
@@ -669,6 +733,33 @@ An inbound handler is either a bare function, which receives no input or `unknow
 
 Every outbound event is persisted to `durability_socket_events` with a sequence number before it is pushed. A reconnecting client subscribes from the last sequence it saw: events still within `retention` (default 1000) are replayed in order, otherwise the client is told to resync and should rebuild its state from an inbound snapshot call. Payloads must be JSON. Keep-alive pings are answered by the runtime through `setWebSocketAutoResponse`, so idle connections never wake the object. Frames over 1 MiB are rejected; malformed frames close the connection with code `4002`.
 
+### Socket channels
+
+Like the other helpers, `DurabilitySocket` takes a `channel` option, `default` unless given one, and each channel holds one socket per object. A library can bring its own socket into an object that already has one, even with the same method and event names:
+
+```ts
+readonly librarySocket = new DurabilitySocket({
+  context: this.ctx,
+  channel: 'durable-alerts',
+  inbound: { list: () => this.alerts.list() },
+  outbound: { updated: event<Alert>() },
+});
+
+fetch(request: Request) {
+  // Which socket accepts an upgrade is up to the application.
+  return new URL(request.url).pathname.endsWith('/alerts')
+    ? this.librarySocket.fetch(request)
+    : this.socket.fetch(request);
+}
+
+webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+  // Any socket routes a frame to the socket of the connection's channel.
+  return this.socket.webSocketMessage(ws, message);
+}
+```
+
+A connection belongs to the channel of the socket whose `fetch` accepted it; the channel is stored in its WebSocket attachment next to its metadata and subscriptions, so it survives hibernation. Its calls and subscriptions run only that socket's handlers, whichever socket the object's `webSocketMessage` delegates to, and an outbound method pushes only to its own channel's subscribers. Each channel numbers, retains, and replays its events independently, so one channel's traffic never trims another's history or makes its clients resync. Connections accepted before channels existed belong to `default`. A frame from a connection whose channel no socket attached, such as one a deploy removed, closes it with code `1011` and a `durability.socket.channel_missing` report; it never reaches another channel, and the channel's events are kept for when its socket attaches again. Attaching a second socket to a channel already in use throws. Events use the composite primary key `(channel, seq)`; existing events move to `default` with their sequence numbers. A schema downgrade refuses to discard non-default-channel events: revert those channels' sockets and delete their events first. The wire protocol and browser client are unchanged; point a client at the endpoint the application routes to that channel.
+
 The browser client derives every method and event type from the socket:
 
 ```ts
@@ -854,6 +945,9 @@ const grant = await limits.with(timeout, 5_000).request(accountId, {
 
 `usage()` reports the limit, outstanding permits, lease footprint, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
 
+- **Pools.** One object can hold several limits: give each `DurabilitySemaphore` its own `channel` (default `default`) and expose each through its own RPC method, then build one `DurabilitySemaphore.client()` per method. Each pool sees only its own limit, groups, rounds, grants, leases, and lease provisioning; a report sent to the wrong pool is answered `not_found` and frees nothing. Attaching a second semaphore to a channel in use throws. Grants and leases of a pool no instance attached are kept, untouched, until it attaches again.
+- **Client identity.** The holder counts a client as its `clientId` together with the optional `clientChannel` of the queue that sent the message, `default` when omitted. Two queues on one object may share a `clientId` and a pool: neither can claim, release, or settle the other's grants or leases, and each receives only its own lease updates. Default clients keep protocol version 1 and its original response shape. Named queues use version 2 with `clientChannel`; the holder echoes both the version and channel. Old holders reject version 2 before allocating permits, even if they previously understood channels and were downgraded while idle.
+
 ### Leases
 
 Rounds cost a round trip per batch of admissions. For bursty arrivals, the holder can hand each `(client, group)` with queued demand a **lease**: a block of permits the client may draw locally, one per item, with no round trip. Where that capacity comes from is the `provisioning` mode:
@@ -876,7 +970,7 @@ new DurabilitySemaphore({
 - **`under`** — a reserve inside the limit is kept for leases; grants may use at most `limit - reserve`. Still never exceeds the limit, and leases have guaranteed headroom. The reserve never takes the last permit: with a reserve at or above the limit (including after lowering the limit), grants keep one, so groups excluded from leases and clients without lease support still make progress.
 - **`over`** — leases come from a separate budget above the limit (the original gatekeeper behaviour); the effective ceiling is `limit + extra`.
 
-Leases are issued only to clients that report `leases` (the queue always does), to groups without their own limit unless `limitedGroups: 'withinGroupLimit'`, and only to a client that holds no undrawn permits for that group. Each round shares the remaining lease budget equally among candidates, oldest demand first, up to `permitsPerLease`; with fewer permits left than candidates, the oldest get one each. When a round leaves demand unserved, the holder marks its replies `contended`, and each client returns the undrawn permits of leases in groups where it has nothing queued, so an idle lease cannot keep other clients waiting. A client that stops talking to the holder keeps its lease until `ttlMs`. Reports (`drawn`, `released` high-water marks) heartbeat a lease, and the queue reports a lease with permits in use at half its lifetime even when nothing else is happening, so long-running work keeps its permits counted; a lease unreported for `ttlMs` is retired rather than forgotten: its client may be cut off from the holder with work still running, so, like a claimed grant permit, its footprint stays counted until the client reports what it drew and released. The queue keeps reporting a stopped lease until the holder settles it. A report for a lease the holder never knew is answered retired and its live footprint charged against that round. On the client, a drawn permit is one-shot: releasing the item returns footprint to the holder but never makes the permit drawable again. Lowering a group's eligibility, or the limit, retires leases on the next round. A retired lease stops drawing at once but stays counted in full until its client confirms how much it drew, since it may have drawn after its last report.
+Leases are issued only to clients that report `leases` (both default and named queues do), to groups without their own limit unless `limitedGroups: 'withinGroupLimit'`, and only to a client that holds no undrawn permits for that group. Each round shares the remaining lease budget equally among candidates, oldest demand first, up to `permitsPerLease`; with fewer permits left than candidates, the oldest get one each. When a round leaves demand unserved, the holder marks its replies `contended`, and each client returns the undrawn permits of leases in groups where it has nothing queued, so an idle lease cannot keep other clients waiting. A client that stops talking to the holder keeps its lease until `ttlMs`. Reports (`drawn`, `released` high-water marks) heartbeat a lease, and the queue reports a lease with permits in use at half its lifetime even when nothing else is happening, so long-running work keeps its permits counted; a lease unreported for `ttlMs` is retired rather than forgotten: its client may be cut off from the holder with work still running, so, like a claimed grant permit, its footprint stays counted until the client reports what it drew and released. The queue keeps reporting a stopped lease until the holder settles it. A report for a lease the holder never knew is answered retired and its live footprint charged against that round. On the client, a drawn permit is one-shot: releasing the item returns footprint to the holder but never makes the permit drawable again. Lowering a group's eligibility, or the limit, retires leases on the next round. A retired lease stops drawing at once but stays counted in full until its client confirms how much it drew, since it may have drawn after its last report.
 
 ### Queueing work in a client Durable Object
 
@@ -937,9 +1031,10 @@ export class JobShard extends DurableObject<Env> {
 - **Releasing.** Call `release(id)` when the work ends, and pass `finished(ids)` so a release that never happens — a lifecycle hook is best-effort, a crash can come between the work ending and the call — does not hold the permit forever. The queue asks `finished` about each admitted item `finishedCheckMs` (default 60 seconds) after `admit()` returned, and again at that interval, releasing the ones it reports done. Without `finished`, a lost `release()` leaks the permit until the item is released by hand.
 - **Requests.** Each key is asked at most once per `nextRequestAt`, with demand aggregated per group from the oldest queued items. A failed request, or one unanswered after `attemptTimeoutMs`, is retried with backoff. Items whose key already holds unclaimed permits — a grant sized for demand that was cancelled, say — are admitted without a request.
 - **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
-- **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
+- **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel on it: `durability.semaphore-queue` for the default queue, and the JSON tuple `["durability.semaphore-queue","<channel>"]` for a named one. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
+- **Channels.** Several queues share one object through `channel` (default `default`); each channel holds one queue. Items, grants, keys, and leases are scoped to the queue, so two queues may use the same item IDs and keys. A named queue sends version-2 messages with `clientChannel`, so queues sharing a `clientId` stay apart at the holder; which holder pool a key reaches is still decided by `server`. Old version-1 holders reject these messages before allocating grants or leases. The queue checks the response version and channel before applying it: incompatible peers leave its items queued and its reports pending for retry. Upgrade holders before giving queues a channel. The default queue's wire format and outbox channel are unchanged. Records of a queue channel no instance attached are kept, untouched, until it attaches again.
 
-`DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema. See the typechecked [account concurrency composition](../../examples/account-concurrency).
+`DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema. Upgrading moves existing grants, leases, items, keys, and pending reports to the default pool, client channel, and queue without changing their IDs; a schema downgrade refuses to run while any pool, client channel, or queue other than `default` has records. See the typechecked [account concurrency composition](../../examples/account-concurrency).
 
 ## Routing and fanout
 
@@ -1000,6 +1095,8 @@ const result = await routing.push([{ id: 'job:42', body: job }], {
 ```
 
 The application chooses the RPC method via `invoke`; routing does not know about messages or fanout. A single push selects one shard for the entire input. Static fanout target IDs identify independent delivery obligations; each accepted message snapshots its recipients. Targets added later do not receive old work, and a removed target's work remains durable with an error and backoff until that ID is restored. Target callbacks/storage references are fixed at capability construction.
+
+Several fanouts share one scheduler and one set of tables, partitioned by `channel` (default `default`), so a library can attach its own fanout beside the application's. Target IDs, message IDs, and deduplication keys are independent in each channel, and each instance delivers, settles, memoizes, and counts `pendingDeliveries` only for its own channel, with its own targets, policies, `dlq`, and lifecycle hooks. Attaching two fanouts with the same channel to one scheduler throws. Deliveries of a channel no fanout attaches are retained and postponed, with a `durability.channel_missing` report, until that channel's fanout attaches again.
 
 ### Acceptance, not completion
 
@@ -1276,6 +1373,24 @@ applyLimits(update: TopologyStateUpdate<Limits>) {
 
 `onLifecycleEvent` receives the outbox events of those channels: `channel` names the publication or state channel, and `id` is the group, or `[group, member]` as JSON for a delivery.
 
+### Instance channels
+
+A `channel` option, `default` unless given one, lets several topologies share one coordinator and scheduler, for example an application's and a library's. Each channel holds one instance, with its own groups, state values, versions, publisher, and `deliver` callbacks: the same group and state names in two channels are unrelated groups, and deleting or updating one leaves the other alone. Constructing a second topology on a channel already in use throws `DurabilityTopology for channel "library" is already attached to this scheduler`, with or without a publisher.
+
+```ts
+private readonly libraryTopology = new DurabilityTopology({
+  scheduler: this.scheduler,
+  channel: 'library',
+  publish: {
+    write: (snapshot, encoded) =>
+      this.env.TOPOLOGY.put(`library/${snapshot.group}`, encoded),
+    delete: (group) => this.env.TOPOLOGY.delete(`library/${group}`),
+  },
+});
+```
+
+Snapshots do not name the instance channel, and both instances record the same coordinator, so instances sharing one read store must publish under different keys, as above. The default instance keeps the outbox channels `durability.topology` and `durability.topology.<state>`; any other instance uses `["durability.topology", <channel>, "publication"]` and `["durability.topology", <channel>, "state", <state>]` as JSON, so no two instances or states can share an outbox channel, whatever their names contain. Pending publications and deliveries of an instance no longer constructed are kept and postponed, never handed to another instance. Groups, states, and write records are keyed by `owner_channel` plus their existing keys; existing rows migrate to `default` unchanged. A schema downgrade refuses to drop rows of other instance channels, including the tombstones `delete` leaves behind: delete those rows explicitly before rolling back.
+
 ### Reading
 
 Stateless Workers read through a client. It has one method:
@@ -1321,8 +1436,8 @@ export class Partition extends DurableObject<Env> {
     // Flushed records stay readable: `write` returns a locator the log keeps,
     // and `read` hands the segment back when a consumer asks for it.
     cold: {
-      write: async ({ records, firstOffset }) => {
-        const locator = `segment/${this.ctx.id}/${firstOffset}`;
+      write: async ({ channel = 'default', records, firstOffset }) => {
+        const locator = `segment/${this.ctx.id}/${encodeURIComponent(channel)}/${firstOffset}`;
         await this.env.COLD.put(locator, JSON.stringify(records), {
           onlyIf: { etagDoesNotMatch: '*' },
         });
@@ -1382,7 +1497,7 @@ type LogColdStorage<Body> = {
 };
 ```
 
-`write` receives one contiguous run of records, oldest first, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
+`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
 
 `read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
 
@@ -1415,6 +1530,24 @@ A range is held until it is acked, nacked, or its lease expires after `leaseMs`.
 A range that keeps failing would be redelivered forever. `maxAttempts` bounds that, but only together with `onPoison`: without somewhere to send the records, blocking the consumer beats silently dropping them. With both set, an exhausted range is marked skipped — durably, before the callback runs, so a failing handler cannot resurrect it — and the commit then runs over it like an acked one.
 
 Leases are opt-in. Without the `leases` option no lease tables are created, `read`/`commit` behave exactly as before, and the lease methods throw.
+
+### Channels
+
+A log attaches to a channel, `default` unless given one, and each channel holds one `DurabilityLog` per scheduler; a second instance on a channel in use throws `DurabilityLog for channel "events" is already attached to this scheduler`. Channels share the object but nothing else: each counts its own offsets from 0, and deduplication keys, consumer cursors, retention, byte budgets, cold segments, leases, batch ids, and `load()` are all scoped to the channel. A library can keep a log next to the application's, using the same keys and consumer names, and a `trim()` or lease on one never touches the other:
+
+```ts
+const events = new DurabilityLog<Event>({ scheduler, cold });
+const audit = new DurabilityLog<AuditEntry>({
+  scheduler,
+  channel: 'audit',
+  retention: { maxRecords: 10_000 },
+  cold,
+});
+```
+
+Because two channels both flush a segment starting at offset 0, cold storage shared between them must include `segment.channel ?? 'default'` in the location it writes to, as in the example above; otherwise one channel's segment overwrites or refuses the other's. The stored locator stays opaque and is read back only by the channel that wrote it, so locators written before channels existed keep working on `default`.
+
+Records use composite keys such as `(channel, offset)` and `(channel, consumer)`; existing records, cursors, segments, leases, and allocations migrate to `default` unchanged. A log whose channel no instance attaches keeps its data and runs nothing, since a log schedules no work of its own. A schema downgrade refuses to discard a non-default channel's records, cursors, segments, offset counter, leases, or allocations.
 
 ### What it is not
 
