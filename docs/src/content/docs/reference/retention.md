@@ -5,7 +5,7 @@ description: Retention and purge for durable capabilities.
 
 ## Destructive retention purge
 
-`purgeBefore(timestamp)` on either helper deletes that helper's records created strictly before `timestamp`, regardless of status, and returns the count. Records created exactly at the cutoff are retained.
+`purgeBefore(timestamp)` on either helper deletes that helper's records on its own `channel` created strictly before `timestamp`, regardless of status, and returns the count. Records created exactly at the cutoff are retained.
 
 ```ts
 const removedOperations = await this.durability.purgeBefore(retentionCutoff);

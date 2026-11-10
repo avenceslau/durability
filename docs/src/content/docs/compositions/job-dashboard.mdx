@@ -28,7 +28,7 @@ The composition uses [operations](/primitives/operations/), a shared [scheduler]
 
 </ArchitectureWalkthrough>
 
-There is one named `Pipeline` and one named `Dashboard` per tenant. They are separate failure and persistence boundaries. The pipeline's scheduler drives both its `Durability` operations and `DurabilityFanout`; its `alarm()` delegates to that one scheduler. The dashboard has no scheduler because SQL, its custom tracker source, and `DurabilitySocket` do not need background alarm work in this example.
+There is one named `Pipeline` and one named `Dashboard` per tenant. They are separate failure and persistence boundaries. The pipeline's scheduler drives both its `Durability` operations and `DurabilityFanout`; its `alarm()` delegates to that one scheduler. The dashboard has no `alarm()` and never sets its alarm, because SQL, its custom tracker source, and `DurabilitySocket` do not need background alarm work in this example. Its socket joins the object's scheduler only to apply its schema and claim its channel.
 
 | State or responsibility      | Owner                          | Identity or recovery boundary                     |
 | ---------------------------- | ------------------------------ | ------------------------------------------------- |

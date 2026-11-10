@@ -42,7 +42,7 @@ const construct = sourceExcerpt(
   'construct',
   'Attach to the object storage',
   '    const scheduler = config.scheduler ?? new DurabilityScheduler(config);',
-  '        this.#store.nextPendingAt(this.#finished !== undefined),\n    });'
+  '            this.#finished !== undefined && this.#checking === undefined,\n        }),\n    });'
 );
 const enqueue = sourceExcerpt(
   queue,
@@ -66,7 +66,7 @@ const runDue = sourceExcerpt(
   'run-due',
   'Run due work from the alarm',
   '  async #runDue(now: number): Promise<void> {',
-  '        .map(({ key }) => this.#request(key))\n    );\n  }'
+  '        .map(({ key }) => this.#request(key)),\n    ]);\n  }'
 );
 const request = sourceExcerpt(
   queue,
@@ -137,7 +137,7 @@ const checkFinished = sourceExcerpt(
   queueFile,
   'check-finished',
   'Release what finished() reports done',
-  '  async #checkFinished(now: number): Promise<void> {',
+  '  async #releaseFinished(now: number): Promise<void> {',
   '        await this.release(id);\n      }\n    }\n  }'
 );
 const notifyBatch = sourceExcerpt(
@@ -145,7 +145,7 @@ const notifyBatch = sourceExcerpt(
   queueFile,
   'notify-batch',
   'Hand admitted items to admit()',
-  '  async #notifyBatch(): Promise<void> {',
+  '  async #notify(): Promise<void> {',
   '    } finally {\n      release();\n    }\n  }'
 );
 const nextPendingAt = sourceExcerpt(
@@ -153,7 +153,7 @@ const nextPendingAt = sourceExcerpt(
   storeFile,
   'next-pending',
   'When the queue next needs the alarm',
-  '  nextPendingAt(checksFinished: boolean): number | undefined {',
+  '  nextPendingAt({',
   "    return typeof at === 'number' ? at : undefined;\n  }"
 );
 
@@ -307,13 +307,13 @@ export const walkthrough = validateWalkthrough({
     },
     items: {
       description:
-        'durability_semaphore_queue_items, _grants, _keys, and _leases: items and their state, this object’s copy of each grant and lease, and per-key request pacing.',
+        'durability_semaphore_queue_items, _grants, _keys, and _leases: items and their state, this object’s copy of each grant and lease, and per-key request pacing. Every row is keyed by the queue’s channel, so queues on one object may reuse item IDs and keys.',
       href: '/reference/storage/',
       source: 'enqueue',
     },
     outbox: {
       description:
-        'Rows of the durability.semaphore-queue outbox channel in durability_outbox: the newest cumulative claimed, released, or drawn counts per grant or lease, kept until a sync succeeds.',
+        'Rows of the queue’s outbox channel in durability_outbox (durability.semaphore-queue for the default queue): the newest cumulative claimed, released, or drawn counts per grant or lease, kept until a sync succeeds.',
       href: '/primitives/outbox/',
       source: 'publish-reports',
     },
@@ -355,7 +355,7 @@ export const walkthrough = validateWalkthrough({
           id: 'field',
           title: 'The queue shares the object’s scheduler',
           description:
-            'The queue attaches to the same DurabilityScheduler as the jobs helper, so both use this object’s storage and alarm. clientId is the object’s own ID, the name the holder knows this client by; server is the client from DurabilitySemaphore.client().',
+            'The queue attaches to the same DurabilityScheduler as the jobs helper, so both use this object’s storage and alarm. clientId is the object’s own ID; the holder knows this client by clientId together with the queue’s channel, which the example leaves at default. server is the client from DurabilitySemaphore.client().',
           stage: ['shard', 'queue', 'client-object', 'focus:queue'],
           source: sourceFocus(
             jobShard,
@@ -371,7 +371,7 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create queue tables and an outbox channel',
           description:
-            'The constructor applies the queue migrations through ctx.storage.sql and opens the durability.semaphore-queue outbox channel on the same scheduler. Report retries are capped at 5 seconds, half the holder’s default claim window.',
+            'The constructor applies the queue migrations through ctx.storage.sql, opens its outbox channel on the same scheduler (durability.semaphore-queue for the default queue, a JSON tuple of that name and the channel for a named one), and registers its channel of the queue tables with the scheduler. Report retries are capped at 5 seconds, half the holder’s default claim window.',
           stage: ['items', 'outbox'],
           source: sourceFocus(
             construct,
@@ -417,12 +417,12 @@ export const walkthrough = validateWalkthrough({
           id: 'arm',
           title: 'Set the alarm for the next request',
           description:
-            'Before the transaction commits, the scheduler sets the object’s one alarm from the queue’s earliest due time: a key with queued items, an admitted item to notify or check, or a lease to report. Never sooner than alarmMinDelayMs; an in-memory timer covers sooner work.',
+            'Before the transaction commits, the scheduler sets the object’s one alarm from the queue’s earliest due time in its channel: a key with queued items, an admitted item to notify or check, or a lease to report. Never sooner than alarmMinDelayMs; an in-memory timer covers sooner work. While an admit() call runs, the timer leaves out items waiting for admit(), and while a finished() call runs, items waiting for a check; the alarm still counts them in case the object is evicted.',
           stage: ['alarm', '-alarm->shard', 'focus:alarm'],
           source: sourceFocus(
             nextPendingAt,
             'SELECT next_request_at FROM durability_semaphore_queue_keys',
-            'FROM durability_semaphore_queue_leases WHERE confirmed = 0'
+            'WHERE channel = ? AND confirmed = 0'
           ),
           durable: 'The alarm commits with the item rows.',
           volatile: 'The in-memory timer for work due before the alarm.',
@@ -447,7 +447,7 @@ export const walkthrough = validateWalkthrough({
           id: 'claim',
           title: 'Store the grant and claim items',
           description:
-            'One transaction stores the returned grants and leases, marks queued items claiming against the grants, stages the new cumulative claimed count in the outbox, and records the holder’s nextRequestAt.',
+            'The reply is used only if it echoes this queue’s protocol version and channel. One transaction then stores the returned grants and leases, marks queued items claiming against the grants, stages the new cumulative claimed count in the outbox, and records the holder’s nextRequestAt.',
           stage: ['focus:items'],
           source: sourceFocus(
             claimLocally,
@@ -547,7 +547,7 @@ export const walkthrough = validateWalkthrough({
           id: 'finished',
           title: 'finished() finds a lost release',
           description:
-            'On a timer or alarm pass, admitted items whose check is due get their next check time first, then finished() is asked about them. The example treats any result that is no longer pending as done, and each one is released.',
+            'On a timer or alarm pass, with no other check running, admitted items whose check is due get their next check time first, then finished() is asked about them. The example treats any result that is no longer pending as done, and each one is released.',
           stage: ['focus:jobs'],
           source: sourceFocus(
             checkFinished,
@@ -615,7 +615,7 @@ export const walkthrough = validateWalkthrough({
           id: 'due',
           title: 'Due keys ask again',
           description:
-            'The alarm pass drops settled leases, hands out pending admit() calls, runs finished() checks, reports leases in use, and then requests permits for every due key that has no request in flight.',
+            'The alarm pass drops settled leases, then at the same time hands out pending admit() calls, runs finished() checks, reports leases in use, and requests permits for every due key that has no request in flight. A slow admit() or finished() call does not hold back the requests.',
           stage: ['focus:queue'],
           source: sourceFocus(
             runDue,
@@ -660,7 +660,7 @@ export const walkthrough = validateWalkthrough({
           id: 'outbox',
           title: 'Reports wait in the outbox',
           description:
-            'Staged reports are rows, so they survive and publish again. Only the retry backoff is capped at 5 seconds: a sync can take up to attemptTimeoutMs to time out, and a retry no in-memory timer runs waits for the physical alarm, at least 15 seconds out by default. Delivery within the claim window is not guaranteed; a claim the holder hears about after it comes back expired, and the queue returns those items to queued.',
+            'Staged reports are rows, so they survive and publish again. Only the retry backoff is capped at 5 seconds: a sync can take up to attemptTimeoutMs to time out, and a retry no in-memory timer runs waits for the physical alarm, at least 15 seconds out by default. A live instance retries a failed alarm pass from its in-memory timer after 1 second, doubling up to that delay. Delivery within the claim window is not guaranteed; a claim the holder hears about after it comes back expired, and the queue returns those items to queued.',
           stage: ['focus:outbox'],
           source: sourceFocus(
             construct,

@@ -26,19 +26,20 @@ Import browser code from `durability/client`, and use type-only imports for Work
 
 These defaults apply to operations and named alarms unless otherwise specified. Other capabilities define their own policies in the reference.
 
-| Option                         | Default                      | Scope                                                                  |
-| ------------------------------ | ---------------------------- | ---------------------------------------------------------------------- |
-| `attemptTimeoutMs`             | `300_000` (5 minutes)        | Global execution policy or per method                                  |
-| `retries.maxAttempts`          | `5`, including the first     | Global execution policy or per method                                  |
-| `retries.delay`                | Jittered exponential backoff | Global execution policy or per method                                  |
-| `methods.<name>`               | No overrides                 | Operation or alarm handler policy                                      |
-| `methods.<name>.retryTimeouts` | `false`                      | Named alarms only                                                      |
-| `alarmConcurrency`             | `10`                         | Shared scheduler; also accepted by a standalone helper using `context` |
-| `alarmMinDelayMs`              | `15_000`                     | Physical alarm delay; allowed range `1_000`–`15_000`                   |
-| `alarmHandoffMs`               | `840_000` (14 minutes)       | Shared scheduler alarm handoff                                         |
-| `includeResults`               | `false`                      | Opt-in operation results in lifecycle events                           |
+| Option                         | Default                      | Scope                                                                 |
+| ------------------------------ | ---------------------------- | --------------------------------------------------------------------- |
+| `attemptTimeoutMs`             | `300_000` (5 minutes)        | Global execution policy or per method                                 |
+| `retries.maxAttempts`          | `5`, including the first     | Global execution policy or per method                                 |
+| `retries.delay`                | Jittered exponential backoff | Global execution policy or per method                                 |
+| `methods.<name>`               | No overrides                 | Operation or alarm handler policy                                     |
+| `methods.<name>.retryTimeouts` | `false`                      | Named alarms only                                                     |
+| `alarmConcurrency`             | `10`                         | The object's scheduler; also accepted by a helper using `context`     |
+| `alarmMinDelayMs`              | `15_000`                     | Physical alarm delay; allowed range `1_000`–`15_000`                  |
+| `alarmHandoffMs`               | `840_000` (14 minutes)       | Alarm handoff of the object's scheduler                               |
+| `channel`                      | `'default'`                  | One instance of a helper kind per channel; scopes its IDs and records |
+| `includeResults`               | `false`                      | Opt-in operation results in lifecycle events                          |
 
-Pass **either** `context` (private scheduler) **or** `scheduler` (shared), not both. `handlers` defines the generated methods; names that collide with built-in instance members are rejected.
+Pass **either** `context` **or** `scheduler`, not both. Either way the helper joins the object's one scheduler, and a scheduler option set to a different value by two attachments throws. `handlers` defines the generated methods; names that collide with built-in instance members are rejected.
 
 ## Primitive reference
 

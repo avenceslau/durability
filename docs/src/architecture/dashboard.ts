@@ -271,7 +271,7 @@ export const walkthrough = validateWalkthrough({
     },
     objectAlarm: {
       description:
-        'The Pipeline’s single alarm. Its one scheduler drives both the import operations and the fanout deliveries, and alarm() delegates to it. The Dashboard has no scheduler and no alarm.',
+        'The Pipeline’s single alarm. Its one scheduler drives both the import operations and the fanout deliveries, and alarm() delegates to it. The Dashboard schedules no work and never sets its alarm.',
       href: '/primitives/scheduler/',
       source: 'pipeline-import',
     },
@@ -319,7 +319,7 @@ export const walkthrough = validateWalkthrough({
     },
     socket: {
       description:
-        'Stores each outbound event in durability_socket_events (the last 1,000 by default) and sends it over hibernatable WebSockets accepted with ctx.acceptWebSocket. Subscriptions live in each socket’s attachment.',
+        'Stores each outbound event in durability_socket_events under its channel (the last 1,000 by default) and sends it over hibernatable WebSockets accepted with ctx.acceptWebSocket. Each connection’s channel and subscriptions live in its attachment.',
       href: '/primitives/socket/',
       source: 'socket-publish',
     },
@@ -384,7 +384,7 @@ export const walkthrough = validateWalkthrough({
           id: 'alarm',
           title: 'One scheduler, one alarm',
           description:
-            'The Pipeline’s scheduler drives both its operations and its fanout from the object’s one alarm, and alarm() delegates to it. The Dashboard has no scheduler: SQL, its tracker source, and the socket need no background work.',
+            'The Pipeline’s scheduler drives both its operations and its fanout from the object’s one alarm, and alarm() delegates to it. The Dashboard never sets its alarm: SQL, its tracker source, and the socket need no background work. Its socket joins that object’s scheduler only to migrate its table and claim its channel.',
           stage: ['objectAlarm', 'flow:alarm'],
           source: sourceFocus(
             importOrder,
@@ -549,7 +549,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:socket'],
           source: sourceFocus(
             socketPublish,
-            "'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?) RETURNING seq',"
+            '`INSERT INTO durability_socket_events (channel, seq, name, payload, created_at)'
           ),
           durable: 'The last 1,000 events, by default.',
           volatile: 'Open WebSockets receive the frame immediately.',
@@ -665,11 +665,11 @@ export const walkthrough = validateWalkthrough({
           id: 'publish',
           title: 'Store the event, then send it',
           description:
-            'Each job event gets a sequence number in durability_socket_events, events beyond the retention limit are deleted, and the frame goes to every open WebSocket subscribed to job.',
+            'Each job event gets the next sequence number of the socket’s channel in durability_socket_events, that channel’s events beyond the retention limit are deleted, and the frame goes to every open WebSocket subscribed to job.',
           stage: ['focus:socket'],
           source: sourceFocus(
             socketPublish,
-            "'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?) RETURNING seq',",
+            '`INSERT INTO durability_socket_events (channel, seq, name, payload, created_at)',
             'seq - this.#retention'
           ),
           durable: 'The event and its sequence number.',

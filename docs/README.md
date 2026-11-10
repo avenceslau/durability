@@ -83,7 +83,7 @@ After editing a package README, restart the dev server or rerun the build to ref
 </ArchitectureWalkthrough>
 ```
 
-Existing models are `billing`, `email`, `dashboard`, `concurrency`, and `event-stream`.
+The composition models are `billing`, `email`, `dashboard`, `concurrency`, and `event-stream`. Every primitive page has a model named after it, such as `operations` or `semaphore-queue`.
 
 - The [Astro component](./src/components/architecture/ArchitectureWalkthrough.astro) shows a small diagram preview in the guide. Clicking it opens a full-screen native dialog with the diagram and **complete source files**, not snippets. Component selection switches files and scrolls to the relevant lines. ← / → keys and the on-screen arrows walk through the flow; Escape/close restores focus and the guide's scroll position. Keyboard shortcuts only apply in the open explorer and leave file selectors and text selection alone. Extra controls and state notes stay under **Details**; no-JavaScript readers get source links and an ordered text fallback. Its small client module synchronizes the views using Nimbus's `mount()` lifecycle; no React island or server is required.
 - Each model has its own file in [`src/architecture/`](./src/architecture/). A model declares nodes, edges, source excerpts, and named scenarios. Every step names the affected nodes/edges, a source range, and durable versus in-memory state.

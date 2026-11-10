@@ -37,7 +37,7 @@ Payloads and results must be JSON-serializable. JavaScript objects such as class
 
 ## One object, one physical alarm
 
-Cloudflare gives each Durable Object one physical alarm. With one helper, pass `context: this.ctx` and delegate `alarm()` to that helper. With several helpers, share a scheduler:
+Cloudflare gives each Durable Object one physical alarm, and Durability gives each object one scheduler that owns it. With one helper, pass `context: this.ctx` and delegate `alarm()` to that helper. With several helpers, create a `DurabilityScheduler` and pass it to each:
 
 ```ts
 import {
@@ -64,9 +64,34 @@ alarm(info?: AlarmInvocationInfo) {
 
 The methods `refreshIndex()` and `cleanup()` above are application code. Give your own implementations idempotent effects.
 
-Do not create independent private schedulers on the same object, overwrite its physical alarm with `storage.setAlarm()`, or omit alarm delegation. Express unrelated scheduled work as named alarms attached to the same scheduler.
+A helper configured with `context` instead of `scheduler`, and any further `DurabilityScheduler` created for the same object, joins the object's scheduler. Whichever attaches can set scheduler options; an option left out never conflicts, and a different value for an option already set throws. The object's `alarm()` can delegate to the scheduler or to any helper's `alarm`: each runs the due work of every helper on the object.
+
+Do not overwrite the object's physical alarm with `storage.setAlarm()` or omit alarm delegation. Express unrelated scheduled work as named alarms. Install `durability` once per Worker, as a peer dependency of libraries that use it: a second copy reaching the same object throws.
 
 The scheduler's default concurrency budget is 10 handlers, shared across eager operations, timers, and alarm work attached to it. Physical alarms provide a durable fallback; in-memory timers can start work earlier but do not survive eviction. Timing is not a real-time guarantee.
+
+## Channels keep instances apart
+
+`Durability`, `DurabilityAlarms`, `DurabilityFanout`, `DurabilityLog`, `DurabilitySocket`, and the experimental `DurabilityOutbox`, `DurabilitySchedule`, `DurabilitySemaphore`, `DurabilitySemaphoreQueue`, and `DurabilityTopology` accept a `channel`, which defaults to `default`. Each channel of a helper kind holds one instance; attaching a second instance to a channel already in use throws.
+
+Instances on different channels share the object's scheduler but not their records. IDs and names are unique within a channel, and each instance runs, lists, and purges only its own channel's work. A library that uses Durability inside your object should use a channel of its own:
+
+```ts
+// In a library
+const alerts = new Durability({
+  context: ctx,
+  channel: 'durable-alerts',
+  handlers: { notify },
+});
+
+// In the application, on the default channel
+const jobs = new Durability({ context: this.ctx, handlers: { charge } });
+// Both can register { id: 'invoice-1' }; they are different calls.
+```
+
+Records of a channel that no instance attached, such as one a deploy removed, are kept. Its due operations, alarms, fanout deliveries, and outbox entries are postponed by a minute, and a `durability.channel_missing` error is logged. Schedule and semaphore state stays unchanged until its instance attaches again, and log and socket history stays stored.
+
+The channel is part of every persisted key. Records written before channels existed belong to `default` and keep their IDs and names. A schema downgrade refuses to discard records on other channels; remove that state deliberately before rolling back.
 
 ## Retrying a handler starts it again
 

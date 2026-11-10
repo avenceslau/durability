@@ -36,10 +36,16 @@ supply them.
 </ArchitectureWalkthrough>
 
 `DurabilityAlarms` and `Durability` receive the _same_
-[`DurabilityScheduler`](/primitives/scheduler/). A Durable Object has one physical alarm,
-so creating independent alarm owners would be incorrect. The scheduler's concurrency of
-five is a single pool shared by renewal handlers and operation work in this object; it is
-not five concurrent charges for every customer globally.
+[`DurabilityScheduler`](/primitives/scheduler/). A Durable Object has one physical alarm
+and one scheduler: a helper given `this.ctx` instead would join the same scheduler, so
+passing it explicitly makes the sharing visible rather than creating it. The scheduler's
+concurrency of five is a single pool shared by renewal handlers and operation work in this
+object; it is not five concurrent charges for every customer globally.
+
+Both helpers use the default [channel](/primitives/operations/#channels). A library that
+adds its own `Durability` or `DurabilityAlarms` to this object on another channel shares
+the scheduler and its five permits, but not these rows: its IDs and alarm names never
+meet `renew` or the charge IDs, and `purgeHistory()` does not remove its records.
 
 ## Full request and renewal flow
 

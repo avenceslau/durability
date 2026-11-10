@@ -107,6 +107,10 @@ The recovery only works because admission is retried with stable IDs and the ope
 
 The design permits many `JobShard` objects to submit to a shared account key. This **demo does not spread one account across four shards**: `shardFor(accountId, width = 4)` hashes the account but returns `${accountId}-${hash % width}`. For a given account it always returns one stable name; the width merely selects that account's suffix. A production router may distribute an account across multiple stable shards, but every such shard must still submit with the same `key: accountId` to preserve the shared budget.
 
+## Channels
+
+The example uses the default channel for both the semaphore and the queue. To hold a second limit in `AccountLimit`, give the second `DurabilitySemaphore` its own `channel`, expose it through its own RPC method, and build a second `DurabilitySemaphore.client()` that calls that method. A second queue in `JobShard` takes its own `channel` and keeps its items, grants, keys, and leases apart from the first; it sends version-2 messages with its channel, which only a holder that knows channels accepts, so deploy the holder first. The pool a queue's keys reach is chosen by its `server`, not by its channel.
+
 ## Failure and semantics table
 
 | Situation                           | What this composition does                                                                  | Remaining concern                                                                                                                                   |

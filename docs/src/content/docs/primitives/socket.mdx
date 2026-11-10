@@ -10,9 +10,9 @@ Import `DurabilitySocket` from `durability/socket`. Expose an explicit inbound R
 `DurabilitySocket` adds no infrastructure of its own. It uses the Durable Object it is constructed in:
 
 - **`ctx.storage.sql`** holds `durability_socket_events`, the outbound events kept for replay. Inbound calls are never stored; durable work behind a call needs its own primitive, such as a `Durability` operation.
-- **Hibernatable WebSockets** (`ctx.acceptWebSocket`) carry everything per connection: each socket's attachment holds its upgrade metadata and subscribed event names, so the runtime can evict an idle object without closing connections, and pings are answered without waking it. Your class's `fetch()`, `webSocketMessage()`, and `webSocketClose()` must delegate to the socket.
-- **No alarm.** The socket never sets the object's alarm; anything that must happen later belongs to a primitive that does, and that primitive's `alarm()` delegation.
-- **The live instance** holds only configuration: the inbound allowlist and the outbound methods. It is rebuilt with each new instance and finds existing connections again through `ctx.getWebSockets()`.
+- **Hibernatable WebSockets** (`ctx.acceptWebSocket`) carry everything per connection: each socket's attachment holds its upgrade metadata, its channel, and its subscribed event names, so the runtime can evict an idle object without closing connections, and pings are answered without waking it. Your class's `fetch()`, `webSocketMessage()`, and `webSocketClose()` must delegate to the socket.
+- **No alarm.** The socket joins the object's scheduler only to apply its schema and claim its channel, and never sets the object's alarm; anything that must happen later belongs to a primitive that does, and that primitive's `alarm()` delegation.
+- **The live instance** holds only configuration: its channel, the inbound allowlist, and the outbound methods. It is rebuilt with each new instance and finds existing connections again through `ctx.getWebSockets()`.
 
 <ArchitectureWalkthrough example="socket">
 
@@ -22,9 +22,9 @@ Import `DurabilitySocket` from `durability/socket`. Expose an explicit inbound R
 
 ## Behind the scenes
 
-**Durable state:** `durability_socket_events` stores a sequence, event name, JSON payload, and creation time. Upgrade metadata and subscribed event names are kept in hibernatable WebSocket attachments. Runtime ping auto-responses avoid waking the object for idle keepalives.
+**Durable state:** `durability_socket_events` stores a channel, a sequence, event name, JSON payload, and creation time, keyed by `(channel, seq)`. Upgrade metadata, the connection's channel, and subscribed event names are kept in hibernatable WebSocket attachments. Runtime ping auto-responses avoid waking the object for idle keepalives.
 
-An outbound call inserts its event and trims history to its retention window before sending it to current subscribers. Reconnection subscribes from a sequence: matching retained rows replay in order, while an absent or ahead-of-head cursor, or one whose next event was already trimmed, tells the client to resync from a snapshot.
+An outbound call inserts its event with its channel's next sequence and trims that channel's history to its retention window before sending it to the channel's current subscribers. Trimming always keeps the newest row, so a channel never reuses a sequence. Reconnection subscribes from a sequence: matching retained rows replay in order, while an absent or ahead-of-head cursor, or one whose next event was already trimmed, tells the client to resync from a snapshot.
 
 **Not durable RPC execution:** the socket does not persist or deduplicate inbound calls. A connection can disappear after a mutation committed but before its response arrives. Route retried mutations through an operation with a stable ID rather than assuming socket reconnect makes them safe.
 
@@ -155,5 +155,16 @@ export default {
 An inbound handler is either a bare function, which receives no input or `unknown` input it validates itself, or `{ input, handle }`, where `input` is any [Standard Schema](https://standardschema.dev) validator (zod, Valibot, ArkType, …) and `handle` declares its parameter type. A bare function that claims a typed parameter does not compile. Handlers receive `call.metadata`, the value `metadata(request)` returned at upgrade time; it is stored in the WebSocket attachment, so it survives hibernation. The fronting Worker is responsible for authentication and for routing the upgrade to the right object; the socket does no authorization of its own. `metadata` must be assignable to every `SocketCall<…>` annotation the handlers declare.
 
 Every outbound event is persisted to `durability_socket_events` with a sequence number before it is pushed. A reconnecting client subscribes from the last sequence it saw: events still within `retention` (default 1000) are replayed in order, otherwise the client is told to resync and should rebuild its state from an inbound snapshot call. Payloads must be JSON. Keep-alive pings are answered by the runtime through `setWebSocketAutoResponse`, so idle connections never wake the object. Frames over 1 MiB are rejected; malformed frames close the connection with code `4002`.
+
+## Channels
+
+`channel` (default `default`) lets several sockets share one Durable Object, for example the application's and a library's, even with the same method and event names. Each channel holds one socket per object; constructing a second on a channel already in use throws `DurabilitySocket for channel "<name>" is already attached to this scheduler`.
+
+- **Accepting.** Your `fetch()` decides which socket accepts an upgrade, for example by path. A connection belongs to the channel of the socket whose `fetch` accepted it. The channel is stored in the WebSocket attachment, so it survives hibernation; connections accepted before channels existed belong to `default`.
+- **Routing.** `webSocketMessage()` on any socket reads the connection's channel from its attachment and runs that channel's handlers, so the class can delegate every frame to one socket. A frame from a connection whose channel no socket attached, such as one a deploy removed, closes the connection with code `1011` and a `durability.socket.channel_missing` report. It never reaches another channel. The browser client treats `1011` like any other drop and reconnects with backoff.
+- **Events.** An outbound method pushes only to its own channel's subscribers. Each channel numbers, retains, and replays its events on its own, so one channel's traffic never trims another's history or makes its clients resync. A channel's events stay stored while no socket is attached to it.
+- **Migration.** `durability_0023_socket_channels` changes the key to `(channel, seq)` and moves existing events to `default` with their sequence numbers. Reverting it refuses to discard events of other channels; delete them first.
+
+The wire protocol and the browser client do not know about channels: point a client at the endpoint your Worker and `fetch()` route to that channel.
 
 Connect using [DurabilitySocketClient](/primitives/client/).

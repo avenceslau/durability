@@ -66,7 +66,7 @@ const alarm = sourceExcerpt(
   'alarm',
   'Keep the alarm alive after a failure',
   '  async alarm(info?: AlarmInvocationInfo): Promise<void> {',
-  '      this.notifyAlarmRetry(error, info);\n    }\n  }'
+  '    this.scheduleEarlyAlarm(Date.now() + delay);\n  }'
 );
 const runAlarm = sourceExcerpt(
   scheduler,
@@ -239,7 +239,7 @@ export const walkthrough = validateWalkthrough({
     },
     sqlite: {
       description:
-        'One row per operation ID in the object’s own SQLite storage: handler name, payload, generation, status, attempt, next retry time, error, and result.',
+        'One row per channel and operation ID in the object’s own SQLite storage: handler name, payload, generation, status, attempt, next retry time, error, and result.',
       href: '/reference/storage/',
       source: 'construct',
     },
@@ -266,7 +266,7 @@ export const walkthrough = validateWalkthrough({
           id: 'field',
           title: 'The helper belongs to the object instance',
           description:
-            'Durability is constructed with this.ctx, the object’s DurableObjectState. It reads and writes only this object’s storage; another object has its own tables and its own alarm.',
+            'Durability is constructed with this.ctx, the object’s DurableObjectState, and joins the object’s one scheduler, creating it because no other helper has. It reads and writes only this object’s storage; another object has its own tables and its own alarm.',
           stage: ['object', 'durability', 'durable-object', 'focus:durability'],
           source: sourceFocus(
             imageJobs,
@@ -282,7 +282,7 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create tables in the object’s SQLite',
           description:
-            'The constructor applies migrations synchronously through ctx.storage.sql, then registers with the engine so alarm passes include this helper’s table.',
+            'The constructor applies migrations synchronously through ctx.storage.sql, then registers its channel of durability_calls, default here, with the engine so alarm passes include its rows.',
           stage: ['sqlite', 'focus:sqlite'],
           source: sourceFocus(
             construct,
@@ -314,12 +314,12 @@ export const walkthrough = validateWalkthrough({
           id: 'insert',
           title: 'Insert the pending row',
           description:
-            'The insert runs inside a storage transaction. A repeated ID with the same handler and payload is a no-op; a different payload throws instead of being dropped.',
+            'The insert runs inside a storage transaction and is keyed by channel and ID. A repeated ID on the same channel with the same handler and payload is a no-op; a different payload throws instead of being dropped.',
           stage: ['focus:sqlite'],
           source: sourceFocus(
             register,
             'const { inserted, winner } = await this.#engine.transaction((sql) => {',
-            'ON CONFLICT(id) DO NOTHING'
+            'ON CONFLICT(channel, id) DO NOTHING'
           ),
           durable: 'A pending row with attempt 0 commits with the transaction.',
           volatile: 'The serialized payload is held only until the write.',
@@ -439,11 +439,11 @@ export const walkthrough = validateWalkthrough({
           id: 'due',
           title: 'Read due rows from SQLite',
           description:
-            'The alarm pass selects pending rows whose retry time has passed. The interrupted operation is still pending, so it is selected.',
+            'The alarm pass selects this channel’s pending rows whose retry time has passed. The interrupted operation is still pending, so it is selected.',
           stage: ['focus:sqlite'],
           source: sourceFocus(
             runDue,
-            "WHERE status = 'pending' AND next_attempt_at <= ?"
+            "WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?"
           ),
           durable: 'Rows are read, not changed.',
           volatile: 'The due list for this pass.',
@@ -484,15 +484,15 @@ export const walkthrough = validateWalkthrough({
           id: 'failure',
           title: 'An alarm pass throws',
           description:
-            'The runtime retries a failing alarm() only a few times and then drops it, which would strand pending rows. The engine catches the error and sets its own alarm alarmMinDelayMs later instead.',
+            'The runtime retries a failing alarm() only a few times and then drops it, which would strand pending rows. The engine catches the error and sets its own alarm alarmMinDelayMs later instead. It also retries the pass from an in-memory timer after 1 second, doubling with each failure in a row up to alarmMinDelayMs.',
           stage: ['*', 'focus:alarm'],
           source: sourceFocus(
             alarm,
             'if (!(await this.armFallbackAlarm())) {',
-            'throw error;'
+            'this.retryFailedRun();'
           ),
           durable: 'A new alarm time is written directly to storage.',
-          volatile: 'The failed pass and its error.',
+          volatile: 'The failed pass, its error, and the retry timer.',
           status: 'recovery',
         },
         {

@@ -3,7 +3,7 @@ title: Choose a capability
 description: Match operations, alarms, fanout, logs, sockets, and experimental tools to your workload.
 ---
 
-Start with the smallest capability that matches your data's lifetime. Combine helpers on one shared `DurabilityScheduler` when they need durable background work.
+Start with the smallest capability that matches your data's lifetime. Helpers in one Durable Object share its scheduler and its one physical alarm.
 
 ## Stable capabilities
 

@@ -298,7 +298,7 @@ export const walkthrough = validateWalkthrough({
     },
     topology: {
       description:
-        'Needs the object’s ID, which every snapshot carries as its coordinator. Holds one DurabilityOutbox for publication and one per state channel. In-flight writes, deliveries, and their timeouts exist only in this instance.',
+        'Needs the object’s ID, which every snapshot carries as its coordinator. Owns one instance channel (default here) and holds one DurabilityOutbox for publication and one per state channel. In-flight writes, deliveries, and their timeouts exist only in this instance.',
       href: '/primitives/topology/',
       source: 'construct',
     },
@@ -310,13 +310,13 @@ export const walkthrough = validateWalkthrough({
     },
     tables: {
       description:
-        'durability_topology_groups holds each group’s version and members, durability_topology_states each channel’s latest value, and durability_topology_writes every publisher write that might still land.',
+        'durability_topology_groups holds each group’s version and members, durability_topology_states each state channel’s latest value, and durability_topology_writes every publisher write that might still land. Every row is keyed by owner_channel, the instance channel, plus its own keys.',
       href: '/reference/storage/',
       source: 'update',
     },
     outbox: {
       description:
-        'Shared with any other outbox on the scheduler and partitioned by channel: durability.topology keyed by group, and durability.topology.<channel> keyed by [group, member]. Only the newest value per key is pending.',
+        'Shared with any other outbox on the scheduler and partitioned by outbox channel. The default instance uses durability.topology keyed by group, and durability.topology.<state> keyed by [group, member]; any other instance channel uses JSON outbox channel names. Only the newest value per key is pending.',
       href: '/primitives/outbox/',
       source: 'stage-deliveries',
     },
@@ -387,7 +387,7 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create the topology tables',
           description:
-            'The constructor applies the topology migrations synchronously through ctx.storage.sql: groups, states, and write records.',
+            'The constructor applies the topology migrations synchronously through ctx.storage.sql: groups, states, and write records, each keyed by owner_channel.',
           stage: ['tables', 'focus:tables'],
           source: sourceFocus(
             construct,
@@ -399,17 +399,18 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'outboxes',
-          title: 'Publication and channels are outbox channels',
+          title: 'Publication and state channels are outbox channels',
           description:
-            'The publisher gets an outbox on durability.topology and each state channel one on durability.topology.<name>, all on the same scheduler, so their rows share durability_outbox and the object alarm.',
+            'The constructor first claims its instance channel, default here, so a second topology on that instance channel throws, with or without a publisher. The publisher then gets an outbox on durability.topology and each state channel one on durability.topology.<state>, all on the same scheduler, so their rows share durability_outbox and the object alarm. The test worker’s second topology, on the secondary instance channel, gets JSON outbox channel names instead.',
           stage: ['outbox', 'focus:outbox'],
           source: sourceFocus(
             construct,
-            'this.#publication = new DurabilityOutbox<Publication<Meta>>({',
-            'channel: `${publicationChannel}.${name}`,'
+            'this.#engine.claimChannel(',
+            'channel: stateChannelFor(ownerChannel, name),'
           ),
-          durable: 'durability_outbox, partitioned by channel.',
-          volatile: 'One DurabilityOutbox instance per channel.',
+          durable: 'durability_outbox, partitioned by outbox channel.',
+          volatile:
+            'The instance channel claim and one DurabilityOutbox instance per outbox channel.',
           status: 'normal',
         },
         {
@@ -446,7 +447,7 @@ export const walkthrough = validateWalkthrough({
           id: 'stage',
           title: 'Stage sends and set the alarm before commit',
           description:
-            'In the same transaction the snapshot is staged on the publication channel and a delivery for each member on the limits channel. The engine then sets the object alarm to the earliest pending row, so nothing commits without its alarm.',
+            'In the same transaction the snapshot is staged on the publication outbox channel and a delivery for each member on the limits state channel’s outbox channel. The engine then sets the object alarm to the earliest pending row, so nothing commits without its alarm.',
           stage: ['alarm', '-alarm->coordinator', 'focus:topology'],
           source: sourceFocus(
             transaction,
@@ -467,7 +468,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['kv', 'flow:publish'],
           source: sourceFocus(
             publish,
-            'INSERT INTO durability_topology_writes (id, group_id, land_by)',
+            'INSERT INTO durability_topology_writes',
             'encodeSnapshot(publication.snapshot)'
           ),
           durable:
@@ -564,7 +565,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:kv'],
           source: sourceFocus(
             landing,
-            'DELETE FROM durability_topology_writes WHERE group_id = ? AND land_by <= ?',
+            '`DELETE FROM durability_topology_writes\n     WHERE owner_channel = ? AND group_id = ? AND land_by <= ?',
             'return until ?? undefined;'
           ),
           durable: 'No write records; the outbox row is deleted.',
@@ -623,7 +624,7 @@ export const walkthrough = validateWalkthrough({
           id: 'joiner',
           title: 'The new member gets the current value',
           description:
-            'The limits value did not change, so existing members get nothing. The new member was not in the channel’s role before, so its delivery is staged in the same transaction that added it.',
+            'The limits value did not change, so existing members get nothing. The new member was not in the limits state channel’s role before, so its delivery is staged in the same transaction that added it.',
           stage: ['focus:outbox'],
           source: sourceFocus(
             stageDeliveries,
@@ -636,7 +637,7 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'draining',
-          title: 'The draining member leaves the write channel',
+          title: 'The draining member leaves the limits state channel',
           description:
             'limits reaches active members only, so the draining member’s pending delivery is deleted. A delivery already in flight still arrives; its version check orders values but cannot tell the shard it left the role.',
           stage: ['focus:shard'],

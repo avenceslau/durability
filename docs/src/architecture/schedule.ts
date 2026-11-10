@@ -46,7 +46,7 @@ const identity = sourceExcerpt(
   'identity',
   'Derive the run’s idempotency key',
   '  #idempotencyKey(scheduledTime: number): string {',
-  '    return `${this.#keyPrefix}${scheduledTime}`;\n  }'
+  '    return `${this.#keyPrefix}${scheduledTime}${this.#keySuffix}`;\n  }'
 );
 const hold = sourceExcerpt(
   schedule,
@@ -117,7 +117,7 @@ export const walkthrough = validateWalkthrough({
   id: 'schedule',
   title: 'How DurabilitySchedule uses your Durable Object',
   summary:
-    'DurabilitySchedule keeps one schedule row and one row per in-flight run in the object’s SQLite storage, and holds an alarm invocation open while runs are in flight. Step through one tick, evict the object mid-run, then follow an outcome until it is acknowledged.',
+    'DurabilitySchedule keeps one schedule row per channel and one row per in-flight run in the object’s SQLite storage, and holds an alarm invocation open while runs are in flight. Step through one tick, evict the object mid-run, then follow an outcome until it is acknowledged.',
   diagram: {
     canvas: { width: 1000, height: 960 },
     direction: 'down',
@@ -235,13 +235,13 @@ export const walkthrough = validateWalkthrough({
   details: {
     caller: {
       description:
-        'Whatever owns the schedule definition calls the object over RPC with an expression and a version. Each object holds one schedule.',
+        'Whatever owns the schedule definition calls the object over RPC with an expression and a version. Each channel of an object holds one schedule.',
       href: '/primitives/schedule/',
       source: 'set',
     },
     object: {
       description:
-        'Your class (Cron in the example below). The schedule is a field built on the object’s DurabilityScheduler, so it is rebuilt with every new instance. Its alarm() method must delegate to the scheduler.',
+        'Your class (Cron in the example below). The schedule is a field built on the object’s DurabilityScheduler, so it is rebuilt with every new instance. Its alarm() method must delegate to the scheduler or to any helper’s alarm().',
       href: '/primitives/scheduler/',
       source: 'alarm-method',
     },
@@ -265,13 +265,13 @@ export const walkthrough = validateWalkthrough({
     },
     'schedule-table': {
       description:
-        'One row in the object’s SQLite storage: version, expression, jitter, and the next tick’s nominal time. A cancel keeps it as a tombstone with no expression.',
+        'One row per channel in the object’s SQLite storage: version, expression, jitter, and the next tick’s nominal time. A cancel keeps it as a tombstone with no expression.',
       href: '/reference/storage/',
       source: 'set',
     },
     'runs-table': {
       description:
-        'One row per run from its tick until its outcome is delivered or dead-lettered: state, due time, next delivery time, delivery attempt, and error. No finished-run history remains.',
+        'One row per run, keyed by channel and scheduled time, from its tick until its outcome is delivered or dead-lettered: state, due time, next delivery time, delivery attempt, and error. No finished-run history remains.',
       href: '/reference/storage/',
       source: 'tick',
     },
@@ -314,12 +314,12 @@ export const walkthrough = validateWalkthrough({
           id: 'attach',
           title: 'The schedule attaches to the object’s scheduler',
           description:
-            'DurabilitySchedule is constructed with the object’s DurabilityScheduler, so it shares the object’s one alarm. Its run identity is prefixed with the Durable Object ID.',
+            'DurabilitySchedule is constructed with the object’s DurabilityScheduler, so it shares the object’s one alarm. Its run identity is prefixed with the Durable Object ID; on a named channel it ends with the JSON-encoded channel name.',
           stage: ['object', 'schedule', 'durable-object', 'focus:schedule'],
           source: sourceFocus(
             construct,
             'this.#engine = engineFor(config);',
-            "this.#keyPrefix = objectId === undefined ? '' : `${objectId}:`;"
+            ': `:${JSON.stringify(this.#channel)}`;'
           ),
           durable: 'Nothing is written yet.',
           volatile:
@@ -330,7 +330,7 @@ export const walkthrough = validateWalkthrough({
           id: 'tables',
           title: 'Create two tables and register with the scheduler',
           description:
-            'The constructor applies migrations through ctx.storage.sql, then registers its runs table with its own way to compute the next pending time. A second schedule on the same scheduler throws.',
+            'The constructor applies migrations through ctx.storage.sql, then registers its channel of the runs table with its own way to compute the next pending time. A second schedule on the same channel throws.',
           stage: ['schedule-table', 'runs-table'],
           source: sourceFocus(
             construct,
@@ -362,11 +362,11 @@ export const walkthrough = validateWalkthrough({
           id: 'arm',
           title: 'Set the object alarm to the next tick',
           description:
-            'In the same transaction the scheduler asks the schedule for its next pending time: the next tick’s nominal time plus jitter. The alarm is set to it, never sooner than alarmMinDelayMs.',
+            'In the same transaction the scheduler asks each attached channel’s schedule for its next pending time: the next tick’s nominal time plus jitter. The alarm is set to the earliest, never sooner than alarmMinDelayMs. A channel no instance attached is not asked, so its rows do not arm the alarm.',
           stage: ['alarm', '-alarm->object', 'focus:alarm'],
           source: sourceFocus(
             nextPending,
-            'const tick = firesAt(readSchedule(sql));',
+            'const tick = firesAt(readSchedule(sql, this.#channel));',
             'return Math.min(...pending);'
           ),
           durable: 'The alarm is stored with the schedule row.',
@@ -377,7 +377,7 @@ export const walkthrough = validateWalkthrough({
           id: 'hold',
           title: 'The alarm opens a loop that stays open',
           description:
-            'When the alarm fires, the class delegates to the scheduler, which calls the schedule’s alarm pass. That pass loops, and stays pending while runs or deliveries are in flight, so the alarm invocation keeps the object in memory.',
+            'When the alarm fires, the class delegates to the scheduler, which calls the alarm pass of each attached schedule. A pass loops, and stays pending while its channel’s runs or deliveries are in flight, so the alarm invocation keeps the object in memory.',
           stage: ['+alarm->object', 'flow:run'],
           source: sourceFocus(
             hold,
@@ -428,7 +428,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             record,
             'const recorded = await this.#engine.transaction(',
-            "WHERE scheduled_time = ? AND state = 'running'"
+            "WHERE channel = ? AND scheduled_time = ? AND state = 'running'"
           ),
           durable: 'The run row holds its outcome.',
           volatile: 'The slot is released once the handler has settled.',
@@ -443,7 +443,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             deliverOnce,
             'this.#onOutcome({ ...run, attempt }, outcome)',
-            "'DELETE FROM durability_schedule_runs WHERE scheduled_time = ?',"
+            'WHERE channel = ? AND scheduled_time = ?'
           ),
           durable: 'Only the schedule row remains.',
           volatile: 'The delivery promise.',
@@ -491,7 +491,7 @@ export const walkthrough = validateWalkthrough({
           id: 'wake',
           title: 'The alarm starts a new instance',
           description:
-            'The runtime creates a new instance, which constructs the scheduler and the schedule again, and calls alarm(). Delegating to the scheduler (or to this method) runs the schedule’s alarm pass.',
+            'The runtime creates a new instance, which constructs the scheduler and the schedule again, and calls alarm(). Delegating to the scheduler, to this method, or to any other helper’s alarm() runs the schedule’s alarm pass.',
           stage: ['focus:object'],
           source: sourceFocus(
             alarmMethod,
@@ -506,11 +506,11 @@ export const walkthrough = validateWalkthrough({
           id: 'orphans',
           title: 'A running row without a slot is interrupted',
           description:
-            'The first thing each pass does is look for rows marked running that no slot in this instance holds. They are marked errored with ScheduledRunInterruptedError, not run again.',
+            'The first thing each pass does is look for rows of its own channel marked running that no slot in this instance holds. They are marked errored with ScheduledRunInterruptedError, not run again. Running rows of other channels are left to their own instances.',
           stage: ['focus:runs-table'],
           source: sourceFocus(
             interrupt,
-            "WHERE state = 'running'",
+            "WHERE channel = ? AND state = 'running'",
             "SET state = 'errored', error = ?, next_at = ?, attempt = 0"
           ),
           durable: 'The run row holds an errored outcome.',
@@ -525,7 +525,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['flow:outcome'],
           source: sourceFocus(
             deliverDue,
-            "WHERE state IN ('complete', 'errored') AND next_at <= ?",
+            "WHERE channel = ? AND state IN ('complete', 'errored') AND next_at <= ?",
             'this.#deliver(this.#describe(row), outcomeOf(row), row.attempt + 1);'
           ),
           durable: 'The row stays until onOutcome returns.',
@@ -540,7 +540,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:target'],
           source: sourceFocus(
             identity,
-            'return `${this.#keyPrefix}${scheduledTime}`;'
+            'return `${this.#keyPrefix}${scheduledTime}${this.#keySuffix}`;'
           ),
           durable:
             'Whether the effect happened is recorded only by the target, if at all.',
@@ -593,7 +593,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:runs-table'],
           source: sourceFocus(
             deliverDue,
-            "WHERE state IN ('complete', 'errored') AND next_at <= ?"
+            "WHERE channel = ? AND state IN ('complete', 'errored') AND next_at <= ?"
           ),
           durable: 'The outcome itself never changes.',
           volatile: 'The new delivery promise.',
@@ -608,7 +608,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             deliverOnce,
             'await this.#engine.transaction((sql) => {',
-            "'DELETE FROM durability_schedule_runs WHERE scheduled_time = ?',"
+            'WHERE channel = ? AND scheduled_time = ?'
           ),
           durable: 'The row survives until the delete commits.',
           volatile: 'onOutcome’s success is not recorded anywhere.',

@@ -56,7 +56,7 @@ const operationSource = sourceExcerpt(
   'operation-source',
   'Durability as a tracked source',
   '  #trackedSource(): UntypedSource {',
-  '        this.#engine.watch(callsTable, id, () => listener()),\n    };\n  }'
+  '        this.#engine.watch(this.#table, id, () => listener()),\n    };\n  }'
 );
 const get = sourceExcerpt(
   tracker,
@@ -400,7 +400,7 @@ export const walkthrough = validateWalkthrough({
           id: 'table',
           title: 'Records are rows in the object’s SQLite',
           description:
-            'The source’s get and list run SQL against durability_calls through the engine’s ctx.storage.sql handle. A record is whatever that table holds right now.',
+            'The source’s get and list run SQL against its own channel’s rows of durability_calls through the engine’s ctx.storage.sql handle. A record is whatever that table holds right now.',
           stage: ['calls', 'focus:calls'],
           source: sourceFocus(
             operationSource,
@@ -408,7 +408,7 @@ export const walkthrough = validateWalkthrough({
             'return call && callRecord(sql, call);'
           ),
           durable:
-            'One durability_calls row per operation ID, kept until purgeBefore().',
+            'One durability_calls row per channel and operation ID, kept until purgeBefore().',
           volatile: 'Nothing beyond the query results.',
           status: 'normal',
         },
@@ -520,10 +520,11 @@ export const walkthrough = validateWalkthrough({
           stage: ['flow:recover'],
           source: sourceFocus(
             watchers,
-            'for (const listener of this.watchers.get(table.name)?.get(key) ?? []) {'
+            'for (const listener of this.watchers.get(tableOwner(table))?.get(key) ??',
+            'listener(completed);'
           ),
           durable: 'The row is completed.',
-          volatile: 'An empty watchers map in a fresh tracker.',
+          volatile: 'An empty watchers map in a fresh engine.',
           status: 'recovery',
         },
         {

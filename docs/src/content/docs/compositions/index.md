@@ -29,7 +29,7 @@ Object names are part of this design. A stable name determines where state and d
 
 ### 2. Share scheduling inside an object
 
-Every helper that drives durable background work in one object must attach to its shared `DurabilityScheduler`. Delegate that object's `alarm()` to the scheduler. Another object gets its **own** scheduler; a scheduler is not a cross-object coordinator.
+Every helper in one object joins that object's scheduler, whether it is given a shared `DurabilityScheduler` or `context`. Delegate the object's `alarm()` to the scheduler or to any helper's `alarm`. Another object gets its **own** scheduler; a scheduler is not a cross-object coordinator.
 
 Routing's in-memory observer and the socket server do not need a separate physical alarm. Do not create independent alarm-owning helpers just because they serve different features.
 

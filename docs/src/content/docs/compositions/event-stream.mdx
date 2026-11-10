@@ -40,9 +40,10 @@ configuration tweak.
 
 The `DurabilityRouting` observer is in memory. It helps route a live producer request and
 report load; it is not a durable routing table. The `DurabilityLog` and named retention
-alarm share one [`scheduler`](/primitives/scheduler/) in each `Partition`, because that
-object has one physical alarm. Different partitions are independent objects, not members
-of one scheduler or transaction.
+alarm share one [`scheduler`](/primitives/scheduler/) in each `Partition`: a Durable Object
+has one scheduler, which every helper built for it joins, and one physical alarm. The log
+registers no timed work, so only the retention alarm sets that alarm. Different partitions
+are independent objects, not members of one scheduler or transaction.
 
 ## Producer path: one batch, one shard
 
@@ -87,6 +88,11 @@ When trimming flushes records, the cold writer stores JSON in R2 under
 `segments/<object-id>/<firstOffset>`. Its `etagDoesNotMatch: '*'` conditional write makes a
 repeat flush for that first offset non-destructive. A reader can serve a cursor below the
 hot window from the stored segment, so lagging groups can replay it.
+
+The key leaves out the segment's `channel`. That is safe because each `Partition` has one
+log, on the default channel. A second log on the same object, on its own channel, would
+flush segments with overlapping offsets, so a writer shared between them must include
+`channel` in the key; see [log channels](/primitives/log/#channels).
 
 The alarm compares `hotOffset` with `nextOffset`, not `oldestOffset`. The latter includes
 cold-readable records and can remain low indefinitely; using it would keep scheduling an

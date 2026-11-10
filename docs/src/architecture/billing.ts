@@ -84,7 +84,7 @@ const scheduleAlarm = sourceExcerpt(
   'schedule-alarm',
   'Replace the named occurrence',
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
-  '      deleteMemos(sql, alarmsTable, name);\n    });'
+  '      deleteMemos(sql, this.#table, key);\n    });'
 );
 const executeAlarm = sourceExcerpt(
   alarmsSource,
@@ -307,13 +307,13 @@ export const walkthrough = validateWalkthrough({
     },
     alarms: {
       description:
-        'One row per alarm name in ctx.storage.sql: generation, scheduled time, next attempt, attempt count, and last error. Scheduling the name again replaces the row with a new generation; a successful occurrence deletes its row.',
+        'One row per channel and alarm name in ctx.storage.sql: generation, scheduled time, next attempt, attempt count, and last error. Scheduling the name again replaces the row with a new generation; a successful occurrence deletes its row.',
       href: '/primitives/alarms/',
       source: 'schedule-alarm',
     },
     calls: {
       description:
-        'One row per charge, keyed by the renewal occurrence’s idempotencyKey: payload, status, attempt count, next retry, and result. Rows stay until purgeHistory() deletes them.',
+        'One row per charge, keyed by channel and the renewal occurrence’s idempotencyKey: payload, status, attempt count, next retry, and result. Rows stay until purgeHistory() deletes them.',
       href: '/primitives/operations/',
       source: 'register',
     },
@@ -382,7 +382,7 @@ export const walkthrough = validateWalkthrough({
           id: 'scheduler',
           title: 'One scheduler owns the object’s alarm',
           description:
-            'A Durable Object has one alarm, so both helpers attach to a single DurabilityScheduler built from this.ctx. Its five permits are one pool for renewal handlers and charge attempts in this object, not a limit across customers.',
+            'A Durable Object has one alarm and one scheduler, so both helpers attach to the DurabilityScheduler built from this.ctx; a helper given this.ctx directly would join the same one. Its five permits are one pool for renewal handlers and charge attempts in this object, not a limit across customers.',
           stage: ['scheduler', 'focus:scheduler'],
           source: sourceFocus(
             scheduler,
@@ -398,7 +398,7 @@ export const walkthrough = validateWalkthrough({
           id: 'tables',
           title: 'Each helper creates its table',
           description:
-            'Durability and DurabilityAlarms receive scheduler: this.scheduler. Their constructors apply migrations through ctx.storage.sql and register their tables with the same engine, so one alarm pass covers both.',
+            'Durability and DurabilityAlarms receive scheduler: this.scheduler. Their constructors apply migrations through ctx.storage.sql and register the default channel of their tables with the same engine, so one alarm pass covers both.',
           stage: ['alarms', 'calls'],
           source: sourceFocus(
             helpers,
@@ -431,11 +431,11 @@ export const walkthrough = validateWalkthrough({
           id: 'upsert',
           title: 'Replace the pending occurrence',
           description:
-            'The renew row is keyed by name. A repeated subscribe() replaces the pending occurrence with a new generation and a new 30-day deadline rather than adding a second renewal, and deletes the replaced occurrence’s memos.',
+            'The renew row is keyed by channel and name, and this example uses the default channel. A repeated subscribe() replaces the pending occurrence with a new generation and a new 30-day deadline rather than adding a second renewal, and deletes the replaced occurrence’s memos.',
           stage: ['focus:alarms'],
           source: sourceFocus(
             scheduleAlarm,
-            'ON CONFLICT(name) DO UPDATE SET',
+            'ON CONFLICT(channel, name) DO UPDATE SET',
             'generation_id = excluded.generation_id,'
           ),
           durable:
@@ -627,7 +627,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:calls'],
           source: sourceFocus(
             runDue,
-            "WHERE status = 'pending' AND next_attempt_at <= ?"
+            "WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?"
           ),
           durable:
             'The interrupted attempt still counts toward the eight attempts.',
@@ -717,7 +717,7 @@ export const walkthrough = validateWalkthrough({
           description:
             'In the naive loop, a crash before the “last billed” write makes the next run charge again with nothing linking the two requests. Here a retried renew registers the same ID and payload again, which is a no-op, and an interrupted charge retries as the same row.',
           stage: ['flow:renew'],
-          source: sourceFocus(register, 'ON CONFLICT(id) DO NOTHING'),
+          source: sourceFocus(register, 'ON CONFLICT(channel, id) DO NOTHING'),
           durable: 'Still one charge row for the occurrence.',
           volatile: 'The interrupted attempt is gone, but its row is not.',
           status: 'failure',

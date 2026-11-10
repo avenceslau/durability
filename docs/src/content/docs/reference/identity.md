@@ -9,6 +9,7 @@ A handler receives several identifiers; only some are stable:
 
 - **Operation `id`** (operations) and **`idempotencyKey`** (named alarms) are the logical identity. They are stable across every attempt and retry, so they are the only safe deduplication keys for downstream services.
 - **`operation` / `name`** is the handler the work was registered under.
+- **`channel`** scopes both: an operation `id` or alarm name is unique within its helper's channel, so two helpers on different channels can use the same one for different work.
 - **`attempt`** is the one-based ordinal of the current attempt, claimed in a durable write before the handler runs. It is retry/logging context, not an execution identity.
 - **Named-alarm generation** is an internal token minted per scheduled occurrence; it backs `idempotencyKey` and is not exposed directly.
 

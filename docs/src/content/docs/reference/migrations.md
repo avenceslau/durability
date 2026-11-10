@@ -29,7 +29,7 @@ DurabilityAlarms.migrate(this.ctx, null); // remove the named alarm schema
 
 Passing a name moves that capability's schema to exactly that version. Each batch of migrations applies or reverts in one synchronous transaction, so a failure leaves the schema untouched.
 
-Every history row stores its migration's `down` script. If a Durable Object later runs an older `durability` version, that version reverts the migrations it does not recognize using the stored scripts, so downgrades are safe without code changes. To guard against deploying a very old version by mistake, at most two unknown migrations are reverted; beyond that, construction throws. The `durability_migrations` table is dropped once no durability history remains.
+Every history row stores its migration's `down` script. If a Durable Object later runs an older `durability` version, that version reverts the migrations it does not recognize using the stored scripts, so downgrades are safe without code changes. To guard against deploying a very old version by mistake, at most two unknown migrations are reverted; beyond that, construction throws. Reverting a migration that added `channel` to a table fails while that table holds records on a channel other than `default`, so a downgrade never discards them silently. The `durability_migrations` table is dropped once no durability history remains.
 
 ### Application schemas
 

@@ -6,7 +6,8 @@ description: Configure retries, retention, migrations, observability, and safe d
 ## Before shipping
 
 - Use SQLite-backed Durable Objects and export every configured class.
-- Construct helpers once and share one scheduler per object.
+- Construct each helper once per object instance. Helpers in one object share its scheduler.
+- Give a library's helpers a `channel` of their own, and install `durability` once per Worker.
 - Delegate `alarm()` directly to the helper or shared scheduler.
 - Authenticate and authorize public Worker and socket entry points.
 - Use stable operation IDs and idempotent or reconciling external receivers.
@@ -85,7 +86,7 @@ There are two distinct migration layers:
 
 Durability tracks capability migrations in `durability_migrations`. Application tables can use exported `migrate()` with their own history table. A migration batch applies or reverts in one synchronous transaction.
 
-Explicitly moving a capability to `null` removes its schema and records. Treat this as destructive maintenance, not routine startup. Stored down scripts support downgrades, but construction rejects more than two unknown migrations rather than silently reverting an arbitrarily old deployment.
+Explicitly moving a capability to `null` removes its schema and records. Treat this as destructive maintenance, not routine startup. Stored down scripts support downgrades, but construction rejects more than two unknown migrations rather than silently reverting an arbitrarily old deployment. A downgrade past the migration that added channels fails while records exist on a channel other than `default`; remove that state first.
 
 [Storage and migrations](/reference/migrations/#storage)
 
@@ -105,7 +106,8 @@ Build-time `__DURABILITY_DEV__` tracing logs payloads, results, SQL, and binding
 
 | Symptom                                         | Check                                                                                  |
 | ----------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Jobs register but do not progress after restart | Exported class, SQLite migration, `alarm()` delegation, and shared scheduler wiring    |
+| Jobs register but do not progress after restart | Exported class, SQLite migration, and `alarm()` delegation                             |
+| `durability.channel_missing` appears in logs    | No instance attached that `channel`; its records are kept until one attaches again     |
 | Submission resolves without a result            | Expected: registration is acceptance; call `getResult(id)`                             |
 | A repeated submission throws                    | Confirm the ID is bound to the same operation and identical payload                    |
 | External effects happen twice                   | Receiver-side deduplication and the crash window between effect and local settlement   |
@@ -115,4 +117,4 @@ Build-time `__DURABILITY_DEV__` tracing logs payloads, results, SQL, and binding
 | A log consumer throws `LogTruncatedError`       | It fell behind readable retention; rebuild or resume according to application policy   |
 | Routing seems unaware of backlog elsewhere      | Load observations are bounded, local, advisory, and reset on eviction                  |
 
-The scheduler rearms a fallback after a failed alarm pass when possible. If even setting that fallback fails, the error reaches the platform's alarm retry mechanism. Monitor repeated alarm failures rather than assuming retry infrastructure can never fail.
+After a failed alarm pass the scheduler rearms a fallback alarm when possible and retries the pass from an in-memory timer after one second, doubling up to the fallback delay while passes keep failing. If even setting that fallback fails, the error reaches the platform's alarm retry mechanism. Monitor repeated alarm failures rather than assuming retry infrastructure can never fail.

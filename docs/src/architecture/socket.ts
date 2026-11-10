@@ -34,7 +34,7 @@ const schema = sourceExcerpt(
   'schema',
   'The event table',
   "    name: 'durability_0006_create_socket_events',",
-  "    down: 'DROP TABLE IF EXISTS durability_socket_events;',"
+  '      DROP TABLE durability_socket_events_before_channels;\n    `,'
 );
 const construct = sourceExcerpt(
   socket,
@@ -233,13 +233,13 @@ export const walkthrough = validateWalkthrough({
     },
     websockets: {
       description:
-        'Hibernatable WebSockets accepted with ctx.acceptWebSocket. Each attachment holds the upgrade metadata and the subscribed event names; the runtime keeps it with the connection while the object is evicted.',
+        'Hibernatable WebSockets accepted with ctx.acceptWebSocket. Each attachment holds the upgrade metadata, the channel of the socket that accepted it, and the subscribed event names; the runtime keeps it with the connection while the object is evicted.',
       href: '/primitives/socket/',
       source: 'accept',
     },
     socket: {
       description:
-        'Holds only configuration in memory: the inbound allowlist, the outbound methods it installed, and the retention limit. Subscriptions and metadata live on the sockets, events in SQLite.',
+        'Holds only configuration in memory: its channel, the inbound allowlist, the outbound methods it installed, and the retention limit. It also adds its frame handler to a map of the object’s sockets by channel. Subscriptions and metadata live on the sockets, events in SQLite.',
       href: '/primitives/socket/',
       source: 'construct',
     },
@@ -251,7 +251,7 @@ export const walkthrough = validateWalkthrough({
     },
     events: {
       description:
-        'durability_socket_events in the object’s own SQLite storage: an autoincrementing sequence, the event name, the JSON payload, and the creation time. Only the newest retention rows (1,000 by default) are kept.',
+        'durability_socket_events in the object’s own SQLite storage, keyed by channel and a sequence each channel numbers on its own, with the event name, the JSON payload, and the creation time. Only the newest retention rows (1,000 by default) of each channel are kept.',
       href: '/reference/storage/',
       source: 'schema',
     },
@@ -300,12 +300,12 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create the event table in the object\u2019s SQLite',
           description:
-            'The constructor applies this migration synchronously through ctx.storage.sql. The AUTOINCREMENT sequence never reuses a number, even after old rows are trimmed.',
+            'The constructor applies these migrations synchronously through ctx.storage.sql. The second rebuilds the table with the key (channel, seq) and moves existing events to the default channel with their sequence numbers.',
           stage: ['events', 'focus:events'],
           source: sourceFocus(
             schema,
-            'CREATE TABLE IF NOT EXISTS durability_socket_events (',
-            'created_at INTEGER NOT NULL'
+            'CREATE TABLE durability_socket_events (',
+            'PRIMARY KEY (channel, seq)'
           ),
           durable: 'durability_socket_events exists in this object’s storage.',
           volatile:
@@ -331,7 +331,7 @@ export const walkthrough = validateWalkthrough({
           id: 'accept',
           title: 'Accept a hibernatable WebSocket',
           description:
-            'socket.fetch() captures metadata from the request and accepts the server end with ctx.acceptWebSocket, the hibernation API. The metadata and an empty subscription go into the socket’s attachment.',
+            'socket.fetch() captures metadata from the request and accepts the server end with ctx.acceptWebSocket, the hibernation API. The metadata, an empty subscription, and the socket’s channel go into the connection’s attachment, so the connection belongs to this channel.',
           stage: ['websockets', 'focus:websockets'],
           source: sourceFocus(
             accept,
@@ -362,7 +362,7 @@ export const walkthrough = validateWalkthrough({
           id: 'call',
           title: 'Call an allowlisted handler',
           description:
-            'webSocketMessage() looks the method up among the inbound keys, validates createTodo’s input with its schema, and passes the attachment’s metadata. Here the handler is a durable operation, so the result frame only means the operation was registered.',
+            'webSocketMessage() passes the frame to the socket of the connection’s channel, read from its attachment. That socket looks the method up among the inbound keys, validates createTodo’s input with its schema, and passes the attachment’s metadata. Here the handler is a durable operation, so the result frame only means the operation was registered.',
           stage: ['durability', 'flow:call'],
           source: sourceFocus(
             call,
@@ -393,11 +393,11 @@ export const walkthrough = validateWalkthrough({
           id: 'event',
           title: 'Store the created event',
           description:
-            'The lifecycle hook calls this.socket.created(todo). The event is inserted with the next sequence before anything is sent, and rows older than the retention window are deleted.',
+            'The lifecycle hook calls this.socket.created(todo). The event is inserted with its channel’s next sequence before anything is sent, and that channel’s rows older than the retention window are deleted. The newest row is always kept, so a sequence number is never reused.',
           stage: ['focus:events'],
           source: sourceFocus(
             publish,
-            "'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?) RETURNING seq',",
+            '`INSERT INTO durability_socket_events (channel, seq, name, payload, created_at)',
             'seq - this.#retention'
           ),
           durable: 'The event row with its sequence.',
@@ -408,7 +408,7 @@ export const walkthrough = validateWalkthrough({
           id: 'push',
           title: 'Push to every subscribed socket',
           description:
-            'ctx.getWebSockets() returns every socket accepted by this object, including ones accepted by an earlier instance. Only open sockets whose attachment lists the event receive the frame.',
+            'ctx.getWebSockets() returns every socket accepted by this object, including ones accepted by an earlier instance. Only open sockets whose attachment names this channel and lists the event receive the frame.',
           stage: ['flow:push'],
           source: sourceFocus(
             publish,
@@ -462,7 +462,7 @@ export const walkthrough = validateWalkthrough({
           id: 'wake',
           title: 'A frame starts a new instance',
           description:
-            'When a browser sends a call, the runtime constructs a new TodoList, which constructs a new DurabilitySocket, and calls webSocketMessage(). Without this delegation, frames would reach no handler.',
+            'When a browser sends a call, the runtime constructs a new TodoList, which constructs a new DurabilitySocket, and calls webSocketMessage(). Without this delegation, frames would reach no handler. If the new instance attaches no socket on the connection’s channel, the frame closes the connection with code 1011 and a durability.socket.channel_missing report.',
           stage: ['focus:object'],
           source: sourceFocus(
             todoList,
@@ -491,12 +491,12 @@ export const walkthrough = validateWalkthrough({
           id: 'publish',
           title: 'Events reach sockets from the earlier instance',
           description:
-            'A toggle publishes an updated event. getWebSockets() still lists the hibernated sockets and their attachments still hold the subscriptions, so no client has to resubscribe.',
+            'A toggle publishes an updated event. getWebSockets() still lists the hibernated sockets and their attachments still hold the channel and the subscriptions, so no client has to resubscribe.',
           stage: ['flow:push'],
           source: sourceFocus(
             publish,
             'for (const ws of this.#context.getWebSockets()) {',
-            'if (!readAttachment(ws).names.includes(name)) {'
+            '!attachment.names.includes(name)'
           ),
           durable: 'The new event row.',
           volatile: 'Nothing was rebuilt to find the subscribers.',
@@ -563,7 +563,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:events'],
           source: sourceFocus(
             publish,
-            "'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?) RETURNING seq',",
+            '`INSERT INTO durability_socket_events (channel, seq, name, payload, created_at)',
             'if (ws.readyState !== WebSocket.OPEN) {'
           ),
           durable: 'The event row.',
@@ -574,11 +574,11 @@ export const walkthrough = validateWalkthrough({
           id: 'replay',
           title: 'Replay from the last sequence',
           description:
-            'The client reconnects and subscribes with the last sequence it saw. Retained rows after it are sent in order, filtered to the subscribed names, and the reply says replayed: true.',
+            'The client reconnects and subscribes with the last sequence it saw. Retained rows of the socket’s channel after it are sent in order, filtered to the subscribed names, and the reply says replayed: true.',
           stage: ['flow:push'],
           source: sourceFocus(
             subscribe,
-            "'SELECT seq, name, payload FROM durability_socket_events WHERE seq > ? ORDER BY seq',",
+            "'SELECT seq, name, payload FROM durability_socket_events WHERE channel = ? AND seq > ? ORDER BY seq',",
             'payload: deserialize(row.payload),'
           ),
           durable: 'Rows are read, not changed.',

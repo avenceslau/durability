@@ -9,8 +9,8 @@ Import `DurabilityAlarms` from `durability`. Use it for named, replaceable occur
 
 `DurabilityAlarms` adds no storage or infrastructure of its own. It uses the Durable Object it is constructed in:
 
-- **`ctx.storage.sql`** holds one row per alarm name, so occurrences are as durable as the object and belong to it alone. Success deletes the row.
-- **The object's one alarm** serves every name. The scheduler sets it to the earliest pending row of every attached helper in the same transaction that schedules an occurrence, and your class's `alarm()` must delegate to the scheduler (or to `alarms.alarm()` when the helper has a private one).
+- **`ctx.storage.sql`** holds one row per channel and alarm name, so occurrences are as durable as the object and belong to it alone. Success deletes the row.
+- **The object's one alarm** serves every name. The object's one scheduler sets it to the earliest pending row of every attached helper in the same transaction that schedules an occurrence, and your class's `alarm()` must delegate to the scheduler or to any helper's `alarm()`, including `alarms.alarm()`; each runs the due work of every helper on the object.
 - **The live instance** holds the map of running occurrences and their abort signals, plus the scheduler's permits and timer. Eviction discards them; a pending occurrence then runs again with the same `idempotencyKey`.
 - **Other helpers** on the same scheduler, such as `Durability` in the example below, share the alarm and the concurrency permits.
 
@@ -22,7 +22,7 @@ Import `DurabilityAlarms` from `durability`. Use it for named, replaceable occur
 
 ## Behind the scenes
 
-**Durable state:** `durability_alarms` holds one current occurrence per handler name, with a generation, scheduled time, attempt, retry time, status, and error. Occurrence-scoped intermediate results live in `durability_memos`.
+**Durable state:** `durability_alarms` holds one current occurrence per channel and handler name, with primary key `(channel, name)`, a generation, scheduled time, attempt, retry time, status, and error. Occurrence-scoped intermediate results live in `durability_memos`.
 
 Scheduling transactionally upserts a fresh generation, resets its attempt counter, removes the previous occurrence's memos, and reconciles the physical alarm. It can replace a failed occurrence as well as a pending one. A currently executing handler is not forcibly stopped; its generation-fenced settlement cannot delete the replacement.
 
@@ -76,3 +76,24 @@ A timeout aborts the handler's `signal` and is terminal by default because the e
 `alarms.<name>.cancel(): Promise<boolean>`. This deletes the alarm's pending occurrence and its memos and reconciles the physical alarm in one transaction, then aborts the `signal` of a running attempt of it. That attempt's settlement can no longer retry it. It resolves `true` when a pending occurrence was deleted. Failed occurrences are left for `purgeBefore`.
 
 Gives up: cancelling does not stop later scheduling. A call to the scheduling method after `cancel`, including one from the running handler before it returns, schedules a new occurrence.
+
+## Channels
+
+`channel` (default `default`) lets several `DurabilityAlarms` instances share one object and its scheduler. Alarm names are unique within a channel, so an application and a library can both have an alarm called `check`, each with its own handler, policy, and lifecycle hook. Each instance schedules, cancels, runs, lists, and purges only its own channel's alarms:
+
+```ts
+const reminders = new DurabilityAlarms({
+  context: this.ctx,
+  handlers: { check },
+});
+const alerts = new DurabilityAlarms({
+  context: this.ctx,
+  channel: 'durable-alerts',
+  retries: { maxAttempts: 5 },
+  handlers: { check: () => runChecks(this.ctx) },
+});
+```
+
+Each channel holds one instance per object: constructing a second on a channel already attached throws. Within a channel, a due alarm whose name has no handler, such as one a deploy removed, fails through that channel's instance. Due alarms of a channel no instance attached are kept, postponed one minute at a time, and reported as `durability.channel_missing` until that channel's instance attaches again.
+
+The `durability_0016_alarms_channel` migration moves existing alarms and their memoized results to `default` without changing their names, so their `idempotencyKey` values stay the same. Reverting it refuses to run while alarms on other channels exist; drain or purge those channels first.

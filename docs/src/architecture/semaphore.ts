@@ -243,7 +243,7 @@ export const walkthrough = validateWalkthrough({
     },
     holder: {
       description:
-        'Your class. One instance per semaphore key, here per account. It exposes handle() through an RPC method of its own and delegates alarm() to the scheduler the semaphore is attached to.',
+        'Your class. One instance per semaphore key, here per account. It exposes handle() through an RPC method of its own and delegates alarm() to the scheduler the semaphore is attached to. An object holding several pools gives each semaphore its own channel and RPC method.',
       href: '/primitives/semaphore/',
       source: 'account-limit',
     },
@@ -261,19 +261,19 @@ export const walkthrough = validateWalkthrough({
     },
     alarm: {
       description:
-        'The object’s one alarm. Through the scheduler it follows the earliest expiry of a grant with unclaimed permits, so unclaimed capacity comes back even if nobody sends another request.',
+        'The object’s one alarm. Through the scheduler it follows the earliest expiry of a grant with unclaimed permits in any pool, so unclaimed capacity comes back even if nobody sends another request.',
       href: '/primitives/scheduler/',
       source: 'next-pending',
     },
     grants: {
       description:
-        'durability_semaphore_grants: one row per grant with client ID, group, permits, cumulative claimed and released counts, and the claim deadline.',
+        'durability_semaphore_grants: one row per grant, keyed by pool channel and grant ID, with the client ID and client channel, group, permits, cumulative claimed and released counts, and the claim deadline.',
       href: '/reference/storage/',
       source: 'allocate',
     },
     leases: {
       description:
-        'durability_semaphore_leases: blocks of permits a client may draw locally, with the released count, an expiry refreshed by reports, and a retired flag.',
+        'durability_semaphore_leases: blocks of permits a client may draw locally, keyed by pool channel and lease ID, with the client ID and client channel, the released count, an expiry refreshed by reports, and a retired flag.',
       href: '/reference/storage/',
       source: 'allocate-leases',
     },
@@ -320,7 +320,7 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create grant and lease tables',
           description:
-            'The constructor applies the semaphore migrations through ctx.storage.sql, then registers with the engine. Only the grants table takes part in alarm passes: due work there is reclaiming unclaimed permits.',
+            'The constructor applies the semaphore migrations through ctx.storage.sql, then registers its channel of the grants table with the scheduler. Only grants take part in alarm passes: due work there is reclaiming unclaimed permits in this pool.',
           stage: ['grants', 'leases'],
           source: sourceFocus(
             construct,
@@ -413,11 +413,11 @@ export const walkthrough = validateWalkthrough({
           id: 'arm',
           title: 'Set the alarm for the claim deadline',
           description:
-            'Before the transaction commits, the scheduler sets the object’s one alarm from the earliest deadline of a grant with unclaimed permits, never sooner than alarmMinDelayMs (15 seconds). A sooner deadline is covered by an in-memory timer. Lease expiry does not set the alarm.',
+            'Before the transaction commits, the scheduler sets the object’s one alarm from the earliest deadline of a grant with unclaimed permits in this pool, never sooner than alarmMinDelayMs (15 seconds). A sooner deadline is covered by an in-memory timer. Lease expiry does not set the alarm.',
           stage: ['alarm', '-alarm->holder', 'focus:alarm'],
           source: sourceFocus(
             nextPendingAt,
-            'WHERE claimed < permits',
+            'WHERE channel = ? AND claimed < permits',
             'ORDER BY expires_at ASC'
           ),
           durable: 'The alarm commits with the grant rows it serves.',
@@ -428,7 +428,7 @@ export const walkthrough = validateWalkthrough({
           id: 'reply',
           title: 'Resolve the waiting RPC',
           description:
-            'Only after the commit does each waiting promise resolve, with its grants, blocked groups, clamped claim results, leases, and nextRequestAt: when the client may ask again.',
+            'Only after the commit does each waiting promise resolve. The reply echoes the request’s protocol version and client channel and carries its grants, blocked groups, clamped claim results, leases, and nextRequestAt: when the client may ask again.',
           stage: ['flow:round'],
           source: sourceFocus(
             runRound,
@@ -529,11 +529,11 @@ export const walkthrough = validateWalkthrough({
           id: 'clamp',
           title: 'A late claim is clamped',
           description:
-            'A client that claims after the deadline gets its claim clamped to what the grant still holds and status expired, so it requeues the items it could not admit. If reclaim already ran on a grant with nothing claimed, the grant was deleted and the claim gets not_found instead.',
+            'A client that claims after the deadline gets its claim clamped to what the grant still holds and status expired, so it requeues the items it could not admit. If reclaim already ran on a grant with nothing claimed, the grant was deleted and the claim gets not_found instead. A report for a grant in another pool, or owned by another clientId and client channel, also gets not_found.',
           stage: ['flow:request'],
           source: sourceFocus(
             applyReports,
-            'if (!grant || grant.client_id !== clientId) {',
+            'if (!grant || !ownedBy(grant, client)) {',
             "status: expired && report.claimed > claimed ? 'expired' : 'ok',"
           ),
           durable: 'The claimed count never exceeds the grant.',

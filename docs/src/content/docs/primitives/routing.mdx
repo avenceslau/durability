@@ -98,6 +98,8 @@ A snapshot contains `observedAt`, `windowMs: 60000`, and:
 - `inbound`: instantaneous `inFlight`, rolling `completed`, and `averageProcessingMs` for enqueue calls through acceptance/rejection.
 - `outbound`: the same metrics for target delivery attempts (one batch to one target is one attempt), plus exact durable `pendingDeliveries` counting outstanding message-target pairs.
 
+When several fanouts share an object through [channels](/primitives/fanout/#channels), each reports `pendingDeliveries` for its own channel only. Each fanout records its timings in the `routing` load it is given, or in a private one when it is given none. Passing the same `DurabilityRouting` to two fanouts combines their in-flight counts and timings, while each snapshot still carries its own channel's backlog.
+
 Counts and averages share a rolling window with one-second buckets. No samples means `null`, not zero; telemetry resets on eviction while backlog survives. A DO cannot measure requests waiting in the platform before its handler starts. Snapshots are advisory, not capacity reservations or global metrics.
 
 `sharding(input, context, observations)` can inspect recent per-shard snapshots. Caller context can contain arbitrary local values; it is not persisted or sent to consumers. A location hint influences initial shard placement, not existing DO placement.

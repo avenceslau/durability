@@ -30,17 +30,33 @@ const attach = sourceExcerpt(
   scheduler,
   schedulerFile,
   'attach',
-  'Share one engine between helpers',
-  'export const engineFor = (attachment: SchedulerAttachment): Engine => {',
-  '  return engine;\n};'
+  'Join the object’s one engine',
+  'type ObjectScheduler = { engine: unknown; installation: symbol };',
+  "    throw new Error('Unknown DurabilityScheduler instance');\n  }\n  return engine;\n};"
+);
+const configure = sourceExcerpt(
+  scheduler,
+  schedulerFile,
+  'configure',
+  'Merge scheduler options',
+  '  attach(\n    context: DurabilityContext,',
+  '      waiter(this.createRelease());\n    }\n  }'
 );
 const register = sourceExcerpt(
   scheduler,
   schedulerFile,
   'register',
-  'Register a helper’s table',
+  'Register a helper’s channel',
   '  register(participant: Participant): void {',
-  '    this.participants.push(participant);\n  }'
+  '      this.waitUntil(resumed, onError);\n    }\n  }'
+);
+const unattached = sourceExcerpt(
+  scheduler,
+  schedulerFile,
+  'unattached',
+  'Postpone channels nothing attached',
+  '  private async postponeUnattachedChannels(',
+  '          now\n        );\n      }\n    });\n  }'
 );
 const transaction = sourceExcerpt(
   scheduler,
@@ -80,7 +96,7 @@ const alarm = sourceExcerpt(
   'alarm',
   'Keep the alarm alive after a failure',
   '  async alarm(info?: AlarmInvocationInfo): Promise<void> {',
-  '      this.notifyAlarmRetry(error, info);\n    }\n  }'
+  '    this.scheduleEarlyAlarm(Date.now() + delay);\n  }'
 );
 const runAlarm = sourceExcerpt(
   scheduler,
@@ -103,7 +119,7 @@ export const walkthrough = validateWalkthrough({
   id: 'scheduler',
   title: 'How DurabilityScheduler uses your Durable Object',
   summary:
-    'A Durable Object has one alarm. DurabilityScheduler owns it for every helper in the object, together with one pool of concurrency permits. Step through two helpers sharing it, evict the object, then see how an alarm pass survives failures and long work.',
+    'A Durable Object has one alarm and one scheduler. Every helper on the object joins the same engine, which owns the alarm and one pool of concurrency permits. Step through two helpers sharing it, evict the object, then see how an alarm pass survives failures and long work.',
   diagram: {
     canvas: { width: 1000, height: 1000 },
     direction: 'down',
@@ -234,7 +250,7 @@ export const walkthrough = validateWalkthrough({
     },
     object: {
       description:
-        'Your class. It constructs one scheduler from this.ctx and passes it to every helper. Its alarm() method must delegate to scheduler.alarm(), which runs the due work of every helper.',
+        'Your class. It constructs one scheduler from this.ctx and passes it to every helper. Its alarm() method must delegate to scheduler.alarm(), or to any helper’s alarm(); each runs the due work of every helper on the object.',
       href: '/primitives/scheduler/',
       source: 'subscription',
     },
@@ -246,7 +262,7 @@ export const walkthrough = validateWalkthrough({
     },
     scheduler: {
       description:
-        'Its engine lives only in this object instance: the list of attached tables, the concurrency permits and their FIFO waiters, the early timer, and the set of running keys. Eviction discards all of it.',
+        'The object’s one engine, shared by every helper and scheduler built for this.ctx. It lives only in this object instance: the merged options, the attached tables and channels, the concurrency permits and their FIFO waiters, the early timer, and the set of running keys. Eviction discards all of it.',
       href: '/primitives/scheduler/',
       source: 'engine-state',
     },
@@ -258,7 +274,7 @@ export const walkthrough = validateWalkthrough({
     },
     durability: {
       description:
-        'One attached helper. Its table, durability_calls, is registered with the engine, and its eager starts and alarm-driven attempts draw from the shared permits.',
+        'One attached helper. Its channel of durability_calls, the default one here, is registered with the engine, and its eager starts and alarm-driven attempts draw from the shared permits.',
       href: '/primitives/operations/',
       source: 'subscription',
     },
@@ -285,7 +301,9 @@ export const walkthrough = validateWalkthrough({
     subscription,
     engineState,
     attach,
+    configure,
     register,
+    unattached,
     transaction,
     reconcile,
     earlyTimer,
@@ -305,7 +323,7 @@ export const walkthrough = validateWalkthrough({
           id: 'one-scheduler',
           title: 'One scheduler per object instance',
           description:
-            'The class constructs one DurabilityScheduler from this.ctx. Its engine is the only code that sets the object’s alarm and its early timer, and it starts with alarmConcurrency permits, here 5, which every attached helper shares.',
+            'The class constructs a DurabilityScheduler from this.ctx. The first attachment for an object creates its engine, the only code that sets the object’s alarm and its early timer. It starts with alarmConcurrency permits, here 5, which every attached helper shares.',
           stage: [
             'object',
             'scheduler',
@@ -329,32 +347,48 @@ export const walkthrough = validateWalkthrough({
           id: 'attach',
           title: 'Both helpers attach to the same engine',
           description:
-            'Each helper is given scheduler: this.scheduler, so it looks up that scheduler’s engine instead of creating one. A helper given context instead builds a private engine, which would set the alarm from its own table only.',
+            'Each helper is given scheduler: this.scheduler and uses that scheduler’s engine. A helper given context: this.ctx would reach the same engine, because the engine is looked up by ctx.storage: the first attachment creates it and every later one joins it. A second copy of the library reaching the same object throws instead of setting the alarm.',
           stage: ['durability', 'alarms', 'focus:scheduler'],
           source: sourceFocus(
             attach,
-            'if (attachment.scheduler === undefined) {',
-            'const engine = engines.get(attachment.scheduler);'
+            'const existing = objectSchedulers.get(context.storage);',
+            'engine.attach(context, config);'
           ),
           durable: 'Nothing is written yet.',
           volatile: 'Both helpers hold a reference to one engine.',
           status: 'normal',
         },
         {
-          id: 'tables',
-          title: 'Each helper registers its table',
+          id: 'options',
+          title: 'Scheduler options merge across attachments',
           description:
-            'After creating its tables through ctx.storage.sql, each helper registers its table and its due-work callback. Registering the same table twice throws, so two helpers of one kind cannot share a scheduler.',
+            'Every attachment passes its scheduler options to the engine. An option one attachment sets applies to every helper, an attachment that omits it accepts that value, and an attachment that sets a different value throws.',
+          stage: ['focus:scheduler'],
+          source: sourceFocus(
+            configure,
+            'for (const key of schedulerOptionKeys) {',
+            'Object.assign(merged, { [key]: value });'
+          ),
+          durable: 'Nothing is written yet.',
+          volatile:
+            'The merged options, rebuilt by the attachments of each new instance.',
+          status: 'normal',
+        },
+        {
+          id: 'tables',
+          title: 'Each helper registers its channel',
+          description:
+            'After creating its tables through ctx.storage.sql, each helper registers its channel of its table, default unless it was given channel, with its due-work callback. The first channel of a table registers the table with one callback that runs every attached channel; a second instance on a channel already attached throws. Here each helper uses the default channel of its own table.',
           stage: ['calls', 'alarms-table'],
           source: sourceFocus(
             register,
-            'if (this.participants.some(({ table }) => table.name === name)) {',
-            'this.participants.push(participant);'
+            'registerChannel(participant: ChannelParticipant): void {',
+            'this.claimChannel(table.name, channel, helper);'
           ),
           durable:
             'durability_calls and durability_alarms exist in this object’s storage.',
           volatile:
-            'The list of attached tables, rebuilt on each construction.',
+            'The attached tables and channels, rebuilt on each construction.',
           status: 'commit',
         },
         {
@@ -376,7 +410,7 @@ export const walkthrough = validateWalkthrough({
           id: 'earliest',
           title: 'The alarm serves the earliest row of any table',
           description:
-            'Reconciliation asks every attached table for its earliest pending time and sets the one alarm to the minimum, but no sooner than alarmMinDelayMs. A second, private scheduler in the same object would overwrite this decision with its own.',
+            'Reconciliation asks every attached table for its earliest pending time, across all of its channels, and sets the one alarm to the minimum, but no sooner than alarmMinDelayMs. Every helper on the object goes through this engine, so no other code moves the alarm.',
           stage: ['focus:alarm'],
           source: sourceFocus(
             reconcile,
@@ -406,7 +440,7 @@ export const walkthrough = validateWalkthrough({
           id: 'alarm-pass',
           title: 'One alarm pass runs every helper',
           description:
-            'When the alarm fires, the class delegates to scheduler.alarm(). The engine calls each attached table’s due-work callback concurrently, then reconciles the alarm again.',
+            'When the alarm fires, the class delegates to scheduler.alarm(); either helper’s alarm() would call the same engine. The engine calls each attached table’s due-work callback concurrently, which runs the due rows of every attached channel, then reconciles the alarm again.',
           stage: ['+alarm->object', 'flow:run'],
           source: sourceFocus(
             runAlarm,
@@ -448,12 +482,12 @@ export const walkthrough = validateWalkthrough({
           stage: ['*', 'focus:scheduler'],
           source: sourceFocus(
             engineState,
-            'private availablePermits: number;',
+            'private readonly participants: Participant[] = [];',
             'private readonly activeByTable = new Map<string, Set<string>>();'
           ),
           durable: 'Rows in both tables, their attempt counts, and the alarm.',
           volatile:
-            'Permits, waiters, the early timer, running keys, and handler promises are lost.',
+            'Attached tables and channels, permits, waiters, the early timer, running keys, and handler promises are lost.',
           status: 'failure',
         },
         {
@@ -474,7 +508,7 @@ export const walkthrough = validateWalkthrough({
           id: 'wake',
           title: 'The alarm starts a new instance',
           description:
-            'The runtime creates a new instance, whose fields construct the scheduler and both helpers again, and calls alarm(). Without this delegation, pending rows in either table would not run again.',
+            'The runtime creates a new instance, whose fields construct the scheduler and both helpers again on one new engine, and calls alarm(). Without this delegation, pending rows in either table would not run again.',
           stage: ['flow:run'],
           source: sourceFocus(
             subscription,
@@ -489,7 +523,7 @@ export const walkthrough = validateWalkthrough({
           id: 'participants',
           title: 'Only constructed helpers are consulted',
           description:
-            'The pass runs the callbacks of the helpers registered in this instance. Constructing every helper as a field, as the example does, ensures both tables are read.',
+            'The pass runs the callbacks of the tables registered in this instance, and reconciliation reads only those tables. Constructing every helper as a field, as the example does, ensures both tables are read.',
           stage: ['focus:scheduler'],
           source: sourceFocus(
             runAlarm,
@@ -499,6 +533,22 @@ export const walkthrough = validateWalkthrough({
           durable: 'Due rows are read from both tables.',
           volatile: 'The due lists for this pass.',
           status: 'recovery',
+        },
+        {
+          id: 'unattached',
+          title: 'Due rows of a missing channel are kept',
+          description:
+            'Assume a table also held due rows on a channel no instance attached, for example one a library uses but this deploy no longer constructs. The pass keeps those rows, moves their next_attempt_at 60 seconds later, and reports durability.channel_missing. They run once a helper attaches that channel again.',
+          stage: ['focus:scheduler'],
+          source: sourceFocus(
+            unattached,
+            "'durability.channel_missing',",
+            'now + unattachedChannelRetryMs,'
+          ),
+          durable:
+            'The rows of the missing channel, with a later next_attempt_at.',
+          volatile: 'Nothing beyond the report.',
+          status: 'gap',
         },
         {
           id: 'claim',
@@ -539,12 +589,27 @@ export const walkthrough = validateWalkthrough({
           id: 'retry-hook',
           title: 'onAlarmRetry reports the failure',
           description:
-            'After the fallback alarm is set, the optional onAlarmRetry hook receives the error. It is best effort: a returned promise goes to waitUntil, and its own failure is only logged.',
+            'After the fallback alarm is set, the optional onAlarmRetry hook receives the error and the fallback alarm’s delay. It is best effort: a returned promise goes to waitUntil, and its own failure is only logged.',
           stage: ['focus:scheduler'],
           source: sourceFocus(alarm, 'this.notifyAlarmRetry(error, info);'),
           durable: 'Nothing beyond the fallback alarm.',
           volatile: 'The hook call and its promise.',
           status: 'normal',
+        },
+        {
+          id: 'retry',
+          title: 'Retry from memory before the fallback',
+          description:
+            'Then the engine sets the early timer to run the pass again after 1 second, doubling with each failure in a row up to alarmMinDelayMs. A pass that succeeds resets the count. The fallback alarm stays set in case the instance is evicted.',
+          stage: ['focus:timer'],
+          source: sourceFocus(
+            alarm,
+            'this.failedRuns += 1;',
+            'this.scheduleEarlyAlarm(Date.now() + delay);'
+          ),
+          durable: 'The fallback alarm.',
+          volatile: 'The early timer and the count of failed passes.',
+          status: 'recovery',
         },
         {
           id: 'fallback-fails',

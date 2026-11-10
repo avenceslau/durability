@@ -236,19 +236,19 @@ export const walkthrough = validateWalkthrough({
     },
     fanout: {
       description:
-        'Holds the static targets and the DLQ writer, plus in-memory state lost on eviction: the running pass per target, settlement closures for in-flight messages, and a cached pending count. Permits and timers belong to the shared scheduler.',
+        'Holds its channel (default here), the static targets, and the DLQ writer, plus in-memory state lost on eviction: the running pass per target, settlement closures for in-flight messages, and a cached pending count. Permits and timers belong to the shared scheduler.',
       href: '/primitives/scheduler/',
       source: 'construct',
     },
     alarm: {
       description:
-        'The object’s single alarm, owned by the shared scheduler. Every fanout transaction sets it to the earliest pending delivery, never sooner than alarmMinDelayMs, so unsettled work brings the object back after eviction.',
+        'The object’s single alarm, owned by the shared scheduler. Every fanout transaction sets it to the earliest pending work of every helper on the object, here the earliest pending delivery, never sooner than alarmMinDelayMs, so unsettled work brings the object back after eviction.',
       href: '/primitives/scheduler/',
       source: 'reconcile',
     },
     sqlite: {
       description:
-        'durability_fanout_messages holds one manifest per deduplication key with its frozen target list; durability_fanout_deliveries holds one row per message and target with attempt, phase, and due time; durability_fanout_seq orders first deliveries.',
+        'durability_fanout_messages holds one manifest per channel and deduplication key with its frozen target list; durability_fanout_deliveries holds one row per channel, message, and target with attempt, phase, and due time; durability_fanout_seq orders first deliveries.',
       href: '/reference/storage/',
       source: 'enqueue',
     },
@@ -312,7 +312,7 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create tables in the object’s SQLite',
           description:
-            'The constructor applies the fanout and memo migrations through ctx.storage.sql, then registers the deliveries table with the scheduler so every alarm pass runs due deliveries.',
+            'The constructor applies the fanout and memo migrations through ctx.storage.sql, then attaches its channel of the deliveries table to the scheduler, so every alarm pass runs this channel’s due deliveries. A second fanout on the same channel would throw here.',
           stage: ['sqlite', 'focus:sqlite'],
           source: sourceFocus(
             construct,
@@ -322,7 +322,7 @@ export const walkthrough = validateWalkthrough({
           durable:
             'The fanout messages, deliveries, and sequence tables and durability_memos exist in this object.',
           volatile:
-            'The registration with the scheduler is in memory and repeats on each construction.',
+            'The channel attachment is in memory and repeats on each construction.',
           status: 'commit',
         },
         {
@@ -344,12 +344,12 @@ export const walkthrough = validateWalkthrough({
           id: 'accept',
           title: 'Insert manifests and delivery rows',
           description:
-            'One transaction inserts a manifest per message, with its sorted target list, and one pending delivery row per target. A repeated deduplication key with the same ID, payload, and targets is skipped; different work under it rejects the whole batch.',
+            'One transaction inserts a manifest per message, with its sorted target list, and one pending delivery row per target, all under the fanout’s channel. A repeated deduplication key in this channel with the same ID, payload, and targets is skipped; different work under it rejects the whole batch.',
           stage: ['focus:sqlite'],
           source: sourceFocus(
             enqueue,
             'registered = await this.#transaction((sql) => {',
-            'ON CONFLICT(id) DO NOTHING'
+            'ON CONFLICT(channel, id) DO NOTHING'
           ),
           durable:
             'Each message and its email and archive deliveries commit together, or none do.',
@@ -429,8 +429,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['+consumer->object', 'focus:consumer'],
           source: sourceFocus(
             remove,
-            'if (!deleteAttempt(sql, deliveriesTable, attemptOf(row))) {',
-            'WHERE key = ? AND remaining = 0`,'
+            'if (!deleteAttempt(sql, this.#table, attemptOf(row))) {',
+            'WHERE channel = ? AND key = ? AND remaining = 0`,'
           ),
           durable:
             'The email delivery and its memos are deleted; the archive delivery settles on its own.',

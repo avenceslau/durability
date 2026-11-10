@@ -34,7 +34,7 @@ const construct = sourceExcerpt(
   'construct',
   'Attach to the object storage',
   '  constructor(config: DurabilityLogConfig<Body>) {',
-  "    this.#engine.migrateSchema('log', durabilityLogMigrations);\n  }"
+  "      'DurabilityLog'\n    );\n  }"
 );
 const appendRecords = sourceExcerpt(
   log,
@@ -114,7 +114,7 @@ const schedule = sourceExcerpt(
   'schedule',
   'Schedule the named alarm',
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
-  '      deleteMemos(sql, alarmsTable, name);\n    });'
+  '      deleteMemos(sql, this.#table, key);\n    });'
 );
 
 export const walkthrough = validateWalkthrough({
@@ -254,7 +254,7 @@ export const walkthrough = validateWalkthrough({
     },
     log: {
       description:
-        'Holds its configuration, the cold-storage callbacks, and a text encoder. It registers no due work with the scheduler and keeps no timers, permits, or running state, so eviction loses nothing it needs.',
+        'Holds its configuration, its channel, the cold-storage callbacks, and a text encoder. It claims its channel on the scheduler but registers no due work with it, and keeps no timers, permits, or running state, so eviction loses nothing it needs.',
       href: '/primitives/log/',
       source: 'construct',
     },
@@ -266,13 +266,13 @@ export const walkthrough = validateWalkthrough({
     },
     sqlite: {
       description:
-        'durability_log_records holds the hot window by offset with a unique deduplication key; durability_log_seq the next offset and byte count; durability_log_cursors one row per consumer; durability_log_segments the cold index. Leases add durability_log_leases and durability_log_allocations.',
+        'Every log table is keyed by channel first. durability_log_records holds the hot window by channel and offset, with a deduplication key unique per channel; durability_log_seq one row per channel with the next offset and byte count; durability_log_cursors one row per channel and consumer; durability_log_segments the cold index by channel and first offset. Leases add durability_log_leases and durability_log_allocations.',
       href: '/reference/storage/',
       source: 'construct',
     },
     r2: {
       description:
-        'Cold storage for flushed segments, keyed by object ID and first offset, refusing to overwrite. The log stores the returned locator and reads it back for consumers behind the hot window.',
+        'Cold storage for flushed segments, keyed by object ID and first offset, refusing to overwrite. The key leaves out the segment’s channel, which is safe only because the object has one log; logs on several channels flush overlapping offsets. The log stores the returned locator and reads it back for consumers behind the hot window.',
       href: '/primitives/log/#flushing-to-cold-storage-and-reading-it-back',
       source: 'partition',
     },
@@ -303,7 +303,7 @@ export const walkthrough = validateWalkthrough({
           id: 'field',
           title: 'The log belongs to the object instance',
           description:
-            'Partition builds a scheduler from this.ctx and attaches the log to it. The log reads and writes only this object’s storage; another partition has its own records and cursors.',
+            'Partition builds a scheduler from this.ctx and attaches the log to it. The log passes no channel, so its rows are on the default channel. It reads and writes only this object’s storage; another partition has its own records and cursors.',
           stage: ['object', 'log', 'durable-object', 'focus:log'],
           source: sourceFocus(
             partition,
@@ -319,17 +319,17 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create tables, but no alarm work',
           description:
-            'The constructor applies the log migrations through ctx.storage.sql, plus the lease tables when leases are enabled. Unlike fanout or Durability, it never registers with the scheduler, so no alarm pass ever runs log work.',
+            'The constructor joins the object’s one scheduler through engineFor, applies the log migrations through ctx.storage.sql, plus the lease tables when leases are enabled, and claims its channel, so a second log on the same channel throws. Unlike fanout or Durability, it registers no due work with the scheduler, so no alarm pass ever runs log work.',
           stage: ['sqlite', 'focus:sqlite'],
           source: sourceFocus(
             construct,
-            "this.#engine.migrateSchema('logLeases', durabilityLogLeaseMigrations);",
-            "this.#engine.migrateSchema('log', durabilityLogMigrations);"
+            'this.#engine = engineFor(config);',
+            "'DurabilityLog'\n    );"
           ),
           durable:
             'The records, cursors, segments, and sequence tables exist in this object.',
           volatile:
-            'Only the record that migrations already ran, kept by the engine.',
+            'The record that migrations already ran and the claimed channel, kept by the scheduler.',
           status: 'commit',
         },
         {
@@ -366,7 +366,7 @@ export const walkthrough = validateWalkthrough({
           id: 'offsets',
           title: 'Allocate consecutive offsets',
           description:
-            'New records take consecutive offsets from durability_log_seq, which also counts the payload bytes held in the object. A key already in the hot window keeps its first offset and consumes no new one.',
+            'New records take consecutive offsets from the channel’s row in durability_log_seq, which the channel’s first append creates and which also counts the payload bytes the channel holds in the object. A key already in the hot window keeps its first offset and consumes no new one.',
           stage: ['focus:log'],
           source: sourceFocus(
             appendRecords,
@@ -412,7 +412,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sqlite'],
           source: sourceFocus(
             commitCursor,
-            'ON CONFLICT(consumer) DO UPDATE',
+            'ON CONFLICT(channel, consumer) DO UPDATE',
             'WHERE excluded."offset" > durability_log_cursors."offset"'
           ),
           durable: 'The group’s cursor row holds the committed offset.',
@@ -445,11 +445,11 @@ export const walkthrough = validateWalkthrough({
           id: 'rebuild',
           title: 'A new instance has nothing to restore',
           description:
-            'The next request creates a new instance, which rebuilds the log helper. The tables already exist, and there is no running work, timer, or alarm participant to recover.',
+            'The next request creates a new instance, which rebuilds the log helper from its configuration. The tables already exist, and there is no running work, timer, or scheduler participant to recover.',
           stage: ['focus:log'],
           source: sourceFocus(
             construct,
-            'this.#engine = engineFor(config);',
+            'this.#routing = config.routing ?? new RoutingLoad();',
             'this.#leases = config.leases;'
           ),
           durable: 'Records, offsets, and cursors as committed.',
@@ -475,7 +475,7 @@ export const walkthrough = validateWalkthrough({
           id: 'same-offset',
           title: 'Existing keys return their first offsets',
           description:
-            'Inside the append transaction, each key is looked up first. A key that is still retained returns its original offset and writes nothing.',
+            'Inside the append transaction, each key is looked up first among the channel’s records. A key that is still retained returns its original offset and writes nothing.',
           stage: ['focus:sqlite'],
           source: sourceFocus(
             appendRecords,
@@ -548,7 +548,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             schedule,
             'await this.#engine.transaction((sql) => {',
-            'ON CONFLICT(name) DO UPDATE SET'
+            'ON CONFLICT(channel, name) DO UPDATE SET'
           ),
           durable: 'durability_alarms and the object alarm.',
           volatile: 'Nothing the sweep depends on.',
@@ -588,7 +588,7 @@ export const walkthrough = validateWalkthrough({
           id: 'write',
           title: 'Write the segment to R2 first',
           description:
-            'The run goes to cold.write, which puts it under the object ID and first offset, refusing to overwrite. If the write fails, trim() throws with every record still in the object and the named alarm retries.',
+            'The run goes to cold.write with the log’s channel and its first and last offsets. The example puts it under the object ID and first offset, refusing to overwrite. If the write fails, trim() throws with every record still in the object and the named alarm retries.',
           stage: ['focus:r2'],
           source: sourceFocus(
             trim,
@@ -607,8 +607,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sqlite'],
           source: sourceFocus(
             trim,
-            'insertSegment(this.#engine.sql, {',
-            'trimThrough(sql, last.offset + 1, expiring.length)'
+            'insertSegment(this.#engine.sql, this.#channel, {',
+            'trimThrough(sql, this.#channel, last.offset + 1, expiring.length)'
           ),
           durable:
             'The segment row, then fewer records and a smaller byte count.',
@@ -639,7 +639,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:r2'],
           source: sourceFocus(
             rehydrate,
-            'const segment = findSegment(this.#engine.sql, from);',
+            'const segment = findSegment(this.#engine.sql, this.#channel, from);',
             '? await this.#cold?.read(segment.locator)'
           ),
           durable: 'Nothing is written by a cold read.',
@@ -692,8 +692,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['*', 'focus:sqlite'],
           source: sourceFocus(
             lease,
-            'const allocated = readAllocation(sql, consumer);',
-            'setAllocation(transaction, consumer, last + 1);'
+            'const allocated = readAllocation(sql, this.#channel, consumer);',
+            'setAllocation(transaction, this.#channel, consumer, last + 1);'
           ),
           durable: 'The lease row with its batch ID and expiry.',
           volatile: 'The records on their way to the poller.',
@@ -708,7 +708,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             claimExpired,
             "AND (state = 'pending'",
-            "OR (state = 'active' AND expires_at <= ?))"
+            "OR (state = 'active' AND expires_at <= ?5))"
           ),
           durable: 'The lease row stays active until leaseMs passes.',
           volatile: 'The holder’s records and its batch ID.',
@@ -722,7 +722,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sqlite'],
           source: sourceFocus(
             claimExpired,
-            "SET batch_id = ?, state = 'active', attempt = attempt + 1,"
+            "SET batch_id = ?1, state = 'active', attempt = attempt + 1,"
           ),
           durable: 'The same range, a new batch ID, attempt 2.',
           volatile: 'The records read again for the new holder.',

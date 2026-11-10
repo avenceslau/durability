@@ -3,15 +3,15 @@ title: DurabilityScheduler
 description: Share one physical alarm and concurrency budget across capabilities.
 ---
 
-Import `DurabilityScheduler` from `durability`. Construct one per object when composing alarm-owning capabilities. A scheduler coordinates that object's work, not work across different objects.
+Import `DurabilityScheduler` from `durability`. A Durable Object has one scheduler: every `DurabilityScheduler` and every helper configured with `context` for the same object join it. A scheduler coordinates that object's work, not work across different objects.
 
 ## How it uses your Durable Object
 
 The scheduler owns the parts of the Durable Object that its helpers would otherwise compete for:
 
-- **The object's one alarm** (`ctx.storage.setAlarm`). Helper writes that add or reschedule pending work run in a storage transaction that also sets the alarm to the earliest pending row of every attached table. Your class's `alarm()` must delegate to `scheduler.alarm()`.
-- **`ctx.storage.sql`** stays with the helpers: each creates and registers its own tables, and the scheduler only reads their pending times.
-- **The live instance** holds the concurrency permits and their FIFO waiters, the early timer for work due before the alarm, and the list of attached tables. Eviction discards them; the alarm and the rows bring the work back.
+- **The object's one alarm** (`ctx.storage.setAlarm`). Helper writes that add or reschedule pending work run in a storage transaction that also sets the alarm to the earliest pending row of every attached table. Your class's `alarm()` must delegate to `scheduler.alarm()` or to any helper's `alarm()`; each runs the due work of every helper on the object.
+- **`ctx.storage.sql`** stays with the helpers: each creates its own tables and registers its channel of them, and the scheduler only reads their pending times.
+- **The live instance** holds the merged scheduler options, the concurrency permits and their FIFO waiters, the early timer for work due before the alarm, and the attached tables and channels. Eviction discards them; the alarm and the rows bring the work back.
 
 <ArchitectureWalkthrough example="scheduler">
 
@@ -21,21 +21,21 @@ The scheduler owns the parts of the Durable Object that its helpers would otherw
 
 ## Behind the scenes
 
-**Durable state:** the scheduler creates no job table of its own. Attached helpers provide their tables and due-work callbacks; the engine consults them to reconcile the object's one physical alarm. A duplicate participant table is rejected.
+**Durable state:** the scheduler creates no job table of its own. Attached helpers provide their tables and due-work callbacks; the engine consults them to reconcile the object's one physical alarm. Helpers of one kind share a table, partitioned by `channel`: the first instance registers the table, each instance attaches its own channel, and a second instance on a channel already attached throws.
 
 Engine transactions reconcile that alarm alongside their storage changes. The next physical alarm is bounded by the earliest due work and `now + alarmMinDelayMs`. Near-due work can also start from an in-memory timer; experimental `liveTimers` extends timer scheduling further into the future.
 
 **In memory:** timers, active execution locks, promises, and the FIFO concurrency pool. Eager operations and ordinary scheduled work share the default ten permits. Some capabilities, such as recurring schedule runs, explicitly maintain a separate execution limit; a shared scheduler is not a universal limit on all application work.
 
-**Recovery:** a physical alarm reconstructs progress from durable participant state after eviction. Long alarm invocations hand off before the wall-time limit. If a pass itself fails, the scheduler tries to arm a fallback at `alarmMinDelayMs`; only failure to arm that fallback propagates to platform retries.
+**Recovery:** a physical alarm reconstructs progress from durable participant state after eviction. Long alarm invocations hand off before the wall-time limit. If a pass itself fails, the scheduler arms a fallback at `alarmMinDelayMs` and retries the pass from memory sooner; only failure to arm that fallback propagates to platform retries.
 
-Never put two independent alarm-owning schedulers in one object: each can overwrite the other's physical-alarm decision. Not every helper needs alarm work: the retained log uses the engine for storage operations but does not automatically schedule retention.
+Because every helper on the object joins the same engine, no helper can move or delete the physical alarm another one set. Not every helper needs alarm work: the retained log uses the engine for storage operations but does not automatically schedule retention.
 
-Implementation: [`scheduler/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/scheduler/index.ts) (`Engine.transaction`, `reconcile`, `runAlarm`, `startExecution`).
+Implementation: [`scheduler/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/scheduler/index.ts) (`engineFor`, `Engine.attach`, `registerChannel`, `Engine.transaction`, `reconcile`, `runAlarm`, `startExecution`).
 
 ## Using both in one Durable Object
 
-A Durable Object has one physical alarm. When one object uses both helpers, create a `DurabilityScheduler` and pass it to each so they share the alarm, the storage, and the concurrency pool:
+A Durable Object has one physical alarm. When one object uses both helpers, they share the alarm, the storage, and the concurrency pool. Creating a `DurabilityScheduler` and passing it to each makes that sharing explicit and keeps the scheduler options in one place:
 
 ```ts
 import { Durability, DurabilityAlarms, DurabilityScheduler } from 'durability';
@@ -66,7 +66,19 @@ export class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-A helper configured with `context` instead of `scheduler` creates a private scheduler and accepts the scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`) in the same object. Two helpers on the same object must share one scheduler; otherwise each would reconcile the physical alarm against only its own records.
+## One scheduler per Durable Object
+
+The engine is looked up by the object's `ctx.storage`. The first `DurabilityScheduler` or helper built from that context creates it, and every later one joins it, so a helper configured with `context` instead of `scheduler` ends up on the same alarm, storage, and concurrency pool as the example above. Passing `scheduler` explicitly is optional.
+
+- **Options merge.** Each attachment may pass scheduler options (`alarmConcurrency`, `alarmMinDelayMs`, `alarmHandoffMs`, `liveTimers`, `onAlarmRetry`). An option one attachment sets applies to every helper on the object, an attachment that leaves it out never conflicts, and an attachment that sets a different value throws `Scheduler option "…" is already set to a different value for this Durable Object`. Values are compared with `===`, so two different `onAlarmRetry` functions conflict.
+- **Any `alarm()` runs everything.** `scheduler.alarm()` and every helper's `alarm()` call the same engine, so delegating the object's `alarm` to any one of them runs the due work of every helper. A library can build its helpers from the context it is given, and the application only forwards `alarm`.
+- **One copy of the library.** The engines are kept in a registry shared by every copy of durability in the isolate. A second copy reaching an object that already has an engine throws `Another copy of durability is already attached to this Durable Object`; install durability once, for example as a peer dependency of libraries that use it.
+
+## Channels
+
+Every helper that attaches to the scheduler takes a `channel` option, `default` unless given one, so several instances of one helper kind can share the scheduler: an application's `Durability` on `default` and a library's on its own channel, for example. Each channel of a helper kind holds one instance. Instances share the table, partitioned by a `channel` column, and each alarm pass runs the due rows of every attached channel through that channel's instance.
+
+For operations, named alarms, fanout deliveries, and outbox entries, reconciliation reads the earliest pending row across all channels of the table, including channels no instance attached. A pass keeps the due rows of an unattached channel, for example one a deploy removed, moves their next attempt one minute later, and reports `durability.channel_missing`. They run once an instance attaches that channel again. `DurabilitySchedule`, `DurabilitySemaphore`, and `DurabilitySemaphoreQueue` compute their own pending times: an unattached channel's records stay unchanged, do not arm the alarm, and are reported once; attaching the channel again restores its alarm.
 
 ## Delivery semantics and concurrency
 
@@ -80,6 +92,8 @@ Operation completion records are retained indefinitely so their IDs remain dedup
 
 A Durable Object alarm whose handler throws is retried with backoff a limited number of times and then dropped. Every helper's `alarm()` ends by reconciling the physical alarm, and a storage error there would otherwise propagate, so enough of them in a row would leave pending work with nothing armed. Instead, a run that fails arms the physical alarm directly at `alarmMinDelayMs` from now and returns, reporting `durability.alarm.failed` with the error; the next run reconciles properly. Only when even that `setAlarm` fails does the failure reach the platform and its retries.
 
+The fallback alarm can be up to 15 seconds away, so the scheduler also retries the run from its in-memory timer: 1 second after the first failure, doubling with each failure in a row up to `alarmMinDelayMs`. A run that succeeds resets the delay. The fallback alarm stays armed, so the work still runs if the object is evicted before the timer fires.
+
 ## Long-running alarm calls
 
 Alarm invocations have a 15-minute wall-time limit. If work is still pending after `alarmHandoffMs` (default 14 minutes), the scheduler retains its promise in memory, arms a fallback after `alarmMinDelayMs`, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again. If the object is evicted during a handoff, the next alarm reconstructs and executes the persisted pending work.
@@ -88,7 +102,7 @@ Alarm invocations have a 15-minute wall-time limit. If work is still pending aft
 
 `liveTimers?: boolean`. Due work starts from an in-memory timer at its exact scheduled time, however far beyond `alarmMinDelayMs`, and an alarm pass skips records that are already running instead of waiting for them, so a long handler no longer delays newly due work. The physical alarm stays armed at the usual bounded delay as the eviction fallback, and the handoff before the alarm wall-time limit is unchanged.
 
-Gives up: every settled attempt runs one more reconciliation transaction to re-arm the timer, and timers do not survive eviction, so after one the work runs only when the physical alarm fires. Attempts interrupted by the eviction are counted as usual, so an operation with `maxAttempts: 1` fails instead of running again.
+Gives up: timers do not survive eviction, so after one the work runs only when the physical alarm fires. Attempts interrupted by the eviction are counted as usual, so an operation with `maxAttempts: 1` fails instead of running again.
 
 ## `onAlarmRetry` (scheduler)
 

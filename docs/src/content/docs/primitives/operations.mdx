@@ -10,7 +10,7 @@ Import `Durability` from `durability`. Use it for individually identified jobs w
 `Durability` adds no storage or infrastructure of its own. It uses the Durable Object it is constructed in:
 
 - **`ctx.storage.sql`** holds its tables, so operations are as durable as the object and belong to it alone. Another object, even of the same class, has its own rows.
-- **The object's one alarm** (`ctx.storage.setAlarm`) brings the object back after eviction. Every write that adds or reschedules pending work sets the alarm in the same storage transaction, and your class's `alarm()` must delegate to `durability.alarm()`.
+- **The object's one alarm** (`ctx.storage.setAlarm`) brings the object back after eviction. `Durability` joins the object's one [scheduler](/primitives/scheduler/), which owns the alarm. Every write that adds or reschedules pending work sets the alarm in the same storage transaction, and your class's `alarm()` must delegate to `durability.alarm()`, the scheduler's, or any other helper's `alarm()`.
 - **The live instance** holds everything else: concurrency permits, the running attempts, and a timer for work due before the alarm. It is rebuilt with the helper whenever the runtime creates a new instance of the object.
 
 <ArchitectureWalkthrough example="operations">
@@ -21,7 +21,7 @@ Import `Durability` from `durability`. Use it for individually identified jobs w
 
 ## Behind the scenes
 
-**Durable state:** `durability_calls` holds one row per operation ID: handler name, serialized payload, generation, status, attempt count, retry time, error, and result. Shared `durability_memos` holds intermediate memoized results. Pending-time and creation-time indexes support scheduling and purge.
+**Durable state:** `durability_calls` holds one row per channel and operation ID, with primary key `(channel, id)`: handler name, serialized payload, generation, status, attempt count, retry time, error, and result. Shared `durability_memos` holds intermediate memoized results. Pending-time, per-channel pending-time, and creation-time indexes support scheduling and purge.
 
 1. Registration serializes the payload and inserts a pending row in a storage transaction. An existing ID must match both handler and canonical payload. The transaction also reconciles the physical alarm.
 2. A new operation starts eagerly only if the shared scheduler has an immediately available permit. Otherwise the persisted due row waits for a timer/alarm pass.
@@ -30,7 +30,7 @@ Import `Durability` from `durability`. Use it for individually identified jobs w
 
 **After eviction:** the row survives, but locks and running promises do not. A pending handler can run again with the same ID. A remote effect may already have committed; receiver-side idempotency is still necessary. Abort is cooperative: a handler that ignores its signal holds the live permit until it actually settles.
 
-**Lifetime:** completed and failed records stay indefinitely until destructive `purgeBefore()`. Purging also removes deduplication protection and memos.
+**Lifetime:** completed and failed records stay indefinitely until destructive `purgeBefore()`, which removes only the instance's own channel. Purging also removes deduplication protection and memos.
 
 Implementation: [`operations/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/operations/index.ts) (`DurabilityCore`), [`storage.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/storage.ts) (attempt claims and conditional updates).
 
@@ -95,3 +95,24 @@ switch (result.status) {
 The completed result type is inferred from the handler. Looking up a key that belongs to another operation throws `DuplicateDurableCallError`. Payloads and results must be JSON-serializable; as with `JSON.stringify`, `undefined` properties are dropped and `undefined` array elements become `null`.
 
 An ID stays bound to its operation and payload. Registering it again with the same operation and the same data (object key order does not matter; array order and values do) is a no-op, which is what makes retries safe. Registering it with another operation throws `DuplicateDurableCallError`, and with a different payload `DuplicateDurablePayloadError`, instead of silently dropping the new call.
+
+## Channels
+
+`channel` (default `default`) lets several `Durability` instances share one object and its scheduler. Call IDs are unique within a channel, and each instance registers, runs, reads, lists, and purges only its own channel's calls. A library should use a channel of its own so its calls never meet the application's:
+
+```ts
+// In a library
+const jobs = new Durability({
+  context: ctx,
+  channel: 'durable-alerts',
+  handlers: { notify },
+});
+
+// In the application, on the default channel
+const jobs = new Durability({ context: this.ctx, handlers: { charge } });
+// Both can register { id: 'invoice-1' }; they are different calls.
+```
+
+Each channel holds one instance per object: constructing a second on a channel already attached throws `Durability for channel "…" is already attached to this scheduler`. Due calls of a channel no instance attached are kept, postponed one minute at a time, and reported as `durability.channel_missing` until that channel's instance attaches again.
+
+The `durability_0015_calls_channel` migration moves existing calls and their memoized results to `default` without changing their IDs. Reverting it refuses to run while calls on other channels exist; drain or purge those channels first.

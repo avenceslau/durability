@@ -294,13 +294,13 @@ export const walkthrough = validateWalkthrough({
     },
     objectAlarm: {
       description:
-        'The object’s single alarm. Every fanout transaction goes through the scheduler, which sets it to the earliest pending delivery, including a claimed row’s attempt deadline.',
+        'The object’s single alarm. Every fanout transaction goes through the scheduler, which sets it to the earliest pending work of every helper on the object; here that is the earliest pending delivery, including a claimed row’s attempt deadline.',
       href: '/primitives/scheduler/',
       source: 'delivery',
     },
     tables: {
       description:
-        'In ctx.storage.sql: durability_fanout_messages holds one manifest per deduplication key (ID, payload, frozen target list, remaining count); durability_fanout_deliveries holds one row per message and target; durability_fanout_seq orders them.',
+        'In ctx.storage.sql: durability_fanout_messages holds one manifest per channel and deduplication key (ID, payload, frozen target list, remaining count); durability_fanout_deliveries holds one row per channel, message, and target; durability_fanout_seq orders them. This fanout uses the default channel.',
       href: '/primitives/fanout/',
       source: 'fanout-enqueue',
     },
@@ -378,7 +378,7 @@ export const walkthrough = validateWalkthrough({
           id: 'wire',
           title: 'The object composes scheduler and fanout',
           description:
-            'Fields build one scheduler from this.ctx and a fanout attached to it. Constructing the fanout migrates its tables in ctx.storage.sql and registers its delivery table with the scheduler.',
+            'Fields build one scheduler from this.ctx and a fanout attached to it. Constructing the fanout migrates its tables in ctx.storage.sql and attaches its channel, the default one here, of the delivery table to the scheduler.',
           stage: ['fanout', 'focus:fanout'],
           source: sourceFocus(
             delivery,
@@ -507,12 +507,12 @@ export const walkthrough = validateWalkthrough({
           id: 'release',
           title: 'Delete the delivery row',
           description:
-            'ack deletes the row only if this attempt still owns it, decrements the manifest’s remaining count, and deletes the manifest once every target has settled. Only then can the same ID be registered as new work on this object.',
+            'ack deletes the row only if this attempt still owns it, decrements the manifest’s remaining count, and deletes the manifest once every target has settled. Only then can the same ID be registered as new work in this channel of this object.',
           stage: ['focus:tables'],
           source: sourceFocus(
             removeDelivery,
-            'if (!deleteAttempt(sql, deliveriesTable, attemptOf(row))) {',
-            'WHERE key = ? AND remaining = 0`,'
+            'if (!deleteAttempt(sql, this.#table, attemptOf(row))) {',
+            'WHERE channel = ? AND key = ? AND remaining = 0`,'
           ),
           durable:
             'The email row is gone; the archive row follows its own path.',

@@ -73,7 +73,7 @@ const notify = sourceExcerpt(
   queueFile,
   'notify',
   'Hand admitted items to admit()',
-  '  async #notifyBatch(): Promise<void> {',
+  '  async #notify(): Promise<void> {',
   '    } finally {\n      release();\n    }\n  }'
 );
 const release = sourceExcerpt(
@@ -89,7 +89,7 @@ const checkFinished = sourceExcerpt(
   queueFile,
   'check-finished',
   'Ask finished() about admitted items',
-  '  async #checkFinished(now: number): Promise<void> {',
+  '  async #releaseFinished(now: number): Promise<void> {',
   '        await this.release(id);\n      }\n    }\n  }'
 );
 const publish = sourceExcerpt(
@@ -772,7 +772,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             request,
             "'durability.semaphore_queue.request_failed',",
-            'await this.#retrySoon(key, queued.length);'
+            'await this.#retryAfter(key, queued.length, this.#retryDelay(1));'
           ),
           durable: 'The shard’s queued rows are unchanged.',
           volatile: 'The pending request in AccountLimit is gone.',

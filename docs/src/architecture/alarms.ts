@@ -202,7 +202,7 @@ export const walkthrough = validateWalkthrough({
     },
     object: {
       description:
-        'Your class. The scheduler and both helpers are fields, so they are rebuilt whenever the runtime creates a new instance. Its alarm() method must delegate to the shared scheduler (or to alarms.alarm() when the helper has a private one).',
+        'Your class. The scheduler and both helpers are fields, so they are rebuilt whenever the runtime creates a new instance. Its alarm() method must delegate to the scheduler or to any helper’s alarm(), which all run the same pass.',
       href: '/primitives/alarms/',
       source: 'subscription',
     },
@@ -220,7 +220,7 @@ export const walkthrough = validateWalkthrough({
     },
     sqlite: {
       description:
-        'One row per alarm name in the object’s own SQLite storage: generation, scheduled time, attempt, next retry time, status, and error. Success deletes the row, so no history is kept.',
+        'One row per channel and alarm name in the object’s own SQLite storage: generation, scheduled time, attempt, next retry time, status, and error. Success deletes the row, so no history is kept.',
       href: '/reference/storage/',
       source: 'construct',
     },
@@ -280,7 +280,7 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create the table in the object’s SQLite',
           description:
-            'The constructor applies migrations synchronously through ctx.storage.sql, then registers durability_alarms with the scheduler so every alarm pass looks for due names.',
+            'The constructor applies migrations synchronously through ctx.storage.sql, then registers its channel of durability_alarms, default here, with the scheduler so every alarm pass looks for its due names.',
           stage: ['sqlite', 'focus:sqlite'],
           source: sourceFocus(
             construct,
@@ -312,12 +312,12 @@ export const walkthrough = validateWalkthrough({
           id: 'upsert',
           title: 'Upsert the occurrence with a new generation',
           description:
-            'Each call writes a fresh generation ID, resets the attempt count to 0, and deletes memoized results of any previous occurrence of the name, all inside one storage transaction.',
+            'The row is keyed by channel and name. Each call writes a fresh generation ID, resets the attempt count to 0, and deletes memoized results of any previous occurrence of the name, all inside one storage transaction.',
           stage: ['focus:sqlite'],
           source: sourceFocus(
             schedule,
             'const generation = crypto.randomUUID();',
-            'deleteMemos(sql, alarmsTable, name);'
+            'deleteMemos(sql, this.#table, key);'
           ),
           durable: 'One pending row for renew, with attempt 0.',
           volatile: 'The generation ID is held only until the write.',
@@ -445,11 +445,11 @@ export const walkthrough = validateWalkthrough({
           id: 'due',
           title: 'The interrupted occurrence is still due',
           description:
-            'The renew row is pending with a past next_attempt_at, so the alarm pass selects it again.',
+            'The renew row is pending with a past next_attempt_at, so the alarm pass selects it again from this instance’s channel.',
           stage: ['focus:sqlite'],
           source: sourceFocus(
             runDue,
-            "WHERE status = 'pending' AND next_attempt_at <= ?"
+            "WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?"
           ),
           durable: 'Rows are read, not changed.',
           volatile: 'The due list for this pass.',
@@ -477,7 +477,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:durability'],
           source: sourceFocus(
             register,
-            'ON CONFLICT(id) DO NOTHING',
+            'ON CONFLICT(channel, id) DO NOTHING',
             'throw new DuplicateDurablePayloadError(input.id, input.operation);'
           ),
           durable:
@@ -516,8 +516,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['*', 'focus:sqlite'],
           source: sourceFocus(
             schedule,
-            'ON CONFLICT(name) DO UPDATE SET',
-            'deleteMemos(sql, alarmsTable, name);'
+            'ON CONFLICT(channel, name) DO UPDATE SET',
+            'deleteMemos(sql, this.#table, key);'
           ),
           durable:
             'Still one row for renew, with a new generation and idempotencyKey.',
@@ -549,7 +549,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sqlite'],
           source: sourceFocus(
             execute,
-            'const removed = deleteAttempt(this.#engine.sql, alarmsTable, {',
+            'const removed = deleteAttempt(this.#engine.sql, this.#table, {',
             'return removed ? timestamp : undefined;'
           ),
           durable: 'The replacement row is untouched.',
@@ -565,7 +565,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             cancel,
             'const cancelled = await this.#engine.transaction((sql) => {',
-            'deleteMemos(sql, alarmsTable, name);'
+            'deleteMemos(sql, this.#table, key);'
           ),
           durable:
             'The row is gone; the alarm moves to other pending work or is deleted.',

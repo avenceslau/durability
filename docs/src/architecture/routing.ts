@@ -389,7 +389,7 @@ export const walkthrough = validateWalkthrough({
           id: 'snapshot',
           title: 'Attach a load snapshot to the reply',
           description:
-            'The reply carries a snapshot: pendingDeliveries from the durable rows, plus in-flight counts and average timings from the last 60 seconds of in-memory buckets.',
+            'The reply carries a snapshot: pendingDeliveries from the durable rows of this fanout’s channel, plus in-flight counts and average timings from the last 60 seconds of in-memory buckets.',
           stage: ['focus:load'],
           source: sourceFocus(
             snapshot,
@@ -512,12 +512,12 @@ export const walkthrough = validateWalkthrough({
           id: 'recount',
           title: 'The backlog is recounted from SQLite',
           description:
-            'The cached pending count is undefined in a new instance, so the first snapshot runs COUNT(*) over pending delivery rows. Backlog is never rebuilt from telemetry.',
+            'The cached pending count is undefined in a new instance, so the first snapshot runs COUNT(*) over the pending delivery rows of the fanout’s channel. Backlog is never rebuilt from telemetry.',
           stage: ['focus:deliveries'],
           source: sourceFocus(
             pendingRows,
             'this.#pending ??= countRowSchema.parse(',
-            "WHERE status = 'pending'`"
+            "WHERE channel = ? AND status = 'pending'`,"
           ),
           durable: 'The count matches the committed rows.',
           volatile: 'The count is cached again in the new instance.',

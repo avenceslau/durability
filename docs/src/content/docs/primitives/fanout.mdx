@@ -9,7 +9,7 @@ Import `DurabilityFanout` from `durability`. Use it when every accepted message 
 
 `DurabilityFanout` adds no queue service of its own. It uses the Durable Object it is constructed in:
 
-- **`ctx.storage.sql`** holds every accepted message and one delivery row per target, so the shard that accepted a batch is the only one that delivers it.
+- **`ctx.storage.sql`** holds every accepted message and one delivery row per target, so the shard that accepted a batch is the only one that delivers it. Several fanouts on one object share these tables, each in its own [channel](#channels).
 - **The object's one alarm**, owned by the shared `DurabilityScheduler`, is set in the same transaction as every write that adds or reschedules a delivery. Your class's `alarm()` must delegate to `scheduler.alarm()`.
 - **RPC in both directions:** targets are called outside any storage transaction, and each `ack()`, `retry()`, or `deadLetter()` is an RPC back into the object that settles one target's row.
 - **The live instance** holds only the running pass per target, the settlement closures of in-flight messages, and a cached pending count. Eviction loses them; the rows and the alarm bring the work back.
@@ -22,7 +22,7 @@ Import `DurabilityFanout` from `durability`. Use it when every accepted message 
 
 ## Behind the scenes
 
-**Durable state:** `durability_fanout_messages` stores a manifest per active deduplication key. `durability_fanout_deliveries` stores one obligation per message-target pair, with sequence, phase, attempt, and due time. A sequence table orders first deliveries; retry memos are shared with other capabilities.
+**Durable state:** `durability_fanout_messages` stores a manifest per channel and active deduplication key, keyed by `(channel, key)`. `durability_fanout_deliveries` stores one obligation per message-target pair, keyed by `(channel, id)`, with sequence, phase, attempt, and due time. A sequence table orders first deliveries; retry memos are shared with other capabilities.
 
 `enqueue()` validates the whole batch, then transactionally inserts manifests and the frozen target set and reconciles the alarm. Due delivery runs in bounded batches per target under the scheduler's shared permits. Consumer RPC happens outside the acceptance transaction.
 
@@ -138,6 +138,26 @@ batchDelayMs: 100,
 ```
 
 Await settlement calls. Timed-out RPCs cannot be forcibly cancelled, so side effects may overlap later attempts. Storage targets automatically acknowledge successful writes; failed writes retry independently of consumer targets. Their write contract must be idempotent by the supplied delivery identity.
+
+### Channels
+
+`channel` (default `default`) lets several fanouts share one object, for example an application's and a library's. Like every other helper, each fanout joins the object's one scheduler, whether it is given `scheduler` or `context`. Each channel holds one fanout: constructing a second on a channel already in use throws `DurabilityFanout for channel "<channel>" is already attached to this scheduler`.
+
+```ts
+private readonly alerts = new DurabilityFanout<Alert>({
+  scheduler: this.scheduler,
+  channel: 'durable-alerts',
+  targets: {
+    consumer: { deliver: (messages) => this.env.ALERTS.consume(messages) },
+  },
+});
+```
+
+Target IDs, message IDs, and deduplication keys are independent in each channel, so both fanouts above may have a target called `consumer`. Each fanout delivers, acknowledges, retries, dead-letters, memoizes, and counts `pendingDeliveries` only for its own channel, with its own targets, policies, `dlq`, `routing` load, and lifecycle hooks.
+
+Due deliveries of a channel no fanout attaches, such as one a deploy removed, are kept and postponed 60 seconds at a time, with a `durability.channel_missing` report, until that channel's fanout attaches again. A removed target inside an attached channel is handled by that channel's fanout as before: its deliveries are kept and postponed with a `durability.fanout.target_missing` report.
+
+The channel migration keys manifests by `(channel, key)` and deliveries by `(channel, id)`. Existing messages, deliveries, delivery IDs, and memoized results move to `default` unchanged. A schema downgrade refuses to run while any other channel has records; drain them first.
 
 ### DLQ storage and per-target redrive
 

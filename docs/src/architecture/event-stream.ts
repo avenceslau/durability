@@ -286,7 +286,7 @@ export const walkthrough = validateWalkthrough({
     },
     alarm: {
       description:
-        'A Partition has one alarm. The log and the alarms helper share one DurabilityScheduler; the log registers no timed work, so the alarm is set only for the enforceRetention row.',
+        'A Partition has one alarm and one scheduler, which every helper on the object joins. The log and the alarms helper share it; the log registers no timed work, so the alarm is set only for the enforceRetention row.',
       href: '/primitives/scheduler/',
       source: 'partition',
     },
@@ -322,13 +322,13 @@ export const walkthrough = validateWalkthrough({
     },
     r2: {
       description:
-        'The COLD bucket. Flushed segments are stored at segments/<object id>/<firstOffset> with onlyIf etagDoesNotMatch: "*", so a repeated flush leaves the first object in place. Expiring objects is a bucket lifecycle rule, outside this code.',
+        'The COLD bucket. Flushed segments are stored at segments/<object id>/<firstOffset> with onlyIf etagDoesNotMatch: "*", so a repeated flush leaves the first object in place. The key has no channel because each Partition has one log, on the default channel. Expiring objects is a bucket lifecycle rule, outside this code.',
       href: '/primitives/log/',
       source: 'partition',
     },
     storage: {
       description:
-        'The Partition’s own SQLite: durability_log_records (the hot window, with deduplication keys), durability_log_seq (next offset and bytes held), durability_log_cursors (one row per consumer group), durability_log_segments (cold locators), and durability_alarms.',
+        'The Partition’s own SQLite, every table keyed by channel first: durability_log_records (the hot window, with deduplication keys), durability_log_seq (next offset and bytes held), durability_log_cursors (one row per consumer group), durability_log_segments (cold locators), and durability_alarms. This log uses the default channel.',
       href: '/reference/storage/',
       source: 'append-records',
     },
@@ -406,11 +406,11 @@ export const walkthrough = validateWalkthrough({
           id: 'dedup',
           title: 'Deduplicate only within the hot window',
           description:
-            'The Worker passes a producer key as deduplicationKey. A key already in durability_log_records returns its original offset instead of a new record. Once trim removes that row, the same key appends again.',
+            'The Worker passes a producer key as deduplicationKey. A key already among the channel’s rows in durability_log_records returns its original offset instead of a new record. Once trim removes that row, the same key appends again.',
           stage: ['focus:log'],
           source: sourceFocus(
             appendRecords,
-            'WHERE dedup_key = ? LIMIT 1',
+            'WHERE channel = ? AND dedup_key = ? LIMIT 1',
             'assigned.set(record.dedup_key, existing.offset);'
           ),
           durable: 'Deduplication keys live on the hot rows.',
@@ -447,11 +447,11 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             schedule,
             'await this.#engine.transaction((sql) => {',
-            'ON CONFLICT(name) DO UPDATE SET'
+            'ON CONFLICT(channel, name) DO UPDATE SET'
           ),
           durable: 'The named alarm row and the object alarm commit together.',
           volatile:
-            'The in-memory timer the scheduler sets after commit, which this instance only has.',
+            'Nothing: 60 seconds is beyond alarmMinDelayMs, so without liveTimers the scheduler sets no in-memory timer and only the object alarm wakes the sweep.',
           status: 'commit',
         },
         {
@@ -511,7 +511,7 @@ export const walkthrough = validateWalkthrough({
           id: 'flush',
           title: 'Write the segment to R2 first',
           description:
-            'The cold writer puts the batch at segments/<object id>/<firstOffset> unless an object already exists there. A failed write throws with the records still in the object.',
+            'The cold writer puts the batch at segments/<object id>/<firstOffset> unless an object already exists there. It ignores the segment’s channel, which is safe only while the object has one log. A failed write throws with the records still in the object.',
           stage: ['focus:r2'],
           source: sourceFocus(
             partition,
@@ -530,8 +530,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:storage'],
           source: sourceFocus(
             trim,
-            'insertSegment(this.#engine.sql, {',
-            'trimThrough(sql, last.offset + 1, expiring.length)'
+            'insertSegment(this.#engine.sql, this.#channel, {',
+            'trimThrough(sql, this.#channel, last.offset + 1, expiring.length)'
           ),
           durable:
             'The segment locator, then the deletion of the flushed rows.',
@@ -723,7 +723,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:storage'],
           source: sourceFocus(
             commitCursor,
-            'ON CONFLICT(consumer) DO UPDATE',
+            'ON CONFLICT(channel, consumer) DO UPDATE',
             'WHERE excluded."offset" > durability_log_cursors."offset"`,'
           ),
           durable: 'The group’s cursor at page.nextOffset.',

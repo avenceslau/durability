@@ -304,7 +304,7 @@ export const walkthrough = validateWalkthrough({
     },
     websockets: {
       description:
-        'The server end of the connection, accepted with ctx.acceptWebSocket. Its attachment holds the upgrade metadata and the subscribed event names, and the runtime keeps it while the object is evicted.',
+        'The server end of the connection, accepted with ctx.acceptWebSocket. Its attachment holds the upgrade metadata, the socket’s channel, and the subscribed event names, and the runtime keeps it while the object is evicted.',
       href: '/primitives/socket/',
       source: 'accept',
     },
@@ -316,7 +316,7 @@ export const walkthrough = validateWalkthrough({
     },
     events: {
       description:
-        'durability_socket_events in the object’s SQLite storage. Every outbound event gets the next sequence number; the newest 1,000 by default are kept for replay.',
+        'durability_socket_events in the object’s SQLite storage. Every outbound event gets the next sequence number of its socket’s channel; the newest 1,000 of each channel by default are kept for replay.',
       href: '/reference/storage/',
       source: 'publish',
     },
@@ -405,12 +405,12 @@ export const walkthrough = validateWalkthrough({
           id: 'accept',
           title: 'The object accepts a hibernatable socket',
           description:
-            'The object’s fetch() delegates to DurabilitySocket, which accepts the server end with ctx.acceptWebSocket and stores the metadata and an empty subscription in the socket’s attachment.',
+            'The object’s fetch() delegates to DurabilitySocket, which accepts the server end with ctx.acceptWebSocket and stores the metadata, an empty subscription, and the socket’s channel in the socket’s attachment.',
           stage: ['socket', 'websockets', 'durable-object', 'focus:websockets'],
           source: sourceFocus(
             accept,
             'this.#context.acceptWebSocket(server);',
-            'names: [],'
+            'channel: this.#channel,'
           ),
           durable: 'Nothing in SQLite.',
           volatile:
@@ -444,7 +444,8 @@ export const walkthrough = validateWalkthrough({
             'this.#lastSeq = frame.seq;',
             "this.#invoke(handler, { names: fresh }, 'resync');"
           ),
-          durable: 'The head is MAX(seq) of the event table; nothing changes.',
+          durable:
+            'The head is MAX(seq) of the channel’s rows in the event table; nothing changes.',
           volatile: 'The last sequence and the names with history.',
           status: 'recovery',
         },
@@ -514,7 +515,7 @@ export const walkthrough = validateWalkthrough({
           id: 'publish',
           title: 'Store the event, then push it',
           description:
-            'socket.created() inserts the event with the next sequence, deletes rows beyond retention, and sends the frame to every open socket subscribed to created.',
+            'socket.created() inserts the event with its channel’s next sequence, deletes that channel’s rows beyond retention, and sends the frame to every open socket subscribed to created.',
           stage: ['focus:events'],
           source: sourceFocus(
             publish,

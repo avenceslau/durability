@@ -9,7 +9,7 @@ Import `DurabilitySemaphore` from `durability/experimental/semaphore` and pin an
 
 `DurabilitySemaphore` runs inside the holder object you define, one per semaphore key, and keeps the whole budget there:
 
-- **`ctx.storage.sql`** holds `durability_semaphore_grants` and `durability_semaphore_leases`. Every round applies reports and writes new grants and leases in one storage transaction, before any client hears back.
+- **`ctx.storage.sql`** holds `durability_semaphore_grants` and `durability_semaphore_leases`, keyed by the semaphore's `channel`. Every round applies reports and writes new grants and leases in one storage transaction, before any client hears back.
 - **The object's one alarm** follows the earliest claim deadline of a grant with unclaimed permits, so unclaimed capacity comes back without another request. Your class's `alarm()` must delegate to the scheduler. Lease expiry is checked when rounds and reports run, not on the alarm.
 - **The live instance** holds the requests waiting for a round, the round timer, and whatever your `limit` and `groupLimit` callbacks read. Eviction fails the waiting RPC calls; clients ask again.
 - **RPC with client objects** goes through `DurabilitySemaphore.client()`, which reaches the holder with `getByName(key)` and calls the method you choose. Clients keep their own copy of grants and leases and report cumulative counts.
@@ -22,7 +22,7 @@ Import `DurabilitySemaphore` from `durability/experimental/semaphore` and pin an
 
 ## Behind the scenes
 
-**Durable state:** grant tables record client/group ownership, permits, cumulative claimed/released counts, and expiry. Optional lease tables account for locally drawable capacity. The request array awaiting a round is in memory, not a persisted work queue.
+**Durable state:** grant tables record the pool channel, the owning client (`clientId` and client channel) and group, permits, cumulative claimed/released counts, and expiry. Optional lease tables account for locally drawable capacity. The request array awaiting a round is in memory, not a persisted work queue.
 
 An allocation round first applies cumulative reports transactionally, reclaims expired unclaimed grants, and allocates grants in oldest-demand order. High-water marks only move forward and are clamped, so repeated or reordered reports cannot return the same capacity twice.
 
@@ -89,6 +89,14 @@ const grant = await limits.with(timeout, 5_000).request(accountId, {
 - **Client side.** `DurabilitySemaphore.client()` has the same shape as `DurabilityRouting.client()`: the Vite plugin injects `exportName`, `namespace` is the escape hatch, and caller transforms such as `timeout` compose. The underlying `SemaphoreClient` is transport-independent and remembers each key's `nextRequestAt`.
 
 `usage()` reports the limit, outstanding permits, lease footprint, and per-group usage. `DurabilitySemaphore.migrate(this.ctx, null)` removes the schema.
+
+### Pools and client identity
+
+One object can hold several limits. Give each `DurabilitySemaphore` its own `channel` (default `default`), expose each through its own RPC method, and build one `DurabilitySemaphore.client()` per method. Each pool has its own limit, groups, rounds, grants, and leases; a report for a grant in another pool is answered `not_found` and frees nothing. A second semaphore on a channel already in use on the same object throws. Grants and leases of a pool that no instance attached are kept unchanged until it attaches again.
+
+The holder identifies a client by `clientId` together with `clientChannel`, the channel of the queue that sent the message (`default` when omitted). Two queues on one object can share a `clientId` and a pool without claiming, releasing, or settling each other's grants or leases. Messages without `clientChannel` use `v: 1`; messages with it use `v: 2`, and the holder echoes `v` and `clientChannel` in every response. A holder from before channels accepts only version 1 and rejects version 2 before allocating anything, so upgrade holders before giving queues a channel. `lease_granted`, `lease_retired`, and `grant_reclaimed` lifecycle events carry the client's `clientChannel`.
+
+The schema migration moves existing grants and leases to the default pool and client channel without changing their IDs. Reverting it refuses to run while any grant or lease has another pool or client channel.
 
 ### Leases
 

@@ -44,13 +44,13 @@ const stage = sourceExcerpt(
   '  #stageIn(sql: SqlStorage, key: string, value: Value): OutboxRow {',
   '    return staged;\n  }'
 );
-const attach = sourceExcerpt(
-  outbox,
-  outboxFile,
-  'attach',
-  'Join the scheduler’s alarm passes',
-  '  #attach(): void {',
-  '    channels.set(this.#channel, () => this.#runDue());\n  }'
+const registerChannel = sourceExcerpt(
+  scheduler,
+  schedulerFile,
+  'register-channel',
+  'Run attached channels, retain the rest',
+  '  registerChannel(participant: ChannelParticipant): void {',
+  '          now\n        );\n      }\n    });\n  }'
 );
 const runDue = sourceExcerpt(
   outbox,
@@ -248,9 +248,9 @@ export const walkthrough = validateWalkthrough({
     },
     outbox: {
       description:
-        'Owns one channel and its publish callback. Only this instance holds the channel’s running batch, the retry() marks of a publish in flight, and its timeout. Permits and the in-memory timer belong to the shared scheduler. Two outboxes with one channel on one scheduler throw.',
+        'Owns one channel and its publish callback, and attaches that channel to the scheduler the same way every other helper attaches its channels. Only this instance holds the channel’s running batch, the retry() marks of a publish in flight, and its timeout. Permits and the in-memory timer belong to the shared scheduler. Two outboxes with one channel on one scheduler throw.',
       href: '/primitives/outbox/',
-      source: 'attach',
+      source: 'construct',
     },
     alarm: {
       description:
@@ -281,7 +281,7 @@ export const walkthrough = validateWalkthrough({
     outboxObject,
     config,
     construct,
-    attach,
+    registerChannel,
     stage,
     transaction,
     reconcile,
@@ -320,7 +320,7 @@ export const walkthrough = validateWalkthrough({
           id: 'migrate',
           title: 'Create tables in the object’s SQLite',
           description:
-            'The constructor applies the outbox migrations through ctx.storage.sql, then attaches its channel. The first outbox on a scheduler registers durability_outbox with it, so every alarm pass runs due rows.',
+            'The constructor applies the outbox migrations through ctx.storage.sql, then attaches its channel with the scheduler’s registerChannel. The first channel attached for durability_outbox registers the table with the scheduler, so every alarm pass runs the due rows of each attached channel.',
           stage: ['sqlite', 'focus:sqlite'],
           source: sourceFocus(
             construct,
@@ -470,17 +470,17 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'pass',
-          title: 'The pass runs every channel',
+          title: 'The pass runs every attached channel',
           description:
-            'The scheduler’s pass runs each attached channel, then postpones up to 50 due rows of each channel no outbox attaches anymore by 60 seconds, so they keep their data without firing the alarm every pass. If more rows are due, the reconciled alarm brings another pass for them.',
+            'The scheduler’s pass for durability_outbox first postpones the due rows of each channel no outbox attaches by 60 seconds, with a durability.channel_missing report, so they keep their data without firing the alarm every pass. It then runs the pass of each attached channel, here the default one.',
           stage: ['focus:outbox'],
           source: sourceFocus(
-            attach,
-            'runDue: async () => {',
-            'await postponeOrphans(engine, created);'
+            registerChannel,
+            'runDue: async (now, info) => {',
+            '[...created.values()].map((attached) => attached.runDue(now, info))'
           ),
           durable:
-            'Up to 50 due rows per orphaned channel move 60 seconds later; nothing is deleted.',
+            'Due rows of unattached channels move 60 seconds later; nothing is deleted.',
           volatile: 'The pass and its permit.',
           status: 'recovery',
         },

@@ -9,7 +9,7 @@ Import `DurabilitySemaphoreQueue` from `durability/experimental/semaphore` and p
 
 `DurabilitySemaphoreQueue` runs in each client object that queues work, next to the operations it admits, and talks to the holder object only over RPC:
 
-- **`ctx.storage.sql`** holds the queue's items, this object's copy of every grant and lease, per-key request pacing, and pending reports as rows of the shared outbox. Claims and their reports commit in one transaction.
+- **`ctx.storage.sql`** holds the queue's items, this object's copy of every grant and lease, per-key request pacing, and pending reports as rows of the shared outbox. Every queue row is keyed by the queue's `channel`. Claims and their reports commit in one transaction.
 - **The object's one alarm** is shared with every helper on the scheduler. It drives permit requests for due keys, `admit()` retries, `finished()` checks, lease renewals, and report publishing, so your class's `alarm()` must delegate to the scheduler.
 - **The live instance** holds only the keys with a request in flight, the holder's last blocked reasons, and the running `admit()` and `finished()` calls. Eviction loses an open request; the key is asked again after its deadline.
 - **RPC to the holder** goes through `DurabilitySemaphore.client()`: `request` waits for the holder's round, and `sync` carries cumulative claimed, released, and drawn counts from the outbox. The holder never calls the client.
@@ -22,7 +22,7 @@ Import `DurabilitySemaphoreQueue` from `durability/experimental/semaphore` and p
 
 ## Behind the scenes
 
-**Durable state:** queue item, grant, pacing-key, and optional lease tables hold local demand and allocated capacity. An internal [outbox](/primitives/outbox/) channel, `durability.semaphore-queue`, persists cumulative claim/release reports on the same scheduler.
+**Durable state:** queue item, grant, pacing-key, and optional lease tables hold local demand and allocated capacity. An internal [outbox](/primitives/outbox/) channel persists cumulative claim/release reports on the same scheduler: `durability.semaphore-queue` for the default queue, and the JSON tuple `["durability.semaphore-queue","<channel>"]` for a named one.
 
 `enqueue()` idempotently inserts items by ID. Demand is aggregated per semaphore key and group. Returned grants are stored transactionally; local claims and their outbound reports commit together. Grant-based work becomes admitted after holder confirmation. Lease-drawn work can be admitted locally because its capacity was already reserved at the holder.
 
@@ -90,10 +90,18 @@ export class JobShard extends DurableObject<Env> {
 }
 ```
 
-- **States.** An item is `queued` until permits arrive, `claiming` while the holder confirms the claim, and `admitted` once `admit()` has been handed the item. Items drawn from a lease skip `claiming` and are admitted at once; `AdmittedItem.via` says which path admitted an item. `admit()` runs after the admission commits and is retried under `retries.delay` until it returns, so it must be idempotent on item ID. `release(id)` returns the permit; `cancel(id)` removes an item that is still `queued`.
+- **States.** An item is `queued` until permits arrive, `claiming` while the holder confirms the claim, and `admitted` once the holder has confirmed it; `admit()` is then handed the item. Items drawn from a lease skip `claiming` and are admitted at once; `AdmittedItem.via` says which path admitted an item. `admit()` runs after the admission commits and is retried under `retries.delay` until it returns, so it must be idempotent on item ID. `release(id)` returns the permit; `cancel(id)` removes an item that is still `queued`.
 - **Releasing.** Call `release(id)` when the work ends, and pass `finished(ids)` so a release that never happens — a lifecycle hook is best-effort, a crash can come between the work ending and the call — does not hold the permit forever. The queue asks `finished` about each admitted item `finishedCheckMs` (default 60 seconds) after `admit()` returned, and again at that interval, releasing the ones it reports done. Without `finished`, a lost `release()` leaks the permit until the item is released by hand.
-- **Requests.** Each key is asked at most once per `nextRequestAt`, with demand aggregated per group from the oldest queued items. A failed request, or one unanswered after `attemptTimeoutMs`, is retried with backoff. Items whose key already holds unclaimed permits — a grant sized for demand that was cancelled, say — are admitted without a request.
+- **Requests.** Each key is asked at most once per `nextRequestAt`, with demand aggregated per group from the oldest queued items. A failed request, or one unanswered after `attemptTimeoutMs`, is retried with backoff. Requests for due keys run alongside pending `admit()` and `finished()` calls, not after them. A failed alarm pass is retried from an in-memory timer after 1 second, doubling up to `alarmMinDelayMs`, so a claim report due in that pass does not wait for the fallback alarm. Items whose key already holds unclaimed permits — a grant sized for demand that was cancelled, say — are admitted without a request.
 - **Blocked attribution.** `status(id)` on a queued item carries the holder's most recent reason for that key and group (`limit`, `group_limit`, …); `blocked` lifecycle events report counts per group. Attribution is in-memory and best-effort.
-- **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel (`durability.semaphore-queue`) on it; one queue per scheduler. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
+- **Composition.** The queue shares the scheduler with everything else in the object and creates its own outbox channel on it; one queue per channel. Pass `DurabilitySemaphore.client()` as `server` — caller transforms apply to every request and sync.
+
+### Channels
+
+Several queues can share one object: give each its own `channel` (default `default`). Items, grants, keys, and leases are scoped to the queue, so two queues may use the same item IDs and keys. Which holder pool a key reaches is decided by `server`, not by the channel.
+
+The default queue sends version-1 messages without `clientChannel`, as before. A named queue sends version 2 with `clientChannel`, so the holder counts its permits apart from other queues sharing its `clientId`. The queue applies a response only if it echoes the same version and channel. A mismatched grant is ignored and the key is asked again after `attemptTimeoutMs`; a mismatched sync leaves its reports pending for retry. A holder from before channels rejects version 2 before allocating anything, so the named queue's items stay queued until a compatible holder answers. Upgrade holders before giving queues a channel.
+
+Records of a queue channel that no instance attached are kept unchanged until it attaches again. The schema migration moves existing items, grants, keys, and leases to the default queue without changing their IDs, and their pending reports stay on the default queue's outbox channel. Reverting it refuses to run while any queue other than `default` has records.
 
 `DurabilitySemaphoreQueue.migrate(this.ctx, null)` removes the queue schema. See the typechecked [account concurrency composition](https://github.com/avenceslau/durability/blob/main/examples/account-concurrency).

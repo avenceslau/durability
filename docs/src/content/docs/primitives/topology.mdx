@@ -10,7 +10,7 @@ Import `DurabilityTopology` from `durability/experimental` and pin an exact vers
 `DurabilityTopology` turns one Durable Object into the coordinator of its groups. It uses that object, and only reads or calls the others:
 
 - **`ctx.storage.sql`** holds the membership, state values, and write records in `durability_topology_*` tables, plus every staged publication and delivery as rows in the shared `durability_outbox` table. They commit in one transaction with each change.
-- **The object's one alarm** is set in that same transaction to the earliest pending outbox row, so publication and deliveries resume after eviction. Your class's `alarm()` must delegate to the scheduler the helper is attached to.
+- **The object's one alarm** is set in that same transaction to the earliest pending outbox row, so publication and deliveries resume after eviction. Your class's `alarm()` must delegate to the object's scheduler, which the helper joins.
 - **The live instance** holds the in-flight store writes, member calls, and their timeouts. An eviction loses them; the outbox rows and write records in storage are what recovery relies on.
 - **Other objects and Workers** never share that storage. Members receive state values over RPC and must check versions themselves; readers use `DurabilityTopology.client`, which reads the published copy and never calls the coordinator.
 
@@ -22,7 +22,7 @@ Import `DurabilityTopology` from `durability/experimental` and pin an exact vers
 
 ## Behind the scenes
 
-**Durable state:** `durability_topology_groups` and `durability_topology_states` hold membership and channel values. `durability_topology_writes` tracks publication requests that could still land after timeout or eviction. Internal [outbox](/primitives/outbox/) channels drive group publication and per-member state delivery.
+**Durable state:** `durability_topology_groups` and `durability_topology_states` hold membership and state channel values. `durability_topology_writes` tracks publication requests that could still land after timeout or eviction. Every row carries an `owner_channel`, the [instance channel](#instance-channels) it belongs to, as part of its key. Internal [outbox](/primitives/outbox/) channels drive group publication and per-member state delivery.
 
 `update(group, next)` evaluates your synchronous draft inside a transaction. It commits membership changes, changed state values, and staged publication/deliveries together. Membership versions advance on actual membership changes; outbox delivery versions prevent applying stale channel values at members.
 
@@ -120,7 +120,7 @@ A shard created on demand can still join its group, so readers can find it later
 
 ### Publishing
 
-`publish.write` receives the snapshot and an `encoded` string. Store `encoded` as is; it is the only format the client reads, and no encoder is exported, so only the coordinator can produce one. It carries the coordinator's Durable Object ID, because versions only compare within one coordinator: if a group moves to another coordinator, its versions start over, and readers accept the new snapshot. Publication runs on a `DurabilityOutbox` channel (`durability.topology`) keyed by group, so it shares the outbox's guarantees: only the newest snapshot of a group is pending, publish calls for the channel run one at a time, and attempts never stop (`retries.delay` controls backoff). The outbox expects sinks to keep the highest version, which a plain `KV.put` cannot, so the topology closes that gap itself, durably:
+`publish.write` receives the snapshot and an `encoded` string. Store `encoded` as is; it is the only format the client reads, and no encoder is exported, so only the coordinator can produce one. It carries the coordinator's Durable Object ID, because versions only compare within one coordinator: if a group moves to another coordinator, its versions start over, and readers accept the new snapshot. Publication runs on a `DurabilityOutbox` channel (`durability.topology` for the default [instance channel](#instance-channels)) keyed by group, so it shares the outbox's guarantees: only the newest snapshot of a group is pending, publish calls for the channel run one at a time, and attempts never stop (`retries.delay` controls backoff). The outbox expects sinks to keep the highest version, which a plain `KV.put` cannot, so the topology closes that gap itself, durably:
 
 - Every write is recorded in storage before it starts and forgotten once it settles.
 - A record that outlives its write, because the write timed out or the object was evicted mid-write, means an older snapshot may still land. A newer write is then not acknowledged until that record's landing deadline has passed, and is written again at that point.
@@ -130,7 +130,7 @@ The landing deadline is the write's start plus `attemptTimeoutMs` plus five minu
 
 ### State channels
 
-Each entry in `states` is a channel whose latest value every member converges to. `members: 'write'` (the default) reaches active members; `'read'` reaches draining members too. Setting a value delivers it to every member in the role. A member that enters the role receives the current value in the same transaction that added it, so a new shard never starts with an old value. A member that leaves the role has its pending delivery discarded; one already in flight may still arrive. Each channel is its own outbox channel (`durability.topology.<name>`) keyed by group and member, so every member is retried independently; `attemptTimeoutMs` bounds one delivery, and a member that hangs holds up the rest of its batch only until then. Setting a channel to the value it already has delivers nothing.
+Each entry in `states` is a channel whose latest value every member converges to. `members: 'write'` (the default) reaches active members; `'read'` reaches draining members too. Setting a value delivers it to every member in the role. A member that enters the role receives the current value in the same transaction that added it, so a new shard never starts with an old value. A member that leaves the role has its pending delivery discarded; one already in flight may still arrive. Each state channel is its own outbox channel (`durability.topology.<name>` for the default instance channel) keyed by group and member, so every member is retried independently; `attemptTimeoutMs` bounds one delivery, and a member that hangs holds up the rest of its batch only until then. Setting a channel to the value it already has delivers nothing.
 
 Only the latest value is delivered, and a timed-out delivery may still arrive after a newer one. `version` is the outbox version, which only increases. Apply an update only when it is newer than the last one applied, in the same transaction:
 
@@ -147,7 +147,27 @@ applyLimits(update: TopologyStateUpdate<Limits>) {
 }
 ```
 
-`onLifecycleEvent` receives the outbox events of those channels: `channel` names the publication or state channel, and `id` is the group, or `[group, member]` as JSON for a delivery.
+`onLifecycleEvent` receives the outbox events of those channels: `channel` is the outbox channel name of the publication or state channel, and `id` is the group, or `[group, member]` as JSON for a delivery.
+
+### Instance channels
+
+State channels are the values pushed to members. Instance channels are a different thing: the `channel` option, `default` unless given one, lets several topologies share one coordinator and scheduler, for example an application's and a library's. Each instance channel holds one topology, with its own groups, state values, versions, stale-write fencing through its write records, publisher, and deliveries. The same group and state names in two instance channels are unrelated, and deleting or updating one leaves the other alone. Constructing a second topology on an instance channel already in use throws `DurabilityTopology for channel "<channel>" is already attached to this scheduler`, with or without a publisher.
+
+```ts
+private readonly libraryTopology = new DurabilityTopology({
+  scheduler: this.scheduler,
+  channel: 'library',
+  publish: {
+    write: (snapshot, encoded) =>
+      this.env.TOPOLOGY.put(`library/${snapshot.group}`, encoded),
+    delete: (group) => this.env.TOPOLOGY.delete(`library/${group}`),
+  },
+});
+```
+
+Snapshots do not name the instance channel, and both instances record the same coordinator ID, so instances that share a read store must publish under different keys, as above. The default instance keeps the outbox channels `durability.topology` and `durability.topology.<state>`. Any other instance uses the JSON outbox channel names `["durability.topology", <channel>, "publication"]` and `["durability.topology", <channel>, "state", <state>]`, so two instances or states never share an outbox channel. Pending publications and deliveries of an instance that is no longer constructed are kept and postponed by the outbox, never handed to another instance.
+
+The channel migration adds `owner_channel` to the three topology tables and moves existing groups, states, and write records to `default`. A schema downgrade refuses to run while rows of another instance channel exist, including the rows `delete` leaves behind; delete those rows explicitly before rolling back.
 
 ### Reading
 

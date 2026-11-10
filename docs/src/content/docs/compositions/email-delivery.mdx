@@ -17,6 +17,7 @@ This walkthrough follows the complete [email queue Worker](https://github.com/av
 </ArchitectureWalkthrough>
 
 - `EmailDelivery` owns acceptance, pending delivery state, and one shared scheduler.
+- The fanout uses the default [channel](/primitives/fanout/#channels). Another fanout on a channel of its own, such as a library's, could share the object and its scheduler without seeing these targets, message IDs, or deliveries.
 - `EmailConsumer` is an ordinary `WorkerEntrypoint`, not a special queue superclass.
 - `DurabilityRouting` chooses the object and reports advisory load. It does not own the queue's records.
 - R2 stores archives and dead letters under distinct prefixes in the `DEAD_LETTERS` bucket binding.
@@ -88,7 +89,7 @@ await routing.with(timeout, 5_000).push({
 });
 ```
 
-Keep retries on the same shard. Fanout deduplication lasts only while its registration remains active and is local to that object; it is not permanent or cross-shard. Keep receiver-side deduplication long enough for the actual replay policy.
+Keep retries on the same shard. Fanout deduplication lasts only while its registration remains active and is local to that object and fanout channel; it is not permanent or cross-shard. Keep receiver-side deduplication long enough for the actual replay policy.
 
 ## Redrive only the failed obligation
 
@@ -120,7 +121,7 @@ Never delete the parked entry before acceptance or after a transport error. A cr
 | One target exhausts its attempts            | Only that target is dead-lettered; siblings continue              | Inspect and authorize redrive              |
 | R2 dead-letter write fails                  | Durable terminal intent remains; DLQ writing retries              | Monitor storage availability               |
 | Redrive accepts, then stops before deleting | The same parked entry may be replayed again                       | Keep external effects idempotent           |
-| Original target ID is removed               | Its accepted work remains pending with errors/backoff             | Keep target IDs stable or plan a migration |
+| Original target ID is removed               | Its accepted work stays pending, postponed with a report          | Keep target IDs stable or plan a migration |
 
 ## Provisioning and production changes
 
