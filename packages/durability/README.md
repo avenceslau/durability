@@ -733,6 +733,33 @@ An inbound handler is either a bare function, which receives no input or `unknow
 
 Every outbound event is persisted to `durability_socket_events` with a sequence number before it is pushed. A reconnecting client subscribes from the last sequence it saw: events still within `retention` (default 1000) are replayed in order, otherwise the client is told to resync and should rebuild its state from an inbound snapshot call. Payloads must be JSON. Keep-alive pings are answered by the runtime through `setWebSocketAutoResponse`, so idle connections never wake the object. Frames over 1 MiB are rejected; malformed frames close the connection with code `4002`.
 
+### Socket channels
+
+Like the other helpers, `DurabilitySocket` takes a `channel` option, `default` unless given one, and each channel holds one socket per object. A library can bring its own socket into an object that already has one, even with the same method and event names:
+
+```ts
+readonly librarySocket = new DurabilitySocket({
+  context: this.ctx,
+  channel: 'durable-alerts',
+  inbound: { list: () => this.alerts.list() },
+  outbound: { updated: event<Alert>() },
+});
+
+fetch(request: Request) {
+  // Which socket accepts an upgrade is up to the application.
+  return new URL(request.url).pathname.endsWith('/alerts')
+    ? this.librarySocket.fetch(request)
+    : this.socket.fetch(request);
+}
+
+webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+  // Any socket routes a frame to the socket of the connection's channel.
+  return this.socket.webSocketMessage(ws, message);
+}
+```
+
+A connection belongs to the channel of the socket whose `fetch` accepted it; the channel is stored in its WebSocket attachment next to its metadata and subscriptions, so it survives hibernation. Its calls and subscriptions run only that socket's handlers, whichever socket the object's `webSocketMessage` delegates to, and an outbound method pushes only to its own channel's subscribers. Each channel numbers, retains, and replays its events independently, so one channel's traffic never trims another's history or makes its clients resync. Connections accepted before channels existed belong to `default`. A frame from a connection whose channel no socket attached, such as one a deploy removed, closes it with code `1011` and a `durability.socket.channel_missing` report; it never reaches another channel, and the channel's events are kept for when its socket attaches again. Attaching a second socket to a channel already in use throws. Events use the composite primary key `(channel, seq)`; existing events move to `default` with their sequence numbers. A schema downgrade refuses to discard non-default-channel events: revert those channels' sockets and delete their events first. The wire protocol and browser client are unchanged; point a client at the endpoint the application routes to that channel.
+
 The browser client derives every method and event type from the socket:
 
 ```ts
