@@ -1,9 +1,8 @@
-import { writeFileSync } from 'node:fs';
-import { dirname, extname, relative, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { parse as parseJavaScript } from '@babel/parser';
 import MagicString from 'magic-string';
 import type { Plugin, ResolvedConfig } from 'vite';
-import { wranglerBindingTypes } from './declarations.js';
+import { writeBindingDeclarations } from './declarations.js';
 import { collectRoutingInjections } from './routing.js';
 import {
   clientFactories,
@@ -24,7 +23,7 @@ import {
   unwrapExpression,
   type SyntaxNode,
 } from './syntax.js';
-import { unwrappedBindingTypes } from './wrangler.js';
+import { loadWranglerProject, type WranglerBindings } from './wrangler.js';
 import { namespaceCall, unusedName, type Wrapper } from './wrap.js';
 
 /** Configuration for the durability transforms Vite plugin. */
@@ -61,9 +60,11 @@ export type DoTransformsPluginOptions = {
  * ```
  */
 export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
-  let durableObjectBindingNames = new Set<string>();
-  let stubBindingNames = new Set<string>();
-  let durableObjectClassNames = new Set<string>();
+  let bindings: WranglerBindings = {
+    durableObjectBindingNames: new Set(),
+    stubBindingNames: new Set(),
+    durableObjectClassNames: new Set(),
+  };
 
   return {
     name: 'do-transforms',
@@ -73,139 +74,25 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         config.root,
         options.wrangler ?? 'wrangler.jsonc'
       );
-      const wranglerModule = await import('wrangler');
-      let wrangler: import('wrangler').Unstable_Config;
-      try {
-        wrangler = wranglerModule.unstable_readConfig(
-          { config: wranglerPath },
-          { hideWarnings: true, preserveOriginalMain: true }
-        );
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        throw Object.assign(
-          new Error(
-            `do-transforms could not load a valid Wrangler configuration at ${wranglerPath}: ${detail}`
-          ),
-          { cause: error }
-        );
-      }
+      const project = await loadWranglerProject(wranglerPath);
+      bindings = project.bindings;
 
-      const durableObjectBindings = wrangler.durable_objects.bindings;
-      durableObjectBindingNames = new Set(
-        durableObjectBindings.map((binding) => binding.name)
-      );
-      const bindings =
-        wranglerModule.unstable_convertConfigBindingsToStartWorkerBindings(
-          wrangler
-        ) ?? {};
-      stubBindingNames = new Set(
-        Object.entries(bindings).flatMap(([name, binding]) => {
-          const type: unknown = Reflect.get(Object(binding), 'type');
-          return typeof type !== 'string' ||
-            unwrappedBindingTypes.has(type) ||
-            type.startsWith('unsafe_')
-            ? []
-            : [name];
-        })
-      );
-      durableObjectClassNames = new Set([
-        ...durableObjectBindings.flatMap((binding) =>
-          binding.script_name === undefined ? [binding.class_name] : []
-        ),
-        ...(wrangler.migrations ?? []).flatMap((migration) => [
-          ...(migration.new_sqlite_classes ?? []),
-          ...(migration.new_classes ?? []),
-        ]),
-      ]);
-
-      if (options.types === false || !wrangler.main) {
+      if (options.types === false || !project.config.main) {
         return;
       }
 
-      const mainPath = resolve(dirname(wranglerPath), wrangler.main);
+      const mainPath = resolve(dirname(wranglerPath), project.config.main);
       const typesPath = options.types
         ? resolve(config.root, options.types)
         : resolve(dirname(mainPath), 'do-transforms.generated.d.ts');
-      if (!typesPath.endsWith('.d.ts')) {
-        throw new Error(
-          `do-transforms types path must end in .d.ts: ${typesPath}`
-        );
-      }
-      let modulePath = relative(dirname(typesPath), mainPath)
-        .split('\\')
-        .join('/');
-      modulePath = modulePath.slice(0, -extname(modulePath).length);
-      if (!modulePath.startsWith('.')) {
-        modulePath = `./${modulePath}`;
-      }
-
-      const durableObjectTypeEntries = durableObjectBindings.map((binding) => {
-        const className = binding.class_name;
-        const localClass =
-          binding.script_name === undefined &&
-          /^[A-Z_$][\w$]*$/i.test(className)
-            ? `import(${JSON.stringify(modulePath)}).${className}`
-            : undefined;
-        return {
-          binding: /^[A-Z_$][\w$]*$/i.test(binding.name)
-            ? binding.name
-            : JSON.stringify(binding.name),
-          localClass,
-        };
-      });
-      let wranglerEnvTypes: string | null;
-      try {
-        ({ env: wranglerEnvTypes } =
-          await wranglerModule.experimental_generateTypes({
-            config: wranglerPath,
-            includeRuntime: false,
-            path: typesPath,
-          }));
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        throw Object.assign(
-          new Error(
-            `do-transforms could not generate Wrangler binding types for ${wranglerPath}: ${detail}`
-          ),
-          { cause: error }
-        );
-      }
-      const bindingTypes = wranglerBindingTypes(wranglerEnvTypes ?? '');
-      const stubTypeEntries = [...stubBindingNames].flatMap((name) => {
-        const type = bindingTypes.get(name);
-        if (type === undefined) {
-          return [];
-        }
-        return [
-          {
-            binding: /^[A-Z_$][\w$]*$/i.test(name)
-              ? name
-              : JSON.stringify(name),
-            type,
-          },
-        ];
-      });
-      const declarations = (indent: string) =>
-        [
-          ...durableObjectTypeEntries.map(({ binding, localClass }) =>
-            localClass
-              ? `${indent}${binding}: TransformDurableObjectNamespace<\n${indent}  ${localClass}\n${indent}>;`
-              : `${indent}${binding}: TransformDurableObjectNamespace;`
-          ),
-          ...stubTypeEntries.map(
-            ({ binding, type }) =>
-              `${indent}${binding}: TransformStub<${type}>;`
-          ),
-        ].join('\n');
-      const durableObjectNamespaceType =
-        durableObjectTypeEntries.length === 0
-          ? ''
-          : `\ntype TransformDurableObjectNamespace<\n  T extends Rpc.DurableObjectBranded | undefined = undefined,\n> = Omit<DurableObjectNamespace<T>, 'get' | 'getByName'> & {\n  get(\n    id: DurableObjectId,\n    options?: DurableObjectNamespaceGetDurableObjectOptions\n  ): TransformStub<DurableObjectStub<T>>;\n  getByName(\n    name: string,\n    options?: DurableObjectNamespaceGetDurableObjectOptions\n  ): TransformStub<DurableObjectStub<T>>;\n};\n`;
-      const contents = `import type { TransformStub } from '@durability/transforms';\n${durableObjectNamespaceType}\ndeclare global {\n  interface Env {\n${declarations('    ')}\n  }\n\n  namespace Cloudflare {\n    interface Env {\n${declarations('      ')}\n    }\n  }\n}\n\nexport {};\n`;
-
-      writeFileSync(typesPath, contents);
+      await writeBindingDeclarations(project, mainPath, typesPath);
     },
     transform(code, id) {
+      const {
+        durableObjectBindingNames,
+        stubBindingNames,
+        durableObjectClassNames,
+      } = bindings;
       const cleanId = id.split('?')[0] ?? id;
       const mayWrapBindings =
         durableObjectBindingNames.size > 0 || stubBindingNames.size > 0;
