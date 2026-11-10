@@ -1063,6 +1063,8 @@ const result = await routing.push([{ id: 'job:42', body: job }], {
 
 The application chooses the RPC method via `invoke`; routing does not know about messages or fanout. A single push selects one shard for the entire input. Static fanout target IDs identify independent delivery obligations; each accepted message snapshots its recipients. Targets added later do not receive old work, and a removed target's work remains durable with an error and backoff until that ID is restored. Target callbacks/storage references are fixed at capability construction.
 
+Several fanouts share one scheduler and one set of tables, partitioned by `channel` (default `default`), so a library can attach its own fanout beside the application's. Target IDs, message IDs, and deduplication keys are independent in each channel, and each instance delivers, settles, memoizes, and counts `pendingDeliveries` only for its own channel, with its own targets, policies, `dlq`, and lifecycle hooks. Attaching two fanouts with the same channel to one scheduler throws. Deliveries of a channel no fanout attaches are retained and postponed, with a `durability.channel_missing` report, until that channel's fanout attaches again.
+
 ### Acceptance, not completion
 
 `fanout.enqueue` accepts a message or batch and returns:

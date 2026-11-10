@@ -11,6 +11,8 @@ import type { RoutingSession } from '../src/routing';
 import {
   archivePrefix,
   deadLetterPrefix,
+  libraryChannel,
+  libraryDeadLetterPrefix,
   routing,
   type BatchRequest,
   type DeliveryObject,
@@ -204,5 +206,42 @@ describe('composed routing and fanout in workerd', () => {
     await runDurableObjectAlarm(recovered);
     expect(await recovered.cleaned()).toBe(true);
     expect((await recovered.load()).inbound.completed).toBe(0);
+  });
+
+  it('delivers the same message ID and target independently in a NUL-named channel', async () => {
+    const id = crypto.randomUUID();
+    const stub = namespace.getByName(id);
+    const message = { id, body: { action: 'ack' as const, shard: id } };
+    await expect(stub.enqueue({ messages: [message] })).resolves.toMatchObject({
+      success: true,
+    });
+    await expect(stub.enqueueLibrary([message])).resolves.toMatchObject({
+      success: true,
+      load: { outbound: { pendingDeliveries: 1 } },
+    });
+    await waitFor(async () => {
+      expect((await stub.load()).outbound.pendingDeliveries).toBe(0);
+      expect((await stub.libraryLoad()).outbound.pendingDeliveries).toBe(0);
+    });
+
+    expect(await stub.libraryChannels()).toEqual([{ channel: libraryChannel }]);
+    expect(await env.DEAD_LETTERS.head(`received/${id}/1`)).not.toBeNull();
+    expect(await env.DEAD_LETTERS.head(`received/${id}/2`)).toBeNull();
+    expect(
+      await env.DEAD_LETTERS.head(`library-received/${id}/3`)
+    ).not.toBeNull();
+    const deadLetters = async (prefix: string) => {
+      const page = await env.DEAD_LETTERS.list({ prefix });
+      const entries = await Promise.all(
+        page.objects.map(async ({ key }) =>
+          (await env.DEAD_LETTERS.get(key))!.json<StoredMessage<TestMessage>>()
+        )
+      );
+      return entries.filter((entry) => entry.messageId === id);
+    };
+    expect(await deadLetters(libraryDeadLetterPrefix)).toEqual([
+      expect.objectContaining({ target: 'consumer', attempts: 3 }),
+    ]);
+    expect(await deadLetters(deadLetterPrefix)).toEqual([]);
   });
 });

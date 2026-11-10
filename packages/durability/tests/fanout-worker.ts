@@ -22,6 +22,8 @@ export type RouteContext = { shard?: string };
 
 export const archivePrefix = 'archive/';
 export const deadLetterPrefix = 'dead-letters/';
+export const libraryChannel = 'library\u0000one';
+export const libraryDeadLetterPrefix = 'library-dead-letters/';
 
 const writeTo =
   (bucket: R2Bucket, prefix: string) =>
@@ -76,6 +78,34 @@ export class DeliveryObject extends DurableObject<Env> {
     retries: { maxAttempts: 2, delay: () => 10 },
     dlq: writeTo(this.env.DEAD_LETTERS, deadLetterPrefix),
   });
+  // Same target ID as the default channel, under a different policy and DLQ.
+  private readonly library = new DurabilityFanout<TestMessage>({
+    scheduler: this.scheduler,
+    channel: libraryChannel,
+    targets: {
+      consumer: {
+        deliver: async (messages) => {
+          const channels = this.ctx.storage.sql
+            .exec(
+              `SELECT DISTINCT channel FROM durability_fanout_deliveries
+               WHERE channel != 'default'`
+            )
+            .toArray();
+          await this.ctx.storage.put('libraryChannels', channels);
+          await Promise.all(
+            messages.map((message) =>
+              this.env.DEAD_LETTERS.put(
+                `library-received/${message.id}/${message.attempt}`,
+                message.target
+              )
+            )
+          );
+        },
+      },
+    },
+    retries: { maxAttempts: 3, delay: () => 10 },
+    dlq: writeTo(this.env.DEAD_LETTERS, libraryDeadLetterPrefix),
+  });
 
   async enqueue(request: BatchRequest) {
     const result = await this.fanout.enqueue(request.messages, request.options);
@@ -90,6 +120,15 @@ export class DeliveryObject extends DurableObject<Env> {
 
   load() {
     return this.fanout.load();
+  }
+  enqueueLibrary(messages: FanoutInput<TestMessage>[]) {
+    return this.library.enqueue(messages);
+  }
+  libraryLoad() {
+    return this.library.load();
+  }
+  libraryChannels() {
+    return this.ctx.storage.get('libraryChannels');
   }
   scheduleCleanup(at: number) {
     return this.alarms.cleanup(at);
