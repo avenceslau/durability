@@ -409,6 +409,7 @@ export class DurabilitySchedule {
     this.#engine.migrateSchema('schedule', durabilityScheduleMigrations);
     this.#engine.registerChannel({
       table: runsTable,
+      channelTables: ['durability_schedule'],
       channel: this.#channel,
       helper: 'DurabilitySchedule',
       runDue: () => this.#hold(),

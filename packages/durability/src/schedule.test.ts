@@ -1016,6 +1016,42 @@ describe('DurabilitySchedule channels', () => {
     expect(channelRows(storage)).toEqual([]);
   });
 
+  it('logs a removed configuration and resumes it when its channel returns without a write', async () => {
+    start();
+    const storage = new FakeStorage();
+    const original = setup({ channel: 'library' }, storage);
+    await original.schedule.set({ expression: '1000', version: 1 });
+    vi.clearAllTimers();
+
+    const reported = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const application = setup({}, storage);
+    vi.setSystemTime(11_000);
+    await application.schedule.alarm();
+    expect(channelRows(storage)).toEqual([]);
+    expect(storage.alarmAt).toBeNull();
+    expect(reported).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'durability.channel_missing',
+        channel: 'library',
+      })
+    );
+
+    vi.setSystemTime(12_000);
+    const run = vi.fn(async () => undefined);
+    const restored = setup({ channel: 'library', run }, storage);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        scheduledTime: 11_000,
+      })
+    );
+    expect(restored.outcomes).toHaveLength(1);
+    await restored.schedule.cancel();
+    expect(storage.alarmAt).toBeNull();
+  });
+
   it('keeps legacy default keys and gives named channels keys no other channel can produce', async () => {
     start();
     const storage = new FakeStorage();
