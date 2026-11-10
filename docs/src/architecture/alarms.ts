@@ -1,7 +1,7 @@
 import example from '../../../examples/subscription-renewals/worker.ts?raw';
-import durability from '../../../packages/durability/src/durability.ts?raw';
-import durabilityAlarms from '../../../packages/durability/src/durability-alarms.ts?raw';
-import scheduler from '../../../packages/durability/src/scheduler.ts?raw';
+import durability from '../../../packages/durability/src/operations/index.ts?raw';
+import durabilityAlarms from '../../../packages/durability/src/alarms/index.ts?raw';
+import scheduler from '../../../packages/durability/src/scheduler/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -10,9 +10,9 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/subscription-renewals/worker.ts';
-const durabilityFile = 'packages/durability/src/durability.ts';
-const alarmsFile = 'packages/durability/src/durability-alarms.ts';
-const schedulerFile = 'packages/durability/src/scheduler.ts';
+const durabilityFile = 'packages/durability/src/operations/index.ts';
+const alarmsFile = 'packages/durability/src/alarms/index.ts';
+const schedulerFile = 'packages/durability/src/scheduler/index.ts';
 
 const subscription = sourceExcerpt(
   example,

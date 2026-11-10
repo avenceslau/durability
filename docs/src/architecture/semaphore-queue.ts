@@ -1,6 +1,6 @@
 import example from '../../../examples/account-concurrency/worker.ts?raw';
-import queue from '../../../packages/durability/src/semaphore-queue.ts?raw';
-import queueStore from '../../../packages/durability/src/semaphore-queue-store.ts?raw';
+import queue from '../../../packages/durability/src/semaphore/queue.ts?raw';
+import queueStore from '../../../packages/durability/src/semaphore/queue-store.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -9,8 +9,8 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/account-concurrency/worker.ts';
-const queueFile = 'packages/durability/src/semaphore-queue.ts';
-const storeFile = 'packages/durability/src/semaphore-queue-store.ts';
+const queueFile = 'packages/durability/src/semaphore/queue.ts';
+const storeFile = 'packages/durability/src/semaphore/queue-store.ts';
 
 const jobShard = sourceExcerpt(
   example,

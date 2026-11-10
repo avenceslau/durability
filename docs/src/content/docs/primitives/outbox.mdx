@@ -30,7 +30,7 @@ Import `DurabilityOutbox` from `durability/experimental` and pin an exact versio
 
 **Lifetime:** superseded pending versions may never publish. Acknowledged rows disappear; detached channels retain/postpone their work. Use [fanout](/primitives/fanout/) when every message matters. The [semaphore queue](/primitives/semaphore-queue/) composes an internal outbox for cumulative accounting.
 
-Implementation: [`outbox.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/outbox.ts) (staging, batch claims, and publication).
+Implementation: [`outbox/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/outbox/index.ts) (staging, batch claims, and publication).
 
 ## Outbox (experimental)
 

@@ -31,7 +31,7 @@ Engine transactions reconcile that alarm alongside their storage changes. The ne
 
 Never put two independent alarm-owning schedulers in one object: each can overwrite the other's physical-alarm decision. Not every helper needs alarm work: the retained log uses the engine for storage operations but does not automatically schedule retention.
 
-Implementation: [`scheduler.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/scheduler.ts) (`Engine.transaction`, `reconcile`, `runAlarm`, `startExecution`).
+Implementation: [`scheduler/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/scheduler/index.ts) (`Engine.transaction`, `reconcile`, `runAlarm`, `startExecution`).
 
 ## Using both in one Durable Object
 

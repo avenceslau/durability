@@ -1,9 +1,9 @@
 import example from '../../../examples/email-queue/worker.ts?raw';
 import target from '../../../packages/durability/src/durable-object-target.ts?raw';
-import fanout from '../../../packages/durability/src/fanout.ts?raw';
-import load from '../../../packages/durability/src/load.ts?raw';
-import routingClient from '../../../packages/durability/src/routing-client.ts?raw';
-import routing from '../../../packages/durability/src/routing.ts?raw';
+import fanout from '../../../packages/durability/src/fanout/index.ts?raw';
+import load from '../../../packages/durability/src/routing/load.ts?raw';
+import routingClient from '../../../packages/durability/src/routing/client.ts?raw';
+import routing from '../../../packages/durability/src/routing/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -13,10 +13,10 @@ import {
 
 const exampleFile = 'examples/email-queue/worker.ts';
 const targetFile = 'packages/durability/src/durable-object-target.ts';
-const fanoutFile = 'packages/durability/src/fanout.ts';
-const loadFile = 'packages/durability/src/load.ts';
-const routingClientFile = 'packages/durability/src/routing-client.ts';
-const routingFile = 'packages/durability/src/routing.ts';
+const fanoutFile = 'packages/durability/src/fanout/index.ts';
+const loadFile = 'packages/durability/src/routing/load.ts';
+const routingClientFile = 'packages/durability/src/routing/client.ts';
+const routingFile = 'packages/durability/src/routing/index.ts';
 
 const emailDelivery = sourceExcerpt(
   example,

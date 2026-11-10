@@ -1,4 +1,4 @@
-import schedule from '../../../packages/durability/src/schedule.ts?raw';
+import schedule from '../../../packages/durability/src/schedule/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -6,7 +6,7 @@ import {
   type ArchitectureWalkthrough,
 } from '../lib/architecture.ts';
 
-const scheduleFile = 'packages/durability/src/schedule.ts';
+const scheduleFile = 'packages/durability/src/schedule/index.ts';
 
 const construct = sourceExcerpt(
   schedule,

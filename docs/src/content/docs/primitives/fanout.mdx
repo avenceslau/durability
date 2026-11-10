@@ -32,7 +32,7 @@ Import `DurabilityFanout` from `durability`. Use it when every accepted message 
 
 **Lifetime:** deduplication ends when the last obligation settles; this is not permanent operation history. There is no automatic archive/DLQ retention policy and no public fanout purge API.
 
-Implementation: [`fanout.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/fanout.ts) (`enqueue`, target delivery, settlement, and manifest removal); [`migrations.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/migrations.ts).
+Implementation: [`fanout/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/fanout/index.ts) (`enqueue`, target delivery, settlement, and manifest removal); [`fanout/migrations.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/fanout/migrations.ts).
 
 ## Routing and fanout
 

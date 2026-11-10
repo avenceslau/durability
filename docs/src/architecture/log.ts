@@ -1,6 +1,6 @@
 import example from '../../../examples/event-topics/worker.ts?raw';
-import alarms from '../../../packages/durability/src/durability-alarms.ts?raw';
-import log from '../../../packages/durability/src/log.ts?raw';
+import alarms from '../../../packages/durability/src/alarms/index.ts?raw';
+import log from '../../../packages/durability/src/log/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -9,8 +9,8 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/event-topics/worker.ts';
-const logFile = 'packages/durability/src/log.ts';
-const alarmsFile = 'packages/durability/src/durability-alarms.ts';
+const logFile = 'packages/durability/src/log/index.ts';
+const alarmsFile = 'packages/durability/src/alarms/index.ts';
 
 const partition = sourceExcerpt(
   example,

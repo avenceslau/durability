@@ -1,6 +1,6 @@
 import example from '../../../examples/image-jobs/worker.ts?raw';
-import durability from '../../../packages/durability/src/durability.ts?raw';
-import scheduler from '../../../packages/durability/src/scheduler.ts?raw';
+import durability from '../../../packages/durability/src/operations/index.ts?raw';
+import scheduler from '../../../packages/durability/src/scheduler/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -9,8 +9,8 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/image-jobs/worker.ts';
-const durabilityFile = 'packages/durability/src/durability.ts';
-const schedulerFile = 'packages/durability/src/scheduler.ts';
+const durabilityFile = 'packages/durability/src/operations/index.ts';
+const schedulerFile = 'packages/durability/src/scheduler/index.ts';
 
 const imageJobs = sourceExcerpt(
   example,

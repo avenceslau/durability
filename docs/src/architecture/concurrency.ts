@@ -1,6 +1,6 @@
 import example from '../../../examples/account-concurrency/worker.ts?raw';
-import queueSource from '../../../packages/durability/src/semaphore-queue.ts?raw';
-import serverSource from '../../../packages/durability/src/semaphore-server.ts?raw';
+import queueSource from '../../../packages/durability/src/semaphore/queue.ts?raw';
+import serverSource from '../../../packages/durability/src/semaphore/server.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -9,8 +9,8 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/account-concurrency/worker.ts';
-const queueFile = 'packages/durability/src/semaphore-queue.ts';
-const serverFile = 'packages/durability/src/semaphore-server.ts';
+const queueFile = 'packages/durability/src/semaphore/queue.ts';
+const serverFile = 'packages/durability/src/semaphore/server.ts';
 
 const accountLimit = sourceExcerpt(
   example,

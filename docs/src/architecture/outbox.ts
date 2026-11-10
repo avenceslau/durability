@@ -1,6 +1,6 @@
-import worker from '../../../packages/durability/tests/outbox-worker.ts?raw';
-import outbox from '../../../packages/durability/src/outbox.ts?raw';
-import scheduler from '../../../packages/durability/src/scheduler.ts?raw';
+import worker from '../../../packages/durability/tests/outbox/worker.ts?raw';
+import outbox from '../../../packages/durability/src/outbox/index.ts?raw';
+import scheduler from '../../../packages/durability/src/scheduler/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -8,9 +8,9 @@ import {
   type ArchitectureWalkthrough,
 } from '../lib/architecture.ts';
 
-const workerFile = 'packages/durability/tests/outbox-worker.ts';
-const outboxFile = 'packages/durability/src/outbox.ts';
-const schedulerFile = 'packages/durability/src/scheduler.ts';
+const workerFile = 'packages/durability/tests/outbox/worker.ts';
+const outboxFile = 'packages/durability/src/outbox/index.ts';
+const schedulerFile = 'packages/durability/src/scheduler/index.ts';
 
 const outboxObject = sourceExcerpt(
   worker,

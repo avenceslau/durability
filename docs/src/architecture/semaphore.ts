@@ -1,8 +1,8 @@
 import example from '../../../examples/account-concurrency/worker.ts?raw';
-import semaphore from '../../../packages/durability/src/semaphore.ts?raw';
-import leases from '../../../packages/durability/src/semaphore-leases.ts?raw';
-import server from '../../../packages/durability/src/semaphore-server.ts?raw';
-import store from '../../../packages/durability/src/semaphore-store.ts?raw';
+import semaphore from '../../../packages/durability/src/semaphore/index.ts?raw';
+import leases from '../../../packages/durability/src/semaphore/leases.ts?raw';
+import server from '../../../packages/durability/src/semaphore/server.ts?raw';
+import store from '../../../packages/durability/src/semaphore/store.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -11,10 +11,10 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/account-concurrency/worker.ts';
-const semaphoreFile = 'packages/durability/src/semaphore.ts';
-const serverFile = 'packages/durability/src/semaphore-server.ts';
-const storeFile = 'packages/durability/src/semaphore-store.ts';
-const leasesFile = 'packages/durability/src/semaphore-leases.ts';
+const semaphoreFile = 'packages/durability/src/semaphore/index.ts';
+const serverFile = 'packages/durability/src/semaphore/server.ts';
+const storeFile = 'packages/durability/src/semaphore/store.ts';
+const leasesFile = 'packages/durability/src/semaphore/leases.ts';
 
 const accountLimit = sourceExcerpt(
   example,

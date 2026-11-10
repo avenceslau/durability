@@ -32,7 +32,7 @@ For unconditional publication stores, write tracking uses a bounded landing dead
 
 **Reader state is in memory:** TTL caches and fallback decisions are not durable membership. The client reads the published store rather than the coordinator, unless application fallback deliberately adds that dependency.
 
-Implementation: [`topology.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/topology.ts), [`topology-client.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/topology-client.ts).
+Implementation: [`topology/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/topology/index.ts), [`topology/client.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/topology/client.ts).
 
 ## Shard topology (experimental)
 

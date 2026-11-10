@@ -1,9 +1,9 @@
-import coordinatorWorker from '../../../packages/durability/tests/topology-worker.ts?raw';
-import outbox from '../../../packages/durability/src/outbox.ts?raw';
-import scheduler from '../../../packages/durability/src/scheduler.ts?raw';
-import client from '../../../packages/durability/src/topology-client.ts?raw';
-import snapshot from '../../../packages/durability/src/topology-snapshot.ts?raw';
-import topology from '../../../packages/durability/src/topology.ts?raw';
+import coordinatorWorker from '../../../packages/durability/tests/topology/worker.ts?raw';
+import outbox from '../../../packages/durability/src/outbox/index.ts?raw';
+import scheduler from '../../../packages/durability/src/scheduler/index.ts?raw';
+import client from '../../../packages/durability/src/topology/client.ts?raw';
+import snapshot from '../../../packages/durability/src/topology/snapshot.ts?raw';
+import topology from '../../../packages/durability/src/topology/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -11,12 +11,12 @@ import {
   type ArchitectureWalkthrough,
 } from '../lib/architecture.ts';
 
-const workerFile = 'packages/durability/tests/topology-worker.ts';
-const outboxFile = 'packages/durability/src/outbox.ts';
-const schedulerFile = 'packages/durability/src/scheduler.ts';
-const clientFile = 'packages/durability/src/topology-client.ts';
-const snapshotFile = 'packages/durability/src/topology-snapshot.ts';
-const topologyFile = 'packages/durability/src/topology.ts';
+const workerFile = 'packages/durability/tests/topology/worker.ts';
+const outboxFile = 'packages/durability/src/outbox/index.ts';
+const schedulerFile = 'packages/durability/src/scheduler/index.ts';
+const clientFile = 'packages/durability/src/topology/client.ts';
+const snapshotFile = 'packages/durability/src/topology/snapshot.ts';
+const topologyFile = 'packages/durability/src/topology/index.ts';
 
 const coordinator = sourceExcerpt(
   coordinatorWorker,

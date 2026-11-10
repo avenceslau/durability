@@ -1,6 +1,6 @@
 import example from '../../../examples/realtime-todos/worker.ts?raw';
-import migrations from '../../../packages/durability/src/migrations.ts?raw';
-import socket from '../../../packages/durability/src/socket.ts?raw';
+import migrations from '../../../packages/durability/src/socket/migrations.ts?raw';
+import socket from '../../../packages/durability/src/socket/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -9,8 +9,8 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/realtime-todos/worker.ts';
-const migrationsFile = 'packages/durability/src/migrations.ts';
-const socketFile = 'packages/durability/src/socket.ts';
+const migrationsFile = 'packages/durability/src/socket/migrations.ts';
+const socketFile = 'packages/durability/src/socket/index.ts';
 
 const todoList = sourceExcerpt(
   example,

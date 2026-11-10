@@ -32,7 +32,7 @@ An allocation round first applies cumulative reports transactionally, reclaims e
 
 Use the [account concurrency composition](/compositions/account-concurrency/) for claim/release lifecycle, retry-safe admission, and reconciliation after a lost release notification.
 
-Implementation: [`semaphore.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore.ts), [`semaphore-server.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore-server.ts), and [`semaphore-store.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore-store.ts).
+Implementation: [`semaphore/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore/index.ts), [`semaphore/server.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore/server.ts), and [`semaphore/store.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/semaphore/store.ts).
 
 ## Semaphore (experimental)
 

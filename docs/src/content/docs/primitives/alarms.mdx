@@ -30,7 +30,7 @@ Scheduling transactionally upserts a fresh generation, resets its attempt counte
 
 **Cancellation and lifetime:** success deletes the occurrence; no permanent result history remains. Failed rows remain until replacement or purge. Experimental `cancel()` deletes a pending occurrence and memos transactionally, then best-effort aborts a running attempt. It cannot undo an external effect or stop that handler from explicitly scheduling new work.
 
-Implementation: [`durability-alarms.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/durability-alarms.ts) (`DurabilityAlarmsCore`) and [`scheduler.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/scheduler.ts) (`Engine.startExecution`).
+Implementation: [`alarms/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/alarms/index.ts) (`DurabilityAlarmsCore`) and [`scheduler/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/scheduler/index.ts) (`Engine.startExecution`).
 
 ## Named alarms
 

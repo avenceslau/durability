@@ -1,8 +1,8 @@
 import browserExample from '../../../examples/realtime-todos/client.ts?raw';
 import workerExample from '../../../examples/realtime-todos/worker.ts?raw';
-import client from '../../../packages/durability/src/client.ts?raw';
-import durability from '../../../packages/durability/src/durability.ts?raw';
-import socket from '../../../packages/durability/src/socket.ts?raw';
+import client from '../../../packages/durability/src/socket/client.ts?raw';
+import durability from '../../../packages/durability/src/operations/index.ts?raw';
+import socket from '../../../packages/durability/src/socket/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -12,9 +12,9 @@ import {
 
 const browserFile = 'examples/realtime-todos/client.ts';
 const workerFile = 'examples/realtime-todos/worker.ts';
-const clientFile = 'packages/durability/src/client.ts';
-const durabilityFile = 'packages/durability/src/durability.ts';
-const socketFile = 'packages/durability/src/socket.ts';
+const clientFile = 'packages/durability/src/socket/client.ts';
+const durabilityFile = 'packages/durability/src/operations/index.ts';
+const socketFile = 'packages/durability/src/socket/index.ts';
 
 const openList = sourceExcerpt(
   browserExample,

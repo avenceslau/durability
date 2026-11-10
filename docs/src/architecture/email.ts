@@ -1,5 +1,5 @@
 import emailSource from '../../../examples/email-queue/worker.ts?raw';
-import fanoutSource from '../../../packages/durability/src/fanout.ts?raw';
+import fanoutSource from '../../../packages/durability/src/fanout/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -8,7 +8,7 @@ import {
 } from '../lib/architecture.ts';
 
 const file = 'examples/email-queue/worker.ts';
-const fanoutFile = 'packages/durability/src/fanout.ts';
+const fanoutFile = 'packages/durability/src/fanout/index.ts';
 
 const consumer = sourceExcerpt(
   emailSource,

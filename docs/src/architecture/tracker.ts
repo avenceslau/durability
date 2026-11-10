@@ -1,9 +1,9 @@
 import dashboard from '../../../examples/job-dashboard/dashboard.ts?raw';
 import pipeline from '../../../examples/job-dashboard/pipeline.ts?raw';
 import worker from '../../../examples/job-dashboard/worker.ts?raw';
-import durability from '../../../packages/durability/src/durability.ts?raw';
-import scheduler from '../../../packages/durability/src/scheduler.ts?raw';
-import tracker from '../../../packages/durability/src/tracker.ts?raw';
+import durability from '../../../packages/durability/src/operations/index.ts?raw';
+import scheduler from '../../../packages/durability/src/scheduler/index.ts?raw';
+import tracker from '../../../packages/durability/src/tracker/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -14,9 +14,9 @@ import {
 const dashboardFile = 'examples/job-dashboard/dashboard.ts';
 const pipelineFile = 'examples/job-dashboard/pipeline.ts';
 const workerFile = 'examples/job-dashboard/worker.ts';
-const durabilityFile = 'packages/durability/src/durability.ts';
-const schedulerFile = 'packages/durability/src/scheduler.ts';
-const trackerFile = 'packages/durability/src/tracker.ts';
+const durabilityFile = 'packages/durability/src/operations/index.ts';
+const schedulerFile = 'packages/durability/src/scheduler/index.ts';
+const trackerFile = 'packages/durability/src/tracker/index.ts';
 
 const pipelineObject = sourceExcerpt(
   pipeline,

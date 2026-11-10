@@ -30,7 +30,7 @@ A due-tick transaction advances the schedule cursor and inserts the run together
 
 **Outcome delivery:** persisted outcomes retry at least once up to their configured budget. `onOutcome` may repeat, so deduplicate by run identity. Run concurrency is separate from the scheduler's ordinary permit pool. Cancel stops future ticks, not already due/running work. Once outcome delivery settles or exhausts, no finished-run history remains.
 
-Implementation: [`schedule.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/schedule.ts) (`DurabilitySchedule`, tick, orphan interruption, and outcome delivery paths).
+Implementation: [`schedule/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/schedule/index.ts) (`DurabilitySchedule`, tick, orphan interruption, and outcome delivery paths).
 
 ## Recurring schedules
 

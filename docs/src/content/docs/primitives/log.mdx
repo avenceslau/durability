@@ -32,7 +32,7 @@ Import `DurabilityLog` from `durability`. Use retained records when consumers ne
 
 **Lifetime:** retention ignores consumer cursors. A slow reader can lose readable history and gets `LogTruncatedError`. Append deduplication ends when the original hot record is flushed or deleted. Processing can repeat after an effect succeeds but before cursor/lease settlement, so effects still need idempotency.
 
-Implementation: [`log.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/log.ts) (`appendRecords`, `read`, `trim`, `lease`, `ack`, `nack`).
+Implementation: [`log/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/log/index.ts) (`appendRecords`, `read`, `trim`, `lease`, `ack`, `nack`).
 
 ## Retained log
 

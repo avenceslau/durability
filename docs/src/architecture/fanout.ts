@@ -1,6 +1,6 @@
 import example from '../../../examples/email-queue/worker.ts?raw';
-import fanout from '../../../packages/durability/src/fanout.ts?raw';
-import scheduler from '../../../packages/durability/src/scheduler.ts?raw';
+import fanout from '../../../packages/durability/src/fanout/index.ts?raw';
+import scheduler from '../../../packages/durability/src/scheduler/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -9,8 +9,8 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/email-queue/worker.ts';
-const fanoutFile = 'packages/durability/src/fanout.ts';
-const schedulerFile = 'packages/durability/src/scheduler.ts';
+const fanoutFile = 'packages/durability/src/fanout/index.ts';
+const schedulerFile = 'packages/durability/src/scheduler/index.ts';
 
 const emailDelivery = sourceExcerpt(
   example,

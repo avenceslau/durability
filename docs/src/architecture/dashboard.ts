@@ -2,7 +2,7 @@ import pipelineSource from '../../../examples/job-dashboard/pipeline.ts?raw';
 import dashboardSource from '../../../examples/job-dashboard/dashboard.ts?raw';
 import clientSource from '../../../examples/job-dashboard/client.ts?raw';
 import workerSource from '../../../examples/job-dashboard/worker.ts?raw';
-import socketSource from '../../../packages/durability/src/socket.ts?raw';
+import socketSource from '../../../packages/durability/src/socket/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -12,7 +12,7 @@ import {
 
 const pipelineFile = 'examples/job-dashboard/pipeline.ts';
 const dashboardFile = 'examples/job-dashboard/dashboard.ts';
-const socketFile = 'packages/durability/src/socket.ts';
+const socketFile = 'packages/durability/src/socket/index.ts';
 
 const workerFetch = sourceExcerpt(
   workerSource,

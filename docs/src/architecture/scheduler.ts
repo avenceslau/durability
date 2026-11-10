@@ -1,5 +1,5 @@
 import example from '../../../examples/subscription-renewals/worker.ts?raw';
-import scheduler from '../../../packages/durability/src/scheduler.ts?raw';
+import scheduler from '../../../packages/durability/src/scheduler/index.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -8,7 +8,7 @@ import {
 } from '../lib/architecture.ts';
 
 const exampleFile = 'examples/subscription-renewals/worker.ts';
-const schedulerFile = 'packages/durability/src/scheduler.ts';
+const schedulerFile = 'packages/durability/src/scheduler/index.ts';
 
 const subscription = sourceExcerpt(
   example,

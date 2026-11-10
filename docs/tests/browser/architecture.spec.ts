@@ -206,7 +206,7 @@ test('clicking code or a component keeps the complete file and moves the highlig
     'true'
   );
   const library = root.locator(
-    '[data-file="packages/durability/src/durability.ts"]'
+    '[data-file="packages/durability/src/operations/index.ts"]'
   );
   await expect(library).toBeVisible();
   expect(
@@ -307,15 +307,15 @@ test('multi-file diagrams switch to the component’s owning file', async ({
   const root = await openExplorer(page);
   await root
     .getByLabel('Example source file')
-    .selectOption('packages/durability/src/scheduler.ts');
+    .selectOption('packages/durability/src/scheduler/index.ts');
   await expect(
-    root.locator('[data-file="packages/durability/src/scheduler.ts"]')
+    root.locator('[data-file="packages/durability/src/scheduler/index.ts"]')
   ).toBeVisible();
   await root
     .getByRole('button', { name: 'Inspect Durability', exact: true })
     .click();
   await expect(
-    root.locator('[data-file="packages/durability/src/durability.ts"]')
+    root.locator('[data-file="packages/durability/src/operations/index.ts"]')
   ).toBeVisible();
   await root
     .getByRole('button', { name: 'Inspect ImageJobs', exact: true })

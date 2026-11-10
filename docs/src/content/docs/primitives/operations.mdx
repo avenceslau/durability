@@ -32,7 +32,7 @@ Import `Durability` from `durability`. Use it for individually identified jobs w
 
 **Lifetime:** completed and failed records stay indefinitely until destructive `purgeBefore()`. Purging also removes deduplication protection and memos.
 
-Implementation: [`durability.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/durability.ts) (`DurabilityCore`), [`storage.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/storage.ts) (attempt claims and conditional updates).
+Implementation: [`operations/index.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/operations/index.ts) (`DurabilityCore`), [`storage.ts`](https://github.com/avenceslau/durability/blob/main/packages/durability/src/storage.ts) (attempt claims and conditional updates).
 
 ## Durable operations
 
