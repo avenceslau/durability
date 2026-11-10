@@ -137,4 +137,56 @@ describe('durable log', () => {
     await stub.commit('slow', 1);
     expect((await stub.load()).outbound.pendingDeliveries).toBe(2);
   });
+
+  it('keeps a NUL-named channel apart in SQLite and R2 across eviction', async () => {
+    const name = crypto.randomUUID();
+    const stub = objectFor(name);
+    const consumer = 'worker\u0000a';
+    await stub.append(
+      [1, 2, 3, 4].map((value) => ({
+        deduplicationKey: `key\u0000${value}`,
+        body: { topic: 'default', value },
+      }))
+    );
+    expect(
+      await stub.appendPeer(
+        [1, 2].map((value) => ({
+          deduplicationKey: `key\u0000${value}`,
+          body: { topic: 'peer', value },
+        }))
+      )
+    ).toMatchObject({ success: true, value: [0, 1] });
+
+    // Both channels flush a segment starting at offset 0 into one bucket.
+    expect(await stub.trim()).toBe(1);
+    expect(await stub.trimPeer()).toBe(1);
+
+    const defaultLease = await stub.lease(consumer, 1);
+    const peerLease = await stub.leasePeer(consumer);
+    expect(defaultLease?.records.map((record) => record.body)).toEqual([
+      { topic: 'default', value: 1 },
+    ]);
+    expect(peerLease?.records.map((record) => record.body)).toEqual([
+      { topic: 'peer', value: 1 },
+    ]);
+
+    await evictDurableObject(stub);
+    const stubAfterEviction = objectFor(name);
+    await expect(async () => {
+      await stubAfterEviction.ackLease(consumer, peerLease!.batchId);
+    }).rejects.toThrow(/is not held/);
+    await stubAfterEviction.ackPeer(consumer, peerLease!.batchId);
+    expect(await stubAfterEviction.cursorPeer(consumer)).toBe(1);
+    expect(await stubAfterEviction.cursor(consumer)).toBeUndefined();
+    expect(
+      (await stubAfterEviction.readPeer(0)).records.map(
+        (record) => record.body.topic
+      )
+    ).toEqual(['peer']);
+    expect(
+      (await stubAfterEviction.read(0, 1)).records.map(
+        (record) => record.body.topic
+      )
+    ).toEqual(['default']);
+  });
 });
