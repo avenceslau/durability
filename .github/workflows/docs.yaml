@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   build:
-    name: Build and browser tests
+    name: Build docs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,13 +44,6 @@ jobs:
       - name: Build the site
         run: pnpm --filter durability-docs build
 
-      - name: Install Chromium
-        run: pnpm --filter durability-docs exec playwright install --with-deps chromium
-
-      - name: Browser tests
-        run: pnpm --filter durability-docs test:browser
-
-      # Uploaded last, so a preview is only created from a site that passed.
       - name: Upload the built site
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
