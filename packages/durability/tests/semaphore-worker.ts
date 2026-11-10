@@ -18,7 +18,6 @@ export class LimitObject extends DurableObject {
     roundPeriodMs: 100,
   });
 
-  /** A second pool on the same object, reached through its own RPC method. */
   private readonly batch = new DurabilitySemaphore({
     scheduler: this.scheduler,
     channel: 'batch',

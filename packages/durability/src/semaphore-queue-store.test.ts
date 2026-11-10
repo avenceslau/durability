@@ -175,7 +175,11 @@ describe('queue storage', () => {
         released: 0,
         created_at: at,
       });
-      target.upsertKey({ key: 'account', next_request_at: at, queued: 1 });
+      target.upsertKey({
+        key: 'account',
+        next_request_at: at,
+        queued: 1,
+      });
     }
 
     expect(store.getItem('same')?.created_at).toBe(50);
@@ -190,8 +194,16 @@ describe('queue storage', () => {
     side.removeItem('same');
     side.removeGrant('g');
     side.removeKey('account');
-    expect(store.countItems()).toEqual({ queued: 1, claiming: 0, admitted: 0 });
-    expect(side.countItems()).toEqual({ queued: 0, claiming: 0, admitted: 0 });
+    expect(store.countItems()).toEqual({
+      queued: 1,
+      claiming: 0,
+      admitted: 0,
+    });
+    expect(side.countItems()).toEqual({
+      queued: 0,
+      claiming: 0,
+      admitted: 0,
+    });
     expect(store.getGrant('g')).toBeDefined();
     expect(store.getKey('account')).toBeDefined();
     expect(side.nextPendingAt(false)).toBeUndefined();
