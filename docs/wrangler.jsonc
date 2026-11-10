@@ -14,4 +14,7 @@
     "run_worker_first": true,
     "not_found_handling": "404-page",
   },
+  // `wrangler preview` requires this block. It stays empty: a preview gets
+  // the site's assets and nothing else.
+  "previews": {},
 }

@@ -42,23 +42,41 @@ The browser checks use the built site through Wrangler. They verify complete sou
 
 ## Deploy
 
+GitHub Actions deploys the site. Nothing needs to be run by hand.
+
+- **Production.** The release workflow calls [`docs-deploy.yaml`](../.github/workflows/docs-deploy.yaml) after it publishes packages, so the site follows each release. For a docs-only fix, run the **Docs deploy** workflow by hand from `main`.
+- **Previews.** A pull request from a branch of this repository that changes the site or the source it reads gets a preview at `pr-<number>-durability-docs.<subdomain>.workers.dev`, with the URL posted as a comment. The preview is deleted when the pull request closes.
+
+Both serve the `durability-docs` Worker from [`wrangler.jsonc`](./wrangler.jsonc), which has two Custom Domains in the Cloudflare account that owns the `shirei.dev` zone:
+
+- `https://durability.shirei.dev` serves the documentation.
+- `https://shirei.dev` permanently redirects with HTTP `308`, preserving the path and query string.
+
+`workers.dev` is disabled. The Worker must run before asset matching so the apex domain redirects even for paths that match existing assets.
+
+### The Worker has no bindings
+
+A Cloudflare token that can deploy a Worker can also attach any KV namespace, R2 bucket, or D1 database in the account to it, without permission on those resources. The workflows are arranged so that a pull request cannot use that:
+
+- [`docs.yaml`](../.github/workflows/docs.yaml) builds a pull request with no secrets and uploads the static output.
+- [`docs-preview.yaml`](../.github/workflows/docs-preview.yaml) holds the token and always runs as it is on `main`. It takes the Worker script and `wrangler.jsonc` from `main` and only the static files from the pull request, then deletes the preview and fails if it has any binding other than `ASSETS`.
+- [`docs-deploy.yaml`](../.github/workflows/docs-deploy.yaml) uploads a version, checks its bindings the same way, and only then sends it traffic.
+- `scripts/worker.test.mjs` lists every key `wrangler.jsonc` may contain, so adding a binding, variable, or environment means changing that test in review.
+
+Keep it that way: do not add bindings to this Worker, and do not make these workflows run code from a pull request with the token present.
+
+### One-time setup
+
+Create a Cloudflare API token with the Workers **Editor** role for the `durability-docs` Worker only. It needs no zone permission, because the Custom Domains are already attached and the workflows do not change them. Then create two GitHub environments restricted to the `main` branch, `docs-preview` and `docs-production`, and give each the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+
+### Deploying by hand
+
 ```sh
 pnpm --filter durability-docs exec wrangler login
 pnpm --filter durability-docs deploy
 ```
 
-The deploy script builds first, then publishes the `durability-docs` Worker from [`wrangler.jsonc`](./wrangler.jsonc). It attaches two Custom Domains in the Cloudflare account that owns the `shirei.dev` zone:
-
-- `https://durability.shirei.dev` serves the documentation.
-- `https://shirei.dev` permanently redirects with HTTP `308`, preserving the path and query string.
-
-`workers.dev` is disabled. The Worker must run before asset matching so the apex domain redirects even for paths that match existing assets. Local preview continues to serve the docs on localhost. No real deployment is performed by the validation commands above.
-
-For CI, supply `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` with permission to deploy this Worker. For Workers Builds with the repository root as the project root, use:
-
-- Install command: `pnpm install --frozen-lockfile`
-- Build command: `pnpm --filter durability-docs build`
-- Deploy command: `pnpm --filter durability-docs exec wrangler deploy`
+This builds and runs `wrangler deploy`. It is the only path that changes the Custom Domains, which needs the Workers Routes permission on the zone.
 
 The `shirei.dev` zone must be active in the deploying Cloudflare account, with permission to manage Custom Domains. Remove or resolve any conflicting existing DNS records or Worker routes before deployment. Wrangler manages the Custom Domain DNS and certificates; no account ID or zone ID is committed. Astro's `site` URL is set to `https://durability.shirei.dev` for canonical links and the sitemap. Keep it aligned with the Worker's redirect target and Wrangler domains if the hostname changes.
 
