@@ -14,6 +14,7 @@ import { contextFor, FakeStorage } from './test-fakes';
 type Overrides = Partial<
   Pick<
     DurabilityScheduleConfig,
+    | 'channel'
     | 'nextOccurrence'
     | 'run'
     | 'onOutcome'
@@ -28,21 +29,21 @@ const every = (expression: string, after: number): number => {
   return (Math.floor(after / interval) + 1) * interval;
 };
 
+/** One object instance; share it between helpers of that instance. */
+const objectContext = (storage: FakeStorage) => ({
+  ...contextFor(storage),
+  waitUntil: () => undefined,
+  id: 'object',
+});
+
 const setup = (
   overrides: Overrides = {},
   storage = new FakeStorage(),
-  alarmHandoffMs?: number
+  alarmHandoffMs?: number,
+  context: ReturnType<typeof contextFor> = objectContext(storage)
 ) => {
-  const background: Promise<unknown>[] = [];
   const outcomes: Array<[ScheduledOutcomeDelivery, ScheduledRunOutcome]> = [];
   const events: DurabilityScheduleEvent[] = [];
-  const context = {
-    ...contextFor(storage),
-    waitUntil: (promise: Promise<unknown>) => {
-      background.push(promise);
-    },
-    id: 'object',
-  };
   const schedule = new DurabilitySchedule({
     context,
     alarmMinDelayMs: 1_000,
@@ -756,7 +757,10 @@ describe('DurabilitySchedule', () => {
       )
     ).toEqual({
       applied: [],
-      rolledBack: ['durability_0014_add_schedule_jitter'],
+      rolledBack: [
+        'durability_0018_schedule_channels',
+        'durability_0014_add_schedule_jitter',
+      ],
     });
   });
 
@@ -775,5 +779,338 @@ describe('DurabilitySchedule', () => {
     expect(() => new DurabilitySchedule(config)).toThrow(
       'already attached to this scheduler'
     );
+    const library = { ...config, channel: 'library' };
+    expect(() => new DurabilitySchedule(library)).not.toThrow();
+    expect(() => new DurabilitySchedule(library)).toThrow(
+      'DurabilitySchedule for channel "library" is already attached to this scheduler'
+    );
+    expect(() => new DurabilitySchedule({ ...config, channel: '' })).toThrow(
+      'DurabilitySchedule channel must be a non-empty string'
+    );
+  });
+});
+
+describe('DurabilitySchedule channels', () => {
+  const channelRows = (storage: FakeStorage) =>
+    storage.sql
+      .exec(
+        `SELECT channel, scheduled_time, state FROM durability_schedule_runs
+         ORDER BY channel, scheduled_time`
+      )
+      .toArray();
+
+  it('keeps definitions, versions, cancels and outcomes apart for the same scheduled time', async () => {
+    start();
+    const storage = new FakeStorage();
+    const context = objectContext(storage);
+    const app = setup({}, storage, undefined, context);
+    const library = setup({ channel: 'library' }, storage, undefined, context);
+
+    expect(await app.schedule.set({ expression: '1000', version: 5 })).toBe(
+      true
+    );
+    expect(await library.schedule.set({ expression: '1000', version: 1 })).toBe(
+      true
+    );
+    expect(await library.schedule.set({ expression: '1000', version: 3 })).toBe(
+      true
+    );
+    expect(app.schedule.get()?.version).toBe(5);
+    expect(library.schedule.get()?.version).toBe(3);
+
+    vi.setSystemTime(11_000);
+    await app.schedule.alarm();
+    expect(app.outcomes).toEqual([
+      [
+        {
+          scheduledTime: 11_000,
+          dueAt: 11_000,
+          idempotencyKey: 'object:11000',
+          attempt: 1,
+        },
+        { status: 'complete' },
+      ],
+    ]);
+    expect(library.outcomes).toEqual([
+      [
+        {
+          scheduledTime: 11_000,
+          dueAt: 11_000,
+          idempotencyKey: 'object:11000:"library"',
+          attempt: 1,
+        },
+        { status: 'complete' },
+      ],
+    ]);
+    expect(app.events.map((event) => event.id)).toEqual([
+      'object:11000',
+      'object:11000',
+      'object:11000',
+    ]);
+
+    expect(await app.schedule.cancel()).toBe(true);
+    expect(await library.schedule.cancel(2)).toBe(false);
+    expect(app.schedule.get()).toBeUndefined();
+    expect(library.schedule.get()?.nextAt).toBe(12_000);
+
+    vi.setSystemTime(12_000);
+    await library.schedule.alarm();
+    expect(app.outcomes).toHaveLength(1);
+    expect(library.outcomes.map(([run]) => run.scheduledTime)).toEqual([
+      11_000, 12_000,
+    ]);
+    expect(channelRows(storage)).toEqual([]);
+  });
+
+  it("does not let a channel holding its runs suppress another channel's tick", async () => {
+    start();
+    const storage = new FakeStorage();
+    const context = objectContext(storage);
+    const { run, release } = gatedRuns();
+    const slow = setup({ channel: 'slow', run }, storage, undefined, context);
+    const fastRun = vi.fn(async () => undefined);
+    const fast = setup(
+      { channel: 'fast', run: fastRun },
+      storage,
+      undefined,
+      context
+    );
+    await slow.schedule.set({ expression: '1000', version: 1 });
+    await fast.schedule.set({ expression: '700', version: 1 });
+
+    vi.setSystemTime(11_000);
+    const pass = slow.schedule.alarm();
+    const passSettled = isSettled(pass);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledOnce();
+    expect(fastRun).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(fastRun).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ scheduledTime: 11_200 })
+    );
+    expect(fast.outcomes).toHaveLength(1);
+    expect(passSettled()).toBe(false);
+
+    await slow.schedule.cancel();
+    await fast.schedule.cancel();
+    release(11_000);
+    await vi.advanceTimersByTimeAsync(0);
+    await pass;
+    expect(slow.outcomes).toHaveLength(1);
+  });
+
+  it('retains a removed channel, interrupts only its own runs, and resumes it when it returns', async () => {
+    start();
+    const reported = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const storage = new FakeStorage();
+    const firstContext = objectContext(storage);
+    const stuck = () => new Promise<void>(() => undefined);
+    const firstApp = setup({ run: stuck }, storage, undefined, firstContext);
+    const firstLibrary = setup(
+      { channel: 'library', run: stuck },
+      storage,
+      undefined,
+      firstContext
+    );
+    await firstApp.schedule.set({ expression: '1000', version: 1 });
+    await firstLibrary.schedule.set({ expression: '1000', version: 1 });
+    vi.setSystemTime(11_000);
+    void firstApp.schedule.alarm();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(channelRows(storage)).toEqual([
+      { channel: 'default', scheduled_time: 11_000, state: 'running' },
+      { channel: 'library', scheduled_time: 11_000, state: 'running' },
+    ]);
+
+    // A deploy removed the library: only the application's channel attaches.
+    const secondApp = setup({}, storage);
+    vi.setSystemTime(12_000);
+    await secondApp.schedule.alarm();
+    expect(
+      secondApp.outcomes.map(([run, outcome]) => [
+        run.idempotencyKey,
+        outcome.status,
+      ])
+    ).toEqual([
+      ['object:11000', 'errored'],
+      ['object:12000', 'complete'],
+    ]);
+    expect(
+      secondApp.events
+        .filter((event) => event.type === 'settled')
+        .map((event) => event.id)
+    ).toEqual(['object:11000', 'object:12000']);
+    expect(channelRows(storage)).toEqual([
+      { channel: 'library', scheduled_time: 11_000, state: 'running' },
+    ]);
+    expect(
+      storage.sql
+        .exec(
+          "SELECT next_at FROM durability_schedule WHERE channel = 'library'"
+        )
+        .toArray()
+    ).toEqual([{ next_at: 12_000 }]);
+    expect(reported).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'durability.channel_missing' })
+    );
+    // The removed channel's retained rows stay dormant instead of arming the alarm.
+    await secondApp.schedule.cancel();
+    expect(storage.alarmAt).toBeNull();
+
+    const thirdContext = objectContext(storage);
+    setup({}, storage, undefined, thirdContext);
+    const library = setup(
+      { channel: 'library' },
+      storage,
+      undefined,
+      thirdContext
+    );
+    vi.setSystemTime(13_500);
+    await library.schedule.alarm();
+    expect(library.outcomes).toEqual([
+      [
+        {
+          scheduledTime: 11_000,
+          dueAt: 11_000,
+          idempotencyKey: 'object:11000:"library"',
+          attempt: 1,
+        },
+        {
+          status: 'errored',
+          error: {
+            name: 'ScheduledRunInterruptedError',
+            message:
+              'Scheduled run was interrupted before it reported an outcome',
+          },
+        },
+      ],
+      [
+        expect.objectContaining({ scheduledTime: 12_000 }),
+        { status: 'complete' },
+      ],
+    ]);
+    expect(library.schedule.get()?.nextAt).toBe(14_000);
+    expect(channelRows(storage)).toEqual([]);
+  });
+
+  it('keeps legacy default keys and gives named channels keys no other channel can produce', async () => {
+    start();
+    const storage = new FakeStorage();
+    const context = contextFor(storage);
+    const keys = new Map<string, string>();
+    for (const channel of ['default', '1', '11000', 'a:1', 'x"y']) {
+      const { schedule } = setup(
+        {
+          channel,
+          run: ({ idempotencyKey }) => {
+            keys.set(channel, idempotencyKey);
+          },
+        },
+        storage,
+        undefined,
+        context
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await schedule.set({ expression: '1000', version: 1 });
+    }
+
+    vi.setSystemTime(11_000);
+    await new DurabilityScheduler({ context }).alarm();
+    expect(Object.fromEntries(keys)).toEqual({
+      default: '11000',
+      '1': '11000:"1"',
+      '11000': '11000:"11000"',
+      'a:1': '11000:"a:1"',
+      'x"y': '11000:"x\\"y"',
+    });
+  });
+
+  it('moves a legacy schedule and its runs to the default channel', async () => {
+    start();
+    const storage = new FakeStorage();
+    DurabilitySchedule.migrate(
+      contextFor(storage),
+      'durability_0014_add_schedule_jitter'
+    );
+    storage.sql.exec(
+      `INSERT INTO durability_schedule (id, version, expression, next_at, jitter_ms)
+       VALUES (1, 3, '1000', 11000, 0)`
+    );
+    storage.sql.exec(
+      `INSERT INTO durability_schedule_runs
+         (scheduled_time, state, next_at, due_at)
+       VALUES (9000, 'complete', 9000, 9000), (10000, 'running', 10000, 10000)`
+    );
+
+    const { schedule, outcomes } = setup({}, storage);
+    expect(channelRows(storage)).toEqual([
+      { channel: 'default', scheduled_time: 9_000, state: 'complete' },
+      { channel: 'default', scheduled_time: 10_000, state: 'running' },
+    ]);
+    expect(schedule.get()).toEqual({
+      expression: '1000',
+      version: 3,
+      jitterMs: 0,
+      nextAt: 11_000,
+    });
+    expect(await schedule.set({ expression: '1000', version: 3 })).toBe(false);
+
+    vi.setSystemTime(11_000);
+    await schedule.alarm();
+    expect(
+      outcomes.map(([run, outcome]) => [run.idempotencyKey, outcome.status])
+    ).toEqual([
+      ['object:9000', 'complete'],
+      ['object:10000', 'errored'],
+      ['object:11000', 'complete'],
+    ]);
+    expect(channelRows(storage)).toEqual([]);
+  });
+
+  it('downgrades default-channel data and refuses to discard named channels', async () => {
+    start();
+    const storage = new FakeStorage();
+    const context = objectContext(storage);
+    const app = setup({}, storage, undefined, context);
+    const library = setup({ channel: 'library' }, storage, undefined, context);
+    await app.schedule.set({ expression: '1000', version: 2 });
+    await library.schedule.set({ expression: '1000', version: 1 });
+    await library.schedule.cancel();
+
+    expect(() =>
+      DurabilitySchedule.migrate(
+        contextFor(storage),
+        'durability_0014_add_schedule_jitter'
+      )
+    ).toThrow(/cannot_downgrade_nondefault_channels/);
+    expect(library.schedule.get()).toBeUndefined();
+    expect(app.schedule.get()?.version).toBe(2);
+
+    storage.sql.exec(
+      "DELETE FROM durability_schedule WHERE channel = 'library'"
+    );
+    expect(
+      DurabilitySchedule.migrate(
+        contextFor(storage),
+        'durability_0014_add_schedule_jitter'
+      )
+    ).toEqual({
+      applied: [],
+      rolledBack: ['durability_0018_schedule_channels'],
+    });
+    expect(
+      storage.sql.exec('SELECT * FROM durability_schedule').toArray()
+    ).toEqual([
+      {
+        id: 1,
+        version: 2,
+        expression: '1000',
+        next_at: 11_000,
+        jitter_ms: 0,
+      },
+    ]);
   });
 });
