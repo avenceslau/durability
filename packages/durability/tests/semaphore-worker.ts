@@ -18,12 +18,28 @@ export class LimitObject extends DurableObject {
     roundPeriodMs: 100,
   });
 
+  private readonly batch = new DurabilitySemaphore({
+    scheduler: this.scheduler,
+    channel: 'batch',
+    limit: 1,
+    roundWaitMs: 50,
+    roundPeriodMs: 100,
+  });
+
   permits(message: SemaphoreRequest) {
     return this.semaphore.handle(message);
   }
 
+  batchPermits(message: SemaphoreRequest) {
+    return this.batch.handle(message);
+  }
+
   usage() {
     return this.semaphore.usage();
+  }
+
+  batchUsage() {
+    return this.batch.usage();
   }
 
   override alarm(info?: AlarmInvocationInfo) {
@@ -38,24 +54,59 @@ export const limits = DurabilitySemaphore.client({
   locationHint: () => 'weur',
 });
 
+export const batchLimits = DurabilitySemaphore.client({
+  target: LimitObject,
+  exportName: 'LimitObject',
+  invoke: (stub, message) => stub.batchPermits(message),
+});
+
+/** Queue channels of one shard; the side channel holds NUL and a dot. */
+export const queueChannels = {
+  main: 'default',
+  side: 'side\u0000.queue',
+  batch: 'batch',
+} as const;
+type QueueName = keyof typeof queueChannels;
+
 /** A client shard: queues jobs per account and records admissions. */
 export class JobShard extends DurableObject {
   protected readonly scheduler = new DurabilityScheduler(
     this.schedulerConfig()
   );
-  private readonly permits = new DurabilitySemaphoreQueue<string>({
-    scheduler: this.scheduler,
-    clientId: this.ctx.id.toString(),
-    server: limits.with(timeout, 5_000),
-    admit: async (items) => {
-      const admitted = (await this.ctx.storage.get<string[]>('admitted')) ?? [];
-      admitted.push(...items.map((item) => item.id));
-      await this.ctx.storage.put('admitted', admitted);
-    },
-  });
+  // Every queue shares this shard's clientId; the side queue also shares the
+  // default holder pool with the main one.
+  private readonly queues: Record<QueueName, DurabilitySemaphoreQueue<string>> =
+    {
+      main: this.queue('main', limits),
+      side: this.queue('side', limits),
+      batch: this.queue('batch', batchLimits),
+    };
 
-  submit(account: string, jobs: { id: string; group?: string }[]) {
-    return this.permits.enqueue(
+  private queue(
+    name: QueueName,
+    server: typeof limits
+  ): DurabilitySemaphoreQueue<string> {
+    const storageKey = name === 'main' ? 'admitted' : `admitted:${name}`;
+    return new DurabilitySemaphoreQueue<string>({
+      scheduler: this.scheduler,
+      channel: queueChannels[name],
+      clientId: this.ctx.id.toString(),
+      server: server.with(timeout, 5_000),
+      admit: async (items) => {
+        const admitted =
+          (await this.ctx.storage.get<string[]>(storageKey)) ?? [];
+        admitted.push(...items.map((item) => item.id));
+        await this.ctx.storage.put(storageKey, admitted);
+      },
+    });
+  }
+
+  submit(
+    account: string,
+    jobs: { id: string; group?: string }[],
+    name: QueueName = 'main'
+  ) {
+    return this.queues[name].enqueue(
       jobs.map((job) => ({
         id: job.id,
         key: account,
@@ -65,16 +116,22 @@ export class JobShard extends DurableObject {
     );
   }
 
-  finish(id: string) {
-    return this.permits.release(id);
+  finish(id: string, name: QueueName = 'main') {
+    return this.queues[name].release(id);
   }
 
-  admitted() {
-    return this.ctx.storage.get<string[]>('admitted');
+  status(id: string, name: QueueName = 'main') {
+    return this.queues[name].status(id);
   }
 
-  usage() {
-    return this.permits.usage();
+  admitted(name: QueueName = 'main') {
+    return this.ctx.storage.get<string[]>(
+      name === 'main' ? 'admitted' : `admitted:${name}`
+    );
+  }
+
+  usage(name: QueueName = 'main') {
+    return this.queues[name].usage();
   }
 
   protected schedulerConfig(): ConstructorParameters<

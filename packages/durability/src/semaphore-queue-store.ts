@@ -74,17 +74,24 @@ const statusCountSchema = z.object({
 });
 
 /**
- * A semaphore client's queue: items, the grants it holds per key, and per-key
- * request pacing. Due work is a key whose request time has passed with items
- * queued, an admitted item whose `admit()` notification is outstanding, or a
- * lease the holder must hear about again.
+ * One queue channel of a semaphore client: items, the grants it holds per
+ * key, and per-key request pacing. Every query is scoped to the channel, so
+ * queues sharing an object may reuse item IDs and keys. Due work is a key
+ * whose request time has passed with items queued, an admitted item whose
+ * `admit()` notification is outstanding, or a lease the holder must hear
+ * about again.
  */
 export class QueueStore {
-  constructor(private readonly sql: SqlStorage) {}
+  constructor(
+    private readonly sql: SqlStorage,
+    private readonly channel: string
+  ) {}
 
   getItem(id: string): QueueItemRow | undefined {
     return this.items(
-      'SELECT * FROM durability_semaphore_queue_items WHERE id = ? LIMIT 1',
+      `SELECT * FROM durability_semaphore_queue_items
+       WHERE channel = ? AND id = ? LIMIT 1`,
+      this.channel,
       id
     )[0];
   }
@@ -93,10 +100,11 @@ export class QueueStore {
     return (
       this.sql
         .exec(
-          `INSERT INTO durability_semaphore_queue_items (${queueItemColumns.join(', ')})
-           VALUES (${queueItemColumns.map(() => '?').join(', ')})
-           ON CONFLICT(id) DO NOTHING
+          `INSERT INTO durability_semaphore_queue_items (channel, ${queueItemColumns.join(', ')})
+           VALUES (?, ${queueItemColumns.map(() => '?').join(', ')})
+           ON CONFLICT(channel, id) DO NOTHING
            RETURNING id`,
+          this.channel,
           ...queueItemColumns.map((column) => row[column])
         )
         .toArray().length > 0
@@ -108,7 +116,7 @@ export class QueueStore {
       `UPDATE durability_semaphore_queue_items
        SET status = ?, grant_id = ?, lease_id = ?, admitted_at = ?, notified = ?,
          attempt = ?, next_attempt_at = ?
-       WHERE id = ?`,
+       WHERE channel = ? AND id = ?`,
       row.status,
       row.grant_id,
       row.lease_id,
@@ -116,13 +124,15 @@ export class QueueStore {
       row.notified,
       row.attempt,
       row.next_attempt_at,
+      this.channel,
       row.id
     );
   }
 
   removeItem(id: string): void {
     this.sql.exec(
-      'DELETE FROM durability_semaphore_queue_items WHERE id = ?',
+      'DELETE FROM durability_semaphore_queue_items WHERE channel = ? AND id = ?',
+      this.channel,
       id
     );
   }
@@ -134,9 +144,10 @@ export class QueueStore {
   ): QueueItemRow[] {
     return this.items(
       `SELECT * FROM durability_semaphore_queue_items
-       WHERE key = ? AND status = ?
+       WHERE channel = ? AND key = ? AND status = ?
        ORDER BY created_at ASC, id ASC
        LIMIT ?`,
+      this.channel,
       key,
       status,
       limit
@@ -146,8 +157,9 @@ export class QueueStore {
   listItemsByGrant(grantId: string): QueueItemRow[] {
     return this.items(
       `SELECT * FROM durability_semaphore_queue_items
-       WHERE grant_id = ?
+       WHERE channel = ? AND grant_id = ?
        ORDER BY created_at ASC, id ASC`,
+      this.channel,
       grantId
     );
   }
@@ -156,9 +168,11 @@ export class QueueStore {
   listCheckDue(now: number, limit: number): QueueItemRow[] {
     return this.items(
       `SELECT * FROM durability_semaphore_queue_items
-       WHERE status = 'admitted' AND notified = 1 AND next_attempt_at <= ?
+       WHERE channel = ? AND status = 'admitted' AND notified = 1
+         AND next_attempt_at <= ?
        ORDER BY next_attempt_at ASC
        LIMIT ?`,
+      this.channel,
       now,
       limit
     );
@@ -167,9 +181,11 @@ export class QueueStore {
   listUnnotified(now: number, limit: number): QueueItemRow[] {
     return this.items(
       `SELECT * FROM durability_semaphore_queue_items
-       WHERE status = 'admitted' AND notified = 0 AND next_attempt_at <= ?
+       WHERE channel = ? AND status = 'admitted' AND notified = 0
+         AND next_attempt_at <= ?
        ORDER BY next_attempt_at ASC
        LIMIT ?`,
+      this.channel,
       now,
       limit
     );
@@ -181,7 +197,8 @@ export class QueueStore {
       this.sql
         .exec(
           `SELECT status, COUNT(*) AS count FROM durability_semaphore_queue_items
-           GROUP BY status`
+           WHERE channel = ? GROUP BY status`,
+          this.channel
         )
         .toArray()
     )) {
@@ -191,26 +208,27 @@ export class QueueStore {
   }
 
   getGrant(grantId: string): QueueGrantRow | undefined {
-    return queueGrantRowSchema
-      .optional()
-      .parse(
-        this.sql
-          .exec(
-            'SELECT * FROM durability_semaphore_queue_grants WHERE grant_id = ? LIMIT 1',
-            grantId
-          )
-          .toArray()[0]
-      );
+    return queueGrantRowSchema.optional().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_grants
+             WHERE channel = ? AND grant_id = ? LIMIT 1`,
+          this.channel,
+          grantId
+        )
+        .toArray()[0]
+    );
   }
 
   insertGrant(row: QueueGrantRow): boolean {
     return (
       this.sql
         .exec(
-          `INSERT INTO durability_semaphore_queue_grants (${queueGrantColumns.join(', ')})
-           VALUES (${queueGrantColumns.map(() => '?').join(', ')})
-           ON CONFLICT(grant_id) DO NOTHING
+          `INSERT INTO durability_semaphore_queue_grants (channel, ${queueGrantColumns.join(', ')})
+           VALUES (?, ${queueGrantColumns.map(() => '?').join(', ')})
+           ON CONFLICT(channel, grant_id) DO NOTHING
            RETURNING grant_id`,
+          this.channel,
           ...queueGrantColumns.map((column) => row[column])
         )
         .toArray().length > 0
@@ -221,19 +239,21 @@ export class QueueStore {
     this.sql.exec(
       `UPDATE durability_semaphore_queue_grants
        SET permits = ?, claimed = ?, confirmed = ?, admitted = ?, released = ?
-       WHERE grant_id = ?`,
+       WHERE channel = ? AND grant_id = ?`,
       row.permits,
       row.claimed,
       row.confirmed,
       row.admitted,
       row.released,
+      this.channel,
       row.grant_id
     );
   }
 
   removeGrant(grantId: string): void {
     this.sql.exec(
-      'DELETE FROM durability_semaphore_queue_grants WHERE grant_id = ?',
+      'DELETE FROM durability_semaphore_queue_grants WHERE channel = ? AND grant_id = ?',
+      this.channel,
       grantId
     );
   }
@@ -243,7 +263,8 @@ export class QueueStore {
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_grants
-           WHERE key = ? ORDER BY created_at ASC, grant_id ASC`,
+           WHERE channel = ? AND key = ? ORDER BY created_at ASC, grant_id ASC`,
+          this.channel,
           key
         )
         .toArray()
@@ -251,26 +272,27 @@ export class QueueStore {
   }
 
   getLease(leaseId: string): QueueLeaseRow | undefined {
-    return queueLeaseRowSchema
-      .optional()
-      .parse(
-        this.sql
-          .exec(
-            'SELECT * FROM durability_semaphore_queue_leases WHERE lease_id = ? LIMIT 1',
-            leaseId
-          )
-          .toArray()[0]
-      );
+    return queueLeaseRowSchema.optional().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_leases
+             WHERE channel = ? AND lease_id = ? LIMIT 1`,
+          this.channel,
+          leaseId
+        )
+        .toArray()[0]
+    );
   }
 
   insertLease(row: QueueLeaseRow): boolean {
     return (
       this.sql
         .exec(
-          `INSERT INTO durability_semaphore_queue_leases (${queueLeaseColumns.join(', ')})
-           VALUES (${queueLeaseColumns.map(() => '?').join(', ')})
-           ON CONFLICT(lease_id) DO NOTHING
+          `INSERT INTO durability_semaphore_queue_leases (channel, ${queueLeaseColumns.join(', ')})
+           VALUES (?, ${queueLeaseColumns.map(() => '?').join(', ')})
+           ON CONFLICT(channel, lease_id) DO NOTHING
            RETURNING lease_id`,
+          this.channel,
           ...queueLeaseColumns.map((column) => row[column])
         )
         .toArray().length > 0
@@ -282,7 +304,7 @@ export class QueueStore {
       `UPDATE durability_semaphore_queue_leases
        SET permits = ?, drawn = ?, released = ?, expires_at = ?,
          renew_at = ?, renew_ms = ?, confirmed = ?
-       WHERE lease_id = ?`,
+       WHERE channel = ? AND lease_id = ?`,
       row.permits,
       row.drawn,
       row.released,
@@ -290,6 +312,7 @@ export class QueueStore {
       row.renew_at,
       row.renew_ms,
       row.confirmed,
+      this.channel,
       row.lease_id
     );
   }
@@ -304,9 +327,10 @@ export class QueueStore {
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_leases
-           WHERE confirmed = 0 AND renew_at <= ?
+           WHERE channel = ? AND confirmed = 0 AND renew_at <= ?
              AND (released < drawn OR expires_at <= ?)
            ORDER BY renew_at ASC LIMIT ?`,
+          this.channel,
           now,
           now,
           limit
@@ -319,7 +343,9 @@ export class QueueStore {
   removeSpentLeases(before: number): void {
     this.sql.exec(
       `DELETE FROM durability_semaphore_queue_leases
-       WHERE confirmed = 1 AND expires_at < ? AND released >= drawn`,
+       WHERE channel = ? AND confirmed = 1 AND expires_at < ?
+         AND released >= drawn`,
+      this.channel,
       before
     );
   }
@@ -329,7 +355,8 @@ export class QueueStore {
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_leases
-           WHERE key = ? ORDER BY created_at ASC, lease_id ASC`,
+           WHERE channel = ? AND key = ? ORDER BY created_at ASC, lease_id ASC`,
+          this.channel,
           key
         )
         .toArray()
@@ -337,26 +364,28 @@ export class QueueStore {
   }
 
   getKey(key: string): QueueKeyRow | undefined {
-    return queueKeyRowSchema
-      .optional()
-      .parse(
-        this.sql
-          .exec(
-            'SELECT * FROM durability_semaphore_queue_keys WHERE key = ? LIMIT 1',
-            key
-          )
-          .toArray()[0]
-      );
+    return queueKeyRowSchema.optional().parse(
+      this.sql
+        .exec(
+          `SELECT * FROM durability_semaphore_queue_keys
+             WHERE channel = ? AND key = ? LIMIT 1`,
+          this.channel,
+          key
+        )
+        .toArray()[0]
+    );
   }
 
   upsertKey(row: QueueKeyRow): void {
     this.sql.exec(
-      `INSERT INTO durability_semaphore_queue_keys (key, next_request_at, queued)
-       VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET
+      `INSERT INTO durability_semaphore_queue_keys
+         (channel, key, next_request_at, queued)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(channel, key) DO UPDATE SET
          next_request_at = excluded.next_request_at, queued = excluded.queued
        WHERE next_request_at != excluded.next_request_at
           OR queued != excluded.queued`,
+      this.channel,
       row.key,
       row.next_request_at,
       row.queued
@@ -365,7 +394,8 @@ export class QueueStore {
 
   removeKey(key: string): void {
     this.sql.exec(
-      'DELETE FROM durability_semaphore_queue_keys WHERE key = ?',
+      'DELETE FROM durability_semaphore_queue_keys WHERE channel = ? AND key = ?',
+      this.channel,
       key
     );
   }
@@ -375,8 +405,9 @@ export class QueueStore {
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_keys
-           WHERE queued > 0 AND next_request_at <= ?
+           WHERE channel = ? AND queued > 0 AND next_request_at <= ?
            ORDER BY next_request_at ASC`,
+          this.channel,
           now
         )
         .toArray()
@@ -390,20 +421,25 @@ export class QueueStore {
         `SELECT MIN(at) AS at FROM (
            SELECT (
              SELECT next_request_at FROM durability_semaphore_queue_keys
-             WHERE queued > 0 ORDER BY next_request_at ASC LIMIT 1
+             WHERE channel = ? AND queued > 0
+             ORDER BY next_request_at ASC LIMIT 1
            ) AS at
            UNION ALL
            SELECT (
              SELECT next_attempt_at FROM durability_semaphore_queue_items
-             WHERE status = 'admitted' AND (notified = 0 OR ?)
+             WHERE channel = ? AND status = 'admitted' AND (notified = 0 OR ?)
              ORDER BY next_attempt_at ASC LIMIT 1
            ) AS at
            UNION ALL
            SELECT MIN(CASE WHEN released < drawn THEN renew_at
                            ELSE MAX(renew_at, expires_at) END) AS at
-           FROM durability_semaphore_queue_leases WHERE confirmed = 0
+           FROM durability_semaphore_queue_leases
+           WHERE channel = ? AND confirmed = 0
          )`,
-        checksFinished ? 1 : 0
+        this.channel,
+        this.channel,
+        checksFinished ? 1 : 0,
+        this.channel
       )
       .toArray()[0]?.['at'];
     return typeof at === 'number' ? at : undefined;
