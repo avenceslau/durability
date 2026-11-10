@@ -22,7 +22,7 @@ type Overrides = Partial<
     | 'runTimeoutMs'
     | 'outcomeRetries'
   >
->;
+> & { context?: ReturnType<typeof contextFor> };
 
 const every = (expression: string, after: number): number => {
   const interval = Number(expression);
@@ -39,13 +39,12 @@ const objectContext = (storage: FakeStorage) => ({
 const setup = (
   overrides: Overrides = {},
   storage = new FakeStorage(),
-  alarmHandoffMs?: number,
-  context: ReturnType<typeof contextFor> = objectContext(storage)
+  alarmHandoffMs?: number
 ) => {
   const outcomes: Array<[ScheduledOutcomeDelivery, ScheduledRunOutcome]> = [];
   const events: DurabilityScheduleEvent[] = [];
   const schedule = new DurabilitySchedule({
-    context,
+    context: objectContext(storage),
     alarmMinDelayMs: 1_000,
     ...(alarmHandoffMs === undefined ? {} : { alarmHandoffMs }),
     nextOccurrence: every,
@@ -803,8 +802,8 @@ describe('DurabilitySchedule channels', () => {
     start();
     const storage = new FakeStorage();
     const context = objectContext(storage);
-    const app = setup({}, storage, undefined, context);
-    const library = setup({ channel: 'library' }, storage, undefined, context);
+    const app = setup({ context }, storage);
+    const library = setup({ channel: 'library', context }, storage);
 
     expect(await app.schedule.set({ expression: '1000', version: 5 })).toBe(
       true
@@ -867,13 +866,22 @@ describe('DurabilitySchedule channels', () => {
     const storage = new FakeStorage();
     const context = objectContext(storage);
     const { run, release } = gatedRuns();
-    const slow = setup({ channel: 'slow', run }, storage, undefined, context);
+    const slow = setup(
+      {
+        channel: 'slow',
+        run,
+        context,
+      },
+      storage
+    );
     const fastRun = vi.fn(async () => undefined);
     const fast = setup(
-      { channel: 'fast', run: fastRun },
-      storage,
-      undefined,
-      context
+      {
+        channel: 'fast',
+        run: fastRun,
+        context,
+      },
+      storage
     );
     await slow.schedule.set({ expression: '1000', version: 1 });
     await fast.schedule.set({ expression: '700', version: 1 });
@@ -908,12 +916,14 @@ describe('DurabilitySchedule channels', () => {
     const storage = new FakeStorage();
     const firstContext = objectContext(storage);
     const stuck = () => new Promise<void>(() => undefined);
-    const firstApp = setup({ run: stuck }, storage, undefined, firstContext);
+    const firstApp = setup({ run: stuck, context: firstContext }, storage);
     const firstLibrary = setup(
-      { channel: 'library', run: stuck },
-      storage,
-      undefined,
-      firstContext
+      {
+        channel: 'library',
+        run: stuck,
+        context: firstContext,
+      },
+      storage
     );
     await firstApp.schedule.set({ expression: '1000', version: 1 });
     await firstLibrary.schedule.set({ expression: '1000', version: 1 });
@@ -973,12 +983,10 @@ describe('DurabilitySchedule channels', () => {
     expect(storage.alarmAt).toBeNull();
 
     const thirdContext = objectContext(storage);
-    setup({}, storage, undefined, thirdContext);
+    setup({ context: thirdContext }, storage);
     const library = setup(
-      { channel: 'library' },
-      storage,
-      undefined,
-      thirdContext
+      { channel: 'library', context: thirdContext },
+      storage
     );
     vi.setSystemTime(13_500);
     await library.schedule.alarm();
@@ -1017,13 +1025,12 @@ describe('DurabilitySchedule channels', () => {
       const { schedule } = setup(
         {
           channel,
+          context,
           run: ({ idempotencyKey }) => {
             keys.set(channel, idempotencyKey);
           },
         },
-        storage,
-        undefined,
-        context
+        storage
       );
       // eslint-disable-next-line no-await-in-loop
       await schedule.set({ expression: '1000', version: 1 });
@@ -1094,8 +1101,8 @@ describe('DurabilitySchedule channels', () => {
     start();
     const storage = new FakeStorage();
     const context = objectContext(storage);
-    const app = setup({}, storage, undefined, context);
-    const library = setup({ channel: 'library' }, storage, undefined, context);
+    const app = setup({ context }, storage);
+    const library = setup({ channel: 'library', context }, storage);
     await app.schedule.set({ expression: '1000', version: 2 });
     await library.schedule.set({ expression: '1000', version: 1 });
     await library.schedule.cancel();
