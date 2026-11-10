@@ -306,6 +306,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     });
     this.#engine.registerChannel({
       table: queueItemsTable,
+      channelTables: [
+        'durability_semaphore_queue_grants',
+        'durability_semaphore_queue_keys',
+        'durability_semaphore_queue_leases',
+      ],
       channel,
       helper: 'A semaphore queue',
       runDue: (now) => this.#runDue(now),

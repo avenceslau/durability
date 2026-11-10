@@ -237,7 +237,7 @@ Install durability once per Worker, as a peer dependency of libraries that use i
 
 ### Channels
 
-`Durability` and `DurabilityOutbox` attach to a channel, `default` unless given one, and each channel of a helper kind holds one instance. Instances on different channels share the scheduler but not their records: IDs are unique within a channel, and each instance runs, lists, and purges only its own. A library should use a channel of its own, so the application can use the same helper and the same IDs without either seeing the other's work:
+`Durability`, `DurabilityAlarms`, `DurabilityFanout`, `DurabilityOutbox`, `DurabilitySchedule`, `DurabilityLog`, `DurabilitySemaphore`, `DurabilitySemaphoreQueue`, `DurabilityTopology`, and `DurabilitySocket` accept `channel`, defaulting to `default`. Each channel of a helper kind holds one instance. Instances on different channels share the scheduler but not their records: IDs and names are scoped to a channel, and each instance's operations affect only its own state. A library should use a channel of its own, so the application can use the same helper and the same IDs without either seeing the other's work:
 
 ```ts
 // In a library
@@ -252,7 +252,7 @@ const jobs = new Durability({ context: this.ctx, handlers: { charge } });
 // Both can register { id: 'invoice-1' }; they are different calls.
 ```
 
-Attaching a second instance to a channel already in use throws `Durability for channel "durable-alerts" is already attached to this scheduler`. Due records of a channel no instance attached, such as one a deploy removed or a library not yet constructed, are kept and looked at again a minute later, with a `durability.channel_missing` report, so they run once their channel's helper attaches again. Records use composite primary keys `(channel, id)` or `(channel, name)`; existing records and their memoized results migrate to `default` without changing their IDs or names. A schema downgrade refuses to discard non-default-channel records: drain or explicitly purge those channels before rolling back. `DurabilityAlarms` and `DurabilityOutbox` take the same `channel` option: an application and a library can both have an alarm called `check`, each with its own handler, policy, and lifecycle hook:
+Attaching a second instance to a channel already in use throws `Durability for channel "durable-alerts" is already attached to this scheduler`. Due operations, alarms, fanout deliveries and outbox entries of a channel no instance attached are retained and postponed a minute, with a `durability.channel_missing` report. Custom-timed schedule and semaphore state is retained unchanged while its owner is absent; reattaching it reconciles any pending work. Data-only log and socket history remains stored. Channel identity is part of persisted keys; existing records and memoized results migrate to `default` without changing their IDs or names. Schema downgrades refuse to discard non-default-channel state. Deliberately remove that state before rolling back: draining or cancelling work may still leave counters or tombstones. `DurabilityAlarms` and `DurabilityOutbox` take the same `channel` option: an application and a library can both have an alarm called `check`, each with its own handler, policy, and lifecycle hook:
 
 ```ts
 const reminders = new DurabilityAlarms({

@@ -267,6 +267,7 @@ export class DurabilitySemaphoreServer {
     this.#store = new HolderStore(this.#engine.sql, channel);
     this.#engine.registerChannel({
       table: grantsTable,
+      channelTables: ['durability_semaphore_leases'],
       channel,
       helper: 'A semaphore',
       runDue: () => this.#reclaimExpired(),
