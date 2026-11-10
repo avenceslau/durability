@@ -136,12 +136,10 @@ export const defaultChannel = 'default';
  * One helper instance's share of a table that several instances partition by
  * a `channel` column. Each runs only its own channel's due rows.
  */
-export type ChannelParticipant = {
-  table: DurableTable;
+export type ChannelParticipant = Participant & {
   channel: string;
   /** How errors name the helper, such as `An outbox`. */
   helper: string;
-  runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
 };
 
 /** How long records of a channel no instance attached wait before they are looked at again. */
@@ -272,6 +270,8 @@ export class Engine {
     string,
     Map<string, ChannelParticipant>
   >();
+  private readonly claimedChannels = new Map<string, Set<string>>();
+  private readonly reportedMissingChannels = new Set<string>();
   private readonly migrated = new Set<MigrationCapability>();
   private availablePermits = defaultAlarmConcurrency;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
@@ -373,6 +373,18 @@ export class Engine {
     this.participants.push(participant);
   }
 
+  /** Reserves an instance identity, including for helpers that do not schedule work. */
+  claimChannel(kind: string, channel: string, helper: string): void {
+    const claimed = this.claimedChannels.get(kind) ?? new Set<string>();
+    if (claimed.has(channel)) {
+      throw new Error(
+        `${helper} for channel "${channel}" is already attached to this scheduler`
+      );
+    }
+    claimed.add(channel);
+    this.claimedChannels.set(kind, claimed);
+  }
+
   /**
    * Attaches one channel of a table several helper instances share. The first
    * attachment registers the table; each run then runs every attached
@@ -395,12 +407,11 @@ export class Engine {
       this.channelsByTable.set(table.name, created);
       channels = created;
     }
-    if (channels.has(channel)) {
-      throw new Error(
-        `${helper} for channel "${channel}" is already attached to this scheduler`
-      );
-    }
-    channels.set(channel, participant);
+    this.claimChannel(table.name, channel, helper);
+    channels.set(channel, {
+      ...participant,
+      table: { ...table, channel },
+    });
   }
 
   /**
@@ -413,14 +424,17 @@ export class Engine {
     channels: ReadonlyMap<string, ChannelParticipant>
   ): Promise<void> {
     const now = Date.now();
+    const customTiming = [...channels.values()].some(
+      (participant) => participant.nextPendingAt !== undefined
+    );
     const unattached = channelRowSchema
       .array()
       .parse(
         this.sql
           .exec(
             `SELECT DISTINCT channel FROM ${table.name}
-             WHERE status = 'pending' AND next_attempt_at <= ?`,
-            now
+             ${customTiming ? '' : "WHERE status = 'pending' AND next_attempt_at <= ?"}`,
+            ...(customTiming ? [] : [now])
           )
           .toArray()
       )
@@ -431,6 +445,11 @@ export class Engine {
     }
 
     for (const channel of unattached) {
+      const identity = JSON.stringify([table.name, channel]);
+      if (customTiming && this.reportedMissingChannels.has(identity)) {
+        continue;
+      }
+      this.reportedMissingChannels.add(identity);
       reportFailure(
         'durability.channel_missing',
         { table: table.name, channel },
@@ -438,6 +457,11 @@ export class Engine {
           `Channel "${channel}" of ${table.name} has no helper attached; retaining its records`
         )
       );
+    }
+    // Custom timing may represent leases or recurring configurations, not pending
+    // attempts. Retain those records unchanged until their channel returns.
+    if (customTiming) {
+      return;
     }
     await this.transaction((sql) => {
       for (const channel of unattached) {
@@ -552,6 +576,27 @@ export class Engine {
     physical?: number | undefined;
     timer?: number | undefined;
   } {
+    const channels = this.channelsByTable.get(participant.table.name);
+    if (
+      participant.table.channel === undefined &&
+      channels !== undefined &&
+      [...channels.values()].some(
+        (channel) => channel.nextPendingAt !== undefined
+      )
+    ) {
+      let physical: number | undefined;
+      let timer: number | undefined;
+      for (const channel of channels.values()) {
+        const next = this.pendingTimes(channel);
+        if (next.physical !== undefined) {
+          physical = Math.min(physical ?? Infinity, next.physical);
+        }
+        if (next.timer !== undefined) {
+          timer = Math.min(timer ?? Infinity, next.timer);
+        }
+      }
+      return { physical, timer };
+    }
     if (participant.nextPendingAt) {
       const at = participant.nextPendingAt(this.sql);
       if (at === undefined) {
