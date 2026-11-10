@@ -37,6 +37,8 @@ import {
   type ExecutionPolicyOptions,
 } from './policy.js';
 import {
+  assertChannel,
+  defaultChannel,
   engineFor,
   type Engine,
   type SchedulerAttachment,
@@ -92,13 +94,18 @@ const seqRowSchema = z.object({ seq: z.number().int().nonnegative() });
 
 const readManifest = (
   sql: SqlStorage,
+  channel: string,
   key: string
 ): FanoutMessageRow | undefined =>
   fanoutMessageRowSchema
     .optional()
     .parse(
       sql
-        .exec('SELECT * FROM durability_fanout_messages WHERE key = ?', key)
+        .exec(
+          'SELECT * FROM durability_fanout_messages WHERE channel = ? AND key = ?',
+          channel,
+          key
+        )
         .toArray()[0]
     );
 
@@ -157,6 +164,13 @@ export type FanoutEnqueueOptions = {
 
 export type DurabilityFanoutConfig<Body> = SchedulerAttachment &
   ExecutionPolicyOptions & {
+    /**
+     * Stable channel ID. Instances on one scheduler share storage, partitioned
+     * by channel; target IDs and deduplication keys are independent in each
+     * channel, so a library can attach its own fanout beside the application's.
+     * Defaults to `default`.
+     */
+    channel?: string;
     targets: Record<string, FanoutTarget<Body>>;
     routing?: RoutingLoad;
     /** Receives terminal failures. Without it, terminal deliveries are dropped. */
@@ -206,6 +220,8 @@ export type DurabilityFanoutEvent =
  */
 export class DurabilityFanout<Body = unknown> {
   readonly #engine: Engine;
+  readonly #channel: string;
+  readonly #table: DurableTable;
   readonly #routing: RoutingLoad;
   readonly #targets: Map<string, FanoutTarget<Body>>;
   readonly #policies: Map<string, AttemptPolicy>;
@@ -224,6 +240,11 @@ export class DurabilityFanout<Body = unknown> {
   #pending: number | undefined;
 
   constructor(config: DurabilityFanoutConfig<Body>) {
+    this.#channel = assertChannel(
+      'DurabilityFanout',
+      config.channel ?? defaultChannel
+    );
+    this.#table = { ...deliveriesTable, channel: this.#channel };
     this.#maxBatchSize = config.maxBatchSize ?? 10;
     assertPositiveInteger('maxBatchSize', this.#maxBatchSize);
     this.#batchDelayMs = config.batchDelayMs ?? 0;
@@ -260,8 +281,10 @@ export class DurabilityFanout<Body = unknown> {
     this.#emit = this.#lifecycle.emit;
     this.#engine.migrateSchema('fanout', durabilityFanoutMigrations);
     this.#engine.migrateSchema('memos', durabilityMemoMigrations);
-    this.#engine.register({
-      table: deliveriesTable,
+    this.#engine.registerChannel({
+      table: this.#table,
+      channel: this.#channel,
+      helper: 'DurabilityFanout',
       runDue: () => this.#runDue(),
     });
   }
@@ -353,7 +376,7 @@ export class DurabilityFanout<Body = unknown> {
       registered = await this.#transaction((sql) => {
         const claims: Claim[] = [];
         for (const entry of entries) {
-          const existing = readManifest(sql, entry.key);
+          const existing = readManifest(sql, this.#channel, entry.key);
           if (existing) {
             if (
               existing.id !== entry.id ||
@@ -386,9 +409,10 @@ export class DurabilityFanout<Body = unknown> {
           };
           sql.exec(
             `INSERT INTO durability_fanout_messages
-               (key, id, payload, targets, remaining, seq, created_at,
-                generation_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+               (channel, key, id, payload, targets, remaining, seq,
+                created_at, generation_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            this.#channel,
             message.key,
             message.id,
             message.payload,
@@ -419,11 +443,12 @@ export class DurabilityFanout<Body = unknown> {
               sql
                 .exec(
                   `INSERT INTO durability_fanout_deliveries
-                     (id, message_key, target_id, seq, status, phase, attempt,
-                      next_attempt_at, created_at, generation_id)
-                   VALUES (?, ?, ?, ?, 'pending', 'delivery', 0, ?, ?, ?)
-                   ON CONFLICT(id) DO NOTHING
+                     (channel, id, message_key, target_id, seq, status, phase,
+                      attempt, next_attempt_at, created_at, generation_id)
+                   VALUES (?, ?, ?, ?, ?, 'pending', 'delivery', 0, ?, ?, ?)
+                   ON CONFLICT(channel, id) DO NOTHING
                    RETURNING id`,
+                  this.#channel,
                   row.id,
                   row.message_key,
                   row.target_id,
@@ -494,7 +519,9 @@ export class DurabilityFanout<Body = unknown> {
         this.#engine.sql
           .exec(
             `SELECT DISTINCT target_id FROM durability_fanout_deliveries
-             ORDER BY target_id`
+             WHERE channel = ?
+             ORDER BY target_id`,
+            this.#channel
           )
           .toArray()
       )
@@ -542,7 +569,7 @@ export class DurabilityFanout<Body = unknown> {
         const exhausted: Claim[] = [];
         const deadline = Date.now() + policy.attemptTimeoutMs;
         for (const row of due) {
-          const message = readManifest(sql, row.message_key);
+          const message = readManifest(sql, this.#channel, row.message_key);
           if (!message || message.generation_id !== row.generation_id) {
             throw new Error('Fanout delivery is missing its message manifest');
           }
@@ -555,7 +582,7 @@ export class DurabilityFanout<Body = unknown> {
           }
           const attempt = claimAttempt(
             sql,
-            deliveriesTable,
+            this.#table,
             row.id,
             row.generation_id,
             policy.maxAttempts,
@@ -588,7 +615,7 @@ export class DurabilityFanout<Body = unknown> {
       for (const row of rows) {
         updateAttempt(
           sql,
-          deliveriesTable,
+          this.#table,
           attemptOf(row),
           'next_attempt_at = ?',
           Date.now() + infrastructureRetryMs
@@ -694,16 +721,16 @@ export class DurabilityFanout<Body = unknown> {
         if (!state.finished) {
           continue;
         }
-        const current = deliveryRowSchema
-          .optional()
-          .parse(
-            this.#engine.sql
-              .exec(
-                'SELECT * FROM durability_fanout_deliveries WHERE id = ?',
-                state.claim.row.id
-              )
-              .toArray()[0]
-          );
+        const current = deliveryRowSchema.optional().parse(
+          this.#engine.sql
+            .exec(
+              `SELECT * FROM durability_fanout_deliveries
+                 WHERE channel = ? AND id = ?`,
+              this.#channel,
+              state.claim.row.id
+            )
+            .toArray()[0]
+        );
         if (
           !current ||
           current.generation_id !== state.claim.row.generation_id ||
@@ -805,7 +832,7 @@ export class DurabilityFanout<Body = unknown> {
       body: deserialize(message.payload) as Body,
       enqueuedAt: message.created_at,
       attempt: row.attempt,
-      memoize: createMemoize(this.#engine.sql, deliveriesTable, attemptOf(row)),
+      memoize: createMemoize(this.#engine.sql, this.#table, attemptOf(row)),
       ack: traceFunction(
         'DurabilityFanoutMessage.ack',
         () =>
@@ -868,21 +895,23 @@ export class DurabilityFanout<Body = unknown> {
 
   /** Deletes a delivery the attempt still owns and releases its manifest share. */
   #removeDelivery(sql: SqlStorage, row: DeliveryRow): boolean {
-    if (!deleteAttempt(sql, deliveriesTable, attemptOf(row))) {
+    if (!deleteAttempt(sql, this.#table, attemptOf(row))) {
       return false;
     }
-    deleteMemos(sql, deliveriesTable, row.id);
+    deleteMemos(sql, this.#table, row.id);
 
     this.#adjustPending(-1);
     sql.exec(
       `UPDATE durability_fanout_messages
        SET remaining = remaining - 1
-       WHERE key = ?`,
+       WHERE channel = ? AND key = ?`,
+      this.#channel,
       row.message_key
     );
     sql.exec(
       `DELETE FROM durability_fanout_messages
-       WHERE key = ? AND remaining = 0`,
+       WHERE channel = ? AND key = ? AND remaining = 0`,
+      this.#channel,
       row.message_key
     );
     return true;
@@ -919,7 +948,7 @@ export class DurabilityFanout<Body = unknown> {
     await this.#transaction((sql) => {
       const updated = updateAttempt(
         sql,
-        deliveriesTable,
+        this.#table,
         attemptOf(row),
         'next_attempt_at = ?, last_error = ?, last_error_name = ?',
         nextAttemptAt,
@@ -966,7 +995,7 @@ export class DurabilityFanout<Body = unknown> {
     await this.#transaction((sql) => {
       const updated = updateAttempt(
         sql,
-        deliveriesTable,
+        this.#table,
         attemptOf(row),
         `phase = 'dead_letter', dead_lettered_at = ?, dead_letter_reason = ?,
          next_attempt_at = ?, last_error = ?, last_error_name = ?`,
@@ -1035,7 +1064,8 @@ export class DurabilityFanout<Body = unknown> {
       this.#engine.sql
         .exec(
           `SELECT COUNT(*) AS count FROM durability_fanout_deliveries
-           WHERE status = 'pending'`
+           WHERE channel = ? AND status = 'pending'`,
+          this.#channel
         )
         .toArray()[0]
     ).count;
@@ -1057,10 +1087,11 @@ export class DurabilityFanout<Body = unknown> {
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_fanout_deliveries
-           WHERE target_id = ? AND phase = 'delivery' AND status = 'pending'
-             AND attempt = 0 AND next_attempt_at <= ?
+           WHERE channel = ? AND target_id = ? AND phase = 'delivery'
+             AND status = 'pending' AND attempt = 0 AND next_attempt_at <= ?
            ORDER BY seq ASC
            LIMIT ?`,
+          this.#channel,
           target,
           now,
           this.#maxBatchSize
@@ -1075,10 +1106,11 @@ export class DurabilityFanout<Body = unknown> {
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_fanout_deliveries
-           WHERE target_id = ? AND status = 'pending'
+           WHERE channel = ? AND target_id = ? AND status = 'pending'
              AND attempt > 0 AND next_attempt_at <= ?
            ORDER BY seq ASC
            LIMIT ?`,
+          this.#channel,
           target,
           now,
           this.#maxBatchSize - first.length
