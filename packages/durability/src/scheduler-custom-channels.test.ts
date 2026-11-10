@@ -89,6 +89,81 @@ it('retains missing custom-timed channels without executing their work', async (
   expect(storage.alarmAt).toBeNull();
 });
 
+it('resumes retained work when a custom-timed channel reattaches', async () => {
+  vi.useFakeTimers();
+  const storage = new FakeStorage();
+  const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+  const engine = engineFor({ scheduler });
+  storage.sql.exec(
+    'CREATE TABLE custom_work (channel TEXT, id INTEGER, next_at INTEGER)'
+  );
+  const due = Date.now() + 5_000;
+  storage.sql.exec("INSERT INTO custom_work VALUES ('library', 1, ?)", due);
+  engine.registerChannel({
+    table: { name: 'custom_work', key: 'id' },
+    channel: 'default',
+    helper: 'Custom',
+    runDue: async () => undefined,
+    nextPendingAt: () => undefined,
+  });
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  await scheduler.alarm();
+  expect(storage.alarmAt).toBeNull();
+
+  const run = vi.fn(async () => {
+    storage.sql.exec(
+      "UPDATE custom_work SET next_at = NULL WHERE channel = 'library'"
+    );
+  });
+  engine.registerChannel({
+    table: { name: 'custom_work', key: 'id' },
+    channel: 'library',
+    helper: 'Custom',
+    runDue: run,
+    nextPendingAt: () =>
+      storage.sql
+        .exec<{ next_at: number | null }>(
+          "SELECT next_at FROM custom_work WHERE channel = 'library'"
+        )
+        .one().next_at ?? undefined,
+  });
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(storage.alarmAt).toBeNull();
+});
+
+it('reports a missing channel whose configuration exists before any runs', async () => {
+  const storage = new FakeStorage();
+  const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+  const engine = engineFor({ scheduler });
+  storage.sql.exec(
+    'CREATE TABLE custom_work (channel TEXT, id INTEGER, next_at INTEGER)'
+  );
+  storage.sql.exec('CREATE TABLE custom_config (channel TEXT, id INTEGER)');
+  storage.sql.exec("INSERT INTO custom_config VALUES ('removed', 1)");
+  engine.registerChannel({
+    table: { name: 'custom_work', key: 'id' },
+    channelTables: ['custom_config'],
+    channel: 'default',
+    helper: 'Custom',
+    runDue: async () => undefined,
+    nextPendingAt: () => undefined,
+  });
+  const reported = vi
+    .spyOn(console, 'error')
+    .mockImplementation(() => undefined);
+  await scheduler.alarm();
+  expect(reported).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: 'durability.channel_missing',
+      channel: 'removed',
+    })
+  );
+  expect(storage.sql.exec('SELECT * FROM custom_config').toArray()).toEqual([
+    { channel: 'removed', id: 1 },
+  ]);
+});
+
 it('reserves channels for capabilities without alarm work', () => {
   const scheduler = new DurabilityScheduler({
     context: contextFor(new FakeStorage()),

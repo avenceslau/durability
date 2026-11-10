@@ -140,6 +140,8 @@ export type ChannelParticipant = Participant & {
   channel: string;
   /** How errors name the helper, such as `An outbox`. */
   helper: string;
+  /** Other tables carrying this capability's channel identity, such as its configuration. */
+  channelTables?: readonly string[];
 };
 
 /** How long records of a channel no instance attached wait before they are looked at again. */
@@ -412,6 +414,30 @@ export class Engine {
       ...participant,
       table: { ...table, channel },
     });
+    if (participant.nextPendingAt !== undefined) {
+      // Missing custom channels are dormant. Defer until construction finishes,
+      // then restore their alarm without requiring a new application write.
+      const onError = (error: unknown) =>
+        reportFailure(
+          'durability.channel_resume_failed',
+          { table: table.name, channel },
+          error
+        );
+      const resumed = Promise.resolve()
+        .then(() => {
+          if (participant.nextPendingAt?.(this.sql) !== undefined) {
+            return this.scheduleNextAlarm();
+          }
+          return undefined;
+        })
+        .catch(async (error: unknown) => {
+          if (await this.armFallbackAlarm()) {
+            this.retryFailedRun();
+          }
+          onError(error);
+        });
+      this.waitUntil(resumed, onError);
+    }
   }
 
   /**
@@ -427,17 +453,21 @@ export class Engine {
     const customTiming = [...channels.values()].some(
       (participant) => participant.nextPendingAt !== undefined
     );
+    const channelTables = new Set([
+      table.name,
+      ...[...channels.values()].flatMap(
+        (participant) => participant.channelTables ?? []
+      ),
+    ]);
+    const query = customTiming
+      ? [...channelTables]
+          .map((name) => `SELECT channel FROM ${name}`)
+          .join(' UNION ')
+      : `SELECT DISTINCT channel FROM ${table.name}
+         WHERE status = 'pending' AND next_attempt_at <= ?`;
     const unattached = channelRowSchema
       .array()
-      .parse(
-        this.sql
-          .exec(
-            `SELECT DISTINCT channel FROM ${table.name}
-             ${customTiming ? '' : "WHERE status = 'pending' AND next_attempt_at <= ?"}`,
-            ...(customTiming ? [] : [now])
-          )
-          .toArray()
-      )
+      .parse(this.sql.exec(query, ...(customTiming ? [] : [now])).toArray())
       .map((row) => row.channel)
       .filter((channel) => !channels.has(channel));
     if (unattached.length === 0) {
