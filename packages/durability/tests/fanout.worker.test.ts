@@ -211,13 +211,23 @@ describe('composed routing and fanout in workerd', () => {
   it('delivers the same message ID and target independently in a NUL-named channel', async () => {
     const id = crypto.randomUUID();
     const stub = namespace.getByName(id);
-    const message = { id, body: { action: 'ack' as const, shard: id } };
+    const message = {
+      id,
+      body: {
+        action: 'ack' as const,
+        shard: id,
+      },
+    };
     await expect(stub.enqueue({ messages: [message] })).resolves.toMatchObject({
       success: true,
     });
     await expect(stub.enqueueLibrary([message])).resolves.toMatchObject({
       success: true,
-      load: { outbound: { pendingDeliveries: 1 } },
+      load: {
+        outbound: {
+          pendingDeliveries: 1,
+        },
+      },
     });
     await waitFor(async () => {
       expect((await stub.load()).outbound.pendingDeliveries).toBe(0);

@@ -78,7 +78,6 @@ export class DeliveryObject extends DurableObject<Env> {
     retries: { maxAttempts: 2, delay: () => 10 },
     dlq: writeTo(this.env.DEAD_LETTERS, deadLetterPrefix),
   });
-  // Same target ID as the default channel, under a different policy and DLQ.
   private readonly library = new DurabilityFanout<TestMessage>({
     scheduler: this.scheduler,
     channel: libraryChannel,

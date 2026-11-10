@@ -146,25 +146,58 @@ describe('fanout', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 
-  it('retains removed targets and does not deliver old messages to newly configured ones', async () => {
-    const { fanout, config } = fixture({
-      removed: { deliver: async () => undefined },
-    });
-    await fanout.enqueue({ id: 'old', body: 'x' });
-    await fanout.alarm();
-    // An evicted instance has no in-memory timers; the retry belongs to the recreated one.
-    vi.clearAllTimers();
-    const added = vi.fn(async () => undefined);
-    const recreated = new DurabilityFanout({
-      ...config,
-      targets: { added: { deliver: added } },
-    });
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    vi.advanceTimersByTime(1_000);
-    await recreated.alarm();
-    expect(added).not.toHaveBeenCalled();
-    expect((await recreated.load()).outbound.pendingDeliveries).toBe(1);
-  });
+  it.each(['default', 'library'])(
+    'retains removed targets without delivering old messages to new ones on %s',
+    async (channel) => {
+      const storage = new FakeStorage();
+      const fanout = new DurabilityFanout({
+        context: contextFor(storage),
+        channel,
+        targets: {
+          removed: {
+            deliver: async () => undefined,
+          },
+        },
+        retries: { maxAttempts: 2, delay: () => 1_000 },
+      });
+      await fanout.enqueue({ id: 'old', body: 'x' });
+      await fanout.alarm();
+      // Discard the evicted instance's timers while preserving simulated time.
+      const now = Date.now();
+      vi.clearAllTimers();
+      vi.setSystemTime(now);
+      const added = vi.fn(async () => undefined);
+      const recreated = new DurabilityFanout({
+        context: contextFor(storage),
+        channel,
+        targets: {
+          added: {
+            deliver: added,
+          },
+        },
+      });
+      const reported = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+      vi.advanceTimersByTime(1_000);
+      await recreated.alarm();
+      expect(added).not.toHaveBeenCalled();
+      expect((await recreated.load()).outbound.pendingDeliveries).toBe(1);
+      expect(reported).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'durability.fanout.target_missing',
+          target: 'removed',
+        })
+      );
+      expect(
+        storage.sql
+          .exec(
+            'SELECT channel, next_attempt_at FROM durability_fanout_deliveries'
+          )
+          .toArray()
+      ).toEqual([{ channel, next_attempt_at: Date.now() + 60_000 }]);
+    }
+  );
 
   it('lets a healthy target complete while another target is still awaiting a consumer', async () => {
     let finish!: () => void;
@@ -852,7 +885,11 @@ describe('fanout channels', () => {
     expect(appAttempts).toEqual([1]);
     expect(libraryAttempts).toEqual([1, 2]);
     expect([...librarySink.entries.values()]).toEqual([
-      expect.objectContaining({ messageId: 'm', body: 'library', attempts: 2 }),
+      expect.objectContaining({
+        messageId: 'm',
+        body: 'library',
+        attempts: 2,
+      }),
     ]);
     expect((await library.load()).outbound.pendingDeliveries).toBe(0);
   });
@@ -879,12 +916,16 @@ describe('fanout channels', () => {
     });
     const app = new DurabilityFanout<string>({
       scheduler,
-      targets: { consumer: consumer('app', 'ack') },
+      targets: {
+        consumer: consumer('app', 'ack'),
+      },
     });
     const library = new DurabilityFanout<string>({
       scheduler,
       channel: 'library',
-      targets: { consumer: consumer('library', 'retry') },
+      targets: {
+        consumer: consumer('library', 'retry'),
+      },
       retries: { maxAttempts: 2, delay: () => 1_000 },
       dlq: sink.write,
     });
@@ -921,16 +962,28 @@ describe('fanout channels', () => {
     ).toEqual([]);
 
     await expect(
-      app.enqueue({ id: 'app', deduplicationKey: entry.id, body: 'app' })
+      app.enqueue({
+        id: 'app',
+        deduplicationKey: entry.id,
+        body: 'app',
+      })
     ).resolves.toMatchObject({ success: true });
     await expect(
       library.enqueue(
-        { id: entry.messageId, body: entry.body, deduplicationKey: entry.id },
+        {
+          id: entry.messageId,
+          body: entry.body,
+          deduplicationKey: entry.id,
+        },
         { targets: [entry.target] }
       )
     ).resolves.toMatchObject({
       success: true,
-      load: { outbound: { pendingDeliveries: 1 } },
+      load: {
+        outbound: {
+          pendingDeliveries: 1,
+        },
+      },
     });
     await scheduler.alarm();
     expect(saved.filter((value) => value === 'library:1')).toHaveLength(3);
@@ -940,26 +993,51 @@ describe('fanout channels', () => {
           'SELECT channel, message_key, attempt FROM durability_fanout_deliveries'
         )
         .toArray()
-    ).toEqual([{ channel: 'library', message_key: entry.id, attempt: 1 }]);
+    ).toEqual([
+      {
+        channel: 'library',
+        message_key: entry.id,
+        attempt: 1,
+      },
+    ]);
   });
 
   it('rejects a second fanout for the same channel on one scheduler', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
     });
-    const targets = { consumer: { deliver: () => undefined } };
+    const targets = {
+      consumer: {
+        deliver: () => undefined,
+      },
+    };
     expect(() => new DurabilityFanout({ scheduler, targets })).not.toThrow();
     expect(
-      () => new DurabilityFanout({ scheduler, channel: 'library', targets })
+      () =>
+        new DurabilityFanout({
+          scheduler,
+          channel: 'library',
+          targets,
+        })
     ).not.toThrow();
     expect(() => new DurabilityFanout({ scheduler, targets })).toThrow(
       'DurabilityFanout for channel "default" is already attached to this scheduler'
     );
     expect(
-      () => new DurabilityFanout({ scheduler, channel: 'library', targets })
+      () =>
+        new DurabilityFanout({
+          scheduler,
+          channel: 'library',
+          targets,
+        })
     ).toThrow(/channel "library" is already attached/);
     expect(
-      () => new DurabilityFanout({ scheduler, channel: '', targets })
+      () =>
+        new DurabilityFanout({
+          scheduler,
+          channel: '',
+          targets,
+        })
     ).toThrow('DurabilityFanout channel must be a non-empty string');
   });
 
@@ -971,7 +1049,11 @@ describe('fanout channels', () => {
     const retrying = new DurabilityFanout<string>({
       context: contextFor(storage),
       channel: 'library',
-      targets: { consumer: { deliver: () => undefined } },
+      targets: {
+        consumer: {
+          deliver: () => undefined,
+        },
+      },
       retries: { delay: () => 1_000 },
     });
     await retrying.enqueue({ id: 'm', body: 'x' });
@@ -980,7 +1062,11 @@ describe('fanout channels', () => {
 
     const appOnly = new DurabilityFanout<string>({
       context: contextFor(storage),
-      targets: { consumer: { deliver: () => undefined } },
+      targets: {
+        consumer: {
+          deliver: () => undefined,
+        },
+      },
     });
     vi.advanceTimersByTime(1_000);
     await appOnly.alarm();
@@ -1016,45 +1102,6 @@ describe('fanout channels', () => {
     await returned.alarm();
     expect(delivered).toEqual([2]);
     expect((await returned.load()).outbound.pendingDeliveries).toBe(0);
-  });
-
-  it('postpones a removed target inside an attached channel', async () => {
-    const error = vi
-      .spyOn(console, 'error')
-      .mockImplementation(() => undefined);
-    const storage = new FakeStorage();
-    const first = new DurabilityFanout<string>({
-      context: contextFor(storage),
-      channel: 'library',
-      targets: { removed: { deliver: () => undefined } },
-      retries: { delay: () => 1_000 },
-    });
-    await first.enqueue({ id: 'm', body: 'x' });
-    await first.alarm();
-    evict();
-
-    const added = vi.fn(() => undefined);
-    const recreated = new DurabilityFanout<string>({
-      context: contextFor(storage),
-      channel: 'library',
-      targets: { added: { deliver: added } },
-    });
-    vi.advanceTimersByTime(1_000);
-    await recreated.alarm();
-    expect(added).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'durability.fanout.target_missing',
-        target: 'removed',
-      })
-    );
-    expect(
-      storage.sql
-        .exec(
-          'SELECT channel, next_attempt_at FROM durability_fanout_deliveries'
-        )
-        .toArray()
-    ).toEqual([{ channel: 'library', next_attempt_at: Date.now() + 60_000 }]);
   });
 
   it('moves legacy manifests, deliveries, and memoized results to the default channel', async () => {
@@ -1104,12 +1151,20 @@ describe('fanout channels', () => {
     const scheduler = new DurabilityScheduler({ context });
     const app = new DurabilityFanout<string>({
       scheduler,
-      targets: { consumer: { deliver: deliver('default') } },
+      targets: {
+        consumer: {
+          deliver: deliver('default'),
+        },
+      },
     });
     const library = new DurabilityFanout<string>({
       scheduler,
       channel: 'library',
-      targets: { consumer: { deliver: deliver('library') } },
+      targets: {
+        consumer: {
+          deliver: deliver('library'),
+        },
+      },
     });
     expect((await app.load()).outbound.pendingDeliveries).toBe(1);
     expect((await library.load()).outbound.pendingDeliveries).toBe(0);
@@ -1143,7 +1198,11 @@ describe('fanout channels', () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
     const scheduler = new DurabilityScheduler({ context });
-    const targets = { consumer: { deliver: () => undefined } };
+    const targets = {
+      consumer: {
+        deliver: () => undefined,
+      },
+    };
     const app = new DurabilityFanout<string>({
       scheduler,
       targets,
