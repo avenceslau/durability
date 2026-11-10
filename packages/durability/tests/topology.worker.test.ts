@@ -2,6 +2,7 @@ import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { DurabilityTopology } from '../src/experimental';
 import {
+  secondaryKey,
   topologyKey,
   type TopologyCoordinator,
   type TopologyShard,
@@ -91,5 +92,34 @@ describe('topology in workerd', () => {
 
     expect(await coordinator.remove(group)).toEqual({ published: true });
     expect(await env.TOPOLOGY.get(topologyKey(group))).toBeNull();
+  });
+
+  it('keeps a second instance channel apart in the same coordinator', async () => {
+    const group = crypto.randomUUID();
+    const coordinator = coordinators.getByName(group);
+    await coordinator.create(group, 1, { max: 1 });
+    const secondary = await coordinator.createSecondary(
+      group,
+      `${group}-secondary`,
+      { max: 2 }
+    );
+    expect(secondary).toMatchObject({
+      published: true,
+      snapshot: { group, version: 1 },
+    });
+
+    await waitFor(async () => {
+      expect(await shards.getByName(`${group}-0`).limits()).toEqual({ max: 1 });
+      expect(await shards.getByName(`${group}-secondary`).limits()).toEqual({
+        max: 2,
+      });
+    });
+
+    expect(await coordinator.removeSecondary(group)).toEqual({
+      published: true,
+    });
+    expect(await env.TOPOLOGY.get(secondaryKey(group))).toBeNull();
+    const view = await clientFor().get(group);
+    expect(view.members.map((member) => member.id)).toEqual([`${group}-0`]);
   });
 });

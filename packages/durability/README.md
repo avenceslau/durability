@@ -1340,6 +1340,24 @@ applyLimits(update: TopologyStateUpdate<Limits>) {
 
 `onLifecycleEvent` receives the outbox events of those channels: `channel` names the publication or state channel, and `id` is the group, or `[group, member]` as JSON for a delivery.
 
+### Instance channels
+
+A `channel` option, `default` unless given one, lets several topologies share one coordinator and scheduler, for example an application's and a library's. Each channel holds one instance, with its own groups, state values, versions, publisher, and `deliver` callbacks: the same group and state names in two channels are unrelated groups, and deleting or updating one leaves the other alone. Constructing a second topology on a channel already in use throws `DurabilityTopology for channel "library" is already attached to this scheduler`, with or without a publisher.
+
+```ts
+private readonly libraryTopology = new DurabilityTopology({
+  scheduler: this.scheduler,
+  channel: 'library',
+  publish: {
+    write: (snapshot, encoded) =>
+      this.env.TOPOLOGY.put(`library/${snapshot.group}`, encoded),
+    delete: (group) => this.env.TOPOLOGY.delete(`library/${group}`),
+  },
+});
+```
+
+Snapshots do not name the instance channel, and both instances record the same coordinator, so instances sharing one read store must publish under different keys, as above. The default instance keeps the outbox channels `durability.topology` and `durability.topology.<state>`; any other instance uses `["durability.topology", <channel>, "publication"]` and `["durability.topology", <channel>, "state", <state>]` as JSON, so no two instances or states can share an outbox channel, whatever their names contain. Pending publications and deliveries of an instance no longer constructed are kept and postponed, never handed to another instance. Groups, states, and write records are keyed by `owner_channel` plus their existing keys; existing rows migrate to `default` unchanged. A schema downgrade refuses to drop rows of other instance channels, including the tombstones `delete` leaves behind: delete those rows explicitly before rolling back.
+
 ### Reading
 
 Stateless Workers read through a client. It has one method:
