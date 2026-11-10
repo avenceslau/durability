@@ -58,6 +58,28 @@ export function syntaxNode(value: unknown): SyntaxNode | undefined {
   return value as SyntaxNode;
 }
 
+/**
+ * Calls `visit` with every child value of a node and the key it is stored
+ * under. Array children are visited item by item.
+ */
+export function forEachChild(
+  node: SyntaxNode,
+  visit: (child: unknown, key: string) => void
+): void {
+  for (const [key, child] of Object.entries(node)) {
+    if (key === 'type') {
+      continue;
+    }
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        visit(item, key);
+      }
+    } else {
+      visit(child, key);
+    }
+  }
+}
+
 export function unwrapExpression(value: unknown): SyntaxNode | undefined {
   let node = syntaxNode(value);
   while (

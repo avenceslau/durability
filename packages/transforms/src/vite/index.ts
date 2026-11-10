@@ -15,6 +15,7 @@ import {
 } from './scopes.js';
 import {
   bindingIdentifiers,
+  forEachChild,
   functionTypes,
   identifierName,
   memberExpressionTypes,
@@ -248,17 +249,9 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
 
         if (node.type === 'BlockStatement') {
           const blockScope: Scope = { parent: scope, bindings: new Map() };
-          for (const [childKey, child] of Object.entries(node)) {
-            if (childKey !== 'type') {
-              if (Array.isArray(child)) {
-                for (const item of child) {
-                  index(item, blockScope, node, childKey);
-                }
-              } else {
-                index(child, blockScope, node, childKey);
-              }
-            }
-          }
+          forEachChild(node, (child, childKey) => {
+            index(child, blockScope, node, childKey);
+          });
           return;
         }
 
@@ -280,17 +273,11 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             trustedThisEnv:
               superName !== undefined && platformEntrypointNames.has(superName),
           };
-          for (const [childKey, child] of Object.entries(node)) {
-            if (childKey !== 'type' && childKey !== 'id') {
-              if (Array.isArray(child)) {
-                for (const item of child) {
-                  index(item, classScope, node, childKey);
-                }
-              } else {
-                index(child, classScope, node, childKey);
-              }
+          forEachChild(node, (child, childKey) => {
+            if (childKey !== 'id') {
+              index(child, classScope, node, childKey);
             }
-          }
+          });
           return;
         }
 
@@ -344,22 +331,16 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
               }
             }
           }
-          for (const [childKey, child] of Object.entries(node)) {
-            if (childKey === 'type' || childKey === 'id') {
-              continue;
+          forEachChild(node, (child, childKey) => {
+            if (childKey === 'id') {
+              return;
             }
             const childScope =
               childKey === 'params' || childKey === 'body'
                 ? functionScope
                 : scope;
-            if (Array.isArray(child)) {
-              for (const item of child) {
-                index(item, childScope, node, childKey);
-              }
-            } else {
-              index(child, childScope, node, childKey);
-            }
-          }
+            index(child, childScope, node, childKey);
+          });
           return;
         }
 
@@ -374,11 +355,9 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
               });
             }
           }
-          for (const [childKey, child] of Object.entries(node)) {
-            if (childKey !== 'type') {
-              index(child, catchScope, node, childKey);
-            }
-          }
+          forEachChild(node, (child, childKey) => {
+            index(child, catchScope, node, childKey);
+          });
           return;
         }
 
@@ -403,14 +382,6 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             if (node.kind === 'const') {
               declarators.push({ node: declaration, scope });
             }
-          }
-        } else if (node.type === 'ClassDeclaration') {
-          const className = identifierName(syntaxNode(node.id));
-          if (className) {
-            scope.bindings.set(className, {
-              kind: 'other',
-              wrapReferences: false,
-            });
           }
         } else if (
           node.type === 'ImportDefaultSpecifier' ||
@@ -444,18 +415,9 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           }
         }
 
-        for (const [childKey, child] of Object.entries(node)) {
-          if (childKey === 'type') {
-            continue;
-          }
-          if (Array.isArray(child)) {
-            for (const item of child) {
-              index(item, scope, node, childKey);
-            }
-          } else {
-            index(child, scope, node, childKey);
-          }
-        }
+        forEachChild(node, (child, childKey) => {
+          index(child, scope, node, childKey);
+        });
       };
 
       index(ast, rootScope);
@@ -716,15 +678,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           }
         }
 
-        for (const child of Object.values(node)) {
-          if (Array.isArray(child)) {
-            for (const item of child) {
-              visit(item);
-            }
-          } else {
-            visit(child);
-          }
-        }
+        forEachChild(node, visit);
       };
 
       if (mayWrapBindings) {

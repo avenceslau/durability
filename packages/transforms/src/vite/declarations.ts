@@ -1,5 +1,5 @@
 import { parse as parseJavaScript } from '@babel/parser';
-import { identifierName, syntaxNode } from './syntax.js';
+import { forEachChild, identifierName, syntaxNode } from './syntax.js';
 
 /**
  * Reads binding types from `wrangler types` output. Types that Wrangler could
@@ -35,15 +35,7 @@ export function wranglerBindingTypes(source: string): Map<string, string> {
       types.set(name, source.slice(annotation.start, annotation.end));
     }
 
-    for (const child of Object.values(node)) {
-      if (Array.isArray(child)) {
-        for (const item of child) {
-          visit(item);
-        }
-      } else {
-        visit(child);
-      }
-    }
+    forEachChild(node, visit);
   };
 
   visit(ast);

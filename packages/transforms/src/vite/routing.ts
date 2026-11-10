@@ -1,5 +1,6 @@
 import { resolveBinding, type Scope } from './scopes.js';
 import {
+  forEachChild,
   identifierName,
   memberExpressionTypes,
   propertyName,
@@ -214,15 +215,7 @@ export function collectRoutingInjections(
       }
     }
 
-    for (const child of Object.values(node)) {
-      if (Array.isArray(child)) {
-        for (const item of child) {
-          visit(item);
-        }
-      } else {
-        visit(child);
-      }
-    }
+    forEachChild(node, visit);
   };
 
   visit(program);
