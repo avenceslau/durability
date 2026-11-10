@@ -2,29 +2,13 @@ import { dirname, resolve } from 'node:path';
 import { parse as parseJavaScript } from '@babel/parser';
 import MagicString from 'magic-string';
 import type { Plugin, ResolvedConfig } from 'vite';
+import { markConfiguredBindings } from './binding-kinds.js';
 import { writeBindingDeclarations } from './declarations.js';
 import { collectRoutingInjections } from './routing.js';
-import {
-  clientFactories,
-  platformEntrypointNames,
-  resolveBinding,
-  type BindingKind,
-  type NodeRelation,
-  type Scope,
-} from './scopes.js';
-import {
-  bindingIdentifiers,
-  forEachChild,
-  functionTypes,
-  identifierName,
-  memberExpressionTypes,
-  propertyName,
-  syntaxNode,
-  unwrapExpression,
-  type SyntaxNode,
-} from './syntax.js';
+import { clientFactories, indexScopes } from './scopes.js';
+import { syntaxNode } from './syntax.js';
 import { loadWranglerProject, type WranglerBindings } from './wrangler.js';
-import { namespaceCall, unusedName, type Wrapper } from './wrap.js';
+import { applyWrappers, findWrappers } from './wrap.js';
 
 /** Configuration for the durability transforms Vite plugin. */
 export type DoTransformsPluginOptions = {
@@ -88,14 +72,10 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       await writeBindingDeclarations(project, mainPath, typesPath);
     },
     transform(code, id) {
-      const {
-        durableObjectBindingNames,
-        stubBindingNames,
-        durableObjectClassNames,
-      } = bindings;
       const cleanId = id.split('?')[0] ?? id;
       const mayWrapBindings =
-        durableObjectBindingNames.size > 0 || stubBindingNames.size > 0;
+        bindings.durableObjectBindingNames.size > 0 ||
+        bindings.stubBindingNames.size > 0;
       const mayInjectRouting = [...clientFactories.values()].some((name) =>
         code.includes(name)
       );
@@ -114,475 +94,32 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       const program = syntaxNode(
         (ast as unknown as { program?: unknown }).program
       );
-      const rootScope: Scope = { bindings: new Map() };
-      const nodeScopes = new WeakMap<object, Scope>();
-      const relations = new WeakMap<object, NodeRelation>();
-      const declarators: Array<{ node: SyntaxNode; scope: Scope }> = [];
-
-      const index = (
-        value: unknown,
-        scope: Scope,
-        parent?: SyntaxNode,
-        key?: string
-      ): void => {
-        const node = syntaxNode(value);
-        if (!node) {
-          return;
-        }
-        nodeScopes.set(node, scope);
-        if (parent && key) {
-          relations.set(node, { parent, key });
-        }
-
-        if (node.type === 'BlockStatement') {
-          const blockScope: Scope = { parent: scope, bindings: new Map() };
-          forEachChild(node, (child, childKey) => {
-            index(child, blockScope, node, childKey);
-          });
-          return;
-        }
-
-        if (
-          node.type === 'ClassDeclaration' ||
-          node.type === 'ClassExpression'
-        ) {
-          const className = identifierName(syntaxNode(node.id));
-          if (className) {
-            scope.bindings.set(className, {
-              kind: 'other',
-              wrapReferences: false,
-            });
-          }
-          const superName = identifierName(syntaxNode(node.superClass));
-          const classScope: Scope = {
-            parent: scope,
-            bindings: new Map(),
-            trustedThisEnv:
-              superName !== undefined && platformEntrypointNames.has(superName),
-          };
-          forEachChild(node, (child, childKey) => {
-            if (childKey !== 'id') {
-              index(child, classScope, node, childKey);
-            }
-          });
-          return;
-        }
-
-        if (functionTypes.has(node.type)) {
-          if (node.type === 'FunctionDeclaration') {
-            const name = identifierName(syntaxNode(node.id));
-            if (name) {
-              scope.bindings.set(name, {
-                kind: 'other',
-                wrapReferences: false,
-              });
-            }
-          }
-          const functionScope: Scope = {
-            parent: scope,
-            bindings: new Map(),
-            trustedThisEnv: scope.trustedThisEnv ?? false,
-          };
-          if (node.type === 'FunctionExpression') {
-            const name = identifierName(syntaxNode(node.id));
-            if (name) {
-              functionScope.bindings.set(name, {
-                kind: 'other',
-                wrapReferences: false,
-              });
-            }
-          }
-          const params = Array.isArray(node.params) ? node.params : [];
-          const handlerName =
-            node.type === 'FunctionDeclaration'
-              ? identifierName(syntaxNode(node.id))
-              : identifierName(syntaxNode(node.key));
-          const hasWorkerEnvParameter =
-            handlerName !== undefined &&
-            ['email', 'fetch', 'queue', 'scheduled', 'tail'].includes(
-              handlerName
-            );
-          for (const [parameterIndex, param] of params.entries()) {
-            for (const identifier of bindingIdentifiers(param)) {
-              const name = identifierName(identifier);
-              if (name) {
-                functionScope.bindings.set(name, {
-                  kind:
-                    hasWorkerEnvParameter &&
-                    parameterIndex === 1 &&
-                    syntaxNode(param)?.type === 'Identifier'
-                      ? 'env'
-                      : 'other',
-                  wrapReferences: false,
-                });
-              }
-            }
-          }
-          forEachChild(node, (child, childKey) => {
-            if (childKey === 'id') {
-              return;
-            }
-            const childScope =
-              childKey === 'params' || childKey === 'body'
-                ? functionScope
-                : scope;
-            index(child, childScope, node, childKey);
-          });
-          return;
-        }
-
-        if (node.type === 'CatchClause') {
-          const catchScope: Scope = { parent: scope, bindings: new Map() };
-          for (const identifier of bindingIdentifiers(node.param)) {
-            const name = identifierName(identifier);
-            if (name) {
-              catchScope.bindings.set(name, {
-                kind: 'other',
-                wrapReferences: false,
-              });
-            }
-          }
-          forEachChild(node, (child, childKey) => {
-            index(child, catchScope, node, childKey);
-          });
-          return;
-        }
-
-        if (
-          node.type === 'VariableDeclaration' &&
-          Array.isArray(node.declarations)
-        ) {
-          for (const declarationValue of node.declarations) {
-            const declaration = syntaxNode(declarationValue);
-            if (!declaration) {
-              continue;
-            }
-            for (const identifier of bindingIdentifiers(declaration.id)) {
-              const name = identifierName(identifier);
-              if (name) {
-                scope.bindings.set(name, {
-                  kind: 'other',
-                  wrapReferences: false,
-                });
-              }
-            }
-            if (node.kind === 'const') {
-              declarators.push({ node: declaration, scope });
-            }
-          }
-        } else if (
-          node.type === 'ImportDefaultSpecifier' ||
-          node.type === 'ImportNamespaceSpecifier' ||
-          node.type === 'ImportSpecifier'
-        ) {
-          const localName = identifierName(syntaxNode(node.local));
-          if (localName) {
-            const importSource = syntaxNode(parent?.source);
-            const importedName = identifierName(syntaxNode(node.imported));
-            const isTypeOnlyImport =
-              parent?.importKind === 'type' || node.importKind === 'type';
-            const isClientFactoryImport =
-              !isTypeOnlyImport &&
-              node.type === 'ImportSpecifier' &&
-              importSource?.type === 'StringLiteral' &&
-              typeof importSource.value === 'string' &&
-              importedName !== undefined &&
-              clientFactories.get(importSource.value) === importedName;
-            scope.bindings.set(localName, {
-              kind: isClientFactoryImport
-                ? 'client'
-                : node.type === 'ImportSpecifier' &&
-                    importedName === 'env' &&
-                    importSource?.type === 'StringLiteral' &&
-                    importSource.value === 'cloudflare:test'
-                  ? 'env'
-                  : 'other',
-              wrapReferences: false,
-            });
-          }
-        }
-
-        forEachChild(node, (child, childKey) => {
-          index(child, scope, node, childKey);
-        });
-      };
-
-      index(ast, rootScope);
+      const scopes = indexScopes(ast);
 
       const routingInjections =
         mayInjectRouting && program
           ? collectRoutingInjections(
               code,
               program,
-              durableObjectClassNames,
-              nodeScopes,
-              rootScope
+              bindings.durableObjectClassNames,
+              scopes.nodeScopes,
+              scopes.rootScope
             )
           : [];
 
-      const isEnvRoot = (value: unknown, scope: Scope): boolean => {
-        const node = unwrapExpression(value);
-        if (!node) {
-          return false;
-        }
-        if (node.type === 'Identifier' && typeof node.name === 'string') {
-          return (
-            resolveBinding(nodeScopes.get(node) ?? scope, node.name)?.kind ===
-            'env'
-          );
-        }
-        let trustsThisEnv = false;
-        for (
-          let current: Scope | undefined = scope;
-          current;
-          current = current.parent
-        ) {
-          if (current.trustedThisEnv === true) {
-            trustsThisEnv = true;
-            break;
-          }
-        }
-        return (
-          trustsThisEnv &&
-          memberExpressionTypes.has(node.type) &&
-          propertyName(node) === 'env' &&
-          unwrapExpression(node.object)?.type === 'ThisExpression'
-        );
-      };
-
-      const configuredBindingKind = (
-        value: unknown,
-        scope: Scope
-      ): BindingKind | undefined => {
-        const node = unwrapExpression(value);
-        if (!node) {
-          return undefined;
-        }
-        if (node.type === 'Identifier' && typeof node.name === 'string') {
-          const binding = resolveBinding(
-            nodeScopes.get(node) ?? scope,
-            node.name
-          );
-          return binding?.kind === 'namespace' || binding?.kind === 'stub'
-            ? binding.kind
-            : undefined;
-        }
-        if (
-          !memberExpressionTypes.has(node.type) ||
-          !isEnvRoot(node.object, scope)
-        ) {
-          return undefined;
-        }
-        const name = propertyName(node);
-        if (name && durableObjectBindingNames.has(name)) {
-          return 'namespace';
-        }
-        return name && stubBindingNames.has(name) ? 'stub' : undefined;
-      };
-
-      for (let changed = true; changed; ) {
-        changed = false;
-        for (const { node, scope } of declarators) {
-          const bindingPattern = syntaxNode(node.id);
-          if (!bindingPattern) {
-            continue;
-          }
-          if (bindingPattern.type === 'Identifier') {
-            const name = identifierName(bindingPattern);
-            const binding = name ? scope.bindings.get(name) : undefined;
-            const kind = configuredBindingKind(node.init, scope);
-            if (binding && kind && binding.kind !== kind) {
-              binding.kind = kind;
-              binding.wrapReferences = false;
-              changed = true;
-            }
-          } else if (
-            bindingPattern.type === 'ObjectPattern' &&
-            isEnvRoot(node.init, scope)
-          ) {
-            const properties = Array.isArray(bindingPattern.properties)
-              ? bindingPattern.properties
-              : [];
-            for (const propertyValue of properties) {
-              const property = syntaxNode(propertyValue);
-              if (!property || property.type !== 'ObjectProperty') {
-                continue;
-              }
-              const key = syntaxNode(property.key);
-              const propertyBindings = bindingIdentifiers(property.value);
-              const name =
-                property.computed === true
-                  ? key?.type === 'StringLiteral' &&
-                    typeof key.value === 'string'
-                    ? key.value
-                    : undefined
-                  : (identifierName(key) ??
-                    (key?.type === 'StringLiteral' &&
-                    typeof key.value === 'string'
-                      ? key.value
-                      : undefined));
-              const kind = name
-                ? durableObjectBindingNames.has(name)
-                  ? 'namespace'
-                  : stubBindingNames.has(name)
-                    ? 'stub'
-                    : undefined
-                : undefined;
-              const localName =
-                propertyBindings.length === 1
-                  ? identifierName(propertyBindings[0])
-                  : undefined;
-              const binding = localName
-                ? scope.bindings.get(localName)
-                : undefined;
-              if (binding && kind && binding.kind !== kind) {
-                binding.kind = kind;
-                binding.wrapReferences = kind === 'stub';
-                changed = true;
-              }
-            }
-          }
-        }
-      }
-
-      const isUnsafePosition = (node: SyntaxNode): boolean => {
-        let current = node;
-        for (
-          let relation = relations.get(current);
-          relation;
-          relation = relations.get(current)
-        ) {
-          const { parent, key } = relation;
-          if (
-            (parent.type === 'AssignmentExpression' && key === 'left') ||
-            (parent.type === 'AssignmentPattern' && key === 'left') ||
-            ((parent.type === 'ForInStatement' ||
-              parent.type === 'ForOfStatement') &&
-              key === 'left') ||
-            (parent.type === 'UpdateExpression' && key === 'argument') ||
-            (parent.type === 'UnaryExpression' &&
-              parent.operator === 'delete' &&
-              key === 'argument') ||
-            (parent.type === 'VariableDeclarator' && key === 'id') ||
-            (functionTypes.has(parent.type) && key === 'params') ||
-            (parent.type === 'CatchClause' && key === 'param')
-          ) {
-            return true;
-          }
-          current = parent;
-        }
-        return false;
-      };
-
-      const isReferenceIdentifier = (node: SyntaxNode): boolean => {
-        if (isUnsafePosition(node)) {
-          return false;
-        }
-        const relation = relations.get(node);
-        if (!relation) {
-          return false;
-        }
-        const { parent, key } = relation;
-        if (
-          (memberExpressionTypes.has(parent.type) && key === 'property') ||
-          ((parent.type === 'ObjectProperty' ||
-            parent.type === 'ObjectMethod' ||
-            parent.type === 'ClassMethod' ||
-            parent.type === 'ClassPrivateMethod') &&
-            (key === 'key' || parent.shorthand === true)) ||
-          parent.type === 'ImportSpecifier' ||
-          parent.type === 'ImportDefaultSpecifier' ||
-          parent.type === 'ImportNamespaceSpecifier' ||
-          parent.type === 'ExportSpecifier' ||
-          parent.type === 'LabeledStatement' ||
-          parent.type === 'BreakStatement' ||
-          parent.type === 'ContinueStatement' ||
-          parent.type === 'MetaProperty' ||
-          parent.type.startsWith('JSX') ||
-          (parent.type.startsWith('TS') && key !== 'expression')
-        ) {
-          return false;
-        }
-        return true;
-      };
-
-      const wrappers: Wrapper[] = [];
-      const visit = (value: unknown): void => {
-        const node = syntaxNode(value);
-        if (!node) {
-          return;
-        }
-
-        if (
-          (node.type === 'CallExpression' ||
-            node.type === 'OptionalCallExpression') &&
-          !isUnsafePosition(node)
-        ) {
-          const callee = unwrapExpression(node.callee);
-          if (callee && memberExpressionTypes.has(callee.type)) {
-            const method = propertyName(callee);
-            if (
-              (method === 'get' || method === 'getByName') &&
-              configuredBindingKind(
-                callee.object,
-                nodeScopes.get(node) ?? rootScope
-              ) === 'namespace' &&
-              typeof node.start === 'number' &&
-              typeof node.end === 'number'
-            ) {
-              wrappers.push({
-                start: node.start,
-                end: node.end,
-                namespaceCall: options.restoreBrokenStubs
-                  ? namespaceCall(code, node, callee, method)
-                  : undefined,
-              });
-            }
-          }
-        }
-
-        if (
-          memberExpressionTypes.has(node.type) &&
-          configuredBindingKind(node, nodeScopes.get(node) ?? rootScope) ===
-            'stub' &&
-          !isUnsafePosition(node) &&
-          typeof node.start === 'number' &&
-          typeof node.end === 'number'
-        ) {
-          wrappers.push({ start: node.start, end: node.end });
-        } else if (node.type === 'Identifier' && isReferenceIdentifier(node)) {
-          const name = identifierName(node);
-          const binding = name
-            ? resolveBinding(nodeScopes.get(node), name)
-            : undefined;
-          if (
-            binding?.kind === 'stub' &&
-            binding.wrapReferences &&
-            typeof node.start === 'number' &&
-            typeof node.end === 'number'
-          ) {
-            wrappers.push({ start: node.start, end: node.end });
-          }
-        }
-
-        forEachChild(node, visit);
-      };
-
-      if (mayWrapBindings) {
-        visit(ast);
-      }
-      const uniqueWrappers: Wrapper[] = [];
-      let coveredUntil = -1;
-      for (const wrapper of wrappers.sort(
-        (left, right) => left.start - right.start || right.end - left.end
-      )) {
-        if (wrapper.end <= coveredUntil) {
-          continue;
-        }
-        uniqueWrappers.push(wrapper);
-        coveredUntil = wrapper.end;
-      }
-      if (uniqueWrappers.length === 0 && routingInjections.length === 0) {
+      markConfiguredBindings(scopes, bindings);
+      const wrappers = mayWrapBindings
+        ? findWrappers(
+            {
+              code,
+              scopes,
+              bindings,
+              restoreBrokenStubs: options.restoreBrokenStubs,
+            },
+            ast
+          )
+        : [];
+      if (wrappers.length === 0 && routingInjections.length === 0) {
         return null;
       }
 
@@ -590,35 +127,8 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       for (const injection of routingInjections) {
         transformed.prependLeft(injection.at, injection.text);
       }
-      if (uniqueWrappers.length > 0) {
-        const helperName = unusedName(code, '__doTransformsCreateStub');
-        const restoreHelperName = unusedName(
-          code,
-          '__doTransformsRestorableStub'
-        );
-        const imports = new Set<string>();
-        for (const wrapper of uniqueWrappers) {
-          const call = wrapper.namespaceCall;
-          if (!call) {
-            imports.add(`createTransformStub as ${helperName}`);
-            transformed.prependLeft(wrapper.start, `${helperName}(`);
-            transformed.appendRight(wrapper.end, ')');
-            continue;
-          }
-
-          imports.add(`createRestorableStubFactory as ${restoreHelperName}`);
-          transformed.prependLeft(call.calleeStart, `${restoreHelperName}(`);
-          transformed.overwrite(
-            call.objectEnd,
-            call.calleeEnd,
-            `, ${JSON.stringify(call.method)})${call.insertOptional ? '?.' : ''}`
-          );
-        }
-        const importOffset = code.startsWith('#!') ? code.indexOf('\n') + 1 : 0;
-        transformed.prependLeft(
-          importOffset,
-          `import { ${[...imports].join(', ')} } from '@durability/transforms';\n`
-        );
+      if (wrappers.length > 0) {
+        applyWrappers(transformed, code, wrappers);
       }
 
       return {
