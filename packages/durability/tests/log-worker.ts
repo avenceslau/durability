@@ -27,7 +27,7 @@ export class LogTestObject extends DurableObject<Env> {
     // Real cold storage: one immutable object per flushed segment. Channels
     // count offsets separately, so the key includes the channel.
     const cold: LogColdStorage<LogEvent> = {
-      write: async ({ channel, records, firstOffset }) => {
+      write: async ({ channel = 'default', records, firstOffset }) => {
         const locator = `${segmentPrefix}${this.ctx.id.toString()}/${encodeURIComponent(channel)}/${firstOffset}`;
         await this.env.DEAD_LETTERS.put(locator, JSON.stringify(records), {
           onlyIf: { etagDoesNotMatch: '*' },

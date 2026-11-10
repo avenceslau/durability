@@ -1383,7 +1383,7 @@ export class Partition extends DurableObject<Env> {
     // Flushed records stay readable: `write` returns a locator the log keeps,
     // and `read` hands the segment back when a consumer asks for it.
     cold: {
-      write: async ({ channel, records, firstOffset }) => {
+      write: async ({ channel = 'default', records, firstOffset }) => {
         const locator = `segment/${this.ctx.id}/${encodeURIComponent(channel)}/${firstOffset}`;
         await this.env.COLD.put(locator, JSON.stringify(records), {
           onlyIf: { etagDoesNotMatch: '*' },
@@ -1492,7 +1492,7 @@ const audit = new DurabilityLog<AuditEntry>({
 });
 ```
 
-Because two channels both flush a segment starting at offset 0, cold storage shared between them must include `segment.channel` in the location it writes to, as in the example above; otherwise one channel's segment overwrites or refuses the other's. The stored locator stays opaque and is read back only by the channel that wrote it, so locators written before channels existed keep working on `default`.
+Because two channels both flush a segment starting at offset 0, cold storage shared between them must include `segment.channel ?? 'default'` in the location it writes to, as in the example above; otherwise one channel's segment overwrites or refuses the other's. The stored locator stays opaque and is read back only by the channel that wrote it, so locators written before channels existed keep working on `default`.
 
 Records use composite keys such as `(channel, offset)` and `(channel, consumer)`; existing records, cursors, segments, leases, and allocations migrate to `default` unchanged. A log whose channel no instance attaches keeps its data and runs nothing, since a log schedules no work of its own. A schema downgrade refuses to discard a non-default channel's records, cursors, segments, offset counter, leases, or allocations.
 

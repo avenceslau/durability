@@ -606,10 +606,11 @@ export type LogReadOptions = {
 /** One contiguous run of records leaving the object, oldest first. */
 export type LogSegment<Body = unknown> = {
   /**
-   * The log's channel. Offsets are counted per channel, so logs sharing
-   * external storage must include it in the location they write to.
+   * The log always supplies its channel. Optional for legacy callers that
+   * construct segments themselves; omitted means `default`. Shared external
+   * storage must include the channel in the location it writes to.
    */
-  channel: string;
+  channel?: string;
   firstOffset: number;
   lastOffset: number;
   records: LogRecord<Body>[];
@@ -746,15 +747,15 @@ export class DurabilityLog<Body = unknown> {
     }
 
     this.#engine = engineFor(config);
+    this.#engine.migrateSchema('log', durabilityLogMigrations);
+    if (this.#leases) {
+      this.#engine.migrateSchema('logLeases', durabilityLogLeaseMigrations);
+    }
     this.#engine.claimChannel(
       'durability_log_records',
       this.#channel,
       'DurabilityLog'
     );
-    this.#engine.migrateSchema('log', durabilityLogMigrations);
-    if (this.#leases) {
-      this.#engine.migrateSchema('logLeases', durabilityLogLeaseMigrations);
-    }
   }
 
   static migrate(

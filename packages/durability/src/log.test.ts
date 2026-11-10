@@ -709,6 +709,35 @@ describe('log', () => {
 });
 
 describe('log channels', () => {
+  it.each(['default', 'library'])(
+    'does not reserve %s when a migration fails',
+    (channel) => {
+      const storage = new FakeStorage();
+      const context = contextFor(storage);
+      vi.spyOn(storage, 'transactionSync').mockImplementationOnce(() => {
+        throw new Error('migration unavailable');
+      });
+      const config = { context, channel };
+      expect(() => new DurabilityLog(config)).toThrow('migration unavailable');
+      expect(() => new DurabilityLog(config)).not.toThrow();
+      expect(() => new DurabilityLog(config)).toThrow('already attached');
+    }
+  );
+
+  it('accepts legacy cold segments without channel metadata', async () => {
+    const segment: LogSegment<string> = {
+      firstOffset: 0,
+      lastOffset: 0,
+      records: [],
+    };
+    const cold: LogColdStorage<string> = {
+      write: async ({ channel = 'default', firstOffset }) =>
+        JSON.stringify([channel, firstOffset]),
+      read: async () => [],
+    };
+    await expect(cold.write(segment)).resolves.toBe('["default",0]');
+  });
+
   const beforeChannels = 'durability_0007_create_log';
   const leasesBeforeChannels = 'durability_0008_create_log_leases';
 
