@@ -74,7 +74,7 @@ export type DurabilitySemaphoreEvent =
       timestamp: number;
       grantId: string;
       clientId: string;
-      clientChannel: string;
+      clientChannel?: string;
       group: string;
       /** Unclaimed permits returned to the pool. */
       permits: number;
@@ -426,7 +426,7 @@ export class DurabilitySemaphoreServer {
       const { leases, ...rest } = allocation;
       entry.resolve({
         type: 'grant',
-        v: 1,
+        v: entry.request.v,
         ...rest,
         nextRequestAt,
         ...(entry.request.leases === undefined
@@ -677,7 +677,7 @@ export class DurabilitySemaphoreServer {
     });
     return {
       type: 'synced',
-      v: 1,
+      v: message.v,
       grantResults: result.grantResults,
       ...(result.leaseEchoes === undefined
         ? {}

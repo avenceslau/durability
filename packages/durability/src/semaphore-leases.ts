@@ -47,7 +47,7 @@ export type LeaseEvent = {
   timestamp: number;
   leaseId: string;
   clientId: string;
-  clientChannel: string;
+  clientChannel?: string;
   group: string;
   permits: number;
 };

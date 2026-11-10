@@ -166,7 +166,6 @@ const maxReportRetryMs = 5_000;
 /** Queued items read per key when building a request's demand. */
 const demandScanLimit = 200;
 const maxDelayMs = 2 ** 31 - 1;
-const maxAcknowledgedKeys = 1_024;
 
 const pairKey = (key: string, second: string): string =>
   JSON.stringify([key, second]);
@@ -223,9 +222,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   readonly #engine: Engine;
   readonly #store: QueueStore;
   readonly #server: SemaphoreHolder;
-  readonly #clientId: string;
-  /** Sent to the holder only by named queues, so the default wire shape is unchanged. */
-  readonly #clientChannel: string | undefined;
+  readonly #identity: Pick<PermitRequest, 'v' | 'clientId' | 'clientChannel'>;
   readonly #admit: DurabilitySemaphoreQueueConfig<Body>['admit'];
   readonly #finished: DurabilitySemaphoreQueueConfig<Body>['finished'];
   readonly #finishedCheckMs: number;
@@ -236,8 +233,6 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   readonly #outbox: DurabilityOutbox<Report>;
   readonly #requesting = new Set<string>();
   readonly #blocked = new Map<string, SemaphoreBlockedReason>();
-  /** Keys whose holder acknowledged this queue's channel since construction. */
-  readonly #acknowledgedKeys = new Set<string>();
   #notifying: Promise<void> | undefined;
   #checking: Promise<void> | undefined;
 
@@ -253,8 +248,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       throw new TypeError('Semaphore queue requires an admit function');
     }
     this.#server = config.server;
-    this.#clientId = config.clientId;
-    this.#clientChannel = channel === defaultChannel ? undefined : channel;
+    this.#identity =
+      channel === defaultChannel
+        ? { v: 1, clientId: config.clientId }
+        : {
+            v: 2,
+            clientId: config.clientId,
+            clientChannel: channel,
+          };
     this.#admit = config.admit;
     if (
       config.finished !== undefined &&
@@ -532,35 +533,21 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       .catch(() => undefined);
   }
 
-  /**
-   * A named queue applies nothing a holder sends without echoing its channel:
-   * such a holder counted the permits under the bare `clientId`, which the
-   * default queue of this object may share.
-   */
   #acknowledged(
     key: string,
-    response: { clientChannel?: string | undefined }
+    response: { v: number; clientChannel?: string | undefined }
   ): boolean {
-    if (this.#clientChannel === undefined) {
-      return true;
-    }
-    this.#acknowledgedKeys.delete(key);
-    if (response.clientChannel === this.#clientChannel) {
-      this.#acknowledgedKeys.add(key);
-      // A forgotten key only costs one request without leases.
-      if (this.#acknowledgedKeys.size > maxAcknowledgedKeys) {
-        const oldest = this.#acknowledgedKeys.values().next().value;
-        if (oldest !== undefined) {
-          this.#acknowledgedKeys.delete(oldest);
-        }
-      }
+    if (
+      response.v === this.#identity.v &&
+      response.clientChannel === this.#identity.clientChannel
+    ) {
       return true;
     }
     reportFailure(
       'durability.semaphore_queue.channel_not_acknowledged',
-      { key, channel: this.#clientChannel },
+      { key, channel: this.#identity.clientChannel ?? defaultChannel },
       new SemaphoreProtocolError(
-        `The holder of "${key}" did not acknowledge semaphore queue channel "${this.#clientChannel}"; it may predate queue channels`
+        `The holder of "${key}" did not acknowledge semaphore queue channel "${this.#identity.clientChannel ?? defaultChannel}"`
       )
     );
     return false;
@@ -591,22 +578,13 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         entry.oldestAt = Math.min(entry.oldestAt, item.created_at);
         demand.set(item.grp, entry);
       }
-      // A holder that ignores the channel would lease to the bare clientId,
-      // and a lease nobody reports stays counted, so a named queue opts into
-      // leases only once the holder has acknowledged its channel.
-      const offersLeases =
-        this.#clientChannel === undefined || this.#acknowledgedKeys.has(key);
       const message: PermitRequest = {
         type: 'request',
-        v: 1,
-        clientId: this.#clientId,
-        ...(this.#clientChannel === undefined
-          ? {}
-          : { clientChannel: this.#clientChannel }),
+        ...this.#identity,
         demand: [...demand].map(([group, entry]) => ({ group, ...entry })),
         grants: grants.map(grantReport),
-        // Present opts this client into leases when the holder offers them.
-        ...(offersLeases ? { leases: leases.map(leaseReport) } : {}),
+        // Version 2 makes old holders reject named queues before allocating leases.
+        leases: leases.map(leaseReport),
       };
 
       // While the holder holds the request for its round, the key must not
@@ -1020,11 +998,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           synced = await this.#deadline('sync', () =>
             this.#server.sync(key, {
               type: 'sync',
-              v: 1,
-              clientId: this.#clientId,
-              ...(this.#clientChannel === undefined
-                ? {}
-                : { clientChannel: this.#clientChannel }),
+              ...this.#identity,
               grants,
               leases,
             })

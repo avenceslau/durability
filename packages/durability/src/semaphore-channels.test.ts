@@ -57,7 +57,6 @@ const holderFor = (
     ...options,
   } as DurabilitySemaphoreConfig);
 
-/** Sends requests to one holder and runs the round they join. */
 const round = async (
   holder: DurabilitySemaphoreServer,
   ...requests: PermitRequest[]
@@ -73,10 +72,19 @@ const leasing = (
   clientChannel?: string
 ): PermitRequest => ({
   type: 'request',
-  v: 1,
+  v: clientChannel === undefined ? 1 : 2,
   clientId,
   ...(clientChannel === undefined ? {} : { clientChannel }),
-  demand: count === 0 ? [] : [{ group: 'g', count, oldestAt: 1 }],
+  demand:
+    count === 0
+      ? []
+      : [
+          {
+            group: 'g',
+            count,
+            oldestAt: 1,
+          },
+        ],
   grants: [],
   leases: [],
 });
@@ -87,12 +95,9 @@ const sync = (
 ) =>
   holder.handle({
     type: 'sync',
-    v: 1,
+    v: message.clientChannel === undefined ? 1 : 2,
     ...message,
   }) as Promise<PermitSyncResult>;
-
-const rows = (storage: FakeStorage, query: string, ...bindings: string[]) =>
-  storage.sql.exec(query, ...bindings).toArray();
 
 /** What a holder that predates client channels sees and answers. */
 const withoutChannel = <
@@ -132,10 +137,19 @@ describe('semaphore pools on one object', () => {
       leases: [{ leaseId, drawn: 2, released: 2, retired: true }],
     });
     expect(crossed.grantResults).toEqual([
-      { grantId, claimed: 0, status: 'not_found' },
+      {
+        grantId,
+        claimed: 0,
+        status: 'not_found',
+      },
     ]);
     expect(crossed.leases).toEqual([
-      { leaseId, group: '', permits: 0, expiresAt: Date.now() },
+      {
+        leaseId,
+        group: '',
+        permits: 0,
+        expiresAt: Date.now(),
+      },
     ]);
     expect(await main.usage()).toMatchObject({ granted: 2, leased: 2 });
     expect(await batch.usage()).toMatchObject({ granted: 3, leased: 2 });
@@ -171,10 +185,11 @@ describe('semaphore pools on one object', () => {
     await main.alarm();
     expect((await main.usage()).granted).toBe(0);
     expect(
-      rows(
-        storage,
-        "SELECT permits FROM durability_semaphore_grants WHERE channel = 'gone'"
-      )
+      storage.sql
+        .exec(
+          "SELECT permits FROM durability_semaphore_grants WHERE channel = 'gone'"
+        )
+        .toArray()
     ).toEqual([{ permits: 4 }]);
 
     const gone = new DurabilitySemaphoreServer({
@@ -184,10 +199,11 @@ describe('semaphore pools on one object', () => {
     });
     await gone.alarm();
     expect(
-      rows(
-        storage,
-        "SELECT permits FROM durability_semaphore_grants WHERE channel = 'gone'"
-      )
+      storage.sql
+        .exec(
+          "SELECT permits FROM durability_semaphore_grants WHERE channel = 'gone'"
+        )
+        .toArray()
     ).toEqual([{ permits: 1 }]);
   });
 });
@@ -196,7 +212,10 @@ describe('semaphore client channels', () => {
   it('counts one clientId separately per client channel', async () => {
     const holder = holderFor({
       limit: 4,
-      leases: { provisioning: { mode: 'over', extra: 4 }, permitsPerLease: 2 },
+      leases: {
+        provisioning: { mode: 'over', extra: 4 },
+        permitsPerLease: 2,
+      },
     });
     const [plain, side] = await round(
       holder,
@@ -222,7 +241,11 @@ describe('semaphore client channels', () => {
     });
     expect(crossed.clientChannel).toBe('side');
     expect(crossed.grantResults).toEqual([
-      { grantId, claimed: 0, status: 'not_found' },
+      {
+        grantId,
+        claimed: 0,
+        status: 'not_found',
+      },
     ]);
     expect(crossed.leases?.[0]?.expiresAt).toBe(Date.now());
     expect(await holder.usage()).toMatchObject({ granted: 4, leased: 4 });
@@ -285,6 +308,22 @@ describe('semaphore client channels', () => {
 describe('semaphore queue channels', () => {
   type Queue = DurabilitySemaphoreQueue<string>;
 
+  const grantReply = (
+    message: PermitRequest,
+    options: Pick<PermitGrant, 'nextRequestAt'> &
+      Partial<Pick<PermitGrant, 'grants'>>
+  ): PermitGrant => ({
+    type: 'grant',
+    v: message.v,
+    grants: options.grants ?? [],
+    blocked: [],
+    nextRequestAt: options.nextRequestAt,
+    grantResults: [],
+    ...(message.clientChannel === undefined
+      ? {}
+      : { clientChannel: message.clientChannel }),
+  });
+
   const holderServer = (
     holder: DurabilitySemaphoreServer
   ): SemaphoreHolder => ({
@@ -325,7 +364,11 @@ describe('semaphore queue channels', () => {
     );
     const side = queueOn(scheduler, holderServer(holder), 'side', sideAdmitted);
 
-    const items = ['x', 'y'].map((id) => ({ id, key: 'acct', body: id }));
+    const items = ['x', 'y'].map((id) => ({
+      id,
+      key: 'acct',
+      body: id,
+    }));
     await expect(main.enqueue(items)).resolves.toEqual({
       queued: ['x', 'y'],
       duplicates: [],
@@ -356,7 +399,11 @@ describe('semaphore queue channels', () => {
     await settle(5_000);
     expect(mainAdmitted.length + sideAdmitted.length).toBe(4);
     expect(await holder.usage()).toMatchObject({ granted: 3 });
-    expect(await full.usage()).toEqual({ queued: 0, claiming: 0, admitted: 2 });
+    expect(await full.usage()).toEqual({
+      queued: 0,
+      claiming: 0,
+      admitted: 2,
+    });
     expect(await partial.usage()).toEqual({
       queued: 0,
       claiming: 0,
@@ -364,17 +411,23 @@ describe('semaphore queue channels', () => {
     });
   });
 
-  it('admits nothing for a named queue through a holder that ignores its channel', async () => {
+  it('admits nothing for a named queue through a version-1 holder', async () => {
     const holder = holderFor({
       limit: 2,
       grantTimeoutMs: 5_000,
-      leases: { provisioning: { mode: 'over', extra: 2 } },
+      leases: {
+        provisioning: { mode: 'over', extra: 2 },
+        permitsPerLease: 2,
+      },
     });
     let legacy = true;
     const sent: SemaphoreRequest[] = [];
     const server: SemaphoreHolder = {
       request: async (_key, message) => {
         sent.push(message);
+        if (legacy && message.v !== 1) {
+          throw new Error('Unsupported semaphore protocol version');
+        }
         const reply = (await holder.handle(
           legacy ? (withoutChannel(message) as PermitRequest) : message
         )) as PermitGrant;
@@ -382,6 +435,9 @@ describe('semaphore queue channels', () => {
       },
       sync: async (_key, message) => {
         sent.push(message);
+        if (legacy && message.v !== 1) {
+          throw new Error('Unsupported semaphore protocol version');
+        }
         const reply = (await holder.handle(
           legacy ? (withoutChannel(message) as PermitSync) : message
         )) as PermitSyncResult;
@@ -406,10 +462,10 @@ describe('semaphore queue channels', () => {
       (message) => message.clientChannel === 'side'
     );
     expect(sideRequests.length).toBeGreaterThan(0);
-    // No leases are asked for until the holder acknowledges the channel.
-    expect(sideRequests.every((message) => !('leases' in message))).toBe(true);
+    // Old holders reject version 2 before granting or leasing to the wrong client.
+    expect(sideRequests.every((message) => message.v === 2)).toBe(true);
 
-    // The holder took back what it granted the unacknowledged request.
+    // The rejected requests consume none of the old holder's grant capacity.
     await settle(5_000);
     const usage = await holder.usage();
     expect(usage.granted).toBeLessThanOrEqual(1);
@@ -425,22 +481,22 @@ describe('semaphore queue channels', () => {
     let acknowledgeSync = false;
     const syncs: PermitSync[] = [];
     const server: SemaphoreHolder = {
-      request: async (_key, message) => ({
-        type: 'grant',
-        v: 1,
-        grants: [{ grantId: 'g1', group: '', permits: 1 }],
-        blocked: [],
-        nextRequestAt: Date.now() + 2_000,
-        grantResults: [],
-        ...(message.clientChannel === undefined
-          ? {}
-          : { clientChannel: message.clientChannel }),
-      }),
+      request: async (_key, message) =>
+        grantReply(message, {
+          grants: [
+            {
+              grantId: 'g1',
+              group: '',
+              permits: 1,
+            },
+          ],
+          nextRequestAt: Date.now() + 2_000,
+        }),
       sync: async (_key, message) => {
         syncs.push(message);
         return {
           type: 'synced',
-          v: 1,
+          v: message.v,
           grantResults: message.grants.map((grant) => ({
             grantId: grant.grantId,
             claimed: grant.claimed,
@@ -475,17 +531,17 @@ describe('semaphore queue channels', () => {
     const storage = new FakeStorage();
     const scheduler = schedulerFor(storage);
     const unavailable: SemaphoreHolder = {
-      request: async (_key, message) => ({
-        type: 'grant',
-        v: 1,
-        grants: [{ grantId: 'g1', group: '', permits: 1 }],
-        blocked: [],
-        nextRequestAt: Date.now() + 60_000,
-        grantResults: [],
-        ...(message.clientChannel === undefined
-          ? {}
-          : { clientChannel: message.clientChannel }),
-      }),
+      request: async (_key, message) =>
+        grantReply(message, {
+          grants: [
+            {
+              grantId: 'g1',
+              group: '',
+              permits: 1,
+            },
+          ],
+          nextRequestAt: Date.now() + 60_000,
+        }),
       sync: async () => {
         throw new Error('holder unavailable');
       },
@@ -524,10 +580,10 @@ describe('semaphore queue channels', () => {
 
     expect(published).toEqual(['user']);
     expect(
-      rows(
-        storage,
-        'SELECT DISTINCT channel FROM durability_outbox ORDER BY channel'
-      ).map((row) => row['channel'])
+      storage.sql
+        .exec('SELECT DISTINCT channel FROM durability_outbox ORDER BY channel')
+        .toArray()
+        .map((row) => row['channel'])
     ).toEqual([
       '["durability.semaphore-queue","durability.semaphore-queue"]',
       '["durability.semaphore-queue","x"]',
@@ -556,17 +612,7 @@ describe('semaphore queue channels', () => {
     const server: SemaphoreHolder = {
       request: async (key, message) => {
         requested.push(`${message.clientChannel ?? 'default'}:${key}`);
-        return {
-          type: 'grant',
-          v: 1,
-          grants: [],
-          blocked: [],
-          nextRequestAt: Date.now() + 60_000,
-          grantResults: [],
-          ...(message.clientChannel === undefined
-            ? {}
-            : { clientChannel: message.clientChannel }),
-        };
+        return grantReply(message, { nextRequestAt: Date.now() + 60_000 });
       },
       sync: async () => ({ type: 'synced', v: 1, grantResults: [] }),
     };
@@ -587,18 +633,24 @@ describe('semaphore queue channels', () => {
     await main.alarm();
     await settle(2_000);
     expect(requested).toEqual([]);
-    expect(await main.usage()).toEqual({ queued: 0, claiming: 0, admitted: 0 });
+    expect(await main.usage()).toEqual({
+      queued: 0,
+      claiming: 0,
+      admitted: 0,
+    });
     expect(
-      rows(
-        storage,
-        "SELECT next_request_at, queued FROM durability_semaphore_queue_keys WHERE channel = 'gone'"
-      )
+      storage.sql
+        .exec(
+          "SELECT next_request_at, queued FROM durability_semaphore_queue_keys WHERE channel = 'gone'"
+        )
+        .toArray()
     ).toEqual([{ next_request_at: 0, queued: 1 }]);
     expect(
-      rows(
-        storage,
-        "SELECT renew_at FROM durability_semaphore_queue_leases WHERE channel = 'gone'"
-      )
+      storage.sql
+        .exec(
+          "SELECT renew_at FROM durability_semaphore_queue_leases WHERE channel = 'gone'"
+        )
+        .toArray()
     ).toEqual([{ renew_at: 0 }]);
     // The dormant rows do not keep the alarm awake.
     expect(storage.alarmAt).toBeNull();
@@ -685,7 +737,9 @@ describe('semaphore channel migrations', () => {
       );
     expect(revert).toThrow(/CHECK constraint/);
     expect(
-      rows(storage, 'SELECT client_channel FROM durability_semaphore_grants')
+      storage.sql
+        .exec('SELECT client_channel FROM durability_semaphore_grants')
+        .toArray()
     ).toEqual([{ client_channel: 'side' }]);
 
     storage.sql.exec(
@@ -700,10 +754,9 @@ describe('semaphore channel migrations', () => {
       rolledBack: ['durability_0020_semaphore_channels'],
     });
     expect(
-      rows(
-        storage,
-        'SELECT grant_id, client_id FROM durability_semaphore_grants'
-      )
+      storage.sql
+        .exec('SELECT grant_id, client_id FROM durability_semaphore_grants')
+        .toArray()
     ).toEqual([{ grant_id: 'g1', client_id: 'shard' }]);
   });
 
@@ -885,13 +938,20 @@ describe('semaphore channel migrations', () => {
       rolledBack: ['durability_0021_semaphore_queue_channels'],
     });
     expect(
-      rows(
-        storage,
-        'SELECT id, key, status FROM durability_semaphore_queue_items'
-      )
-    ).toEqual([{ id: 'a', key: 'k', status: 'queued' }]);
+      storage.sql
+        .exec('SELECT id, key, status FROM durability_semaphore_queue_items')
+        .toArray()
+    ).toEqual([
+      {
+        id: 'a',
+        key: 'k',
+        status: 'queued',
+      },
+    ]);
     expect(
-      rows(storage, 'SELECT lease_id FROM durability_semaphore_queue_leases')
+      storage.sql
+        .exec('SELECT lease_id FROM durability_semaphore_queue_leases')
+        .toArray()
     ).toEqual([{ lease_id: 'L' }]);
   });
 });

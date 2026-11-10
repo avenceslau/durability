@@ -2,16 +2,26 @@ import { z } from 'zod';
 
 /**
  * Messages between a semaphore client and the Durable Object holding the
- * limit. Both sides tolerate unknown fields so mixed deployments keep working;
- * new fields must be optional.
+ * limit. Default clients keep version 1. Named queues use version 2 so old
+ * holders reject them before allocating grants or leases under the wrong
+ * identity. Extra fields remain tolerated within each version.
  */
 
 const nonNegative = z.number().int().nonnegative();
 const nonEmpty = z.string().min(1);
+const protocolVersion = z.union([z.literal(1), z.literal(2)]);
+
+const versionMatchesChannel = (message: {
+  v: 1 | 2;
+  clientChannel?: string | undefined;
+}): boolean => message.v === (message.clientChannel === undefined ? 1 : 2);
+
+const channelVersionError =
+  'Client channel does not match semaphore protocol version';
 
 /**
- * Which queue of the client object sent the message. Omitted means the
- * default queue, so older clients keep their identity.
+ * Which queue of the client object sent the message. Version 1 omits it;
+ * version 2 requires it. Older clients therefore keep their identity.
  */
 const clientChannel = nonEmpty.optional();
 
@@ -50,33 +60,37 @@ export const leaseGrantSchema = z.object({
 });
 export type LeaseGrant = z.infer<typeof leaseGrantSchema>;
 
-export const permitRequestSchema = z.object({
-  type: z.literal('request'),
-  v: z.literal(1),
-  clientId: nonEmpty,
-  clientChannel,
-  /** Sparse demand per group with the oldest queued time, for FIFO allocation. */
-  demand: z
-    .object({
-      group: z.string(),
-      count: z.number().int().positive(),
-      oldestAt: nonNegative,
-    })
-    .array()
-    .max(maxDemandEntries),
-  grants: grantReportSchema.array().max(maxGrantReports),
-  leases: leaseReportSchema.array().max(maxGrantReports).optional(),
-});
+export const permitRequestSchema = z
+  .object({
+    type: z.literal('request'),
+    v: protocolVersion,
+    clientId: nonEmpty,
+    clientChannel,
+    /** Sparse demand per group with the oldest queued time, for FIFO allocation. */
+    demand: z
+      .object({
+        group: z.string(),
+        count: z.number().int().positive(),
+        oldestAt: nonNegative,
+      })
+      .array()
+      .max(maxDemandEntries),
+    grants: grantReportSchema.array().max(maxGrantReports),
+    leases: leaseReportSchema.array().max(maxGrantReports).optional(),
+  })
+  .refine(versionMatchesChannel, channelVersionError);
 export type PermitRequest = z.infer<typeof permitRequestSchema>;
 
-export const permitSyncSchema = z.object({
-  type: z.literal('sync'),
-  v: z.literal(1),
-  clientId: nonEmpty,
-  clientChannel,
-  grants: grantReportSchema.array().max(maxGrantReports),
-  leases: leaseReportSchema.array().max(maxGrantReports).optional(),
-});
+export const permitSyncSchema = z
+  .object({
+    type: z.literal('sync'),
+    v: protocolVersion,
+    clientId: nonEmpty,
+    clientChannel,
+    grants: grantReportSchema.array().max(maxGrantReports),
+    leases: leaseReportSchema.array().max(maxGrantReports).optional(),
+  })
+  .refine(versionMatchesChannel, channelVersionError);
 export type PermitSync = z.infer<typeof permitSyncSchema>;
 
 export const semaphoreRequestSchema = z.discriminatedUnion('type', [
@@ -103,43 +117,43 @@ export const grantResultSchema = z.object({
 });
 export type GrantResult = z.infer<typeof grantResultSchema>;
 
-export const permitGrantSchema = z.object({
-  type: z.literal('grant'),
-  v: z.literal(1),
-  grants: z
-    .object({
-      grantId: nonEmpty,
-      group: z.string(),
-      permits: z.number().int().positive(),
-    })
-    .array(),
-  blocked: z
-    .object({ group: z.string(), reason: semaphoreBlockedReasonSchema })
-    .array(),
-  /** The client must not send another request before this. */
-  nextRequestAt: nonNegative,
-  grantResults: grantResultSchema.array(),
-  leases: leaseGrantSchema.array().optional(),
-  /** Demand went unserved: return undrawn lease permits in groups with nothing queued. */
-  contended: z.boolean().optional(),
-  /**
-   * Echoes the request's `clientChannel`. A holder that predates client
-   * channels drops the field, so its absence tells a named queue that the
-   * holder counted it under the bare `clientId`.
-   */
-  clientChannel,
-});
+export const permitGrantSchema = z
+  .object({
+    type: z.literal('grant'),
+    v: protocolVersion,
+    grants: z
+      .object({
+        grantId: nonEmpty,
+        group: z.string(),
+        permits: z.number().int().positive(),
+      })
+      .array(),
+    blocked: z
+      .object({ group: z.string(), reason: semaphoreBlockedReasonSchema })
+      .array(),
+    /** The client must not send another request before this. */
+    nextRequestAt: nonNegative,
+    grantResults: grantResultSchema.array(),
+    leases: leaseGrantSchema.array().optional(),
+    /** Demand went unserved: return undrawn lease permits in groups with nothing queued. */
+    contended: z.boolean().optional(),
+    /** Echoes the request's client channel in version 2. */
+    clientChannel,
+  })
+  .refine(versionMatchesChannel, channelVersionError);
 export type PermitGrant = z.infer<typeof permitGrantSchema>;
 
-export const permitSyncResultSchema = z.object({
-  type: z.literal('synced'),
-  v: z.literal(1),
-  grantResults: grantResultSchema.array(),
-  leases: leaseGrantSchema.array().optional(),
-  contended: z.boolean().optional(),
-  /** Echoes the sync's `clientChannel`, as for a grant. */
-  clientChannel,
-});
+export const permitSyncResultSchema = z
+  .object({
+    type: z.literal('synced'),
+    v: protocolVersion,
+    grantResults: grantResultSchema.array(),
+    leases: leaseGrantSchema.array().optional(),
+    contended: z.boolean().optional(),
+    /** Echoes the sync's `clientChannel`, as for a grant. */
+    clientChannel,
+  })
+  .refine(versionMatchesChannel, channelVersionError);
 export type PermitSyncResult = z.infer<typeof permitSyncResultSchema>;
 
 export const semaphoreResponseSchema = z.discriminatedUnion('type', [
