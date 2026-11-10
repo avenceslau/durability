@@ -11,11 +11,11 @@
   },
   "include": [
     "src/index.ts",
-    "src/client.ts",
+    "src/socket/client.ts",
     "src/experimental.ts",
-    "src/routing.ts",
-    "src/semaphore.ts",
-    "src/socket.ts",
+    "src/routing/index.ts",
+    "src/semaphore/index.ts",
+    "src/socket/index.ts",
     "src/utils.ts"
   ],
   "exclude": ["dist", "node_modules", "src/**/*.test.ts"]

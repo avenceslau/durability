@@ -20,11 +20,11 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./client": "./src/client.ts",
+    "./client": "./src/socket/client.ts",
     "./experimental": "./src/experimental.ts",
-    "./routing": "./src/routing.ts",
-    "./socket": "./src/socket.ts",
-    "./experimental/semaphore": "./src/semaphore.ts",
+    "./routing": "./src/routing/index.ts",
+    "./socket": "./src/socket/index.ts",
+    "./experimental/semaphore": "./src/semaphore/index.ts",
     "./utils": "./src/utils.ts"
   },
   "publishConfig": {
@@ -36,24 +36,24 @@
         "import": "./dist/index.js"
       },
       "./client": {
-        "types": "./dist/client.d.ts",
-        "import": "./dist/client.js"
+        "types": "./dist/socket/client.d.ts",
+        "import": "./dist/socket/client.js"
       },
       "./experimental": {
         "types": "./dist/experimental.d.ts",
         "import": "./dist/experimental.js"
       },
       "./routing": {
-        "types": "./dist/routing.d.ts",
-        "import": "./dist/routing.js"
+        "types": "./dist/routing/index.d.ts",
+        "import": "./dist/routing/index.js"
       },
       "./socket": {
-        "types": "./dist/socket.d.ts",
-        "import": "./dist/socket.js"
+        "types": "./dist/socket/index.d.ts",
+        "import": "./dist/socket/index.js"
       },
       "./experimental/semaphore": {
-        "types": "./dist/semaphore.d.ts",
-        "import": "./dist/semaphore.js"
+        "types": "./dist/semaphore/index.d.ts",
+        "import": "./dist/semaphore/index.js"
       },
       "./utils": {
         "types": "./dist/utils.d.ts",

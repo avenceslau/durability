@@ -1,7 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { evictDurableObject, runInDurableObject, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { DurabilitySocketClient, SocketRemoteError } from '../src/client';
+import {
+  DurabilitySocketClient,
+  SocketRemoteError,
+} from '../src/socket/client';
 import { DurabilitySocket } from '../src/socket';
 import type { SocketTestObject, Todo } from './socket-worker';
 

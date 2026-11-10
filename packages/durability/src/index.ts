@@ -9,7 +9,7 @@ export {
   type DurableOperationResult,
   type DurabilityOperationEvent,
   type HandlerMap,
-} from './durability.js';
+} from './operations/index.js';
 export {
   DurabilityAlarms,
   type DurabilityAlarmsConfig,
@@ -19,12 +19,12 @@ export {
   type DurableAlarmHandler,
   type DurableAlarmInfo,
   type DurableNamedAlarm,
-} from './durability-alarms.js';
+} from './alarms/index.js';
 export {
   maxMemoBytes,
   maxMemosPerRecord,
   type DurableMemoize,
-} from './memoize.js';
+} from './memoize/index.js';
 export {
   DurabilityFanout,
   type DurabilityFanoutConfig,
@@ -33,7 +33,7 @@ export {
   type FanoutInput,
   type FanoutTarget,
   type FanoutEnqueueOptions,
-} from './fanout.js';
+} from './fanout/index.js';
 export {
   DurabilityLog,
   maxLogBytes,
@@ -48,14 +48,14 @@ export {
   type LogRetention,
   type LogSegment,
   type LogBounds,
-} from './log.js';
+} from './log/index.js';
 export {
   RoutingLoad,
   type EnqueueResult,
   type LoadSnapshot,
   type ProcessingLoad,
-} from './load.js';
-export type { MessageWrite, StoredMessage } from './stored-message.js';
+} from './routing/load.js';
+export type { MessageWrite, StoredMessage } from './fanout/stored-message.js';
 export {
   DurabilityScheduler,
   type AlarmRetryInfo,
@@ -63,7 +63,7 @@ export {
   type DurabilitySchedulerConfig,
   type DurabilitySchedulerOptions,
   type SchedulerAttachment,
-} from './scheduler.js';
+} from './scheduler/index.js';
 export {
   DuplicateDurableCallError,
   DuplicateDurablePayloadError,
