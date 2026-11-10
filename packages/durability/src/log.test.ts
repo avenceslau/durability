@@ -864,8 +864,16 @@ describe('log channels', () => {
         lastOffset,
       }))
     ).toEqual([
-      { channel: 'default', firstOffset: 0, lastOffset: 1 },
-      { channel: 'library', firstOffset: 0, lastOffset: 0 },
+      {
+        channel: 'default',
+        firstOffset: 0,
+        lastOffset: 1,
+      },
+      {
+        channel: 'library',
+        firstOffset: 0,
+        lastOffset: 0,
+      },
     ]);
 
     // Both channels flushed offset 0; each rehydrates its own.
@@ -996,13 +1004,23 @@ describe('log channels', () => {
 
     const read = vi.fn(async (locator: string) =>
       locator === 'r2://legacy/0'
-        ? [{ offset: 0, deduplicationKey: 'a', body: 'a', appendedAt: 0 }]
+        ? [
+            {
+              offset: 0,
+              deduplicationKey: 'a',
+              body: 'a',
+              appendedAt: 0,
+            },
+          ]
         : undefined
     );
     const log = new DurabilityLog<string>({
       context,
       leases: {},
-      cold: { write: async () => 'unused', read },
+      cold: {
+        write: async () => 'unused',
+        read,
+      },
     });
     new DurabilityLog<string>({ context, channel: 'library' });
 
@@ -1094,7 +1112,13 @@ describe('log channels', () => {
     ]);
     expect(
       storage.sql.exec('SELECT * FROM durability_log_seq').toArray()
-    ).toEqual([{ id: 1, next_offset: 2, total_bytes: expect.any(Number) }]);
+    ).toEqual([
+      {
+        id: 1,
+        next_offset: 2,
+        total_bytes: expect.any(Number),
+      },
+    ]);
     expect(
       storage.sql
         .exec('SELECT "offset", dedup_key FROM durability_log_records')

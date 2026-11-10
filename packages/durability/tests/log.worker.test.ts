@@ -171,18 +171,22 @@ describe('durable log', () => {
     ]);
 
     await evictDurableObject(stub);
-    const revived = objectFor(name);
+    const stubAfterEviction = objectFor(name);
     await expect(async () => {
-      await revived.ackLease(consumer, peerLease!.batchId);
+      await stubAfterEviction.ackLease(consumer, peerLease!.batchId);
     }).rejects.toThrow(/is not held/);
-    await revived.ackPeer(consumer, peerLease!.batchId);
-    expect(await revived.cursorPeer(consumer)).toBe(1);
-    expect(await revived.cursor(consumer)).toBeUndefined();
+    await stubAfterEviction.ackPeer(consumer, peerLease!.batchId);
+    expect(await stubAfterEviction.cursorPeer(consumer)).toBe(1);
+    expect(await stubAfterEviction.cursor(consumer)).toBeUndefined();
     expect(
-      (await revived.readPeer(0)).records.map((record) => record.body.topic)
+      (await stubAfterEviction.readPeer(0)).records.map(
+        (record) => record.body.topic
+      )
     ).toEqual(['peer']);
     expect(
-      (await revived.read(0, 1)).records.map((record) => record.body.topic)
+      (await stubAfterEviction.read(0, 1)).records.map(
+        (record) => record.body.topic
+      )
     ).toEqual(['default']);
   });
 });
