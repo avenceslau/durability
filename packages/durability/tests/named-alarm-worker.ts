@@ -10,6 +10,7 @@ import socketWorker, { SocketTestObject } from './socket-worker';
 export { SocketTestObject };
 export { LogTestObject } from './log-worker';
 export { TrackerTestObject } from './tracker-worker';
+export { ChannelsTestObject } from './channels-worker';
 export { OutboxObject } from './outbox-worker';
 export { JobShard, LimitObject } from './semaphore-worker';
 export { TopologyCoordinator, TopologyShard } from './topology-worker';
