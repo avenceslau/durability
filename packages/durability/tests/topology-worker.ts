@@ -33,7 +33,11 @@ export class TopologyCoordinator extends DurableObject<Env> {
         this.env.TOPOLOGY.put(topologyKey(snapshot.group), encoded),
       delete: (group) => this.env.TOPOLOGY.delete(topologyKey(group)),
     },
-    states: { limits: { deliver: deliverLimits } },
+    states: {
+      limits: {
+        deliver: deliverLimits,
+      },
+    },
   });
   private readonly secondary = new DurabilityTopology({
     scheduler: this.scheduler,
@@ -43,7 +47,11 @@ export class TopologyCoordinator extends DurableObject<Env> {
         this.env.TOPOLOGY.put(secondaryKey(snapshot.group), encoded),
       delete: (group) => this.env.TOPOLOGY.delete(secondaryKey(group)),
     },
-    states: { limits: { deliver: deliverLimits } },
+    states: {
+      limits: {
+        deliver: deliverLimits,
+      },
+    },
   });
 
   create(group: string, shards: number, limits: Limits) {

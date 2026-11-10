@@ -68,7 +68,11 @@ const instance = (
     ...(channel === undefined ? {} : { channel }),
     retries: { delay: () => 1_000 },
     publish: { ...store.publisher, attemptTimeoutMs: 100 },
-    states: { limits: { deliver: members.deliver } },
+    states: {
+      limits: {
+        deliver: members.deliver,
+      },
+    },
   }),
 });
 
@@ -103,11 +107,19 @@ describe('topology instance channels', () => {
 
     await app.topology.update('acme', () => ({
       members: [active('app-0')],
-      states: { limits: { max: 1 } },
+      states: {
+        limits: {
+          max: 1,
+        },
+      },
     }));
     await library.topology.update('acme', () => ({
       members: [active('library-0'), active('library-1')],
-      states: { limits: { max: 2 } },
+      states: {
+        limits: {
+          max: 2,
+        },
+      },
     }));
     await settle();
     await library.topology.update('acme', ({ members }) => ({
@@ -126,15 +138,28 @@ describe('topology instance channels', () => {
     expect(decodeSnapshot(app.store.values.get('acme')!).version).toBe(1);
     expect(decodeSnapshot(library.store.values.get('acme')!).version).toBe(2);
     expect(app.members.applied).toEqual([
-      { member: 'app-0', value: { max: 1 } },
+      {
+        member: 'app-0',
+        value: { max: 1 },
+      },
     ]);
     expect(library.members.applied).toEqual([
-      { member: 'library-0', value: { max: 2 } },
-      { member: 'library-1', value: { max: 2 } },
+      {
+        member: 'library-0',
+        value: { max: 2 },
+      },
+      {
+        member: 'library-1',
+        value: { max: 2 },
+      },
     ]);
 
     await app.topology.update('acme', () => ({
-      states: { limits: { max: 1 } },
+      states: {
+        limits: {
+          max: 1,
+        },
+      },
     }));
     await settle();
     expect(app.members.applied).toHaveLength(1);
@@ -222,15 +247,19 @@ describe('topology instance channels', () => {
     const context = contextOf(storage);
     const dotted = new Members();
     const nested = new Members();
-    const config = (channel: string, state: string, members: Members) =>
+    const createTopology = (channel: string, state: string, members: Members) =>
       new DurabilityTopology<undefined, Record<string, unknown>>({
         context,
         channel,
         publish: new Store().publisher,
-        states: { [state]: { deliver: members.deliver } },
+        states: {
+          [state]: {
+            deliver: members.deliver,
+          },
+        },
       });
-    const first = config('a', 'b.c', dotted);
-    const second = config('a.b', 'c', nested);
+    const first = createTopology('a', 'b.c', dotted);
+    const second = createTopology('a.b', 'c', nested);
     const legacy = instance(context, undefined);
 
     await first.update('g', () => ({
@@ -343,7 +372,12 @@ describe('topology instance channels', () => {
       [
         'durability.topology.limits',
         JSON.stringify(['acme', 'a']),
-        { group: 'acme', member, topologyVersion: 4, value: { max: 7 } },
+        {
+          group: 'acme',
+          member,
+          topologyVersion: 4,
+          value: { max: 7 },
+        },
       ],
     ] as const;
     for (const [index, [channel, key, value]] of pending.entries()) {

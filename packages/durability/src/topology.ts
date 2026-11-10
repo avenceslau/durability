@@ -368,7 +368,11 @@ export class DurabilityTopology<
       if (!name || typeof channel.deliver !== 'function') {
         throw new TopologyError(`Invalid topology channel "${name}"`);
       }
-      return { name, channel, timeoutMs: timeoutOf(channel, config) };
+      return {
+        name,
+        channel,
+        timeoutMs: timeoutOf(channel, config),
+      };
     });
 
     // Claimed only once the config is valid, so a rejected config leaves the
