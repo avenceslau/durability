@@ -8,6 +8,7 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
+import { serialize } from './serialization';
 import { DurabilitySocket, event, SocketInputError } from './socket';
 import type {
   InboundOf,
@@ -164,6 +165,7 @@ describe('DurabilitySocket', () => {
     expect(ws.deserializeAttachment()).toEqual({
       metadata: { userId: 'bob' },
       names: [],
+      channel: 'default',
     });
 
     await socket.webSocketMessage(
@@ -450,5 +452,452 @@ describe('DurabilitySocket', () => {
       outbound: { tick: event<Date>() },
     });
     expect(() => socket.tick(new Date())).toThrow(/invalid_union/);
+  });
+});
+
+type SocketContext = ReturnType<typeof socketContextFor>;
+
+/**
+ * The same object after hibernation or eviction: a new storage identity over
+ * the same data, and the connections the runtime kept open.
+ */
+const restart = (context: SocketContext): SocketContext => ({
+  ...context,
+  storage: new Proxy(context.storage, {}),
+});
+
+/** Each channel's socket uses the same method and event names but its own handlers, metadata, and retention. */
+const createChannelSocket = (
+  context: SocketContext,
+  channel: string | undefined,
+  calls: string[] = [],
+  retention = 3
+) => {
+  const label = channel ?? 'default';
+  const socket = new DurabilitySocket({
+    context,
+    ...(channel === undefined ? {} : { channel }),
+    inbound: {
+      whoami: (_input: unknown, call: SocketCall<{ user: string }>) => {
+        calls.push(label);
+        return `${label}:${call.metadata.user}`;
+      },
+      publish: {
+        input: z.string(),
+        handle: (payload: string) => {
+          calls.push(label);
+          socket.changed(payload);
+          return payload;
+        },
+      },
+    },
+    outbound: { changed: event<string>() },
+    metadata: (request) => ({
+      user: `${label}/${request.headers.get('x-user')}`,
+    }),
+    retention,
+  });
+  return socket;
+};
+
+const send = (
+  socket: { webSocketMessage(ws: WebSocket, message: string): Promise<void> },
+  ws: FakeWebSocket,
+  value: object
+) => socket.webSocketMessage(ws as unknown as WebSocket, frame(value));
+
+const connectServer = async (
+  socket: { fetch(request: Request): Promise<Response> },
+  context: SocketContext,
+  user?: string
+) => {
+  await connect(socket, user);
+  return serverSide(context);
+};
+
+const storedEvents = (context: SocketContext) =>
+  context.storage.sql
+    .exec<{ channel: string; seq: number }>(
+      'SELECT channel, seq FROM durability_socket_events ORDER BY channel, seq'
+    )
+    .toArray();
+
+describe('DurabilitySocket channels', () => {
+  it('routes each connection to its own channel, whichever socket receives the frame', async () => {
+    const context = socketContextFor(new FakeStorage());
+    const calls: string[] = [];
+    const app = createChannelSocket(context, undefined, calls, 3);
+    const library = createChannelSocket(context, 'library', calls, 2);
+    const appWs = await connectServer(app, context, 'alice');
+    const libraryWs = await connectServer(library, context, 'alice');
+
+    expect(appWs.deserializeAttachment()).toEqual({
+      metadata: { user: 'default/alice' },
+      names: [],
+      channel: 'default',
+    });
+    expect(libraryWs.deserializeAttachment()).toEqual({
+      metadata: { user: 'library/alice' },
+      names: [],
+      channel: 'library',
+    });
+
+    for (const receiver of [app, library]) {
+      await send(receiver, appWs, { type: 'call', id: 'w', method: 'whoami' });
+      await send(receiver, libraryWs, {
+        type: 'call',
+        id: 'w',
+        method: 'whoami',
+      });
+    }
+    await send(library, appWs, {
+      type: 'subscribe',
+      id: 's',
+      names: ['changed'],
+    });
+    await send(app, libraryWs, {
+      type: 'subscribe',
+      id: 's',
+      names: ['changed'],
+    });
+    await send(app, libraryWs, {
+      type: 'call',
+      id: 'p',
+      method: 'publish',
+      input: 'from library',
+    });
+
+    expect(calls).toEqual([
+      'default',
+      'library',
+      'default',
+      'library',
+      'library',
+    ]);
+    expect(appWs.frames()).toEqual([
+      { v: 1, type: 'result', id: 'w', output: 'default:default/alice' },
+      { v: 1, type: 'result', id: 'w', output: 'default:default/alice' },
+      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
+    ]);
+    expect(libraryWs.frames()).toEqual([
+      { v: 1, type: 'result', id: 'w', output: 'library:library/alice' },
+      { v: 1, type: 'result', id: 'w', output: 'library:library/alice' },
+      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
+      {
+        v: 1,
+        type: 'event',
+        seq: 1,
+        name: 'changed',
+        payload: 'from library',
+      },
+      { v: 1, type: 'result', id: 'p', output: 'from library' },
+    ]);
+    expect(libraryWs.deserializeAttachment()).toEqual({
+      metadata: { user: 'library/alice' },
+      names: ['changed'],
+      channel: 'library',
+    });
+
+    app.changed('from app');
+    expect(appWs.frames()[appWs.frames().length - 1]).toEqual({
+      v: 1,
+      type: 'event',
+      seq: 1,
+      name: 'changed',
+      payload: 'from app',
+    });
+    expect(libraryWs.frames()).toHaveLength(5);
+  });
+
+  it('numbers, retains, and replays events per channel', async () => {
+    const context = socketContextFor(new FakeStorage());
+    const app = createChannelSocket(context, undefined, [], 3);
+    const library = createChannelSocket(context, 'library', [], 2);
+
+    for (const index of [1, 2, 3]) {
+      app.changed(`a${index}`);
+      library.changed(`l${index}`);
+    }
+    for (const index of [4, 5, 6, 7, 8]) {
+      app.changed(`a${index}`);
+    }
+
+    expect(storedEvents(context)).toEqual([
+      { channel: 'default', seq: 6 },
+      { channel: 'default', seq: 7 },
+      { channel: 'default', seq: 8 },
+      { channel: 'library', seq: 2 },
+      { channel: 'library', seq: 3 },
+    ]);
+
+    const libraryWs = await connectServer(library, context);
+    await send(app, libraryWs, {
+      type: 'subscribe',
+      id: 's',
+      names: ['changed'],
+      since: 1,
+    });
+    expect(libraryWs.frames()).toEqual([
+      { v: 1, type: 'event', seq: 2, name: 'changed', payload: 'l2' },
+      { v: 1, type: 'event', seq: 3, name: 'changed', payload: 'l3' },
+      { v: 1, type: 'subscribed', id: 's', seq: 3, replayed: true },
+    ]);
+
+    const appWs = await connectServer(app, context);
+    await send(library, appWs, {
+      type: 'subscribe',
+      id: 's',
+      names: ['changed'],
+      since: 3,
+    });
+    expect(appWs.frames()).toEqual([
+      { v: 1, type: 'subscribed', id: 's', seq: 8, replayed: false },
+    ]);
+
+    library.changed('l4');
+    expect(libraryWs.frames()[libraryWs.frames().length - 1]).toEqual({
+      v: 1,
+      type: 'event',
+      seq: 4,
+      name: 'changed',
+      payload: 'l4',
+    });
+    expect(
+      storedEvents(context).filter((row) => row.channel === 'library')
+    ).toEqual([
+      { channel: 'library', seq: 3 },
+      { channel: 'library', seq: 4 },
+    ]);
+  });
+
+  it('treats connections accepted before channels as default and keeps their attachment', async () => {
+    const context = socketContextFor(new FakeStorage());
+    const calls: string[] = [];
+    const app = createChannelSocket(context, undefined, calls);
+    const library = createChannelSocket(context, 'library', calls);
+    const legacy = new FakeWebSocket();
+    legacy.serializeAttachment({ metadata: { user: 'old' }, names: [] });
+    context.acceptWebSocket(legacy as unknown as WebSocket);
+
+    await send(library, legacy, { type: 'call', id: 'w', method: 'whoami' });
+    await send(library, legacy, {
+      type: 'subscribe',
+      id: 's',
+      names: ['changed'],
+    });
+    library.changed('library event');
+    app.changed('app event');
+
+    expect(calls).toEqual(['default']);
+    expect(legacy.frames()).toEqual([
+      { v: 1, type: 'result', id: 'w', output: 'default:old' },
+      { v: 1, type: 'subscribed', id: 's', seq: 0, replayed: false },
+      { v: 1, type: 'event', seq: 1, name: 'changed', payload: 'app event' },
+    ]);
+    expect(legacy.deserializeAttachment()).toEqual({
+      metadata: { user: 'old' },
+      names: ['changed'],
+      channel: 'default',
+    });
+  });
+
+  it('restores routing when the object is constructed again', async () => {
+    const first = socketContextFor(new FakeStorage());
+    const firstCalls: string[] = [];
+    const app = createChannelSocket(first, undefined, firstCalls);
+    const library = createChannelSocket(first, 'library', firstCalls);
+    const appWs = await connectServer(app, first);
+    const libraryWs = await connectServer(library, first);
+    for (const ws of [appWs, libraryWs]) {
+      await send(app, ws, { type: 'subscribe', id: 's', names: ['changed'] });
+    }
+    library.changed('before');
+
+    const second = restart(first);
+    const secondCalls: string[] = [];
+    const restartedLibrary = createChannelSocket(
+      second,
+      'library',
+      secondCalls
+    );
+    const restartedApp = createChannelSocket(second, undefined, secondCalls);
+    await send(restartedApp, libraryWs, {
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
+    await send(restartedLibrary, appWs, {
+      type: 'call',
+      id: 'w',
+      method: 'whoami',
+    });
+    restartedLibrary.changed('after');
+
+    expect(firstCalls).toEqual([]);
+    expect(secondCalls).toEqual(['library', 'default']);
+    expect(libraryWs.frames().slice(1)).toEqual([
+      { v: 1, type: 'event', seq: 1, name: 'changed', payload: 'before' },
+      { v: 1, type: 'result', id: 'w', output: 'library:library/alice' },
+      { v: 1, type: 'event', seq: 2, name: 'changed', payload: 'after' },
+    ]);
+    expect(appWs.frames().slice(1)).toEqual([
+      { v: 1, type: 'result', id: 'w', output: 'default:default/alice' },
+    ]);
+  });
+
+  it('throws when a channel is attached twice or is empty', () => {
+    const context = socketContextFor(new FakeStorage());
+    createChannelSocket(context, undefined);
+    createChannelSocket(context, 'library');
+
+    expect(() => createChannelSocket(context, 'default')).toThrow(
+      'DurabilitySocket for channel "default" is already attached to this scheduler'
+    );
+    expect(() => createChannelSocket(context, 'library')).toThrow(
+      'DurabilitySocket for channel "library" is already attached to this scheduler'
+    );
+    expect(() => createChannelSocket(context, '')).toThrow(
+      'DurabilitySocket channel must be a non-empty string'
+    );
+    expect(() =>
+      createChannelSocket(restart(context), 'library')
+    ).not.toThrow();
+  });
+
+  it('closes a connection whose channel is no longer attached without running another channel', async () => {
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const first = socketContextFor(new FakeStorage());
+    const library = createChannelSocket(first, 'library');
+    createChannelSocket(first, undefined);
+    const libraryWs = await connectServer(library, first);
+    library.changed('kept');
+
+    const second = restart(first);
+    const calls: string[] = [];
+    const app = createChannelSocket(second, undefined, calls);
+    await send(app, libraryWs, { type: 'call', id: 'w', method: 'whoami' });
+
+    expect(calls).toEqual([]);
+    expect(libraryWs.sent).toEqual([]);
+    expect(libraryWs.closed).toEqual({
+      code: 1011,
+      reason: 'Socket channel is not attached',
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'durability.socket.channel_missing',
+        channel: 'library',
+      })
+    );
+    expect(storedEvents(second)).toEqual([{ channel: 'library', seq: 1 }]);
+
+    const third = restart(second);
+    const restoredLibrary = createChannelSocket(third, 'library');
+    const reconnected = await connectServer(restoredLibrary, third);
+    await send(restoredLibrary, reconnected, {
+      type: 'subscribe',
+      id: 's',
+      names: ['changed'],
+      since: 0,
+    });
+    expect(reconnected.frames()).toEqual([
+      { v: 1, type: 'event', seq: 1, name: 'changed', payload: 'kept' },
+      { v: 1, type: 'subscribed', id: 's', seq: 1, replayed: true },
+    ]);
+  });
+
+  it('answers keep-alive pings the same way for every channel', () => {
+    const context = socketContextFor(new FakeStorage());
+    const autoResponse = vi.spyOn(context, 'setWebSocketAutoResponse');
+    createChannelSocket(context, undefined);
+    createChannelSocket(context, 'library');
+
+    expect(autoResponse.mock.calls).toEqual([
+      [{ request: '{"v":1,"type":"ping"}', response: '{"v":1,"type":"pong"}' }],
+      [{ request: '{"v":1,"type":"ping"}', response: '{"v":1,"type":"pong"}' }],
+    ]);
+  });
+
+  it('moves existing events to the default channel with their sequence numbers', async () => {
+    const context = socketContextFor(new FakeStorage());
+    expect(
+      DurabilitySocket.migrate(context, 'durability_0006_create_socket_events')
+    ).toEqual({
+      applied: ['durability_0006_create_socket_events'],
+      rolledBack: [],
+    });
+    for (const payload of ['one', 'two', 'three']) {
+      context.storage.sql.exec(
+        'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?)',
+        'changed',
+        serialize(payload),
+        1
+      );
+    }
+    context.storage.sql.exec(
+      'DELETE FROM durability_socket_events WHERE seq = 1'
+    );
+
+    const app = createChannelSocket(context, undefined);
+    app.changed('four');
+    expect(storedEvents(context)).toEqual([
+      { channel: 'default', seq: 2 },
+      { channel: 'default', seq: 3 },
+      { channel: 'default', seq: 4 },
+    ]);
+    const ws = await connectServer(app, context);
+    await send(app, ws, {
+      type: 'subscribe',
+      id: 's',
+      names: ['changed'],
+      since: 1,
+    });
+    expect(ws.frames()).toEqual([
+      { v: 1, type: 'event', seq: 2, name: 'changed', payload: 'two' },
+      { v: 1, type: 'event', seq: 3, name: 'changed', payload: 'three' },
+      { v: 1, type: 'event', seq: 4, name: 'changed', payload: 'four' },
+      { v: 1, type: 'subscribed', id: 's', seq: 4, replayed: true },
+    ]);
+
+    expect(
+      DurabilitySocket.migrate(context, 'durability_0006_create_socket_events')
+    ).toEqual({
+      applied: [],
+      rolledBack: ['durability_0023_socket_channels'],
+    });
+    context.storage.sql.exec(
+      'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?)',
+      'changed',
+      serialize('five'),
+      1
+    );
+    expect(
+      context.storage.sql
+        .exec<{ seq: number; payload: string }>(
+          'SELECT seq, payload FROM durability_socket_events ORDER BY seq'
+        )
+        .toArray()
+    ).toEqual([
+      { seq: 2, payload: serialize('two') },
+      { seq: 3, payload: serialize('three') },
+      { seq: 4, payload: serialize('four') },
+      { seq: 5, payload: serialize('five') },
+    ]);
+  });
+
+  it('refuses to downgrade while another channel holds events', () => {
+    const context = socketContextFor(new FakeStorage());
+    createChannelSocket(context, undefined).changed('app');
+    createChannelSocket(context, 'library').changed('library');
+
+    expect(() =>
+      DurabilitySocket.migrate(context, 'durability_0006_create_socket_events')
+    ).toThrow(/cannot_downgrade_nondefault_channels/);
+    expect(storedEvents(context)).toEqual([
+      { channel: 'default', seq: 1 },
+      { channel: 'library', seq: 1 },
+    ]);
   });
 });

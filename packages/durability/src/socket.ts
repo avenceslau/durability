@@ -6,6 +6,12 @@ import {
   migrateCapability,
   type DurabilityMigrationResult,
 } from './migrations.js';
+import {
+  assertChannel,
+  defaultChannel,
+  engineFor,
+  type Engine,
+} from './scheduler.js';
 import { deserialize, serialize } from './serialization.js';
 import {
   parseClientFrame,
@@ -47,6 +53,13 @@ export type DurabilitySocketConfig<
   metadata?: (request: Request) => Metadata | Promise<Metadata>;
   /** Outbound events kept for replay to reconnecting clients. Defaults to 1000. */
   retention?: number;
+  /**
+   * Partitions the object's sockets, so a library and the application can each
+   * have one. Defaults to `default`. Each connection belongs to the channel
+   * whose `fetch` accepted it, and its frames reach that instance's handlers
+   * whichever instance `webSocketMessage` delegates to.
+   */
+  channel?: string;
 };
 
 /** Thrown to the caller when an inbound payload fails its schema. */
@@ -65,7 +78,16 @@ export class SocketInputError extends Error {
 type Attachment<Metadata> = {
   metadata: Metadata;
   names: string[];
+  channel: string;
 };
+
+type FrameHandler = (ws: WebSocket, frame: SocketClientFrame) => Promise<void>;
+
+/** The socket instances of each Durable Object, by channel, so any of them can route a frame. */
+const frameHandlersByObject = new WeakMap<Engine, Map<string, FrameHandler>>();
+
+// A configuration problem rather than a protocol violation, so clients reconnect.
+const channelMissingCloseCode = 1011;
 
 type EventRow = {
   seq: number;
@@ -115,14 +137,21 @@ const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
 const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
   const stored: unknown = ws.deserializeAttachment();
   if (typeof stored !== 'object' || stored === null) {
-    return { metadata: undefined as Metadata, names: [] };
+    return {
+      metadata: undefined as Metadata,
+      names: [],
+      channel: defaultChannel,
+    };
   }
   const names = Reflect.get(stored, 'names');
+  // Connections accepted before channels existed carry no channel.
+  const channel = Reflect.get(stored, 'channel');
   return {
     metadata: Reflect.get(stored, 'metadata') as Metadata,
     names: Array.isArray(names)
       ? names.filter((name): name is string => typeof name === 'string')
       : [],
+    channel: typeof channel === 'string' ? channel : defaultChannel,
   };
 };
 
@@ -143,6 +172,8 @@ class DurabilitySocketCore<
     Metadata
   >['metadata'];
   readonly #retention: number;
+  readonly #channel: string;
+  readonly #frameHandlers: Map<string, FrameHandler>;
 
   constructor(config: DurabilitySocketConfig<Inbound, Outbound, Metadata>) {
     const retention = config.retention ?? 1_000;
@@ -150,6 +181,10 @@ class DurabilitySocketCore<
       throw new RangeError('retention must be a positive safe integer');
     }
 
+    this.#channel = assertChannel(
+      'DurabilitySocket',
+      config.channel ?? defaultChannel
+    );
     this.#context = config.context;
     this.#storage = traceStorage(config.context.storage);
     // Only own keys are callable; nothing on the prototype chain is reachable.
@@ -174,12 +209,24 @@ class DurabilitySocketCore<
       });
     }
 
+    const engine = engineFor({ context: config.context });
+    engine.claimChannel(
+      'durability_socket_events',
+      this.#channel,
+      'DurabilitySocket'
+    );
     migrateCapability(
       this.#storage,
       'socket',
       durabilitySocketMigrations,
       undefined
     );
+    const frameHandlers =
+      frameHandlersByObject.get(engine) ?? new Map<string, FrameHandler>();
+    frameHandlers.set(this.#channel, (ws, frame) => this.#handle(ws, frame));
+    frameHandlersByObject.set(engine, frameHandlers);
+    this.#frameHandlers = frameHandlers;
+
     // Keep-alive pings are answered by the runtime without waking a hibernated object.
     this.#context.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair(
@@ -216,12 +263,17 @@ class DurabilitySocketCore<
     server.serializeAttachment({
       metadata,
       names: [],
+      channel: this.#channel,
     } satisfies Attachment<Metadata | undefined>);
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Handles one inbound frame; call from the Durable Object's `webSocketMessage`. */
+  /**
+   * Handles one inbound frame; call from the Durable Object's
+   * `webSocketMessage`. The frame goes to the socket of the connection's
+   * channel, which need not be this one.
+   */
   async webSocketMessage(
     ws: WebSocket,
     message: string | ArrayBuffer
@@ -237,11 +289,23 @@ class DurabilitySocketCore<
       ws.close(socketProtocolErrorCode, 'Invalid frame');
       return;
     }
-    if (frame.type === 'subscribe') {
-      this.#subscribe(ws, frame);
+
+    const { channel } = readAttachment(ws);
+    const handle = this.#frameHandlers.get(channel);
+    if (!handle) {
+      reportFailure(
+        'durability.socket.channel_missing',
+        { channel },
+        new Error(`No DurabilitySocket is attached for channel "${channel}"`)
+      );
+      trace('socket.close', {
+        code: channelMissingCloseCode,
+        reason: 'Socket channel is not attached',
+      });
+      ws.close(channelMissingCloseCode, 'Socket channel is not attached');
       return;
     }
-    await this.#call(ws, frame);
+    await handle(ws, frame);
   }
 
   /**
@@ -250,6 +314,14 @@ class DurabilitySocketCore<
    * the method to exist for hibernatable WebSockets.
    */
   webSocketClose(_ws: WebSocket): void {}
+
+  async #handle(ws: WebSocket, frame: SocketClientFrame): Promise<void> {
+    if (frame.type === 'subscribe') {
+      this.#subscribe(ws, frame);
+      return;
+    }
+    await this.#call(ws, frame);
+  }
 
   async #call(
     ws: WebSocket,
@@ -366,7 +438,8 @@ class DurabilitySocketCore<
     }
     const oldest = this.#storage.sql
       .exec<{ seq: number }>(
-        'SELECT MIN(seq) AS seq FROM durability_socket_events'
+        'SELECT MIN(seq) AS seq FROM durability_socket_events WHERE channel = ?',
+        this.#channel
       )
       .one().seq;
     if (since + 1 < oldest) {
@@ -375,7 +448,8 @@ class DurabilitySocketCore<
 
     const rows = this.#storage.sql
       .exec<EventRow>(
-        'SELECT seq, name, payload FROM durability_socket_events WHERE seq > ? ORDER BY seq',
+        'SELECT seq, name, payload FROM durability_socket_events WHERE channel = ? AND seq > ? ORDER BY seq',
+        this.#channel,
         since
       )
       .toArray();
@@ -398,7 +472,8 @@ class DurabilitySocketCore<
   #headSeq(): number {
     const row = this.#storage.sql
       .exec<{ seq: number | null }>(
-        'SELECT MAX(seq) AS seq FROM durability_socket_events'
+        'SELECT MAX(seq) AS seq FROM durability_socket_events WHERE channel = ?',
+        this.#channel
       )
       .one();
     return row.seq ?? 0;
@@ -407,16 +482,23 @@ class DurabilitySocketCore<
   #publish(name: string, payload: unknown): void {
     const serialized = serialize(payload);
     const sql = this.#storage.sql;
+    // Trimming keeps the newest event of a channel, so its maximum never goes back.
     const { seq } = sql
       .exec<{ seq: number }>(
-        'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?) RETURNING seq',
+        `INSERT INTO durability_socket_events (channel, seq, name, payload, created_at)
+         SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?
+         FROM durability_socket_events WHERE channel = ?
+         RETURNING seq`,
+        this.#channel,
         name,
         serialized,
-        Date.now()
+        Date.now(),
+        this.#channel
       )
       .one();
     sql.exec(
-      'DELETE FROM durability_socket_events WHERE seq <= ?',
+      'DELETE FROM durability_socket_events WHERE channel = ? AND seq <= ?',
+      this.#channel,
       seq - this.#retention
     );
 
@@ -431,7 +513,11 @@ class DurabilitySocketCore<
       if (ws.readyState !== WebSocket.OPEN) {
         continue;
       }
-      if (!readAttachment(ws).names.includes(name)) {
+      const attachment = readAttachment(ws);
+      if (
+        attachment.channel !== this.#channel ||
+        !attachment.names.includes(name)
+      ) {
         continue;
       }
       sendFrame(ws, frame);
