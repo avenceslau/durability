@@ -252,7 +252,22 @@ const jobs = new Durability({ context: this.ctx, handlers: { charge } });
 // Both can register { id: 'invoice-1' }; they are different calls.
 ```
 
-Attaching a second instance to a channel already in use throws `Durability for channel "durable-alerts" is already attached to this scheduler`. Due records of a channel no instance attached, such as one a deploy removed or a library not yet constructed, are kept and looked at again a minute later, with a `durability.channel_missing` report, so they run once their channel's helper attaches again. The primary key is `(channel, id)`; existing calls and their memoized results migrate to `default` without changing their IDs. A schema downgrade refuses to discard non-default-channel records: drain or explicitly purge those channels before rolling back. `DurabilityOutbox` takes the same `channel` option.
+Attaching a second instance to a channel already in use throws `Durability for channel "durable-alerts" is already attached to this scheduler`. Due records of a channel no instance attached, such as one a deploy removed or a library not yet constructed, are kept and looked at again a minute later, with a `durability.channel_missing` report, so they run once their channel's helper attaches again. Records use composite primary keys `(channel, id)` or `(channel, name)`; existing records and their memoized results migrate to `default` without changing their IDs or names. A schema downgrade refuses to discard non-default-channel records: drain or explicitly purge those channels before rolling back. `DurabilityAlarms` and `DurabilityOutbox` take the same `channel` option: an application and a library can both have an alarm called `check`, each with its own handler, policy, and lifecycle hook:
+
+```ts
+const reminders = new DurabilityAlarms({
+  context: this.ctx,
+  handlers: { check },
+});
+const alerts = new DurabilityAlarms({
+  context: this.ctx,
+  channel: 'durable-alerts',
+  retries: { maxAttempts: 5 },
+  handlers: { check: () => runChecks(this.ctx) },
+});
+```
+
+Within a channel, a due alarm whose name has no handler, such as one a deploy removed, fails through that channel's instance.
 
 ## Memoize
 

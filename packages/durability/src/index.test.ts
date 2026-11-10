@@ -58,6 +58,7 @@ describe('migrations', () => {
       applied: [
         'durability_0003_create_alarms',
         'durability_0004_alarms_generation_and_created_at',
+        'durability_0016_alarms_channel',
       ],
       rolledBack: [],
     });
@@ -83,6 +84,7 @@ describe('migrations', () => {
     expect(DurabilityAlarms.migrate(context, null)).toEqual({
       applied: [],
       rolledBack: [
+        'durability_0016_alarms_channel',
         'durability_0004_alarms_generation_and_created_at',
         'durability_0003_create_alarms',
       ],
@@ -218,7 +220,9 @@ describe('migrations', () => {
       ...durabilityOperationMigrations.filter(
         ({ name }) => name !== 'durability_0015_calls_channel'
       ),
-      ...durabilityNamedAlarmMigrations,
+      ...durabilityNamedAlarmMigrations.filter(
+        ({ name }) => name !== 'durability_0016_alarms_channel'
+      ),
     ]) {
       storage.sql.exec(migration.up);
     }
@@ -279,6 +283,7 @@ describe('migrations', () => {
       },
       { name: 'durability_0015_calls_channel', capability: 'operations' },
       { name: 'durability_0012_create_memos', capability: 'memos' },
+      { name: 'durability_0016_alarms_channel', capability: 'namedAlarms' },
     ]);
     expect(Durability.migrate(context)).toEqual({
       applied: [],
@@ -329,6 +334,7 @@ describe('migrations', () => {
       'durability_0004_calls_generation_and_created_at',
       'durability_0004_generation_and_created_at',
       'durability_0015_calls_channel',
+      'durability_0016_alarms_channel',
     ]);
   });
 
@@ -2561,6 +2567,114 @@ describe('DurabilityScheduler', () => {
         result: 'back',
       });
     });
+  });
+
+  it('runs alarms of one name on different channels with their own policy and hooks', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+    const appEvents: string[] = [];
+    const libraryEvents: string[] = [];
+    const fail = async () => {
+      throw new Error('unavailable');
+    };
+    const app = new DurabilityAlarms({
+      scheduler,
+      handlers: { check: fail },
+      retries: { maxAttempts: 1 },
+      onLifecycleEvent(event) {
+        appEvents.push('outcome' in event ? event.outcome : event.type);
+      },
+    });
+    const library = new DurabilityAlarms({
+      scheduler,
+      channel: 'library',
+      handlers: { check: fail },
+      retries: { maxAttempts: 3, delay: () => 60_000 },
+      onLifecycleEvent(event) {
+        libraryEvents.push('outcome' in event ? event.outcome : event.type);
+      },
+    });
+
+    await app.check(Date.now());
+    await library.check(Date.now());
+    storage.alarmAt = null;
+    await scheduler.alarm();
+
+    const rows = storage.sql
+      .exec<{ channel: string; name: string; status: string }>(
+        'SELECT channel, name, status FROM durability_alarms ORDER BY channel'
+      )
+      .toArray();
+    expect(rows).toEqual([
+      { channel: 'default', name: 'check', status: 'failed' },
+      { channel: 'library', name: 'check', status: 'pending' },
+    ]);
+    await vi.waitFor(() => {
+      expect(appEvents).toContain('failed');
+      expect(libraryEvents).toContain('retry_scheduled');
+    });
+    expect(appEvents).not.toContain('retry_scheduled');
+    expect(libraryEvents).not.toContain('failed');
+  });
+
+  it('lists, reads, and purges only its own channel', async () => {
+    const storage = new FakeStorage();
+    const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+    const fail = async () => {
+      throw new DurabilityNonRetryableError('failed');
+    };
+    const app = new DurabilityAlarms({ scheduler, handlers: { check: fail } });
+    const library = new DurabilityAlarms({
+      scheduler,
+      channel: 'library',
+      handlers: { check: fail, poll: fail },
+    });
+    await app.check(Date.now());
+    await library.check(Date.now());
+    await library.poll(Date.now());
+    storage.alarmAt = null;
+    await scheduler.alarm();
+    const tracker = new DurabilityTracker({ sources: { app, library } });
+
+    const listed = await tracker.records();
+    expect(listed.records.map(({ source, id }) => [source, id])).toEqual([
+      ['app', 'check'],
+      ['library', 'check'],
+      ['library', 'poll'],
+    ]);
+    await expect(tracker.get('app', 'poll')).resolves.toBeUndefined();
+    await expect(
+      tracker.records({ source: 'library', name: 'check' })
+    ).resolves.toMatchObject({
+      records: [{ source: 'library', id: 'check' }],
+    });
+
+    await expect(library.purgeBefore(Date.now() + 1)).resolves.toBe(2);
+    expect(
+      storage.sql.exec('SELECT channel, name FROM durability_alarms').toArray()
+    ).toEqual([{ channel: 'default', name: 'check' }]);
+  });
+
+  it('rejects a second DurabilityAlarms on a channel', () => {
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(new FakeStorage()),
+    });
+    void new DurabilityAlarms({
+      scheduler,
+      channel: 'library',
+      handlers: { check: async () => undefined },
+    });
+
+    expect(
+      () =>
+        new DurabilityAlarms({
+          scheduler,
+          channel: 'library',
+          handlers: { other: async () => undefined },
+        })
+    ).toThrow(
+      'DurabilityAlarms for channel "library" is already attached to this scheduler'
+    );
   });
 
   it('rejects attaching two helpers of the same kind', () => {
