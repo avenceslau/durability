@@ -375,9 +375,8 @@ export class DurabilityTopology<
       };
     });
 
-    // Claimed only once the config is valid, so a rejected config leaves the
-    // channel free, and claimed even without a publisher or states, so two
-    // instances cannot share one channel's groups.
+    // Validate before claiming so config validation failures leave the channel
+    // free. Even without outboxes, an instance still owns its channel's groups.
     this.#engine.claimChannel(
       'durability_topology_groups',
       ownerChannel,
