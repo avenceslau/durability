@@ -4,7 +4,7 @@ import {
   DurabilityAlarms,
   DurabilityScheduler,
   type DurableCall,
-} from '../src';
+} from '../../src';
 
 export class LiveTimersObject extends DurableObject {
   private readonly scheduler = new DurabilityScheduler({

@@ -1,8 +1,8 @@
 import { exports as workerExports } from 'cloudflare:workers';
 import { timeout } from '@durability/transforms';
 import { describe, expect, it } from 'vitest';
-import type { PermitGrant } from '../src/semaphore';
-import { limits, type JobShard, type LimitObject } from './semaphore-worker';
+import type { PermitGrant } from '../../src/semaphore';
+import { limits, type JobShard, type LimitObject } from './worker';
 
 const namespace = (workerExports as Record<string, unknown>)[
   'LimitObject'

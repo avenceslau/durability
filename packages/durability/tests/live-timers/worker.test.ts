@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { runDurableObjectAlarm } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { LiveTimersObject } from './live-timers-worker';
+import type { LiveTimersObject } from './worker';
 
 declare global {
   namespace Cloudflare {

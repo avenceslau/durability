@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import { timeout } from '@durability/transforms';
-import { DurabilityScheduler } from '../src';
+import { DurabilityScheduler } from '../../src';
 import {
   DurabilitySemaphore,
   DurabilitySemaphoreQueue,
   type SemaphoreRequest,
-} from '../src/semaphore';
+} from '../../src/semaphore';
 
 /** Holds one account's limit; keyed by account id. */
 export class LimitObject extends DurableObject {

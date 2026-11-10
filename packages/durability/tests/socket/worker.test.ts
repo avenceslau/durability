@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest';
 import {
   DurabilitySocketClient,
   SocketRemoteError,
-} from '../src/socket/client';
-import { DurabilitySocket } from '../src/socket';
-import type { SocketTestObject, Todo } from './socket-worker';
+} from '../../src/socket/client';
+import { DurabilitySocket } from '../../src/socket';
+import type { SocketTestObject, Todo } from './worker';
 
 declare global {
   namespace Cloudflare {

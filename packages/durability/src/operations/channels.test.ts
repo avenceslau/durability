@@ -62,7 +62,7 @@ describe('operation channels', () => {
     ).toEqual([]);
   });
 
-  // NUL-containing IDs are covered by tests/channels.worker.test.ts because
+  // NUL-containing IDs are covered by tests/channels/worker.test.ts because
   // Node 22's node:sqlite truncates them when reading TEXT in FakeStorage.
   it.each(['same', '["library","a"]', 'quotes" / \\ ☃'])(
     'isolates the exact ID %j across channels',

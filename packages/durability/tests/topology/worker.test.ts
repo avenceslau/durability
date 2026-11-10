@@ -1,12 +1,12 @@
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import { DurabilityTopology } from '../src/experimental';
+import { DurabilityTopology } from '../../src/experimental';
 import {
   secondaryKey,
   topologyKey,
   type TopologyCoordinator,
   type TopologyShard,
-} from './topology-worker';
+} from './worker';
 
 declare global {
   namespace Cloudflare {

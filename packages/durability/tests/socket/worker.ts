@@ -4,9 +4,9 @@ import {
   Durability,
   type DurableCall,
   type DurabilityLifecycleEvent,
-} from '../src';
-import { DurabilityTracker } from '../src/experimental';
-import { DurabilitySocket, event, type SocketCall } from '../src/socket';
+} from '../../src';
+import { DurabilityTracker } from '../../src/experimental';
+import { DurabilitySocket, event, type SocketCall } from '../../src/socket';
 
 export type Todo = { id: string; title: string; done: boolean };
 

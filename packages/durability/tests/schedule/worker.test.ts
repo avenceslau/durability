@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { runDurableObjectAlarm } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { LiveScheduleObject, ScheduleObject } from './schedule-worker';
+import type { LiveScheduleObject, ScheduleObject } from './worker';
 
 declare global {
   namespace Cloudflare {

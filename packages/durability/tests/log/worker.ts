@@ -6,7 +6,7 @@ import {
   type LogColdStorage,
   type LogPage,
   type LogRecord,
-} from '../src';
+} from '../../src';
 
 type Env = { DEAD_LETTERS: R2Bucket };
 

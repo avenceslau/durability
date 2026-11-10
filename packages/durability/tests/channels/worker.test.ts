@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import type { ChannelsTestObject } from './channels-worker';
+import type { ChannelsTestObject } from './worker';
 
 declare global {
   namespace Cloudflare {

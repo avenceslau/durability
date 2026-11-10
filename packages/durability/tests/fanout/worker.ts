@@ -7,8 +7,8 @@ import {
   type FanoutInput,
   type FanoutEnqueueOptions,
   type StoredMessage,
-} from '../src';
-import { DurabilityRouting } from '../src/routing';
+} from '../../src';
+import { DurabilityRouting } from '../../src/routing';
 
 export type TestMessage = {
   action: 'ack' | 'retry' | 'deadLetter' | 'ignore';

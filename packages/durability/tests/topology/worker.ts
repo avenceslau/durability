@@ -1,9 +1,9 @@
 import { DurableObject, exports as workerExports } from 'cloudflare:workers';
-import { DurabilityScheduler } from '../src';
+import { DurabilityScheduler } from '../../src';
 import {
   DurabilityTopology,
   type TopologyStateUpdate,
-} from '../src/experimental';
+} from '../../src/experimental';
 
 export type Limits = { max: number };
 

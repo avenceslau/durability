@@ -2,7 +2,7 @@ import { exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject } from 'cloudflare:test';
 import { scheduler } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import type { LogTestObject } from './log-worker';
+import type { LogTestObject } from './worker';
 
 const namespaceFor = (name: string) => {
   const candidate = (workerExports as Record<string, unknown>)[name];

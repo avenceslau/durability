@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { newWebSocketRpcSession } from 'capnweb';
 import { describe, expect, it } from 'vitest';
-import type { TrackerApi, TrackerTestObject } from './tracker-worker';
+import type { TrackerApi, TrackerTestObject } from './worker';
 
 declare global {
   namespace Cloudflare {

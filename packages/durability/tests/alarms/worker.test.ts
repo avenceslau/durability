@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { evictDurableObject, runDurableObjectAlarm } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { NamedAlarmTestObject } from './named-alarm-worker';
+import type { NamedAlarmTestObject } from './worker';
 
 declare global {
   namespace Cloudflare {

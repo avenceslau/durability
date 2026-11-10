@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { newWorkersRpcResponse, RpcTarget } from 'capnweb';
-import { Durability, type DurableCall } from '../src';
-import { DurabilityTracker } from '../src/experimental';
+import { Durability, type DurableCall } from '../../src';
+import { DurabilityTracker } from '../../src/experimental';
 
 export class TrackerTestObject extends DurableObject {
   private readonly gates = new Map<string, () => void>();

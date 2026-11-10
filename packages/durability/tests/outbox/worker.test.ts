@@ -1,7 +1,7 @@
 import { exports as workerExports } from 'cloudflare:workers';
 import { runDurableObjectAlarm } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { OutboxObject } from './outbox-worker';
+import type { OutboxObject } from './worker';
 
 const namespace = (workerExports as Record<string, unknown>)[
   'OutboxObject'

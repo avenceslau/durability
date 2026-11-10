@@ -6,8 +6,8 @@ import {
   timeout,
 } from '@durability/transforms';
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import type { StoredMessage } from '../src';
-import type { RoutingSession } from '../src/routing';
+import type { StoredMessage } from '../../src';
+import type { RoutingSession } from '../../src/routing';
 import {
   archivePrefix,
   deadLetterPrefix,
@@ -18,7 +18,7 @@ import {
   type DeliveryObject,
   type RouteContext,
   type TestMessage,
-} from './fanout-worker';
+} from './worker';
 
 declare global {
   namespace Cloudflare {

@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
-import { Durability, type DurableCall } from '../src';
-import { DurabilityTracker } from '../src/experimental';
+import { Durability, type DurableCall } from '../../src';
+import { DurabilityTracker } from '../../src/experimental';
 
 export class ChannelsTestObject extends DurableObject {
   private readonly app = new Durability({

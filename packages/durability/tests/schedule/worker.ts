@@ -1,10 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
-import { DurabilityScheduler } from '../src';
+import { DurabilityScheduler } from '../../src';
 import {
   DurabilitySchedule,
   type ScheduleDefinition,
-} from '../src/experimental';
+} from '../../src/experimental';
 
 type Cursor = SqlStorageCursor<Record<string, SqlStorageValue>>;
 
