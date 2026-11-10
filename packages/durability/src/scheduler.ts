@@ -280,6 +280,7 @@ export class Engine {
   private availablePermits = defaultAlarmConcurrency;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
+  private alarmRefreshRequested = false;
   private failedRuns = 0;
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
@@ -750,14 +751,25 @@ export class Engine {
     this.earlyAlarm = { timestamp, timer };
   }
 
-  /** Coalesces concurrent refresh requests into one reconciliation transaction. */
+  /** Coalesces refreshes without dropping requests arriving after the pending-work read. */
   scheduleNextAlarm(): Promise<void> {
+    this.alarmRefreshRequested = true;
     if (this.alarmRefresh) {
       return this.alarmRefresh;
     }
-    this.alarmRefresh = this.transaction(() => undefined).finally(() => {
-      this.alarmRefresh = undefined;
-    });
+
+    this.alarmRefresh = (async () => {
+      try {
+        do {
+          // eslint-disable-next-line no-await-in-loop
+          await this.transaction(() => {
+            this.alarmRefreshRequested = false;
+          });
+        } while (this.alarmRefreshRequested);
+      } finally {
+        this.alarmRefresh = undefined;
+      }
+    })();
     return this.alarmRefresh;
   }
 

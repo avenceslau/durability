@@ -178,3 +178,89 @@ it('reserves channels for capabilities without alarm work', () => {
     engine.claimChannel('other-records', 'library', 'Other')
   ).not.toThrow();
 });
+
+it('allows another refresh after a coalesced transaction fails', async () => {
+  const storage = new FakeStorage();
+  const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+  const engine = engineFor({ scheduler });
+  const getAlarm = vi
+    .spyOn(storage, 'getAlarm')
+    .mockRejectedValueOnce(new Error('read failed'));
+  const refreshing = engine.scheduleNextAlarm();
+  expect(engine.scheduleNextAlarm()).toBe(refreshing);
+  await expect(refreshing).rejects.toThrow('read failed');
+
+  await expect(engine.scheduleNextAlarm()).resolves.toBeUndefined();
+  expect(getAlarm).toHaveBeenCalledTimes(2);
+});
+
+it('reconciles a channel attached while an earlier refresh is committing', async () => {
+  vi.useFakeTimers();
+  const storage = new FakeStorage();
+  const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+  const engine = engineFor({ scheduler });
+  storage.sql.exec(
+    'CREATE TABLE custom_work (channel TEXT, id INTEGER, next_at INTEGER)'
+  );
+  storage.sql.exec(
+    "INSERT INTO custom_work VALUES ('library', 1, ?)",
+    Date.now() + 5_000
+  );
+  engine.registerChannel({
+    table: {
+      name: 'custom_work',
+      key: 'id',
+    },
+    channel: 'default',
+    helper: 'Custom',
+    runDue: async () => undefined,
+    nextPendingAt: () => undefined,
+  });
+
+  let observed!: () => void;
+  const snapshotRead = new Promise<void>((resolve) => {
+    observed = resolve;
+  });
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.spyOn(storage, 'getAlarm').mockImplementationOnce(async () => {
+    observed();
+    await blocked;
+    return storage.alarmAt;
+  });
+  const refresh = vi.spyOn(engine, 'scheduleNextAlarm');
+  const refreshing = engine.scheduleNextAlarm();
+  await snapshotRead;
+
+  const run = vi.fn(async () => {
+    storage.sql.exec(
+      "UPDATE custom_work SET next_at = NULL WHERE channel = 'library'"
+    );
+  });
+  engine.registerChannel({
+    table: {
+      name: 'custom_work',
+      key: 'id',
+    },
+    channel: 'library',
+    helper: 'Custom',
+    runDue: run,
+    nextPendingAt: () =>
+      storage.sql
+        .exec<{ next_at: number | null }>(
+          "SELECT next_at FROM custom_work WHERE channel = 'library'"
+        )
+        .one().next_at ?? undefined,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(refresh).toHaveBeenCalledTimes(2);
+  release();
+  await refreshing;
+
+  expect(storage.alarmAt).not.toBeNull();
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(storage.alarmAt).toBeNull();
+});
