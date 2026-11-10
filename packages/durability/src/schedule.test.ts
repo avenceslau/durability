@@ -921,8 +921,16 @@ describe('DurabilitySchedule channels', () => {
     void firstApp.schedule.alarm();
     await vi.advanceTimersByTimeAsync(0);
     expect(channelRows(storage)).toEqual([
-      { channel: 'default', scheduled_time: 11_000, state: 'running' },
-      { channel: 'library', scheduled_time: 11_000, state: 'running' },
+      {
+        channel: 'default',
+        scheduled_time: 11_000,
+        state: 'running',
+      },
+      {
+        channel: 'library',
+        scheduled_time: 11_000,
+        state: 'running',
+      },
     ]);
 
     // A deploy removed the library: only the application's channel attaches.
@@ -944,7 +952,11 @@ describe('DurabilitySchedule channels', () => {
         .map((event) => event.id)
     ).toEqual(['object:11000', 'object:12000']);
     expect(channelRows(storage)).toEqual([
-      { channel: 'library', scheduled_time: 11_000, state: 'running' },
+      {
+        channel: 'library',
+        scheduled_time: 11_000,
+        state: 'running',
+      },
     ]);
     expect(
       storage.sql
@@ -1047,8 +1059,16 @@ describe('DurabilitySchedule channels', () => {
 
     const { schedule, outcomes } = setup({}, storage);
     expect(channelRows(storage)).toEqual([
-      { channel: 'default', scheduled_time: 9_000, state: 'complete' },
-      { channel: 'default', scheduled_time: 10_000, state: 'running' },
+      {
+        channel: 'default',
+        scheduled_time: 9_000,
+        state: 'complete',
+      },
+      {
+        channel: 'default',
+        scheduled_time: 10_000,
+        state: 'running',
+      },
     ]);
     expect(schedule.get()).toEqual({
       expression: '1000',
