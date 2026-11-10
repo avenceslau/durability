@@ -10,7 +10,7 @@ afterEach(() => {
 const fixture = () => {
   const storage = new FakeStorage();
   DurabilitySemaphoreQueue.migrate(contextFor(storage));
-  return { storage, store: new QueueStore(storage.sql) };
+  return { storage, store: new QueueStore(storage.sql, 'default') };
 };
 
 describe('queue storage', () => {
@@ -53,10 +53,14 @@ describe('queue storage', () => {
     const { storage, store } = fixture();
     const exec = vi.spyOn(storage.sql, 'exec');
 
-    expect(store.nextPendingAt(false)).toBeUndefined();
+    expect(
+      store.nextPendingAt({ unnotified: true, notified: false })
+    ).toBeUndefined();
     expect(exec).toHaveBeenCalledTimes(1);
     exec.mockClear();
-    expect(store.nextPendingAt(true)).toBeUndefined();
+    expect(
+      store.nextPendingAt({ unnotified: true, notified: true })
+    ).toBeUndefined();
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
@@ -73,15 +77,15 @@ describe('queue storage', () => {
       queued: 1,
     });
 
-    expect(store.nextPendingAt(false)).toBe(20);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(20);
     store.upsertKey({
       key: 'due',
       next_request_at: 0,
       queued: 1,
     });
-    expect(store.nextPendingAt(false)).toBe(0);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(0);
     store.removeKey('due');
-    expect(store.nextPendingAt(false)).toBe(20);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(20);
   });
 
   it('only includes notified items when finished checks are enabled', () => {
@@ -96,11 +100,17 @@ describe('queue storage', () => {
         ('unnotified', 'account', '', 'null', 'admitted', 0, 0, 40);
     `);
 
-    expect(store.nextPendingAt(false)).toBe(40);
-    expect(store.nextPendingAt(true)).toBe(10);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(40);
+    expect(store.nextPendingAt({ unnotified: true, notified: true })).toBe(10);
+    expect(store.nextPendingAt({ unnotified: false, notified: true })).toBe(10);
+    expect(
+      store.nextPendingAt({ unnotified: false, notified: false })
+    ).toBeUndefined();
     store.removeItem('unnotified');
-    expect(store.nextPendingAt(false)).toBeUndefined();
-    expect(store.nextPendingAt(true)).toBe(10);
+    expect(
+      store.nextPendingAt({ unnotified: true, notified: false })
+    ).toBeUndefined();
+    expect(store.nextPendingAt({ unnotified: true, notified: true })).toBe(10);
   });
 
   it('preserves renewal and expiry rules while taking the minimum across all sources', () => {
@@ -125,21 +135,91 @@ describe('queue storage', () => {
     `);
     const exec = vi.spyOn(storage.sql, 'exec');
 
-    expect(store.nextPendingAt(false)).toBe(30);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(30);
     expect(exec).toHaveBeenCalledTimes(1);
 
     storage.sql.exec(
       `UPDATE durability_semaphore_queue_leases
        SET confirmed = 1 WHERE lease_id = 'active'`
     );
-    expect(store.nextPendingAt(false)).toBe(50);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(50);
     storage.sql.exec(
       'UPDATE durability_semaphore_queue_leases SET confirmed = 1'
     );
-    expect(store.nextPendingAt(false)).toBe(60);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(60);
     store.removeItem('item');
-    expect(store.nextPendingAt(false)).toBe(80);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(80);
     store.removeKey('account');
-    expect(store.nextPendingAt(false)).toBeUndefined();
+    expect(
+      store.nextPendingAt({ unnotified: true, notified: false })
+    ).toBeUndefined();
+  });
+
+  it('scopes items, grants, keys, leases, and due times to one channel', () => {
+    const { storage, store } = fixture();
+    const side = new QueueStore(storage.sql, 'side');
+    for (const [target, at] of [
+      [store, 50],
+      [side, 10],
+    ] as const) {
+      target.insertItem({
+        id: 'same',
+        key: 'account',
+        grp: '',
+        payload: 'null',
+        status: 'queued',
+        grant_id: null,
+        lease_id: null,
+        created_at: at,
+        admitted_at: null,
+        notified: 0,
+        attempt: 0,
+        next_attempt_at: at,
+      });
+      target.insertGrant({
+        grant_id: 'g',
+        key: 'account',
+        grp: '',
+        permits: at,
+        claimed: 0,
+        confirmed: 0,
+        admitted: 0,
+        released: 0,
+        created_at: at,
+      });
+      target.upsertKey({
+        key: 'account',
+        next_request_at: at,
+        queued: 1,
+      });
+    }
+
+    expect(store.getItem('same')?.created_at).toBe(50);
+    expect(side.getItem('same')?.created_at).toBe(10);
+    expect(store.getGrant('g')?.permits).toBe(50);
+    expect(side.getGrant('g')?.permits).toBe(10);
+    expect(store.nextPendingAt({ unnotified: true, notified: false })).toBe(50);
+    expect(side.nextPendingAt({ unnotified: true, notified: false })).toBe(10);
+    expect(store.listDueKeys(20)).toEqual([]);
+    expect(side.listDueKeys(20)).toHaveLength(1);
+
+    side.removeItem('same');
+    side.removeGrant('g');
+    side.removeKey('account');
+    expect(store.countItems()).toEqual({
+      queued: 1,
+      claiming: 0,
+      admitted: 0,
+    });
+    expect(side.countItems()).toEqual({
+      queued: 0,
+      claiming: 0,
+      admitted: 0,
+    });
+    expect(store.getGrant('g')).toBeDefined();
+    expect(store.getKey('account')).toBeDefined();
+    expect(
+      side.nextPendingAt({ unnotified: true, notified: false })
+    ).toBeUndefined();
   });
 });

@@ -1,0 +1,5 @@
+---
+'durability': minor
+---
+
+`DurabilityFanout` takes a `channel` option, so several instances share one scheduler: each channel holds one instance, and target IDs, message IDs, and deduplication keys are independent in each channel. Each instance delivers, acknowledges, retries, dead-letters, memoizes, and reports load only for its own channel, with its own targets, policies, DLQ, routing load, and lifecycle hooks. A library can attach its own fanout beside the application's, even with the same target names. A migration changes the primary keys to `(channel, key)` for message manifests and `(channel, id)` for deliveries; existing messages, deliveries, delivery IDs, and memoized results stay on the default channel unchanged. Due deliveries of a channel no instance attached are kept and postponed, with a `durability.channel_missing` report, until their channel's fanout attaches again; a removed target inside an attached channel is still retained and postponed by that channel's fanout. Downgrading refuses to discard records on non-default channels; drain them first.

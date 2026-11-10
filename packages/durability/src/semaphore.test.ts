@@ -761,7 +761,10 @@ describe('semaphore schema upgrades', () => {
     expect(
       Server.migrate({ storage: storage as unknown as DurableObjectStorage })
     ).toMatchObject({
-      applied: ['durability_0009_create_semaphore_leases'],
+      applied: [
+        'durability_0009_create_semaphore_leases',
+        'durability_0020_semaphore_channels',
+      ],
     });
     expect(
       migrateCapability(
@@ -774,6 +777,7 @@ describe('semaphore schema upgrades', () => {
       applied: [
         'durability_0010_add_semaphore_queue_leases',
         'durability_0011_renew_semaphore_queue_leases',
+        'durability_0021_semaphore_queue_channels',
       ],
     });
     expect(

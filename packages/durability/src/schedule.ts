@@ -18,6 +18,8 @@ import {
   type DurabilityRetryOptions,
 } from './policy.js';
 import {
+  assertChannel,
+  defaultChannel,
   engineFor,
   type Engine,
   type SchedulerAttachment,
@@ -113,7 +115,8 @@ export type ScheduledRun = {
   dueAt: number;
   /**
    * `<objectId>:<scheduledTime>`, or the bare scheduled time when the context
-   * has no object ID. A tick fires at most once, so the key is unique per run.
+   * has no object ID. A named channel appends `:` and its JSON-encoded name.
+   * A tick fires at most once per channel, so the key is unique per run.
    */
   idempotencyKey: string;
 };
@@ -178,6 +181,13 @@ export type DurabilityScheduleEvent = ScheduledRunEntity &
 
 export type DurabilityScheduleConfig = SchedulerAttachment & {
   /**
+   * Stable channel ID. Instances on one scheduler share storage, partitioned
+   * by channel; each has its own schedule, runs and hooks. A library should
+   * use its own channel so its schedule never meets the application's.
+   * Defaults to `default`.
+   */
+  channel?: string;
+  /**
    * Returns the first tick strictly after `after`, or `undefined` for none.
    * Must be synchronous and deterministic; durability ships no cron parser.
    */
@@ -205,7 +215,10 @@ export type DurabilityScheduleConfig = SchedulerAttachment & {
 
 type StoredSchedule = z.infer<typeof scheduleRowSchema>;
 
-const readSchedule = (sql: SqlStorage): StoredSchedule | undefined =>
+const readSchedule = (
+  sql: SqlStorage,
+  channel: string
+): StoredSchedule | undefined =>
   scheduleRowSchema.optional().parse(
     sql
       .exec(
@@ -215,26 +228,33 @@ const readSchedule = (sql: SqlStorage): StoredSchedule | undefined =>
              next_at,
              jitter_ms
            FROM durability_schedule
-           WHERE id = 1`
+           WHERE channel = ? AND id = 1`,
+        channel
       )
       .toArray()[0]
   );
 
-const writeSchedule = (sql: SqlStorage, schedule: StoredSchedule): void => {
+const writeSchedule = (
+  sql: SqlStorage,
+  channel: string,
+  schedule: StoredSchedule
+): void => {
   sql.exec(
     `INSERT INTO durability_schedule (
+       channel,
        id,
        version,
        expression,
        next_at,
        jitter_ms
      )
-     VALUES (1, ?, ?, ?, ?)
-     ON CONFLICT (id) DO UPDATE SET
+     VALUES (?, 1, ?, ?, ?, ?)
+     ON CONFLICT (channel, id) DO UPDATE SET
        version = excluded.version,
        expression = excluded.expression,
        next_at = excluded.next_at,
        jitter_ms = excluded.jitter_ms`,
+    channel,
     schedule.version,
     schedule.expression,
     schedule.next_at,
@@ -316,9 +336,9 @@ const deadline = async (
 };
 
 /**
- * Experimental. One recurring schedule per Durable Object whose ticks start
- * individually tracked, overlapping runs and report each run's outcome once,
- * keeping a run's row only until its outcome is delivered.
+ * Experimental. One recurring schedule per channel of a Durable Object whose
+ * ticks start individually tracked, overlapping runs and report each run's
+ * outcome once, keeping a run's row only until its outcome is delivered.
  *
  * A tick inserts its run in the transaction that advances the stored next
  * tick, so a tick fires at most once without retaining finished runs. Missed
@@ -326,6 +346,7 @@ const deadline = async (
  */
 export class DurabilitySchedule {
   readonly #engine: Engine;
+  readonly #channel: string;
   readonly #nextOccurrence: DurabilityScheduleConfig['nextOccurrence'];
   readonly #run: DurabilityScheduleConfig['run'];
   readonly #onOutcome: DurabilityScheduleConfig['onOutcome'];
@@ -335,6 +356,7 @@ export class DurabilitySchedule {
   readonly #maxOutcomeAttempts: number;
   readonly #delay: (attempt: number) => number;
   readonly #keyPrefix: string;
+  readonly #keySuffix: string;
   readonly #emit: (event: DurabilityScheduleEvent) => void;
   /** Runs holding a slot: marked running and not yet settled in this instance. */
   readonly #active = new Set<number>();
@@ -345,6 +367,10 @@ export class DurabilitySchedule {
   #wakeSleeper: (() => void) | undefined;
 
   constructor(config: DurabilityScheduleConfig) {
+    this.#channel = assertChannel(
+      'DurabilitySchedule',
+      config.channel ?? defaultChannel
+    );
     for (const name of ['nextOccurrence', 'run', 'onOutcome'] as const) {
       if (typeof config[name] !== 'function') {
         throw new TypeError(`Schedule requires a ${name} function`);
@@ -371,12 +397,21 @@ export class DurabilitySchedule {
     this.#engine = engineFor(config);
     const objectId = this.#engine.objectId();
     this.#keyPrefix = objectId === undefined ? '' : `${objectId}:`;
+    // Default keys end in a digit and named keys in a quote, so the two never
+    // meet, and the default channel keeps the keys it had before channels.
+    this.#keySuffix =
+      this.#channel === defaultChannel
+        ? ''
+        : `:${JSON.stringify(this.#channel)}`;
     this.#emit = traceLifecycle(
       this.#engine.emitter<DurabilityScheduleEvent>(config.onLifecycleEvent)
     );
     this.#engine.migrateSchema('schedule', durabilityScheduleMigrations);
-    this.#engine.register({
+    this.#engine.registerChannel({
       table: runsTable,
+      channelTables: ['durability_schedule'],
+      channel: this.#channel,
+      helper: 'DurabilitySchedule',
       runDue: () => this.#hold(),
       nextPendingAt: (sql) => this.#nextPendingAt(sql),
       holding: () => this.#loop !== undefined,
@@ -401,7 +436,7 @@ export class DurabilitySchedule {
 
   /** The stored schedule, or `undefined` when none is set or it was cancelled. */
   get(): ScheduleState | undefined {
-    const stored = readSchedule(this.#engine.sql);
+    const stored = readSchedule(this.#engine.sql, this.#channel);
     if (stored === undefined || stored.expression === null) {
       return undefined;
     }
@@ -430,12 +465,12 @@ export class DurabilitySchedule {
 
     // Even a no-op transaction reconciles the physical alarm.
     const applied = await this.#engine.transaction((sql) => {
-      const stored = readSchedule(sql);
+      const stored = readSchedule(sql, this.#channel);
       if (stored !== undefined && stored.version >= version) {
         return false;
       }
       const nextAt = this.#nextAfter(expression, Date.now());
-      writeSchedule(sql, {
+      writeSchedule(sql, this.#channel, {
         version,
         expression,
         next_at: nextAt ?? null,
@@ -459,7 +494,7 @@ export class DurabilitySchedule {
     }
 
     return this.#engine.transaction((sql) => {
-      const stored = readSchedule(sql);
+      const stored = readSchedule(sql, this.#channel);
       const live = stored !== undefined && stored.expression !== null;
       if (version === undefined && !live) {
         return false;
@@ -471,7 +506,7 @@ export class DurabilitySchedule {
       ) {
         return false;
       }
-      writeSchedule(sql, {
+      writeSchedule(sql, this.#channel, {
         version: version ?? stored?.version ?? 0,
         expression: null,
         next_at: null,
@@ -488,13 +523,15 @@ export class DurabilitySchedule {
    * arming a fallback when it starts and re-arming the next tick when it ends.
    */
   #nextPendingAt(sql: SqlStorage): number | undefined {
-    const rows = timedRowSchema
-      .array()
-      .parse(
-        sql
-          .exec('SELECT scheduled_time, next_at FROM durability_schedule_runs')
-          .toArray()
-      );
+    const rows = timedRowSchema.array().parse(
+      sql
+        .exec(
+          `SELECT scheduled_time, next_at FROM durability_schedule_runs
+             WHERE channel = ?`,
+          this.#channel
+        )
+        .toArray()
+    );
     const held: number[] = [];
     const pending: number[] = [];
     for (const row of rows) {
@@ -507,7 +544,7 @@ export class DurabilitySchedule {
         pending.push(row.next_at);
       }
     }
-    const tick = firesAt(readSchedule(sql));
+    const tick = firesAt(readSchedule(sql, this.#channel));
     if (tick !== undefined) {
       pending.push(tick);
     }
@@ -532,7 +569,7 @@ export class DurabilitySchedule {
   }
 
   #idempotencyKey(scheduledTime: number): string {
-    return `${this.#keyPrefix}${scheduledTime}`;
+    return `${this.#keyPrefix}${scheduledTime}${this.#keySuffix}`;
   }
 
   #describe(row: z.infer<typeof dueRowSchema>): ScheduledRun {
@@ -639,13 +676,14 @@ export class DurabilitySchedule {
         sql
           .exec(
             `SELECT * FROM durability_schedule_runs
-             WHERE state IN ('complete', 'errored')`
+             WHERE channel = ? AND state IN ('complete', 'errored')`,
+            this.#channel
           )
           .toArray()
       )
       .filter((row) => !this.#delivering.has(row.scheduled_time))
       .map((row) => row.next_at);
-    const tick = firesAt(readSchedule(sql));
+    const tick = firesAt(readSchedule(sql, this.#channel));
     if (tick !== undefined) {
       times.push(tick);
     }
@@ -661,7 +699,8 @@ export class DurabilitySchedule {
       scheduledTimes(
         sql.exec(
           `SELECT scheduled_time FROM durability_schedule_runs
-           WHERE state = 'running'`
+           WHERE channel = ? AND state = 'running'`,
+          this.#channel
         )
       ).filter((time) => !this.#active.has(time));
     if (orphans(this.#engine.sql).length === 0) {
@@ -676,9 +715,10 @@ export class DurabilitySchedule {
         sql.exec(
           `UPDATE durability_schedule_runs
            SET state = 'errored', error = ?, next_at = ?, attempt = 0
-           WHERE scheduled_time = ?`,
+           WHERE channel = ? AND scheduled_time = ?`,
           JSON.stringify(error),
           now,
+          this.#channel,
           time
         );
       }
@@ -695,13 +735,13 @@ export class DurabilitySchedule {
   }
 
   async #tick(): Promise<void> {
-    const dueAt = firesAt(readSchedule(this.#engine.sql));
+    const dueAt = firesAt(readSchedule(this.#engine.sql, this.#channel));
     if (dueAt === undefined || dueAt > Date.now()) {
       return;
     }
 
     const due = await this.#reserveSlots((sql, free) => {
-      const schedule = readSchedule(sql);
+      const schedule = readSchedule(sql, this.#channel);
       const now = Date.now();
       if (
         schedule === undefined ||
@@ -720,18 +760,20 @@ export class DurabilitySchedule {
         Math.max(scheduledTime, now - schedule.jitter_ms)
       );
       sql.exec(
-        'UPDATE durability_schedule SET next_at = ? WHERE id = 1',
-        nextAt ?? null
+        'UPDATE durability_schedule SET next_at = ? WHERE channel = ? AND id = 1',
+        nextAt ?? null,
+        this.#channel
       );
       const queued = free <= 0;
       const [row] = dueRowSchema.array().parse(
         sql
           .exec(
             `INSERT INTO durability_schedule_runs
-               (scheduled_time, due_at, state, next_at)
-             VALUES (?, ?, ?, ?)
+               (channel, scheduled_time, due_at, state, next_at)
+             VALUES (?, ?, ?, ?, ?)
              ON CONFLICT DO NOTHING
              RETURNING scheduled_time, due_at`,
+            this.#channel,
             scheduledTime,
             scheduledTime + schedule.jitter_ms,
             queued ? 'queued' : 'running',
@@ -767,7 +809,10 @@ export class DurabilitySchedule {
     }
     const queued = this.#engine.sql
       .exec(
-        "SELECT 1 FROM durability_schedule_runs WHERE state = 'queued' LIMIT 1"
+        `SELECT 1 FROM durability_schedule_runs
+         WHERE channel = ? AND state = 'queued'
+         LIMIT 1`,
+        this.#channel
       )
       .toArray();
     if (queued.length === 0) {
@@ -783,14 +828,16 @@ export class DurabilitySchedule {
                 .exec(
                   `UPDATE durability_schedule_runs
                    SET state = 'running', next_at = ?
-                   WHERE scheduled_time IN (
+                   WHERE channel = ? AND scheduled_time IN (
                      SELECT scheduled_time FROM durability_schedule_runs
-                     WHERE state = 'queued'
+                     WHERE channel = ? AND state = 'queued'
                      ORDER BY scheduled_time
                      LIMIT ?
                    )
                    RETURNING scheduled_time, due_at`,
                   Date.now(),
+                  this.#channel,
+                  this.#channel,
                   free
                 )
                 .toArray()
@@ -897,11 +944,12 @@ export class DurabilitySchedule {
           sql.exec(
             `UPDATE durability_schedule_runs
              SET state = ?, error = ?, next_at = ?, attempt = 0
-             WHERE scheduled_time = ? AND state = 'running'
+             WHERE channel = ? AND scheduled_time = ? AND state = 'running'
              RETURNING scheduled_time`,
             outcome.status,
             error === undefined ? null : JSON.stringify(error),
             Date.now(),
+            this.#channel,
             run.scheduledTime
           )
         ).length > 0
@@ -926,7 +974,8 @@ export class DurabilitySchedule {
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_schedule_runs
-           WHERE state IN ('complete', 'errored') AND next_at <= ?`,
+           WHERE channel = ? AND state IN ('complete', 'errored') AND next_at <= ?`,
+          this.#channel,
           Date.now()
         )
         .toArray()
@@ -981,7 +1030,9 @@ export class DurabilitySchedule {
 
     await this.#engine.transaction((sql) => {
       sql.exec(
-        'DELETE FROM durability_schedule_runs WHERE scheduled_time = ?',
+        `DELETE FROM durability_schedule_runs
+         WHERE channel = ? AND scheduled_time = ?`,
+        this.#channel,
         run.scheduledTime
       );
     });
@@ -996,7 +1047,9 @@ export class DurabilitySchedule {
     if (attempt >= this.#maxOutcomeAttempts) {
       await this.#engine.transaction((sql) => {
         sql.exec(
-          'DELETE FROM durability_schedule_runs WHERE scheduled_time = ?',
+          `DELETE FROM durability_schedule_runs
+           WHERE channel = ? AND scheduled_time = ?`,
+          this.#channel,
           run.scheduledTime
         );
       });
@@ -1018,9 +1071,10 @@ export class DurabilitySchedule {
     await this.#engine.transaction((sql) => {
       sql.exec(
         `UPDATE durability_schedule_runs SET attempt = ?, next_at = ?
-         WHERE scheduled_time = ?`,
+         WHERE channel = ? AND scheduled_time = ?`,
         attempt,
         nextAttemptAt,
+        this.#channel,
         run.scheduledTime
       );
     });

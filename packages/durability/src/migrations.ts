@@ -367,6 +367,130 @@ export const durabilityFanoutMigrations = [
       DROP TABLE IF EXISTS durability_fanout_seq;
     `,
   },
+  {
+    name: 'durability_0017_fanout_channels',
+    up: `
+      ALTER TABLE durability_fanout_messages
+        RENAME TO durability_fanout_messages_before_channels;
+      CREATE TABLE durability_fanout_messages (
+        key TEXT NOT NULL,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        targets TEXT NOT NULL,
+        remaining INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        generation_id TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'default',
+        PRIMARY KEY (channel, key)
+      );
+      INSERT INTO durability_fanout_messages
+        (key, id, payload, targets, remaining, seq, created_at,
+         generation_id, channel)
+      SELECT key, id, payload, targets, remaining, seq, created_at,
+        generation_id, 'default'
+      FROM durability_fanout_messages_before_channels;
+      DROP TABLE durability_fanout_messages_before_channels;
+
+      ALTER TABLE durability_fanout_deliveries
+        RENAME TO durability_fanout_deliveries_before_channels;
+      CREATE TABLE durability_fanout_deliveries (
+        id TEXT NOT NULL,
+        message_key TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending')),
+        phase TEXT NOT NULL CHECK (phase IN ('delivery', 'dead_letter')),
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        created_at INTEGER NOT NULL,
+        generation_id TEXT NOT NULL,
+        dead_lettered_at INTEGER,
+        dead_letter_reason TEXT CHECK (dead_letter_reason IN ('explicit', 'exhausted')),
+        channel TEXT NOT NULL DEFAULT 'default',
+        PRIMARY KEY (channel, id)
+      );
+      INSERT INTO durability_fanout_deliveries
+        (id, message_key, target_id, seq, status, phase, attempt,
+         next_attempt_at, last_error, last_error_name, created_at,
+         generation_id, dead_lettered_at, dead_letter_reason, channel)
+      SELECT id, message_key, target_id, seq, status, phase, attempt,
+        next_attempt_at, last_error, last_error_name, created_at,
+        generation_id, dead_lettered_at, dead_letter_reason, 'default'
+      FROM durability_fanout_deliveries_before_channels;
+      DROP TABLE durability_fanout_deliveries_before_channels;
+      CREATE INDEX durability_fanout_deliveries_due_idx
+      ON durability_fanout_deliveries
+        (channel, target_id, phase, status, attempt, seq, next_attempt_at);
+      CREATE INDEX durability_fanout_deliveries_pending_idx
+      ON durability_fanout_deliveries (phase, status, next_attempt_at);
+      CREATE INDEX durability_fanout_deliveries_created_idx
+      ON durability_fanout_deliveries (created_at);
+      CREATE INDEX durability_fanout_deliveries_channel_pending_idx
+      ON durability_fanout_deliveries (channel, status, next_attempt_at);
+    `,
+    down: `
+      CREATE TABLE durability_fanout_channel_guard (
+        channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (channel = 'default')
+      );
+      INSERT INTO durability_fanout_channel_guard
+      SELECT DISTINCT channel FROM durability_fanout_messages
+      UNION SELECT DISTINCT channel FROM durability_fanout_deliveries;
+      DROP TABLE durability_fanout_channel_guard;
+
+      ALTER TABLE durability_fanout_messages
+        RENAME TO durability_fanout_messages_with_channels;
+      CREATE TABLE durability_fanout_messages (
+        key TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        targets TEXT NOT NULL,
+        remaining INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        generation_id TEXT NOT NULL
+      );
+      INSERT INTO durability_fanout_messages
+      SELECT key, id, payload, targets, remaining, seq, created_at,
+        generation_id
+      FROM durability_fanout_messages_with_channels;
+      DROP TABLE durability_fanout_messages_with_channels;
+
+      ALTER TABLE durability_fanout_deliveries
+        RENAME TO durability_fanout_deliveries_with_channels;
+      CREATE TABLE durability_fanout_deliveries (
+        id TEXT PRIMARY KEY,
+        message_key TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending')),
+        phase TEXT NOT NULL CHECK (phase IN ('delivery', 'dead_letter')),
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        last_error_name TEXT,
+        created_at INTEGER NOT NULL,
+        generation_id TEXT NOT NULL,
+        dead_lettered_at INTEGER,
+        dead_letter_reason TEXT CHECK (dead_letter_reason IN ('explicit', 'exhausted'))
+      );
+      INSERT INTO durability_fanout_deliveries
+      SELECT id, message_key, target_id, seq, status, phase, attempt,
+        next_attempt_at, last_error, last_error_name, created_at,
+        generation_id, dead_lettered_at, dead_letter_reason
+      FROM durability_fanout_deliveries_with_channels;
+      DROP TABLE durability_fanout_deliveries_with_channels;
+      CREATE INDEX durability_fanout_deliveries_due_idx
+      ON durability_fanout_deliveries
+        (target_id, phase, status, attempt, seq, next_attempt_at);
+      CREATE INDEX durability_fanout_deliveries_pending_idx
+      ON durability_fanout_deliveries (phase, status, next_attempt_at);
+      CREATE INDEX durability_fanout_deliveries_created_idx
+      ON durability_fanout_deliveries (created_at);
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**
@@ -385,6 +509,45 @@ export const durabilitySocketMigrations = [
       );
     `,
     down: 'DROP TABLE IF EXISTS durability_socket_events;',
+  },
+  {
+    // Each channel numbers its own events, so existing events keep their
+    // sequence numbers on the default channel.
+    name: 'durability_0023_socket_channels',
+    up: `
+      ALTER TABLE durability_socket_events RENAME TO durability_socket_events_before_channels;
+      CREATE TABLE durability_socket_events (
+        seq INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'default',
+        PRIMARY KEY (channel, seq)
+      );
+      INSERT INTO durability_socket_events (seq, name, payload, created_at, channel)
+      SELECT seq, name, payload, created_at, 'default'
+      FROM durability_socket_events_before_channels;
+      DROP TABLE durability_socket_events_before_channels;
+    `,
+    down: `
+      CREATE TABLE durability_socket_events_channel_guard (
+        channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (channel = 'default')
+      );
+      INSERT INTO durability_socket_events_channel_guard
+      SELECT DISTINCT channel FROM durability_socket_events;
+      DROP TABLE durability_socket_events_channel_guard;
+      ALTER TABLE durability_socket_events RENAME TO durability_socket_events_with_channels;
+      CREATE TABLE durability_socket_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_socket_events (seq, name, payload, created_at)
+      SELECT seq, name, payload, created_at
+      FROM durability_socket_events_with_channels;
+      DROP TABLE durability_socket_events_with_channels;
+    `,
   },
 ] satisfies DurableMigrations;
 
@@ -433,6 +596,136 @@ export const durabilityLogMigrations = [
       DROP TABLE IF EXISTS durability_log_seq;
     `,
   },
+  {
+    name: 'durability_0019_log_channels',
+    up: `
+      ALTER TABLE durability_log_records RENAME TO durability_log_records_before_channels;
+      CREATE TABLE durability_log_records (
+        channel TEXT NOT NULL,
+        "offset" INTEGER NOT NULL,
+        dedup_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        appended_at INTEGER NOT NULL,
+        PRIMARY KEY (channel, "offset"),
+        UNIQUE (channel, dedup_key)
+      );
+      INSERT INTO durability_log_records
+        (channel, "offset", dedup_key, payload, bytes, appended_at)
+      SELECT 'default', "offset", dedup_key, payload, bytes, appended_at
+      FROM durability_log_records_before_channels;
+      DROP TABLE durability_log_records_before_channels;
+      CREATE INDEX durability_log_records_appended_idx
+      ON durability_log_records (channel, appended_at, "offset");
+
+      ALTER TABLE durability_log_cursors RENAME TO durability_log_cursors_before_channels;
+      CREATE TABLE durability_log_cursors (
+        channel TEXT NOT NULL,
+        consumer TEXT NOT NULL,
+        "offset" INTEGER NOT NULL,
+        committed_at INTEGER NOT NULL,
+        PRIMARY KEY (channel, consumer)
+      );
+      INSERT INTO durability_log_cursors (channel, consumer, "offset", committed_at)
+      SELECT 'default', consumer, "offset", committed_at
+      FROM durability_log_cursors_before_channels;
+      DROP TABLE durability_log_cursors_before_channels;
+
+      ALTER TABLE durability_log_segments RENAME TO durability_log_segments_before_channels;
+      CREATE TABLE durability_log_segments (
+        channel TEXT NOT NULL,
+        first_offset INTEGER NOT NULL,
+        last_offset INTEGER NOT NULL,
+        locator TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        flushed_at INTEGER NOT NULL,
+        PRIMARY KEY (channel, first_offset)
+      );
+      INSERT INTO durability_log_segments
+        (channel, first_offset, last_offset, locator, bytes, flushed_at)
+      SELECT 'default', first_offset, last_offset, locator, bytes, flushed_at
+      FROM durability_log_segments_before_channels;
+      DROP TABLE durability_log_segments_before_channels;
+
+      ALTER TABLE durability_log_seq RENAME TO durability_log_seq_before_channels;
+      CREATE TABLE durability_log_seq (
+        channel TEXT PRIMARY KEY,
+        next_offset INTEGER NOT NULL,
+        total_bytes INTEGER NOT NULL
+      );
+      INSERT INTO durability_log_seq (channel, next_offset, total_bytes)
+      SELECT 'default', next_offset, total_bytes
+      FROM durability_log_seq_before_channels WHERE id = 1;
+      DROP TABLE durability_log_seq_before_channels;
+    `,
+    // A channel's offset counter is kept even once its records are gone, so
+    // it also blocks the downgrade: dropping it would let offsets repeat.
+    down: `
+      CREATE TABLE durability_log_channel_guard (
+        channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (channel = 'default')
+      );
+      INSERT INTO durability_log_channel_guard
+      SELECT channel FROM durability_log_records
+      UNION SELECT channel FROM durability_log_cursors
+      UNION SELECT channel FROM durability_log_segments
+      UNION SELECT channel FROM durability_log_seq;
+      DROP TABLE durability_log_channel_guard;
+
+      ALTER TABLE durability_log_records RENAME TO durability_log_records_with_channels;
+      CREATE TABLE durability_log_records (
+        "offset" INTEGER PRIMARY KEY,
+        dedup_key TEXT NOT NULL UNIQUE,
+        payload TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        appended_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_log_records
+        ("offset", dedup_key, payload, bytes, appended_at)
+      SELECT "offset", dedup_key, payload, bytes, appended_at
+      FROM durability_log_records_with_channels;
+      DROP TABLE durability_log_records_with_channels;
+      CREATE INDEX durability_log_records_appended_idx
+      ON durability_log_records (appended_at, "offset");
+
+      ALTER TABLE durability_log_cursors RENAME TO durability_log_cursors_with_channels;
+      CREATE TABLE durability_log_cursors (
+        consumer TEXT PRIMARY KEY,
+        "offset" INTEGER NOT NULL,
+        committed_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_log_cursors (consumer, "offset", committed_at)
+      SELECT consumer, "offset", committed_at
+      FROM durability_log_cursors_with_channels;
+      DROP TABLE durability_log_cursors_with_channels;
+
+      ALTER TABLE durability_log_segments RENAME TO durability_log_segments_with_channels;
+      CREATE TABLE durability_log_segments (
+        first_offset INTEGER PRIMARY KEY,
+        last_offset INTEGER NOT NULL,
+        locator TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        flushed_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_log_segments
+        (first_offset, last_offset, locator, bytes, flushed_at)
+      SELECT first_offset, last_offset, locator, bytes, flushed_at
+      FROM durability_log_segments_with_channels;
+      DROP TABLE durability_log_segments_with_channels;
+
+      ALTER TABLE durability_log_seq RENAME TO durability_log_seq_with_channels;
+      CREATE TABLE durability_log_seq (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_offset INTEGER NOT NULL,
+        total_bytes INTEGER NOT NULL
+      );
+      INSERT INTO durability_log_seq (id, next_offset, total_bytes)
+      SELECT 1, next_offset, total_bytes
+      FROM durability_log_seq_with_channels WHERE channel = 'default';
+      INSERT OR IGNORE INTO durability_log_seq (id, next_offset, total_bytes)
+      VALUES (1, 0, 0);
+      DROP TABLE durability_log_seq_with_channels;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**
@@ -468,6 +761,91 @@ export const durabilityLogLeaseMigrations = [
       DROP INDEX IF EXISTS durability_log_leases_order_idx;
       DROP TABLE IF EXISTS durability_log_leases;
       DROP TABLE IF EXISTS durability_log_allocations;
+    `,
+  },
+  {
+    name: 'durability_0024_log_lease_channels',
+    up: `
+      ALTER TABLE durability_log_leases RENAME TO durability_log_leases_before_channels;
+      CREATE TABLE durability_log_leases (
+        channel TEXT NOT NULL,
+        batch_id TEXT NOT NULL,
+        consumer TEXT NOT NULL,
+        first_offset INTEGER NOT NULL,
+        last_offset INTEGER NOT NULL,
+        state TEXT NOT NULL
+          CHECK (state IN ('active', 'pending', 'acked', 'skipped')),
+        attempt INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (channel, batch_id)
+      );
+      INSERT INTO durability_log_leases
+        (channel, batch_id, consumer, first_offset, last_offset, state,
+         attempt, expires_at, created_at)
+      SELECT 'default', batch_id, consumer, first_offset, last_offset, state,
+        attempt, expires_at, created_at
+      FROM durability_log_leases_before_channels;
+      DROP TABLE durability_log_leases_before_channels;
+      CREATE INDEX durability_log_leases_claim_idx
+      ON durability_log_leases (channel, consumer, state, expires_at, first_offset);
+      CREATE INDEX durability_log_leases_order_idx
+      ON durability_log_leases (channel, consumer, first_offset);
+
+      ALTER TABLE durability_log_allocations RENAME TO durability_log_allocations_before_channels;
+      CREATE TABLE durability_log_allocations (
+        channel TEXT NOT NULL,
+        consumer TEXT NOT NULL,
+        allocated_offset INTEGER NOT NULL,
+        PRIMARY KEY (channel, consumer)
+      );
+      INSERT INTO durability_log_allocations (channel, consumer, allocated_offset)
+      SELECT 'default', consumer, allocated_offset
+      FROM durability_log_allocations_before_channels;
+      DROP TABLE durability_log_allocations_before_channels;
+    `,
+    down: `
+      CREATE TABLE durability_log_lease_channel_guard (
+        channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (channel = 'default')
+      );
+      INSERT INTO durability_log_lease_channel_guard
+      SELECT channel FROM durability_log_leases
+      UNION SELECT channel FROM durability_log_allocations;
+      DROP TABLE durability_log_lease_channel_guard;
+
+      ALTER TABLE durability_log_leases RENAME TO durability_log_leases_with_channels;
+      CREATE TABLE durability_log_leases (
+        batch_id TEXT PRIMARY KEY,
+        consumer TEXT NOT NULL,
+        first_offset INTEGER NOT NULL,
+        last_offset INTEGER NOT NULL,
+        state TEXT NOT NULL
+          CHECK (state IN ('active', 'pending', 'acked', 'skipped')),
+        attempt INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_log_leases
+        (batch_id, consumer, first_offset, last_offset, state, attempt,
+         expires_at, created_at)
+      SELECT batch_id, consumer, first_offset, last_offset, state, attempt,
+        expires_at, created_at
+      FROM durability_log_leases_with_channels;
+      DROP TABLE durability_log_leases_with_channels;
+      CREATE INDEX durability_log_leases_claim_idx
+      ON durability_log_leases (consumer, state, expires_at, first_offset);
+      CREATE INDEX durability_log_leases_order_idx
+      ON durability_log_leases (consumer, first_offset);
+
+      ALTER TABLE durability_log_allocations RENAME TO durability_log_allocations_with_channels;
+      CREATE TABLE durability_log_allocations (
+        consumer TEXT PRIMARY KEY,
+        allocated_offset INTEGER NOT NULL
+      );
+      INSERT INTO durability_log_allocations (consumer, allocated_offset)
+      SELECT consumer, allocated_offset
+      FROM durability_log_allocations_with_channels;
+      DROP TABLE durability_log_allocations_with_channels;
     `,
   },
 ] satisfies DurableMigrations;
@@ -561,6 +939,107 @@ export const durabilitySemaphoreMigrations = [
     down: `
       DROP INDEX IF EXISTS durability_semaphore_leases_expires_idx;
       DROP TABLE IF EXISTS durability_semaphore_leases;
+    `,
+  },
+  {
+    name: 'durability_0020_semaphore_channels',
+    up: `
+      ALTER TABLE durability_semaphore_grants RENAME TO durability_semaphore_grants_before_channels;
+      CREATE TABLE durability_semaphore_grants (
+        channel TEXT NOT NULL DEFAULT 'default',
+        grant_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        client_channel TEXT NOT NULL DEFAULT 'default',
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (channel, grant_id)
+      );
+      INSERT INTO durability_semaphore_grants
+        (channel, grant_id, client_id, client_channel, grp, permits, claimed,
+         released, created_at, expires_at)
+      SELECT 'default', grant_id, client_id, 'default', grp, permits, claimed,
+        released, created_at, expires_at
+      FROM durability_semaphore_grants_before_channels;
+      DROP TABLE durability_semaphore_grants_before_channels;
+      CREATE INDEX durability_semaphore_grants_expires_idx
+      ON durability_semaphore_grants (channel, expires_at) WHERE claimed < permits;
+
+      ALTER TABLE durability_semaphore_leases RENAME TO durability_semaphore_leases_before_channels;
+      CREATE TABLE durability_semaphore_leases (
+        channel TEXT NOT NULL DEFAULT 'default',
+        lease_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        client_channel TEXT NOT NULL DEFAULT 'default',
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        retired INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (channel, lease_id)
+      );
+      INSERT INTO durability_semaphore_leases
+        (channel, lease_id, client_id, client_channel, grp, permits, released,
+         created_at, expires_at, retired)
+      SELECT 'default', lease_id, client_id, 'default', grp, permits, released,
+        created_at, expires_at, retired
+      FROM durability_semaphore_leases_before_channels;
+      DROP TABLE durability_semaphore_leases_before_channels;
+      CREATE INDEX durability_semaphore_leases_expires_idx
+      ON durability_semaphore_leases (channel, expires_at);
+    `,
+    down: `
+      CREATE TABLE durability_semaphore_channel_guard (
+        channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (channel = 'default')
+      );
+      INSERT INTO durability_semaphore_channel_guard
+      SELECT channel FROM durability_semaphore_grants
+      UNION SELECT client_channel FROM durability_semaphore_grants
+      UNION SELECT channel FROM durability_semaphore_leases
+      UNION SELECT client_channel FROM durability_semaphore_leases;
+      DROP TABLE durability_semaphore_channel_guard;
+
+      ALTER TABLE durability_semaphore_grants RENAME TO durability_semaphore_grants_with_channels;
+      CREATE TABLE durability_semaphore_grants (
+        grant_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_semaphore_grants
+      SELECT grant_id, client_id, grp, permits, claimed, released, created_at,
+        expires_at
+      FROM durability_semaphore_grants_with_channels;
+      DROP TABLE durability_semaphore_grants_with_channels;
+      CREATE INDEX durability_semaphore_grants_expires_idx
+      ON durability_semaphore_grants (expires_at) WHERE claimed < permits;
+
+      ALTER TABLE durability_semaphore_leases RENAME TO durability_semaphore_leases_with_channels;
+      CREATE TABLE durability_semaphore_leases (
+        lease_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        retired INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO durability_semaphore_leases
+      SELECT lease_id, client_id, grp, permits, released, created_at,
+        expires_at, retired
+      FROM durability_semaphore_leases_with_channels;
+      DROP TABLE durability_semaphore_leases_with_channels;
+      CREATE INDEX durability_semaphore_leases_expires_idx
+      ON durability_semaphore_leases (expires_at);
     `,
   },
 ] satisfies DurableMigrations;
@@ -661,6 +1140,204 @@ export const durabilitySemaphoreQueueMigrations = [
       ALTER TABLE durability_semaphore_queue_leases DROP COLUMN renew_at;
     `,
   },
+  {
+    name: 'durability_0021_semaphore_queue_channels',
+    up: `
+      ALTER TABLE durability_semaphore_queue_items RENAME TO durability_semaphore_queue_items_before_channels;
+      CREATE TABLE durability_semaphore_queue_items (
+        channel TEXT NOT NULL DEFAULT 'default',
+        id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'claiming', 'admitted')),
+        grant_id TEXT,
+        lease_id TEXT,
+        created_at INTEGER NOT NULL,
+        admitted_at INTEGER,
+        notified INTEGER NOT NULL DEFAULT 0,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        PRIMARY KEY (channel, id)
+      );
+      INSERT INTO durability_semaphore_queue_items
+        (channel, id, key, grp, payload, status, grant_id, lease_id, created_at,
+         admitted_at, notified, attempt, next_attempt_at)
+      SELECT 'default', id, key, grp, payload, status, grant_id, lease_id,
+        created_at, admitted_at, notified, attempt, next_attempt_at
+      FROM durability_semaphore_queue_items_before_channels;
+      DROP TABLE durability_semaphore_queue_items_before_channels;
+      CREATE INDEX durability_semaphore_queue_items_key_idx
+      ON durability_semaphore_queue_items (channel, key, status, created_at, id);
+      CREATE INDEX durability_semaphore_queue_items_grant_idx
+      ON durability_semaphore_queue_items (channel, grant_id, created_at, id);
+      CREATE INDEX durability_semaphore_queue_items_notify_idx
+      ON durability_semaphore_queue_items (channel, next_attempt_at)
+      WHERE status = 'admitted' AND notified = 0;
+
+      ALTER TABLE durability_semaphore_queue_grants RENAME TO durability_semaphore_queue_grants_before_channels;
+      CREATE TABLE durability_semaphore_queue_grants (
+        channel TEXT NOT NULL DEFAULT 'default',
+        grant_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        admitted INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (channel, grant_id)
+      );
+      INSERT INTO durability_semaphore_queue_grants
+        (channel, grant_id, key, grp, permits, claimed, confirmed, admitted,
+         released, created_at)
+      SELECT 'default', grant_id, key, grp, permits, claimed, confirmed,
+        admitted, released, created_at
+      FROM durability_semaphore_queue_grants_before_channels;
+      DROP TABLE durability_semaphore_queue_grants_before_channels;
+      CREATE INDEX durability_semaphore_queue_grants_key_idx
+      ON durability_semaphore_queue_grants (channel, key, created_at);
+
+      ALTER TABLE durability_semaphore_queue_keys RENAME TO durability_semaphore_queue_keys_before_channels;
+      CREATE TABLE durability_semaphore_queue_keys (
+        channel TEXT NOT NULL DEFAULT 'default',
+        key TEXT NOT NULL,
+        next_request_at INTEGER NOT NULL,
+        queued INTEGER NOT NULL,
+        PRIMARY KEY (channel, key)
+      );
+      INSERT INTO durability_semaphore_queue_keys
+        (channel, key, next_request_at, queued)
+      SELECT 'default', key, next_request_at, queued
+      FROM durability_semaphore_queue_keys_before_channels;
+      DROP TABLE durability_semaphore_queue_keys_before_channels;
+      CREATE INDEX durability_semaphore_queue_keys_due_idx
+      ON durability_semaphore_queue_keys (channel, next_request_at) WHERE queued > 0;
+
+      ALTER TABLE durability_semaphore_queue_leases RENAME TO durability_semaphore_queue_leases_before_channels;
+      CREATE TABLE durability_semaphore_queue_leases (
+        channel TEXT NOT NULL DEFAULT 'default',
+        lease_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        drawn INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        renew_at INTEGER NOT NULL DEFAULT 0,
+        renew_ms INTEGER NOT NULL DEFAULT 30000,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (channel, lease_id)
+      );
+      INSERT INTO durability_semaphore_queue_leases
+        (channel, lease_id, key, grp, permits, drawn, released, created_at,
+         expires_at, renew_at, renew_ms, confirmed)
+      SELECT 'default', lease_id, key, grp, permits, drawn, released,
+        created_at, expires_at, renew_at, renew_ms, confirmed
+      FROM durability_semaphore_queue_leases_before_channels;
+      DROP TABLE durability_semaphore_queue_leases_before_channels;
+      CREATE INDEX durability_semaphore_queue_leases_key_idx
+      ON durability_semaphore_queue_leases (channel, key, created_at);
+    `,
+    down: `
+      CREATE TABLE durability_semaphore_queue_channel_guard (
+        channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (channel = 'default')
+      );
+      INSERT INTO durability_semaphore_queue_channel_guard
+      SELECT channel FROM durability_semaphore_queue_items
+      UNION SELECT channel FROM durability_semaphore_queue_grants
+      UNION SELECT channel FROM durability_semaphore_queue_keys
+      UNION SELECT channel FROM durability_semaphore_queue_leases;
+      DROP TABLE durability_semaphore_queue_channel_guard;
+
+      ALTER TABLE durability_semaphore_queue_items RENAME TO durability_semaphore_queue_items_with_channels;
+      CREATE TABLE durability_semaphore_queue_items (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'claiming', 'admitted')),
+        grant_id TEXT,
+        created_at INTEGER NOT NULL,
+        admitted_at INTEGER,
+        notified INTEGER NOT NULL DEFAULT 0,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        lease_id TEXT
+      );
+      INSERT INTO durability_semaphore_queue_items
+        (id, key, grp, payload, status, grant_id, created_at, admitted_at,
+         notified, attempt, next_attempt_at, lease_id)
+      SELECT id, key, grp, payload, status, grant_id, created_at, admitted_at,
+        notified, attempt, next_attempt_at, lease_id
+      FROM durability_semaphore_queue_items_with_channels;
+      DROP TABLE durability_semaphore_queue_items_with_channels;
+      CREATE INDEX durability_semaphore_queue_items_key_idx
+      ON durability_semaphore_queue_items (key, status, created_at, id);
+      CREATE INDEX durability_semaphore_queue_items_grant_idx
+      ON durability_semaphore_queue_items (grant_id, created_at, id);
+      CREATE INDEX durability_semaphore_queue_items_notify_idx
+      ON durability_semaphore_queue_items (next_attempt_at)
+      WHERE status = 'admitted' AND notified = 0;
+
+      ALTER TABLE durability_semaphore_queue_grants RENAME TO durability_semaphore_queue_grants_with_channels;
+      CREATE TABLE durability_semaphore_queue_grants (
+        grant_id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        admitted INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_semaphore_queue_grants
+      SELECT grant_id, key, grp, permits, claimed, confirmed, admitted,
+        released, created_at
+      FROM durability_semaphore_queue_grants_with_channels;
+      DROP TABLE durability_semaphore_queue_grants_with_channels;
+      CREATE INDEX durability_semaphore_queue_grants_key_idx
+      ON durability_semaphore_queue_grants (key, created_at);
+
+      ALTER TABLE durability_semaphore_queue_keys RENAME TO durability_semaphore_queue_keys_with_channels;
+      CREATE TABLE durability_semaphore_queue_keys (
+        key TEXT PRIMARY KEY,
+        next_request_at INTEGER NOT NULL,
+        queued INTEGER NOT NULL
+      );
+      INSERT INTO durability_semaphore_queue_keys
+      SELECT key, next_request_at, queued
+      FROM durability_semaphore_queue_keys_with_channels;
+      DROP TABLE durability_semaphore_queue_keys_with_channels;
+      CREATE INDEX durability_semaphore_queue_keys_due_idx
+      ON durability_semaphore_queue_keys (next_request_at) WHERE queued > 0;
+
+      ALTER TABLE durability_semaphore_queue_leases RENAME TO durability_semaphore_queue_leases_with_channels;
+      CREATE TABLE durability_semaphore_queue_leases (
+        lease_id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        grp TEXT NOT NULL,
+        permits INTEGER NOT NULL,
+        drawn INTEGER NOT NULL DEFAULT 0,
+        released INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        renew_at INTEGER NOT NULL DEFAULT 0,
+        renew_ms INTEGER NOT NULL DEFAULT 30000,
+        confirmed INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO durability_semaphore_queue_leases
+      SELECT lease_id, key, grp, permits, drawn, released, created_at,
+        expires_at, renew_at, renew_ms, confirmed
+      FROM durability_semaphore_queue_leases_with_channels;
+      DROP TABLE durability_semaphore_queue_leases_with_channels;
+      CREATE INDEX durability_semaphore_queue_leases_key_idx
+      ON durability_semaphore_queue_leases (key, created_at);
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**
@@ -698,6 +1375,106 @@ export const durabilityTopologyMigrations = [
       DROP TABLE IF EXISTS durability_topology_writes;
       DROP TABLE IF EXISTS durability_topology_states;
       DROP TABLE IF EXISTS durability_topology_groups;
+    `,
+  },
+  {
+    // `owner_channel` is the topology instance; the existing `channel` column
+    // of durability_topology_states stays the state name.
+    name: 'durability_0022_topology_channels',
+    up: `
+      ALTER TABLE durability_topology_groups RENAME TO durability_topology_groups_before_channels;
+      CREATE TABLE durability_topology_groups (
+        group_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        members TEXT NOT NULL,
+        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+        updated_at INTEGER NOT NULL,
+        owner_channel TEXT NOT NULL DEFAULT 'default',
+        PRIMARY KEY (owner_channel, group_id)
+      );
+      INSERT INTO durability_topology_groups
+        (group_id, version, members, deleted, updated_at, owner_channel)
+      SELECT group_id, version, members, deleted, updated_at, 'default'
+      FROM durability_topology_groups_before_channels;
+      DROP TABLE durability_topology_groups_before_channels;
+
+      ALTER TABLE durability_topology_states RENAME TO durability_topology_states_before_channels;
+      CREATE TABLE durability_topology_states (
+        group_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        value TEXT NOT NULL,
+        owner_channel TEXT NOT NULL DEFAULT 'default',
+        PRIMARY KEY (owner_channel, group_id, channel)
+      );
+      INSERT INTO durability_topology_states
+        (group_id, channel, value, owner_channel)
+      SELECT group_id, channel, value, 'default'
+      FROM durability_topology_states_before_channels;
+      DROP TABLE durability_topology_states_before_channels;
+
+      ALTER TABLE durability_topology_writes RENAME TO durability_topology_writes_before_channels;
+      CREATE TABLE durability_topology_writes (
+        id TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        land_by INTEGER NOT NULL,
+        owner_channel TEXT NOT NULL DEFAULT 'default',
+        PRIMARY KEY (owner_channel, id)
+      );
+      INSERT INTO durability_topology_writes
+        (id, group_id, land_by, owner_channel)
+      SELECT id, group_id, land_by, 'default'
+      FROM durability_topology_writes_before_channels;
+      DROP TABLE durability_topology_writes_before_channels;
+      CREATE INDEX durability_topology_writes_group_idx
+      ON durability_topology_writes (owner_channel, group_id, land_by);
+    `,
+    down: `
+      CREATE TABLE durability_topology_channel_guard (
+        owner_channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (owner_channel = 'default')
+      );
+      INSERT INTO durability_topology_channel_guard
+      SELECT owner_channel FROM durability_topology_groups
+      UNION SELECT owner_channel FROM durability_topology_states
+      UNION SELECT owner_channel FROM durability_topology_writes;
+      DROP TABLE durability_topology_channel_guard;
+
+      ALTER TABLE durability_topology_groups RENAME TO durability_topology_groups_with_channels;
+      CREATE TABLE durability_topology_groups (
+        group_id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        members TEXT NOT NULL,
+        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO durability_topology_groups
+      SELECT group_id, version, members, deleted, updated_at
+      FROM durability_topology_groups_with_channels;
+      DROP TABLE durability_topology_groups_with_channels;
+
+      ALTER TABLE durability_topology_states RENAME TO durability_topology_states_with_channels;
+      CREATE TABLE durability_topology_states (
+        group_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (group_id, channel)
+      );
+      INSERT INTO durability_topology_states
+      SELECT group_id, channel, value
+      FROM durability_topology_states_with_channels;
+      DROP TABLE durability_topology_states_with_channels;
+
+      ALTER TABLE durability_topology_writes RENAME TO durability_topology_writes_with_channels;
+      CREATE TABLE durability_topology_writes (
+        id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        land_by INTEGER NOT NULL
+      );
+      INSERT INTO durability_topology_writes
+      SELECT id, group_id, land_by
+      FROM durability_topology_writes_with_channels;
+      DROP TABLE durability_topology_writes_with_channels;
+      CREATE INDEX durability_topology_writes_group_idx
+      ON durability_topology_writes (group_id, land_by);
     `,
   },
 ] satisfies DurableMigrations;
@@ -742,6 +1519,81 @@ export const durabilityScheduleMigrations = [
     down: `
       ALTER TABLE durability_schedule_runs DROP COLUMN due_at;
       ALTER TABLE durability_schedule DROP COLUMN jitter_ms;
+    `,
+  },
+  {
+    name: 'durability_0018_schedule_channels',
+    // WITHOUT ROWID keeps each table a single b-tree under its composite key,
+    // so per-run writes still maintain no secondary index.
+    up: `
+      ALTER TABLE durability_schedule RENAME TO durability_schedule_before_channels;
+      CREATE TABLE durability_schedule (
+        channel TEXT NOT NULL DEFAULT 'default',
+        id INTEGER NOT NULL CHECK (id = 1),
+        version INTEGER NOT NULL,
+        expression TEXT,
+        next_at INTEGER,
+        jitter_ms INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (channel, id)
+      ) WITHOUT ROWID;
+      INSERT INTO durability_schedule
+        (channel, id, version, expression, next_at, jitter_ms)
+      SELECT 'default', id, version, expression, next_at, jitter_ms
+      FROM durability_schedule_before_channels;
+      DROP TABLE durability_schedule_before_channels;
+      ALTER TABLE durability_schedule_runs RENAME TO durability_schedule_runs_before_channels;
+      CREATE TABLE durability_schedule_runs (
+        channel TEXT NOT NULL DEFAULT 'default',
+        scheduled_time INTEGER NOT NULL,
+        state TEXT NOT NULL
+          CHECK (state IN ('queued', 'running', 'complete', 'errored')),
+        next_at INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        due_at INTEGER,
+        PRIMARY KEY (channel, scheduled_time)
+      ) WITHOUT ROWID;
+      INSERT INTO durability_schedule_runs
+        (channel, scheduled_time, state, next_at, attempt, error, due_at)
+      SELECT 'default', scheduled_time, state, next_at, attempt, error, due_at
+      FROM durability_schedule_runs_before_channels;
+      DROP TABLE durability_schedule_runs_before_channels;
+    `,
+    down: `
+      CREATE TABLE durability_schedule_channel_guard (
+        channel TEXT CONSTRAINT cannot_downgrade_nondefault_channels CHECK (channel = 'default')
+      );
+      INSERT INTO durability_schedule_channel_guard
+      SELECT channel FROM durability_schedule
+      UNION SELECT channel FROM durability_schedule_runs;
+      DROP TABLE durability_schedule_channel_guard;
+      ALTER TABLE durability_schedule RENAME TO durability_schedule_with_channels;
+      CREATE TABLE durability_schedule (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL,
+        expression TEXT,
+        next_at INTEGER,
+        jitter_ms INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO durability_schedule (id, version, expression, next_at, jitter_ms)
+      SELECT id, version, expression, next_at, jitter_ms
+      FROM durability_schedule_with_channels;
+      DROP TABLE durability_schedule_with_channels;
+      ALTER TABLE durability_schedule_runs RENAME TO durability_schedule_runs_with_channels;
+      CREATE TABLE durability_schedule_runs (
+        scheduled_time INTEGER PRIMARY KEY,
+        state TEXT NOT NULL
+          CHECK (state IN ('queued', 'running', 'complete', 'errored')),
+        next_at INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        due_at INTEGER
+      );
+      INSERT INTO durability_schedule_runs
+        (scheduled_time, state, next_at, attempt, error, due_at)
+      SELECT scheduled_time, state, next_at, attempt, error, due_at
+      FROM durability_schedule_runs_with_channels;
+      DROP TABLE durability_schedule_runs_with_channels;
     `,
   },
 ] satisfies DurableMigrations;

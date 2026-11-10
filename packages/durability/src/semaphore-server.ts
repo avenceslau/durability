@@ -10,14 +10,19 @@ import {
   allocateLeases,
   applyLeaseReports,
   budgets,
+  clientKey,
   leaseFootprint,
+  ownedBy,
   resolveLeasePolicy,
   type LeaseCandidate,
   type LeaseEvent,
   type LeasePolicy,
+  type SemaphoreClientIdentity,
   type SemaphoreLeaseOptions,
 } from './semaphore-leases.js';
 import {
+  assertChannel,
+  defaultChannel,
   engineFor,
   type Engine,
   type SchedulerAttachment,
@@ -69,12 +74,20 @@ export type DurabilitySemaphoreEvent =
       timestamp: number;
       grantId: string;
       clientId: string;
+      clientChannel?: string;
       group: string;
       /** Unclaimed permits returned to the pool. */
       permits: number;
     };
 
 export type DurabilitySemaphoreConfig = SchedulerAttachment & {
+  /**
+   * Stable pool ID. Semaphores on one object share storage, partitioned by
+   * channel, and each holds its own limit, grants, and leases. The
+   * application routes each request to a pool through its own RPC method.
+   * Defaults to `default`.
+   */
+  channel?: string;
   /** Evaluated once per round. Lowering it never evicts running work. */
   limit: number | (() => number | Promise<number>);
   /**
@@ -113,6 +126,7 @@ export type SemaphoreUsage = {
 
 type Pending = {
   request: PermitRequest;
+  client: SemaphoreClientIdentity;
   resolve: (grant: PermitGrant) => void;
   reject: (error: unknown) => void;
 };
@@ -146,6 +160,24 @@ const effectivePermits = (grant: GrantRow, now: number): number =>
 
 const outstanding = (grant: GrantRow, now: number): number =>
   Math.max(0, effectivePermits(grant, now) - grant.released);
+
+const clientOf = (message: SemaphoreRequest): SemaphoreClientIdentity => ({
+  clientId: message.clientId,
+  clientChannel: message.clientChannel ?? defaultChannel,
+});
+
+/**
+ * Echoes the protocol identity so the client can verify which queue was counted.
+ * Version 1 retains the response shape older clients expect.
+ */
+const acknowledgement = (
+  message: SemaphoreRequest
+): Pick<SemaphoreResponse, 'v' | 'clientChannel'> => ({
+  v: message.v,
+  ...(message.clientChannel === undefined
+    ? {}
+    : { clientChannel: message.clientChannel }),
+});
 
 /** Permits left queued per (group, reason) across one round's allocations. */
 const blockedCounts = (
@@ -198,6 +230,10 @@ export class DurabilitySemaphoreServer {
   #contended = false;
 
   constructor(config: DurabilitySemaphoreConfig) {
+    const channel = assertChannel(
+      'Semaphore',
+      config.channel ?? defaultChannel
+    );
     const limit = config.limit;
     this.#limit = typeof limit === 'function' ? limit : () => limit;
     if (
@@ -228,9 +264,12 @@ export class DurabilitySemaphoreServer {
       this.#engine.emitter<DurabilitySemaphoreEvent>(config.onLifecycleEvent)
     );
     this.#engine.migrateSchema('semaphore', durabilitySemaphoreMigrations);
-    this.#store = new HolderStore(this.#engine.sql);
-    this.#engine.register({
+    this.#store = new HolderStore(this.#engine.sql, channel);
+    this.#engine.registerChannel({
       table: grantsTable,
+      channelTables: ['durability_semaphore_leases'],
+      channel,
+      helper: 'A semaphore',
       runDue: () => this.#reclaimExpired(),
       nextPendingAt: () => this.#store.nextPendingAt(),
     });
@@ -271,7 +310,12 @@ export class DurabilitySemaphoreServer {
 
     const request = parsed.data;
     return new Promise<PermitGrant>((resolve, reject) => {
-      this.#pending.push({ request, resolve, reject });
+      this.#pending.push({
+        request,
+        client: clientOf(request),
+        resolve,
+        reject,
+      });
       this.#scheduleRound();
     });
   }
@@ -385,7 +429,7 @@ export class DurabilitySemaphoreServer {
       const { leases, ...rest } = allocation;
       entry.resolve({
         type: 'grant',
-        v: 1,
+        ...acknowledgement(entry.request),
         ...rest,
         nextRequestAt,
         ...(entry.request.leases === undefined
@@ -428,10 +472,9 @@ export class DurabilitySemaphoreServer {
     let unknownDebt = 0;
     const drawn = new Map<string, number>();
     for (const entry of pending) {
-      const { clientId } = entry.request;
       const grantResults = this.#applyReports(
         store,
-        clientId,
+        entry.client,
         entry.request.grants,
         now
       );
@@ -440,7 +483,7 @@ export class DurabilitySemaphoreServer {
         const outcome = applyLeaseReports(
           store,
           this.#leases,
-          clientId,
+          entry.client,
           entry.request.leases,
           now
         );
@@ -480,8 +523,11 @@ export class DurabilitySemaphoreServer {
       .sort(
         (left, right) =>
           left.oldestAt - right.oldestAt ||
-          left.entry.request.clientId.localeCompare(
-            right.entry.request.clientId
+          left.entry.client.clientId.localeCompare(
+            right.entry.client.clientId
+          ) ||
+          left.entry.client.clientChannel.localeCompare(
+            right.entry.client.clientChannel
           )
       );
     let requested = 0;
@@ -508,7 +554,8 @@ export class DurabilitySemaphoreServer {
       if (give > 0) {
         const grant: GrantRow = {
           grant_id: crypto.randomUUID(),
-          client_id: demand.entry.request.clientId,
+          client_id: demand.entry.client.clientId,
+          client_channel: demand.entry.client.clientChannel,
           grp: demand.group,
           permits: give,
           claimed: 0,
@@ -541,7 +588,7 @@ export class DurabilitySemaphoreServer {
         entry.request.leases === undefined
           ? []
           : entry.request.demand.map((demand) => ({
-              clientId: entry.request.clientId,
+              ...entry.client,
               group: demand.group,
               oldestAt: demand.oldestAt,
             }))
@@ -573,7 +620,9 @@ export class DurabilitySemaphoreServer {
         const byLease = new Map(
           [
             ...allocation.leases,
-            ...(outcome.grants.get(entry.request.clientId) ?? []),
+            ...(outcome.grants.get(
+              clientKey(entry.client.clientId, entry.client.clientChannel)
+            ) ?? []),
           ].map((lease) => [lease.leaseId, lease] as const)
         );
         allocation.leases = [...byLease.values()];
@@ -613,29 +662,24 @@ export class DurabilitySemaphoreServer {
 
   async #sync(message: PermitSync): Promise<PermitSyncResult> {
     const now = Date.now();
+    const client = clientOf(message);
     const result = await this.#engine.transaction(() => {
       const store = this.#store;
       const grantResults = this.#applyReports(
         store,
-        message.clientId,
+        client,
         message.grants,
         now
       );
       const leaseOutcome =
         this.#leases && message.leases
-          ? applyLeaseReports(
-              store,
-              this.#leases,
-              message.clientId,
-              message.leases,
-              now
-            )
+          ? applyLeaseReports(store, this.#leases, client, message.leases, now)
           : undefined;
       return { grantResults, leaseEchoes: leaseOutcome?.echoes };
     });
     return {
       type: 'synced',
-      v: 1,
+      ...acknowledgement(message),
       grantResults: result.grantResults,
       ...(result.leaseEchoes === undefined
         ? {}
@@ -652,14 +696,14 @@ export class DurabilitySemaphoreServer {
    */
   #applyReports(
     store: HolderStore,
-    clientId: string,
+    client: SemaphoreClientIdentity,
     reports: GrantReport[],
     now: number
   ): GrantResult[] {
     const results: GrantResult[] = [];
     for (const report of reports) {
       const grant = store.get(report.grantId);
-      if (!grant || grant.client_id !== clientId) {
+      if (!grant || !ownedBy(grant, client)) {
         results.push({
           grantId: report.grantId,
           claimed: 0,
@@ -722,6 +766,7 @@ export class DurabilitySemaphoreServer {
         timestamp: now,
         grantId: grant.grant_id,
         clientId: grant.client_id,
+        clientChannel: grant.client_channel,
         group: grant.grp,
         permits: grant.permits - grant.claimed,
       });

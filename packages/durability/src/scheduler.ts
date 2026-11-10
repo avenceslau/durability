@@ -121,6 +121,8 @@ export type Participant = {
   runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
   /** Earliest due time, for tables without `status` and `next_attempt_at` columns. */
   nextPendingAt?(sql: SqlStorage): number | undefined;
+  /** Earliest work not already executing; active work still keeps its physical fallback. */
+  nextTimerAt?(sql: SqlStorage): number | undefined;
   /**
    * True while the participant runs its own due work from an alarm invocation
    * it keeps open. The in-memory timer then ignores its pending time, which only
@@ -136,12 +138,12 @@ export const defaultChannel = 'default';
  * One helper instance's share of a table that several instances partition by
  * a `channel` column. Each runs only its own channel's due rows.
  */
-export type ChannelParticipant = {
-  table: DurableTable;
+export type ChannelParticipant = Participant & {
   channel: string;
   /** How errors name the helper, such as `An outbox`. */
   helper: string;
-  runDue(now: number, info: AlarmInvocationInfo | undefined): Promise<void>;
+  /** Other tables carrying this capability's channel identity, such as its configuration. */
+  channelTables?: readonly string[];
 };
 
 /** How long records of a channel no instance attached wait before they are looked at again. */
@@ -272,10 +274,13 @@ export class Engine {
     string,
     Map<string, ChannelParticipant>
   >();
+  private readonly claimedChannels = new Map<string, Set<string>>();
+  private readonly reportedMissingChannels = new Set<string>();
   private readonly migrated = new Set<MigrationCapability>();
   private availablePermits = defaultAlarmConcurrency;
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
+  private alarmRefreshRequested = false;
   private failedRuns = 0;
   private earlyAlarm:
     | { timestamp: number; timer: ReturnType<typeof setTimeout> }
@@ -373,6 +378,18 @@ export class Engine {
     this.participants.push(participant);
   }
 
+  /** Reserves an instance identity, including for helpers that do not schedule work. */
+  claimChannel(kind: string, channel: string, helper: string): void {
+    const claimed = this.claimedChannels.get(kind) ?? new Set<string>();
+    if (claimed.has(channel)) {
+      throw new Error(
+        `${helper} for channel "${channel}" is already attached to this scheduler`
+      );
+    }
+    claimed.add(channel);
+    this.claimedChannels.set(kind, claimed);
+  }
+
   /**
    * Attaches one channel of a table several helper instances share. The first
    * attachment registers the table; each run then runs every attached
@@ -395,12 +412,35 @@ export class Engine {
       this.channelsByTable.set(table.name, created);
       channels = created;
     }
-    if (channels.has(channel)) {
-      throw new Error(
-        `${helper} for channel "${channel}" is already attached to this scheduler`
-      );
+    this.claimChannel(table.name, channel, helper);
+    channels.set(channel, {
+      ...participant,
+      table: { ...table, channel },
+    });
+    if (participant.nextPendingAt !== undefined) {
+      // Missing custom channels are dormant. Defer until construction finishes,
+      // then restore their alarm without requiring a new application write.
+      const onError = (error: unknown) =>
+        reportFailure(
+          'durability.channel_resume_failed',
+          { table: table.name, channel },
+          error
+        );
+      const resumed = Promise.resolve()
+        .then(() => {
+          if (participant.nextPendingAt?.(this.sql) !== undefined) {
+            return this.scheduleNextAlarm();
+          }
+          return undefined;
+        })
+        .catch(async (error: unknown) => {
+          if (await this.armFallbackAlarm()) {
+            this.retryFailedRun();
+          }
+          onError(error);
+        });
+      this.waitUntil(resumed, onError);
     }
-    channels.set(channel, participant);
   }
 
   /**
@@ -413,17 +453,24 @@ export class Engine {
     channels: ReadonlyMap<string, ChannelParticipant>
   ): Promise<void> {
     const now = Date.now();
+    const customTiming = [...channels.values()].some(
+      (participant) => participant.nextPendingAt !== undefined
+    );
+    const channelTables = new Set([
+      table.name,
+      ...[...channels.values()].flatMap(
+        (participant) => participant.channelTables ?? []
+      ),
+    ]);
+    const query = customTiming
+      ? [...channelTables]
+          .map((name) => `SELECT channel FROM ${name}`)
+          .join(' UNION ')
+      : `SELECT DISTINCT channel FROM ${table.name}
+         WHERE status = 'pending' AND next_attempt_at <= ?`;
     const unattached = channelRowSchema
       .array()
-      .parse(
-        this.sql
-          .exec(
-            `SELECT DISTINCT channel FROM ${table.name}
-             WHERE status = 'pending' AND next_attempt_at <= ?`,
-            now
-          )
-          .toArray()
-      )
+      .parse(this.sql.exec(query, ...(customTiming ? [] : [now])).toArray())
       .map((row) => row.channel)
       .filter((channel) => !channels.has(channel));
     if (unattached.length === 0) {
@@ -431,6 +478,11 @@ export class Engine {
     }
 
     for (const channel of unattached) {
+      const identity = JSON.stringify([table.name, channel]);
+      if (customTiming && this.reportedMissingChannels.has(identity)) {
+        continue;
+      }
+      this.reportedMissingChannels.add(identity);
       reportFailure(
         'durability.channel_missing',
         { table: table.name, channel },
@@ -438,6 +490,11 @@ export class Engine {
           `Channel "${channel}" of ${table.name} has no helper attached; retaining its records`
         )
       );
+    }
+    // Custom timing may represent leases or recurring configurations, not pending
+    // attempts. Retain those records unchanged until their channel returns.
+    if (customTiming) {
+      return;
     }
     await this.transaction((sql) => {
       for (const channel of unattached) {
@@ -545,13 +602,34 @@ export class Engine {
   /**
    * The earliest pending time for one participant: `physical` arms the physical
    * alarm (eviction fallback) and includes active work; `timer` drives the
-   * in-memory timer and, under liveTimers, skips work that is already executing
+   * in-memory timer and skips work that is already executing
    * so a still-due active row cannot re-fire a zero-delay timer in a loop.
    */
   private pendingTimes(participant: Participant): {
     physical?: number | undefined;
     timer?: number | undefined;
   } {
+    const channels = this.channelsByTable.get(participant.table.name);
+    if (
+      participant.table.channel === undefined &&
+      channels !== undefined &&
+      [...channels.values()].some(
+        (channel) => channel.nextPendingAt !== undefined
+      )
+    ) {
+      let physical: number | undefined;
+      let timer: number | undefined;
+      for (const channel of channels.values()) {
+        const next = this.pendingTimes(channel);
+        if (next.physical !== undefined) {
+          physical = Math.min(physical ?? Infinity, next.physical);
+        }
+        if (next.timer !== undefined) {
+          timer = Math.min(timer ?? Infinity, next.timer);
+        }
+      }
+      return { physical, timer };
+    }
     if (participant.nextPendingAt) {
       const at = participant.nextPendingAt(this.sql);
       if (at === undefined) {
@@ -559,11 +637,16 @@ export class Engine {
       }
       return participant.holding?.()
         ? { physical: at }
-        : { physical: at, timer: at };
+        : {
+            physical: at,
+            timer: participant.nextTimerAt
+              ? participant.nextTimerAt(this.sql)
+              : at,
+          };
     }
     const active = this.activeByTable.get(participant.table.name);
     const partitioned = this.channelsByTable.has(participant.table.name);
-    const limit = this.liveTimers ? (active?.size ?? 0) + 1 : 1;
+    const limit = (active?.size ?? 0) + 1;
     const rows = pendingHeadRowSchema.array().parse(
       this.sql
         .exec(
@@ -577,12 +660,6 @@ export class Engine {
         .toArray()
     );
     const physical = rows[0]?.next_attempt_at;
-    if (!this.liveTimers) {
-      if (physical === undefined) {
-        return {};
-      }
-      return { physical, timer: physical };
-    }
     const eligible = rows.find(
       (row) => !active?.has(activeKey(row.channel, row.pk))
     );
@@ -674,14 +751,25 @@ export class Engine {
     this.earlyAlarm = { timestamp, timer };
   }
 
-  /** Coalesces concurrent refresh requests into one reconciliation transaction. */
+  /** Coalesces refreshes without dropping requests arriving after the pending-work read. */
   scheduleNextAlarm(): Promise<void> {
+    this.alarmRefreshRequested = true;
     if (this.alarmRefresh) {
       return this.alarmRefresh;
     }
-    this.alarmRefresh = this.transaction(() => undefined).finally(() => {
-      this.alarmRefresh = undefined;
-    });
+
+    this.alarmRefresh = (async () => {
+      try {
+        do {
+          // eslint-disable-next-line no-await-in-loop
+          await this.transaction(() => {
+            this.alarmRefreshRequested = false;
+          });
+        } while (this.alarmRefreshRequested);
+      } finally {
+        this.alarmRefresh = undefined;
+      }
+    })();
     return this.alarmRefresh;
   }
 
@@ -1068,15 +1156,13 @@ export class Engine {
       this.releaseActive(spec.table.name, activeKey(spec.table.channel, key));
       // Re-arm the in-memory timer now that this key is eligible again, so work
       // the timer skipped while it executed is picked up at its exact time.
-      if (this.liveTimers) {
-        void this.scheduleNextAlarm().catch((error) =>
-          reportFailure(
-            'durability.scheduler.refresh_failed',
-            { table: spec.table.name, key },
-            error
-          )
-        );
-      }
+      void this.scheduleNextAlarm().catch((error) =>
+        reportFailure(
+          'durability.scheduler.refresh_failed',
+          { table: spec.table.name, key },
+          error
+        )
+      );
     });
     return execution;
   }

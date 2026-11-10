@@ -18,6 +18,36 @@ const todoSchema = z.object({
 
 type Env = { SOCKET_TEST: DurableObjectNamespace<SocketTestObject> };
 
+const libraryChannel = 'library';
+// Real SQLite keeps NUL bytes, so this channel must stay apart from `library`.
+const nulChannel = 'library\0nul';
+const detachLibraryKey = 'detach-library';
+
+/** Uses the same method and event names as the default socket, with its own handlers and metadata. */
+const createLibrarySocket = (context: DurableObjectState, channel: string) => {
+  const socket = new DurabilitySocket({
+    context,
+    channel,
+    inbound: {
+      whoami: (_input: unknown, call: SocketCall<{ user: string }>) =>
+        `${JSON.stringify(channel)}:${call.metadata.user}`,
+      toggle: {
+        input: z.string(),
+        handle: (id: string) => {
+          socket.updated(id);
+          return id;
+        },
+      },
+    },
+    outbound: { updated: event<string>() },
+    metadata: (request) => ({
+      user: `library-${request.headers.get('x-user') ?? 'anonymous'}`,
+    }),
+    retention: 5,
+  });
+  return socket;
+};
+
 export class SocketTestObject extends DurableObject<Env> {
   private readonly todos = new Map<string, Todo>();
 
@@ -71,6 +101,14 @@ export class SocketTestObject extends DurableObject<Env> {
     retention: 2,
   });
 
+  // A deploy that removed the library channel is simulated by not constructing it.
+  readonly librarySocket =
+    this.ctx.storage.kv.get(detachLibraryKey) === true
+      ? undefined
+      : createLibrarySocket(this.ctx, libraryChannel);
+
+  readonly nulSocket = createLibrarySocket(this.ctx, nulChannel);
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.durability.lifecycle((lifecycleEvent) => {
@@ -86,9 +124,20 @@ export class SocketTestObject extends DurableObject<Env> {
   }
 
   override fetch(request: Request) {
+    const channel = new URL(request.url).searchParams.get('channel');
+    if (channel === libraryChannel) {
+      return (
+        this.librarySocket?.fetch(request) ??
+        new Response('Channel removed', { status: 404 })
+      );
+    }
+    if (channel === nulChannel) {
+      return this.nulSocket.fetch(request);
+    }
     return this.socket.fetch(request);
   }
 
+  // Every connection's frames go through the default socket, which routes them by channel.
   override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     return this.socket.webSocketMessage(ws, message);
   }
