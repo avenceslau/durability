@@ -650,7 +650,7 @@ const durabilityMigrationsRule = {
             }
           }
           if (
-            source === '@durability/storage' &&
+            (source === '@durability/storage' || source === 'durability') &&
             importedName === 'DurableMigrations'
           ) {
             for (const variable of variables) {

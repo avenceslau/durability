@@ -359,6 +359,22 @@ describe('durability-migrations-only', () => {
         down: \`CREATE \${'TEMP' + 'ORARY'}   TABLE backup (id TEXT);\`,
       }] satisfies MigrationList;
     `,
+    `
+      import { migrate, type DurableMigrations } from 'durability';
+      const migrations: DurableMigrations = [{
+        name: '0001_create_jobs',
+        up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+        down: 'DROP TABLE jobs;',
+      }];
+    `,
+    `
+      import type { DurableMigrations as MigrationList } from 'durability';
+      const migrations = [{
+        name: '0001_create_jobs',
+        up: 'CREATE TABLE jobs (id TEXT PRIMARY KEY);',
+        down: 'DROP TABLE jobs;',
+      }] satisfies MigrationList;
+    `,
   ])('accepts tables declared in durable migrations', (source) => {
     const result = lint(source, 'durability-migrations-only');
 
