@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import * as v from 'valibot';
 import type { DurableCall } from './index';
 import { contextFor, FakeStorage } from './test-fakes';
 
-const traceEntrySchema = z.looseObject({
-  event: z.string(),
-  seq: z.number(),
-  method: z.string().optional(),
+const traceEntrySchema = v.looseObject({
+  event: v.string(),
+  seq: v.number(),
+  method: v.optional(v.string()),
 });
 
 afterEach(() => {
@@ -136,9 +136,10 @@ describe('dev mode', () => {
       });
     });
 
-    const entries = traceEntrySchema
-      .array()
-      .parse(debug.mock.calls.map(([entry]) => entry));
+    const entries = v.parse(
+      v.array(traceEntrySchema),
+      debug.mock.calls.map(([entry]) => entry)
+    );
     const call = entries.find(
       (entry) =>
         entry.event === 'durability.dev.call' && entry.method === 'memoize'

@@ -90,7 +90,7 @@ readonly socket = new DurabilitySocket({
   context: this.ctx,
   inbound: {
     work: {
-      input: z.object({ cursor: z.string().optional() }),
+      input: v.object({ cursor: v.optional(v.string()) }),
       handle: (query: { cursor?: string }) => this.tracker.records(query),
     },
   },

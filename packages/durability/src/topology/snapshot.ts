@@ -1,4 +1,5 @@
-import { z } from 'zod';
+import * as v from 'valibot';
+import { jsonSchema } from '../serialization.js';
 
 /** `active` members are in the write and read sets; `draining` members only in the read set. */
 export type TopologyMemberState = 'active' | 'draining';
@@ -42,37 +43,35 @@ const locationHints = [
 ] as const satisfies readonly DurableObjectLocationHint[];
 
 // Unknown keys are stripped, so current members (which carry `joinedAt`) can be returned as input.
-export const memberInputSchema = z.object({
-  id: z.string().min(1),
-  state: z.enum(['active', 'draining']),
-  locationHint: z.enum(locationHints).optional(),
-  meta: z.json().optional(),
+export const memberInputSchema = v.object({
+  id: v.pipe(v.string(), v.minLength(1)),
+  state: v.picklist(['active', 'draining']),
+  locationHint: v.optional(v.picklist(locationHints)),
+  meta: v.optional(jsonSchema),
 });
 
-const memberSchema = memberInputSchema.extend({
-  joinedAt: z.number().int().nonnegative(),
+const memberSchema = v.object({
+  ...memberInputSchema.entries,
+  joinedAt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-export const membersSchema = memberSchema
-  .array()
-  .superRefine((members, ctx) => {
-    for (let index = 1; index < members.length; index++) {
-      if (members[index - 1]!.id >= members[index]!.id) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Members must be sorted by ID and unique',
-          path: [index, 'id'],
-        });
-      }
-    }
-  });
+export const membersSchema = v.pipe(
+  v.array(memberSchema),
+  v.check(
+    (members) =>
+      members.every(
+        (member, index) => index === 0 || members[index - 1]!.id < member.id
+      ),
+    'Members must be sorted by ID and unique'
+  )
+);
 
-const encodedSchema = z.object({
-  format: z.literal(1),
-  group: z.string().min(1),
-  version: z.number().int().positive(),
-  coordinator: z.string().min(1),
-  members: membersSchema.min(1),
+const encodedSchema = v.object({
+  format: v.literal(1),
+  group: v.pipe(v.string(), v.minLength(1)),
+  version: v.pipe(v.number(), v.safeInteger(), v.gtValue(0)),
+  coordinator: v.pipe(v.string(), v.minLength(1)),
+  members: v.pipe(membersSchema, v.minLength(1)),
 });
 
 export const encodeSnapshot = <Meta>(
@@ -83,7 +82,8 @@ export const encodeSnapshot = <Meta>(
 export const decodeSnapshot = <Meta>(
   encoded: string
 ): TopologySnapshot<Meta> => {
-  const { format: _format, ...snapshot } = encodedSchema.parse(
+  const { format: _format, ...snapshot } = v.parse(
+    encodedSchema,
     JSON.parse(encoded)
   );
   return snapshot as unknown as TopologySnapshot<Meta>;

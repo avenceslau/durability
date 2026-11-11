@@ -102,7 +102,7 @@ const nextPendingAt = sourceExcerpt(
   'next-pending',
   'The alarm follows unclaimed grants',
   '  nextPendingAt(): number | undefined {',
-  '      )?.expires_at;\n  }'
+  '    )?.expires_at;\n  }'
 );
 const leaseReports = sourceExcerpt(
   leases,

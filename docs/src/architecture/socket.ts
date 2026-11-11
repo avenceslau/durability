@@ -532,7 +532,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['*', 'flow:call'],
           source: sourceFocus(
             todoList,
-            'input: z.object({ id: z.string(), payload: todoSchema }),',
+            'input: v.object({ id: v.string(), payload: todoSchema }),',
             'handle: this.durability.createTodo,'
           ),
           durable:

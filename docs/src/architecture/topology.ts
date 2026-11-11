@@ -127,7 +127,7 @@ const decode = sourceExcerpt(
   snapshotFile,
   'decode',
   'Re-validate the stored snapshot',
-  'const encodedSchema = z.object({',
+  'const encodedSchema = v.object({',
   '  return snapshot as unknown as TopologySnapshot<Meta>;\n};'
 );
 const clientFallback = sourceExcerpt(
@@ -696,8 +696,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:kv'],
           source: sourceFocus(
             decode,
-            'const encodedSchema = z.object({',
-            'members: membersSchema.min(1),'
+            'const encodedSchema = v.object({',
+            'members: v.pipe(membersSchema, v.minLength(1)),'
           ),
           durable: 'Unchanged.',
           volatile: 'The decoded snapshot.',

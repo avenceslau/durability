@@ -23,8 +23,18 @@ describe('serialize', () => {
   });
 
   it('still rejects values that are not JSON', () => {
-    expect(() => serialize({ when: new Date(0) })).toThrow('Invalid input');
-    expect(() => serialize(() => undefined)).toThrow('Invalid input');
-    expect(() => serialize({ big: 1n })).toThrow('Invalid input');
+    expect(() => serialize({ when: new Date(0) })).toThrow(
+      'Invalid JSON value'
+    );
+    expect(() => serialize(() => undefined)).toThrow('Invalid JSON value');
+    expect(() => serialize({ big: 1n })).toThrow('Invalid JSON value');
+    expect(() => serialize({ ratio: Infinity })).toThrow('Invalid JSON value');
+    // oxlint-disable-next-line no-sparse-arrays
+    expect(() => serialize([1, , 2])).toThrow('Invalid JSON value');
+  });
+
+  it('keeps keys named after object internals', () => {
+    const value = { constructor: 1, prototype: 2 };
+    expect(deserialize(serialize(value))).toEqual(value);
   });
 });

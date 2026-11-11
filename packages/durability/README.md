@@ -623,14 +623,14 @@ import {
   type DurabilityLifecycleEvent,
 } from 'durability';
 import { DurabilitySocket, event, type SocketCall } from 'durability/socket';
-import { z } from 'zod';
+import * as v from 'valibot';
 
-const TodoSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  done: z.boolean(),
+const TodoSchema = v.object({
+  id: v.string(),
+  title: v.string(),
+  done: v.boolean(),
 });
-type Todo = z.infer<typeof TodoSchema>;
+type Todo = v.InferOutput<typeof TodoSchema>;
 type Metadata = { userId: string };
 
 export class TodoList extends DurableObject<Env> {
@@ -655,11 +655,11 @@ export class TodoList extends DurableObject<Env> {
       list: () => [...this.todos.values()],
       // Typed input requires a Standard Schema; here the handler is a durable operation.
       createTodo: {
-        input: z.object({ id: z.string(), payload: TodoSchema }),
+        input: v.object({ id: v.string(), payload: TodoSchema }),
         handle: this.durability.createTodo,
       },
       toggle: {
-        input: z.string(),
+        input: v.string(),
         handle: (id: string, call: SocketCall<Metadata>) => {
           const todo = this.todos.get(id);
           if (!todo) {
@@ -851,7 +851,7 @@ readonly socket = new DurabilitySocket({
   context: this.ctx,
   inbound: {
     work: {
-      input: z.object({ cursor: z.string().optional() }),
+      input: v.object({ cursor: v.optional(v.string()) }),
       handle: (query: { cursor?: string }) => this.tracker.records(query),
     },
   },

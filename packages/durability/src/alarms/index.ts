@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceFunction, traceMethods } from '../dev.js';
 import {
   DurableAlarmTimeoutError,
@@ -49,20 +49,20 @@ import {
   type UntypedSource,
 } from '../tracker/source.js';
 
-const alarmRowSchema = z.object({
-  name: z.string(),
-  channel: z.string(),
-  generation_id: z.string(),
-  status: z.enum(['pending', 'failed']),
-  scheduled_at: z.number().int().nonnegative(),
-  next_attempt_at: z.number().int().nonnegative(),
-  attempt: z.number().int().nonnegative(),
-  last_error: z.string().nullable(),
-  last_error_name: z.string().nullable(),
-  created_at: z.number().int().nonnegative(),
+const alarmRowSchema = v.object({
+  name: v.string(),
+  channel: v.string(),
+  generation_id: v.string(),
+  status: v.picklist(['pending', 'failed']),
+  scheduled_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  next_attempt_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  attempt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  last_error: v.nullable(v.string()),
+  last_error_name: v.nullable(v.string()),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-type AlarmRow = z.infer<typeof alarmRowSchema>;
+type AlarmRow = v.InferOutput<typeof alarmRowSchema>;
 
 const alarmsTable: DurableTable = { name: 'durability_alarms', key: 'name' };
 
@@ -103,7 +103,7 @@ export type DurableAlarmHandler = (
   info: DurableAlarmInfo
 ) => unknown | Promise<unknown>;
 
-const alarmHandlerSchema = z.custom<DurableAlarmHandler>(
+const alarmHandlerSchema = v.custom<DurableAlarmHandler>(
   (value) => typeof value === 'function'
 );
 
@@ -158,17 +158,16 @@ const readAlarm = (
   channel: string,
   name: string
 ): AlarmRow | undefined =>
-  alarmRowSchema
-    .optional()
-    .parse(
-      sql
-        .exec(
-          'SELECT * FROM durability_alarms WHERE channel = ? AND name = ?',
-          channel,
-          name
-        )
-        .toArray()[0]
-    );
+  v.parse(
+    v.optional(alarmRowSchema),
+    sql
+      .exec(
+        'SELECT * FROM durability_alarms WHERE channel = ? AND name = ?',
+        channel,
+        name
+      )
+      .toArray()[0]
+  );
 
 const alarmRecord = (sql: SqlStorage, row: AlarmRow): UntypedRecord => ({
   id: row.name,
@@ -225,7 +224,7 @@ class DurabilityAlarmsCore<Names extends string> {
     this.#engine = engineFor(config);
     this.#handlers = new Map(
       Object.entries<DurableAlarmHandler>(config.handlers).map(
-        ([name, handler]) => [name, alarmHandlerSchema.parse(handler)]
+        ([name, handler]) => [name, v.parse(alarmHandlerSchema, handler)]
       )
     );
     this.#policy = createPolicyResolver(
@@ -339,9 +338,8 @@ class DurabilityAlarmsCore<Names extends string> {
           status,
           name,
         });
-        const records = alarmRowSchema
-          .array()
-          .parse(page.rows)
+        const records = v
+          .parse(v.array(alarmRowSchema), page.rows)
           .map((row) => alarmRecord(sql, row));
         return page.next === undefined
           ? { records }
@@ -369,7 +367,8 @@ class DurabilityAlarmsCore<Names extends string> {
     now: number,
     info: AlarmInvocationInfo | undefined
   ): Promise<void> {
-    const due = alarmRowSchema.array().parse(
+    const due = v.parse(
+      v.array(alarmRowSchema),
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_alarms

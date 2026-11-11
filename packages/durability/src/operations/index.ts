@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceFunction, traceMethods } from '../dev.js';
 import {
   DuplicateDurableCallError,
@@ -53,23 +53,23 @@ import {
   type UntypedSource,
 } from '../tracker/source.js';
 
-const callRowSchema = z.object({
-  id: z.string(),
-  channel: z.string(),
-  operation: z.string(),
-  payload: z.string(),
-  status: z.enum(['pending', 'completed', 'failed']),
-  result: z.string().nullable(),
-  attempt: z.number().int().nonnegative(),
-  next_attempt_at: z.number().int().nonnegative(),
-  last_error: z.string().nullable(),
-  last_error_name: z.string().nullable(),
-  completed_at: z.number().int().nonnegative().nullable(),
-  created_at: z.number().int().nonnegative(),
-  generation_id: z.string(),
+const callRowSchema = v.object({
+  id: v.string(),
+  channel: v.string(),
+  operation: v.string(),
+  payload: v.string(),
+  status: v.picklist(['pending', 'completed', 'failed']),
+  result: v.nullable(v.string()),
+  attempt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  next_attempt_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  last_error: v.nullable(v.string()),
+  last_error_name: v.nullable(v.string()),
+  completed_at: v.nullable(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  generation_id: v.string(),
 });
 
-type CallRow = z.infer<typeof callRowSchema>;
+type CallRow = v.InferOutput<typeof callRowSchema>;
 
 const callsTable: DurableTable = { name: 'durability_calls', key: 'id' };
 
@@ -78,17 +78,16 @@ const readCall = (
   channel: string,
   id: string
 ): CallRow | undefined =>
-  callRowSchema
-    .optional()
-    .parse(
-      sql
-        .exec(
-          'SELECT * FROM durability_calls WHERE channel = ? AND id = ?',
-          channel,
-          id
-        )
-        .toArray()[0]
-    );
+  v.parse(
+    v.optional(callRowSchema),
+    sql
+      .exec(
+        'SELECT * FROM durability_calls WHERE channel = ? AND id = ?',
+        channel,
+        id
+      )
+      .toArray()[0]
+  );
 
 /**
  * The context passed to a durable operation handler for each attempt.
@@ -494,9 +493,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
           status,
           name,
         });
-        const records = callRowSchema
-          .array()
-          .parse(page.rows)
+        const records = v
+          .parse(v.array(callRowSchema), page.rows)
           .map((call) => callRecord(sql, call));
         return page.next === undefined
           ? { records }
@@ -508,21 +506,19 @@ class DurabilityCore<Handlers extends HandlerMap> {
   }
 
   async #runDue(now: number): Promise<void> {
-    const due = z
-      .object({ id: z.string() })
-      .array()
-      .parse(
-        this.#engine.sql
-          .exec(
-            `SELECT id FROM durability_calls
-             WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?
-             ORDER BY next_attempt_at ASC
-             LIMIT 100`,
-            this.#channel,
-            now
-          )
-          .toArray()
-      );
+    const due = v.parse(
+      v.array(v.object({ id: v.string() })),
+      this.#engine.sql
+        .exec(
+          `SELECT id FROM durability_calls
+           WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?
+           ORDER BY next_attempt_at ASC
+           LIMIT 100`,
+          this.#channel,
+          now
+        )
+        .toArray()
+    );
     // With liveTimers an active operation reschedules itself when it settles, so
     // skipping it keeps a long handler from blocking a concurrent alarm pass.
     const pending = this.#engine.liveTimers

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { exponential, jitter } from './utils.js';
 
 /**
@@ -54,24 +54,25 @@ export type AttemptPolicy = {
 };
 
 const functionSchema = <T>() =>
-  z.custom<T>((value) => typeof value === 'function');
+  v.custom<T>((value) => typeof value === 'function');
 
-const retryOptionsSchema = z.object({
-  delay: functionSchema<(attempt: number) => number>().optional(),
-  maxAttempts: z.number().optional(),
+const retryOptionsSchema = v.object({
+  delay: v.optional(functionSchema<(attempt: number) => number>()),
+  maxAttempts: v.optional(v.number()),
 });
 
-export const methodOptionsSchema = z.object({
-  attemptTimeoutMs: z.number().optional(),
-  retries: retryOptionsSchema.optional(),
+export const methodOptionsSchema = v.object({
+  attemptTimeoutMs: v.optional(v.number()),
+  retries: v.optional(retryOptionsSchema),
 });
 
-export const alarmMethodOptionsSchema = methodOptionsSchema.extend({
-  retryTimeouts: z.boolean().optional(),
+export const alarmMethodOptionsSchema = v.object({
+  ...methodOptionsSchema.entries,
+  retryTimeouts: v.optional(v.boolean()),
 });
 
-export type MethodPolicy = z.infer<typeof methodOptionsSchema>;
-export type AlarmMethodPolicy = z.infer<typeof alarmMethodOptionsSchema>;
+export type MethodPolicy = v.InferOutput<typeof methodOptionsSchema>;
+export type AlarmMethodPolicy = v.InferOutput<typeof alarmMethodOptionsSchema>;
 
 export const assertPositiveInteger = (name: string, value: number): void => {
   if (!Number.isInteger(value) || value < 1) {
@@ -105,10 +106,10 @@ export type PolicyResolver<Method> = (
 export const createPolicyResolver = <Method extends MethodPolicy>(
   options: ExecutionPolicyOptions,
   methods: Record<string, unknown>,
-  methodSchema: z.ZodType<Method>
+  methodSchema: v.GenericSchema<unknown, Method>
 ): PolicyResolver<Method> => {
   const attemptTimeoutMs = options.attemptTimeoutMs ?? 5 * 60_000;
-  const retries = retryOptionsSchema.parse(options.retries ?? {});
+  const retries = v.parse(retryOptionsSchema, options.retries ?? {});
   const delay =
     retries.delay ?? ((attempt: number) => jitter(exponential(attempt)));
   const maxAttempts = retries.maxAttempts ?? 5;
@@ -117,7 +118,7 @@ export const createPolicyResolver = <Method extends MethodPolicy>(
 
   const parsed = new Map(
     Object.entries(methods).map(([name, method]) => {
-      const valid = methodSchema.parse(method);
+      const valid = v.parse(methodSchema, method);
       assertMethodOptions(`methods.${name}`, valid);
       return [name, valid];
     })

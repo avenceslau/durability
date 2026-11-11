@@ -293,10 +293,10 @@ describe('DurabilityTracker', () => {
     const { tracker } = setup(async () => undefined);
 
     await expect(tracker.list({ limit: 0 })).rejects.toThrow(
-      'Too small: expected number to be >=1'
+      'Invalid value: Expected >=1 but received 0'
     );
     await expect(tracker.list({ limit: 101 })).rejects.toThrow(
-      'Too big: expected number to be <=100'
+      'Invalid value: Expected <=100 but received 101'
     );
     await expect(
       // @ts-expect-error unknown source keys are rejected

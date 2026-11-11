@@ -13,7 +13,7 @@
     "@durability/transforms": "workspace:^",
     "@tanstack/db": "^0.13.0",
     "durability": "workspace:^",
-    "zod": "^4.4.3"
+    "valibot": "^1.5.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",

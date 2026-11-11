@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceLifecycle, traceMethods } from '../dev.js';
 import {
   reportFailure,
@@ -36,40 +36,40 @@ const runsTable: DurableTable = {
 const maxDelayMs = 2 ** 31 - 1;
 const fallbackRetryMs = 60_000;
 
-const scheduleRowSchema = z.object({
-  version: z.number().int().nonnegative(),
-  expression: z.string().nullable(),
-  next_at: z.number().int().nonnegative().nullable(),
-  jitter_ms: z.number().int().nonnegative(),
+const scheduleRowSchema = v.object({
+  version: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  expression: v.nullable(v.string()),
+  next_at: v.nullable(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  jitter_ms: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-const runStateSchema = z.enum(['queued', 'running', 'complete', 'errored']);
+const runStateSchema = v.picklist(['queued', 'running', 'complete', 'errored']);
 
-const runRowSchema = z.object({
-  scheduled_time: z.number().int().nonnegative(),
-  due_at: z.number().int().nonnegative(),
+const runRowSchema = v.object({
+  scheduled_time: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  due_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   state: runStateSchema,
-  next_at: z.number().int().nonnegative(),
-  attempt: z.number().int().nonnegative(),
-  error: z.string().nullable(),
+  next_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  attempt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  error: v.nullable(v.string()),
 });
 
-type RunRow = z.infer<typeof runRowSchema>;
+type RunRow = v.InferOutput<typeof runRowSchema>;
 
-const timeRowSchema = z.object({
-  scheduled_time: z.number().int().nonnegative(),
+const timeRowSchema = v.object({
+  scheduled_time: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
-const dueRowSchema = z.object({
-  scheduled_time: z.number().int().nonnegative(),
-  due_at: z.number().int().nonnegative(),
+const dueRowSchema = v.object({
+  scheduled_time: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  due_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
-const timedRowSchema = z.object({
-  scheduled_time: z.number().int().nonnegative(),
-  next_at: z.number().int().nonnegative(),
+const timedRowSchema = v.object({
+  scheduled_time: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  next_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
-const serializedErrorSchema = z.object({
-  name: z.string(),
-  message: z.string(),
+const serializedErrorSchema = v.object({
+  name: v.string(),
+  message: v.string(),
 });
 
 /** A schedule as passed to {@link DurabilitySchedule.set}. */
@@ -213,13 +213,14 @@ export type DurabilityScheduleConfig = SchedulerAttachment & {
   onLifecycleEvent?: (event: DurabilityScheduleEvent) => void | Promise<void>;
 };
 
-type StoredSchedule = z.infer<typeof scheduleRowSchema>;
+type StoredSchedule = v.InferOutput<typeof scheduleRowSchema>;
 
 const readSchedule = (
   sql: SqlStorage,
   channel: string
 ): StoredSchedule | undefined =>
-  scheduleRowSchema.optional().parse(
+  v.parse(
+    v.optional(scheduleRowSchema),
     sql
       .exec(
         `SELECT
@@ -268,16 +269,15 @@ const firesAt = (schedule: StoredSchedule | undefined): number | undefined =>
     : schedule.next_at + schedule.jitter_ms;
 
 const scheduledTimes = (cursor: { toArray(): unknown[] }): number[] =>
-  timeRowSchema
-    .array()
-    .parse(cursor.toArray())
+  v
+    .parse(v.array(timeRowSchema), cursor.toArray())
     .map((row) => row.scheduled_time);
 
 const outcomeOf = (row: RunRow): ScheduledRunOutcome =>
   row.state === 'errored'
     ? {
         status: 'errored',
-        error: serializedErrorSchema.parse(JSON.parse(row.error ?? '{}')),
+        error: v.parse(serializedErrorSchema, JSON.parse(row.error ?? '{}')),
       }
     : { status: 'complete' };
 
@@ -523,7 +523,8 @@ export class DurabilitySchedule {
    * arming a fallback when it starts and re-arming the next tick when it ends.
    */
   #nextPendingAt(sql: SqlStorage): number | undefined {
-    const rows = timedRowSchema.array().parse(
+    const rows = v.parse(
+      v.array(timedRowSchema),
       sql
         .exec(
           `SELECT scheduled_time, next_at FROM durability_schedule_runs
@@ -572,7 +573,7 @@ export class DurabilitySchedule {
     return `${this.#keyPrefix}${scheduledTime}${this.#keySuffix}`;
   }
 
-  #describe(row: z.infer<typeof dueRowSchema>): ScheduledRun {
+  #describe(row: v.InferOutput<typeof dueRowSchema>): ScheduledRun {
     return {
       scheduledTime: row.scheduled_time,
       dueAt: row.due_at,
@@ -670,9 +671,9 @@ export class DurabilitySchedule {
   /** The next time the loop has timed work: a tick or an outcome retry. */
   #nextWakeAt(): number | undefined {
     const sql = this.#engine.sql;
-    const times = runRowSchema
-      .array()
+    const times = v
       .parse(
+        v.array(runRowSchema),
         sql
           .exec(
             `SELECT * FROM durability_schedule_runs
@@ -765,7 +766,8 @@ export class DurabilitySchedule {
         this.#channel
       );
       const queued = free <= 0;
-      const [row] = dueRowSchema.array().parse(
+      const [row] = v.parse(
+        v.array(dueRowSchema),
         sql
           .exec(
             `INSERT INTO durability_schedule_runs
@@ -823,7 +825,8 @@ export class DurabilitySchedule {
       const rows =
         free <= 0
           ? []
-          : dueRowSchema.array().parse(
+          : v.parse(
+              v.array(dueRowSchema),
               sql
                 .exec(
                   `UPDATE durability_schedule_runs
@@ -970,7 +973,8 @@ export class DurabilitySchedule {
   }
 
   #deliverDue(): void {
-    const due = runRowSchema.array().parse(
+    const due = v.parse(
+      v.array(runRowSchema),
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_schedule_runs

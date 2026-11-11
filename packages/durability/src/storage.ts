@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 
 /**
  * A table of durable records: a primary key column plus `generation_id`,
@@ -29,8 +29,8 @@ export type AttemptRef = {
   attempt: number;
 };
 
-const attemptRowSchema = z.object({
-  attempt: z.number().int().nonnegative(),
+const attemptRowSchema = v.object({
+  attempt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
 // Every write is conditional on the record's generation and pending status, so a
@@ -52,7 +52,8 @@ export const claimAttempt = (
 ): number | undefined => {
   const deadlineAssignment =
     nextAttemptAt === undefined ? '' : ', next_attempt_at = ?';
-  return attemptRowSchema.optional().parse(
+  return v.parse(
+    v.optional(attemptRowSchema),
     sql
       .exec(
         `UPDATE ${table.name}
@@ -121,7 +122,8 @@ export const exhaustAttempts = (
   maxAttempts: number,
   error: { name: string; message: string }
 ): number | undefined =>
-  attemptRowSchema.optional().parse(
+  v.parse(
+    v.optional(attemptRowSchema),
     sql
       .exec(
         `UPDATE ${table.name}
@@ -152,9 +154,9 @@ export type CreatedPage = {
   next?: string;
 };
 
-const createdCursorSchema = z.tuple([
-  z.number().int().nonnegative(),
-  z.string(),
+const createdCursorSchema = v.strictTuple([
+  v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  v.string(),
 ]);
 
 /**
@@ -170,7 +172,7 @@ export const listCreated = (
   const [createdAt, key] =
     query.after === undefined
       ? [-1, '']
-      : createdCursorSchema.parse(JSON.parse(query.after));
+      : v.parse(createdCursorSchema, JSON.parse(query.after));
   const status = query.status ?? null;
   const name = query.name ?? null;
   const found = sql

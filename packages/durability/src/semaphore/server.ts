@@ -1,3 +1,4 @@
+import * as v from 'valibot';
 import { traceLifecycle, traceMethods } from '../dev.js';
 import { SemaphoreProtocolError, reportFailure } from '../errors.js';
 import { durabilitySemaphoreMigrations } from './migrations.js';
@@ -298,17 +299,17 @@ export class DurabilitySemaphoreServer {
    * fails and the client asks again.
    */
   handle(message: SemaphoreRequest): Promise<SemaphoreResponse> {
-    const parsed = semaphoreRequestSchema.safeParse(message);
+    const parsed = v.safeParse(semaphoreRequestSchema, message);
     if (!parsed.success) {
       return Promise.reject(
         new SemaphoreProtocolError('Malformed semaphore message')
       );
     }
-    if (parsed.data.type === 'sync') {
-      return this.#sync(parsed.data);
+    if (parsed.output.type === 'sync') {
+      return this.#sync(parsed.output);
     }
 
-    const request = parsed.data;
+    const request = parsed.output;
     return new Promise<PermitGrant>((resolve, reject) => {
       this.#pending.push({
         request,
