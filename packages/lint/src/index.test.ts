@@ -139,6 +139,61 @@ describe('alarm-runner-only', () => {
     );
   });
 
+  it.each([
+    `
+      import { Durability as Jobs } from 'durability';
+      class Example {
+        jobs = new Jobs({ context: this.ctx, handlers: {} });
+      }
+    `,
+    `
+      import * as durability from 'durability';
+      class Example {
+        alarms = new durability.DurabilityAlarms({ context: this.ctx, handlers: {} });
+      }
+    `,
+    `
+      class Example {
+        jobs = new Jobs({ context: this.ctx, handlers: {} });
+      }
+      import { Durability as Jobs } from 'durability';
+    `,
+  ])('rejects a helper constructed through an aliased import', (source) => {
+    const result = lint(source, 'alarm-runner-only');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'A class using createDurability must delegate alarm() directly to durability.alarm(alarmInfo).'
+    );
+  });
+
+  it.each([
+    `
+      import { Durability as Jobs } from 'other-package';
+      class Example {
+        jobs = new Jobs({ context: this.ctx, handlers: {} });
+      }
+    `,
+    `
+      import * as durability from 'durability';
+      class Example {
+        log = new durability.DurabilityLog({ context: this.ctx });
+      }
+    `,
+    `
+      import { Durability as Jobs } from 'durability';
+      function build(Jobs: new (options: object) => object) {
+        return class Example {
+          jobs = new Jobs({});
+        };
+      }
+    `,
+  ])('ignores a constructor that is not an imported helper', (source) => {
+    const result = lint(source, 'alarm-runner-only');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
   it.each(['setAlarm', 'deleteAlarm'])(
     'rejects direct %s calls in a durability class',
     (method) => {

@@ -37,7 +37,7 @@ class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead.
+When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead. Helpers imported from `durability` under another name (`import { Durability as Jobs }`) or through a namespace import (`new durability.Durability(...)`) are recognized too.
 
 ## `transform-next-once`
 
