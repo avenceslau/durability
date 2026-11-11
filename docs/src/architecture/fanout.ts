@@ -481,7 +481,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sqlite'],
           source: sourceFocus(
             listDue,
-            'const retries = deliveryRowSchema.array().parse(',
+            'const retries = v.parse(',
             'AND attempt > 0 AND next_attempt_at <= ?'
           ),
           durable: 'Rows are read, not changed.',

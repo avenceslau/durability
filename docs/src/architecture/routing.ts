@@ -516,7 +516,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:deliveries'],
           source: sourceFocus(
             pendingRows,
-            'this.#pending ??= countRowSchema.parse(',
+            'this.#pending ??= v.parse(',
             "WHERE channel = ? AND status = 'pending'`,"
           ),
           durable: 'The count matches the committed rows.',

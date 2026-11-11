@@ -1,76 +1,76 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 
-export const queueItemRowSchema = z.object({
-  id: z.string(),
-  key: z.string(),
-  grp: z.string(),
-  payload: z.string(),
+export const queueItemRowSchema = v.object({
+  id: v.string(),
+  key: v.string(),
+  grp: v.string(),
+  payload: v.string(),
   /** queued: waiting for permits; claiming: counted against a grant, awaiting confirmation; admitted: running. */
-  status: z.enum(['queued', 'claiming', 'admitted']),
-  grant_id: z.string().nullable(),
-  lease_id: z.string().nullable(),
-  created_at: z.number().int().nonnegative(),
-  admitted_at: z.number().int().nonnegative().nullable(),
+  status: v.picklist(['queued', 'claiming', 'admitted']),
+  grant_id: v.nullable(v.string()),
+  lease_id: v.nullable(v.string()),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  admitted_at: v.nullable(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
   /** 0 until `admit()` has returned for this item. */
-  notified: z.number().int().min(0).max(1),
-  attempt: z.number().int().nonnegative(),
-  next_attempt_at: z.number().int().nonnegative(),
+  notified: v.pipe(v.number(), v.safeInteger(), v.minValue(0), v.maxValue(1)),
+  attempt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  next_attempt_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-export type QueueItemRow = z.infer<typeof queueItemRowSchema>;
+export type QueueItemRow = v.InferOutput<typeof queueItemRowSchema>;
 
-export const queueGrantRowSchema = z.object({
-  grant_id: z.string(),
-  key: z.string(),
-  grp: z.string(),
-  permits: z.number().int().nonnegative(),
+export const queueGrantRowSchema = v.object({
+  grant_id: v.string(),
+  key: v.string(),
+  grp: v.string(),
+  permits: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Permits counted against this grant locally, as a high-water mark. */
-  claimed: z.number().int().nonnegative(),
+  claimed: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Claims the holder has confirmed. */
-  confirmed: z.number().int().nonnegative(),
+  confirmed: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Items handed to `admit()` from this grant; never derived from live rows. */
-  admitted: z.number().int().nonnegative(),
-  released: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
+  admitted: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  released: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-export type QueueGrantRow = z.infer<typeof queueGrantRowSchema>;
+export type QueueGrantRow = v.InferOutput<typeof queueGrantRowSchema>;
 
-export const queueKeyRowSchema = z.object({
-  key: z.string(),
+export const queueKeyRowSchema = v.object({
+  key: v.string(),
   /** Earliest time the next permit request for this key may be sent. */
-  next_request_at: z.number().int().nonnegative(),
-  queued: z.number().int().nonnegative(),
+  next_request_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  queued: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-export type QueueKeyRow = z.infer<typeof queueKeyRowSchema>;
+export type QueueKeyRow = v.InferOutput<typeof queueKeyRowSchema>;
 
-export const queueLeaseRowSchema = z.object({
-  lease_id: z.string(),
-  key: z.string(),
-  grp: z.string(),
-  permits: z.number().int().nonnegative(),
+export const queueLeaseRowSchema = v.object({
+  lease_id: v.string(),
+  key: v.string(),
+  grp: v.string(),
+  permits: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Permits drawn so far; a drawn permit is never drawable again. */
-  drawn: z.number().int().nonnegative(),
-  released: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
-  expires_at: z.number().int().nonnegative(),
+  drawn: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  released: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  expires_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** When to report the lease again while it has permits in use, so the holder keeps it. */
-  renew_at: z.number().int().nonnegative(),
+  renew_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Half the lease's lifetime at the holder, from its last refresh. */
-  renew_ms: z.number().int().positive(),
+  renew_ms: v.pipe(v.number(), v.safeInteger(), v.gtValue(0)),
   /** 1 once the holder has settled the stopped lease; until then it is reported again. */
-  confirmed: z.number().int().min(0).max(1),
+  confirmed: v.pipe(v.number(), v.safeInteger(), v.minValue(0), v.maxValue(1)),
 });
 
-export type QueueLeaseRow = z.infer<typeof queueLeaseRowSchema>;
+export type QueueLeaseRow = v.InferOutput<typeof queueLeaseRowSchema>;
 
-const queueItemColumns = queueItemRowSchema.keyof().options;
-const queueGrantColumns = queueGrantRowSchema.keyof().options;
-const queueLeaseColumns = queueLeaseRowSchema.keyof().options;
-const statusCountSchema = z.object({
-  status: queueItemRowSchema.shape.status,
-  count: z.number().int().nonnegative(),
+const queueItemColumns = v.keyof(queueItemRowSchema).options;
+const queueGrantColumns = v.keyof(queueGrantRowSchema).options;
+const queueLeaseColumns = v.keyof(queueLeaseRowSchema).options;
+const statusCountSchema = v.object({
+  status: queueItemRowSchema.entries.status,
+  count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
 /**
@@ -193,7 +193,8 @@ export class QueueStore {
 
   countItems(): Record<QueueItemRow['status'], number> {
     const counts = { queued: 0, claiming: 0, admitted: 0 };
-    for (const row of statusCountSchema.array().parse(
+    for (const row of v.parse(
+      v.array(statusCountSchema),
       this.sql
         .exec(
           `SELECT status, COUNT(*) AS count FROM durability_semaphore_queue_items
@@ -208,7 +209,8 @@ export class QueueStore {
   }
 
   getGrant(grantId: string): QueueGrantRow | undefined {
-    return queueGrantRowSchema.optional().parse(
+    return v.parse(
+      v.optional(queueGrantRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_grants
@@ -259,7 +261,8 @@ export class QueueStore {
   }
 
   listGrants(key: string): QueueGrantRow[] {
-    return queueGrantRowSchema.array().parse(
+    return v.parse(
+      v.array(queueGrantRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_grants
@@ -272,7 +275,8 @@ export class QueueStore {
   }
 
   getLease(leaseId: string): QueueLeaseRow | undefined {
-    return queueLeaseRowSchema.optional().parse(
+    return v.parse(
+      v.optional(queueLeaseRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_leases
@@ -323,7 +327,8 @@ export class QueueStore {
    * reported, so a lost report must be repeated.
    */
   listRenewalsDue(now: number, limit: number): QueueLeaseRow[] {
-    return queueLeaseRowSchema.array().parse(
+    return v.parse(
+      v.array(queueLeaseRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_leases
@@ -351,7 +356,8 @@ export class QueueStore {
   }
 
   listLeases(key: string): QueueLeaseRow[] {
-    return queueLeaseRowSchema.array().parse(
+    return v.parse(
+      v.array(queueLeaseRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_leases
@@ -364,7 +370,8 @@ export class QueueStore {
   }
 
   getKey(key: string): QueueKeyRow | undefined {
-    return queueKeyRowSchema.optional().parse(
+    return v.parse(
+      v.optional(queueKeyRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_keys
@@ -401,7 +408,8 @@ export class QueueStore {
   }
 
   listDueKeys(now: number): QueueKeyRow[] {
-    return queueKeyRowSchema.array().parse(
+    return v.parse(
+      v.array(queueKeyRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_queue_keys
@@ -454,8 +462,9 @@ export class QueueStore {
   }
 
   private items(query: string, ...bindings: SqlStorageValue[]): QueueItemRow[] {
-    return queueItemRowSchema
-      .array()
-      .parse(this.sql.exec(query, ...bindings).toArray());
+    return v.parse(
+      v.array(queueItemRowSchema),
+      this.sql.exec(query, ...bindings).toArray()
+    );
   }
 }

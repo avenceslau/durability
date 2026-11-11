@@ -1,41 +1,41 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 
-export const grantRowSchema = z.object({
-  grant_id: z.string(),
-  client_id: z.string(),
+export const grantRowSchema = v.object({
+  grant_id: v.string(),
+  client_id: v.string(),
   /** The client's queue channel; `clientId` alone does not identify a client. */
-  client_channel: z.string(),
-  grp: z.string(),
-  permits: z.number().int().nonnegative(),
-  claimed: z.number().int().nonnegative(),
-  released: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
+  client_channel: v.string(),
+  grp: v.string(),
+  permits: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  claimed: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  released: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Unclaimed permits are reclaimed once this passes. */
-  expires_at: z.number().int().nonnegative(),
+  expires_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-export type GrantRow = z.infer<typeof grantRowSchema>;
+export type GrantRow = v.InferOutput<typeof grantRowSchema>;
 
 /** Permits a client may draw locally without a round trip; held by the holder. */
-export const leaseRowSchema = z.object({
-  lease_id: z.string(),
-  client_id: z.string(),
-  client_channel: z.string(),
-  grp: z.string(),
-  permits: z.number().int().nonnegative(),
+export const leaseRowSchema = v.object({
+  lease_id: v.string(),
+  client_id: v.string(),
+  client_channel: v.string(),
+  grp: v.string(),
+  permits: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Drawn permits the client has returned, as a high-water mark. */
-  released: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
+  released: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** Refreshed by every report; the lease is swept once this passes. */
-  expires_at: z.number().int().nonnegative(),
+  expires_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   /** 1 once no more permits may be drawn; footprint stays until released. */
-  retired: z.number().int().min(0).max(1),
+  retired: v.pipe(v.number(), v.safeInteger(), v.minValue(0), v.maxValue(1)),
 });
 
-export type LeaseRow = z.infer<typeof leaseRowSchema>;
+export type LeaseRow = v.InferOutput<typeof leaseRowSchema>;
 
-const grantColumns = grantRowSchema.keyof().options;
-const leaseColumns = leaseRowSchema.keyof().options;
+const grantColumns = v.keyof(grantRowSchema).options;
+const leaseColumns = v.keyof(leaseRowSchema).options;
 
 /**
  * Permits one semaphore channel has handed out. Every query is scoped to the
@@ -50,7 +50,8 @@ export class HolderStore {
   ) {}
 
   list(): GrantRow[] {
-    return grantRowSchema.array().parse(
+    return v.parse(
+      v.array(grantRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_grants
@@ -62,7 +63,8 @@ export class HolderStore {
   }
 
   get(grantId: string): GrantRow | undefined {
-    return grantRowSchema.optional().parse(
+    return v.parse(
+      v.optional(grantRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_grants
@@ -75,20 +77,18 @@ export class HolderStore {
   }
 
   nextPendingAt(): number | undefined {
-    return grantRowSchema
-      .pick({ expires_at: true })
-      .optional()
-      .parse(
-        this.sql
-          .exec(
-            `SELECT expires_at FROM durability_semaphore_grants
-             WHERE channel = ? AND claimed < permits
-             ORDER BY expires_at ASC
-             LIMIT 1`,
-            this.channel
-          )
-          .toArray()[0]
-      )?.expires_at;
+    return v.parse(
+      v.optional(v.pick(grantRowSchema, ['expires_at'])),
+      this.sql
+        .exec(
+          `SELECT expires_at FROM durability_semaphore_grants
+           WHERE channel = ? AND claimed < permits
+           ORDER BY expires_at ASC
+           LIMIT 1`,
+          this.channel
+        )
+        .toArray()[0]
+    )?.expires_at;
   }
 
   insert(row: GrantRow): boolean {
@@ -129,7 +129,8 @@ export class HolderStore {
   }
 
   listLeases(): LeaseRow[] {
-    return leaseRowSchema.array().parse(
+    return v.parse(
+      v.array(leaseRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_leases
@@ -141,7 +142,8 @@ export class HolderStore {
   }
 
   getLease(leaseId: string): LeaseRow | undefined {
-    return leaseRowSchema.optional().parse(
+    return v.parse(
+      v.optional(leaseRowSchema),
       this.sql
         .exec(
           `SELECT * FROM durability_semaphore_leases

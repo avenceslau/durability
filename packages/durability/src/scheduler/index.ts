@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { trace, traceMethods, traceStorage } from '../dev.js';
 import {
   DurableRetryPolicyError,
@@ -103,12 +103,14 @@ const maxAlarmDelayMs = 15_000;
 // be served by the physical alarm fallback.
 const maxTimerMs = 2 ** 31 - 1;
 
-const pendingHeadRowSchema = z.object({
-  pk: z.string(),
-  channel: z.string().optional(),
-  next_attempt_at: z.number().int().nonnegative(),
+const pendingHeadRowSchema = v.object({
+  pk: v.string(),
+  channel: v.optional(v.string()),
+  next_attempt_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
-const countRowSchema = z.object({ count: z.number().int().nonnegative() });
+const countRowSchema = v.object({
+  count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
 
 type PhysicalAlarm = Pick<
   DurableObjectTransaction,
@@ -149,7 +151,7 @@ export type ChannelParticipant = Participant & {
 /** How long records of a channel no instance attached wait before they are looked at again. */
 const unattachedChannelRetryMs = 60_000;
 
-const channelRowSchema = z.object({ channel: z.string() });
+const channelRowSchema = v.object({ channel: v.string() });
 
 const activeKey = (channel: string | undefined, key: string): string =>
   JSON.stringify([channel ?? null, key]);
@@ -468,9 +470,11 @@ export class Engine {
           .join(' UNION ')
       : `SELECT DISTINCT channel FROM ${table.name}
          WHERE status = 'pending' AND next_attempt_at <= ?`;
-    const unattached = channelRowSchema
-      .array()
-      .parse(this.sql.exec(query, ...(customTiming ? [] : [now])).toArray())
+    const unattached = v
+      .parse(
+        v.array(channelRowSchema),
+        this.sql.exec(query, ...(customTiming ? [] : [now])).toArray()
+      )
       .map((row) => row.channel)
       .filter((channel) => !channels.has(channel));
     if (unattached.length === 0) {
@@ -647,7 +651,8 @@ export class Engine {
     const active = this.activeByTable.get(participant.table.name);
     const partitioned = this.channelsByTable.has(participant.table.name);
     const limit = (active?.size ?? 0) + 1;
-    const rows = pendingHeadRowSchema.array().parse(
+    const rows = v.parse(
+      v.array(pendingHeadRowSchema),
       this.sql
         .exec(
           `SELECT ${participant.table.key} AS pk, next_attempt_at${partitioned ? ', channel' : ''}
@@ -795,7 +800,8 @@ export class Engine {
     const where = `created_at < ?${channelClause(table)}`;
     const params = [before, ...channelBindings(table)];
     const removed = await this.transaction((sql) => {
-      const { count } = countRowSchema.parse(
+      const { count } = v.parse(
+        countRowSchema,
         sql
           .exec(
             `SELECT COUNT(*) AS count FROM ${table.name} WHERE ${where}`,

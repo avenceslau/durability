@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { reportFailure, TopologyError } from '../errors.js';
 import type { LifecycleHook } from '../lifecycle.js';
 import { durabilityTopologyMigrations } from './migrations.js';
@@ -137,18 +137,18 @@ const stateChannelFor = (ownerChannel: string, state: string): string =>
     ? `${outboxChannelPrefix}.${state}`
     : JSON.stringify([outboxChannelPrefix, ownerChannel, 'state', state]);
 
-const groupRowSchema = z.object({
-  group_id: z.string(),
-  version: z.number().int().positive(),
-  members: z.string(),
-  deleted: z.union([z.literal(0), z.literal(1)]),
+const groupRowSchema = v.object({
+  group_id: v.string(),
+  version: v.pipe(v.number(), v.safeInteger(), v.gtValue(0)),
+  members: v.string(),
+  deleted: v.union([v.literal(0), v.literal(1)]),
 });
 
-type GroupRow = z.infer<typeof groupRowSchema>;
+type GroupRow = v.InferOutput<typeof groupRowSchema>;
 
-const stateRowSchema = z.object({
-  channel: z.string(),
-  value: z.string(),
+const stateRowSchema = v.object({
+  channel: v.string(),
+  value: v.string(),
 });
 
 class TopologyTimeoutError extends Error {
@@ -243,7 +243,8 @@ const outstandingWritesUntil = (
     group,
     now
   );
-  const { until } = z.object({ until: z.number().int().nullable() }).parse(
+  const { until } = v.parse(
+    v.object({ until: v.nullable(v.pipe(v.number(), v.safeInteger())) }),
     sql
       .exec(
         `SELECT MAX(land_by) AS until FROM durability_topology_writes
@@ -275,7 +276,8 @@ const readGroup = (
   ownerChannel: string,
   group: string
 ): GroupRow | undefined =>
-  groupRowSchema.optional().parse(
+  v.parse(
+    v.optional(groupRowSchema),
     sql
       .exec(
         `SELECT group_id, version, members, deleted
@@ -288,7 +290,8 @@ const readGroup = (
   );
 
 const readStates = (sql: SqlStorage, ownerChannel: string, group: string) =>
-  stateRowSchema.array().parse(
+  v.parse(
+    v.array(stateRowSchema),
     sql
       .exec(
         `SELECT channel, value FROM durability_topology_states
@@ -300,7 +303,8 @@ const readStates = (sql: SqlStorage, ownerChannel: string, group: string) =>
   );
 
 const parseMembers = <Meta>(row: GroupRow): TopologyMember<Meta>[] =>
-  membersSchema.parse(
+  v.parse(
+    membersSchema,
     JSON.parse(row.members)
   ) as unknown as TopologyMember<Meta>[];
 
@@ -790,11 +794,13 @@ export class DurabilityTopology<
     );
     const seen = new Set<string>();
     const members = inputs.map((input) => {
-      const parsed = memberInputSchema.safeParse(input);
+      const parsed = v.safeParse(memberInputSchema, input);
       if (!parsed.success) {
-        throw new TopologyError(`Invalid member: ${parsed.error.message}`);
+        throw new TopologyError(
+          `Invalid member: ${v.summarize(parsed.issues)}`
+        );
       }
-      const { id, state, locationHint, meta } = parsed.data;
+      const { id, state, locationHint, meta } = parsed.output;
       if (seen.has(id)) {
         throw new TopologyError(`Duplicate member "${id}"`);
       }
@@ -815,7 +821,7 @@ export class DurabilityTopology<
     sql: SqlStorage,
     group: string,
     changes: Record<string, unknown>,
-    current: z.infer<typeof stateRowSchema>[]
+    current: v.InferOutput<typeof stateRowSchema>[]
   ): Set<string> {
     const existing = new Map(current.map((row) => [row.channel, row.value]));
     const changed = new Set<string>();

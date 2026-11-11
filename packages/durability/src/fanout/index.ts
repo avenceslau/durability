@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceFunction, traceMethods } from '../dev.js';
 import {
   DurableRetryPolicyError,
@@ -54,62 +54,67 @@ import {
   type DurableTable,
 } from '../storage.js';
 
-const fanoutMessageRowSchema = z.object({
-  key: z.string(),
-  id: z.string(),
-  payload: z.string(),
-  targets: z.string(),
-  remaining: z.number().int().nonnegative(),
-  seq: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
-  generation_id: z.string(),
+const fanoutMessageRowSchema = v.object({
+  key: v.string(),
+  id: v.string(),
+  payload: v.string(),
+  targets: v.string(),
+  remaining: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  seq: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  generation_id: v.string(),
 });
 
-type FanoutMessageRow = z.infer<typeof fanoutMessageRowSchema>;
+type FanoutMessageRow = v.InferOutput<typeof fanoutMessageRowSchema>;
 
-const deliveryRowSchema = z.object({
-  id: z.string(),
-  message_key: z.string(),
-  target_id: z.string(),
-  seq: z.number().int().nonnegative(),
-  status: z.literal('pending'),
-  phase: z.enum(['delivery', 'dead_letter']),
-  attempt: z.number().int().nonnegative(),
-  next_attempt_at: z.number().int().nonnegative(),
-  last_error: z.string().nullable(),
-  last_error_name: z.string().nullable(),
-  created_at: z.number().int().nonnegative(),
-  generation_id: z.string(),
-  dead_lettered_at: z.number().int().nonnegative().nullable(),
-  dead_letter_reason: z.enum(['explicit', 'exhausted']).nullable(),
+const deliveryRowSchema = v.object({
+  id: v.string(),
+  message_key: v.string(),
+  target_id: v.string(),
+  seq: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  status: v.literal('pending'),
+  phase: v.picklist(['delivery', 'dead_letter']),
+  attempt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  next_attempt_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  last_error: v.nullable(v.string()),
+  last_error_name: v.nullable(v.string()),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  generation_id: v.string(),
+  dead_lettered_at: v.nullable(
+    v.pipe(v.number(), v.safeInteger(), v.minValue(0))
+  ),
+  dead_letter_reason: v.nullable(v.picklist(['explicit', 'exhausted'])),
 });
 
-type DeliveryRow = z.infer<typeof deliveryRowSchema>;
+type DeliveryRow = v.InferOutput<typeof deliveryRowSchema>;
 
 const deliveriesTable: DurableTable = {
   name: 'durability_fanout_deliveries',
   key: 'id',
 };
 
-const countRowSchema = z.object({ count: z.number().int().nonnegative() });
-const seqRowSchema = z.object({ seq: z.number().int().nonnegative() });
+const countRowSchema = v.object({
+  count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
+const seqRowSchema = v.object({
+  seq: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
 
 const readManifest = (
   sql: SqlStorage,
   channel: string,
   key: string
 ): FanoutMessageRow | undefined =>
-  fanoutMessageRowSchema
-    .optional()
-    .parse(
-      sql
-        .exec(
-          'SELECT * FROM durability_fanout_messages WHERE channel = ? AND key = ?',
-          channel,
-          key
-        )
-        .toArray()[0]
-    );
+  v.parse(
+    v.optional(fanoutMessageRowSchema),
+    sql
+      .exec(
+        'SELECT * FROM durability_fanout_messages WHERE channel = ? AND key = ?',
+        channel,
+        key
+      )
+      .toArray()[0]
+  );
 
 const attemptOf = (row: DeliveryRow): AttemptRef => ({
   key: row.id,
@@ -391,7 +396,8 @@ export class DurabilityFanout<Body = unknown> {
             }
             continue;
           }
-          const { seq } = seqRowSchema.parse(
+          const { seq } = v.parse(
+            seqRowSchema,
             sql
               .exec(
                 `UPDATE durability_fanout_seq
@@ -514,10 +520,9 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   async #runDue(): Promise<void> {
-    const targets = z
-      .object({ target_id: z.string() })
-      .array()
+    const targets = v
       .parse(
+        v.array(v.object({ target_id: v.string() })),
         this.#engine.sql
           .exec(
             `SELECT DISTINCT target_id FROM durability_fanout_deliveries
@@ -723,7 +728,8 @@ export class DurabilityFanout<Body = unknown> {
         if (!state.finished) {
           continue;
         }
-        const current = deliveryRowSchema.optional().parse(
+        const current = v.parse(
+          v.optional(deliveryRowSchema),
           this.#engine.sql
             .exec(
               `SELECT * FROM durability_fanout_deliveries
@@ -1062,7 +1068,8 @@ export class DurabilityFanout<Body = unknown> {
   }
 
   #pendingCount(): number {
-    this.#pending ??= countRowSchema.parse(
+    this.#pending ??= v.parse(
+      countRowSchema,
       this.#engine.sql
         .exec(
           `SELECT COUNT(*) AS count FROM durability_fanout_deliveries
@@ -1085,7 +1092,8 @@ export class DurabilityFanout<Body = unknown> {
    * queries instead of one sort over every pending row.
    */
   #listDue(target: string, now: number): DeliveryRow[] {
-    const first = deliveryRowSchema.array().parse(
+    const first = v.parse(
+      v.array(deliveryRowSchema),
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_fanout_deliveries
@@ -1104,7 +1112,8 @@ export class DurabilityFanout<Body = unknown> {
       return first;
     }
 
-    const retries = deliveryRowSchema.array().parse(
+    const retries = v.parse(
+      v.array(deliveryRowSchema),
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_fanout_deliveries

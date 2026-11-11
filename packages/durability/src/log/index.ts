@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceMethods } from '../dev.js';
 import {
   LogAppendError,
@@ -27,67 +27,73 @@ import {
 } from '../scheduler/index.js';
 import { deserialize, serialize } from '../serialization.js';
 
-const logRecordRowSchema = z.object({
-  offset: z.number().int().nonnegative(),
-  dedup_key: z.string(),
-  payload: z.string(),
-  bytes: z.number().int().nonnegative(),
-  appended_at: z.number().int().nonnegative(),
+const logRecordRowSchema = v.object({
+  offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  dedup_key: v.string(),
+  payload: v.string(),
+  bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  appended_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-type LogRecordRow = z.infer<typeof logRecordRowSchema>;
+type LogRecordRow = v.InferOutput<typeof logRecordRowSchema>;
 
-const logCursorRowSchema = z.object({
-  consumer: z.string(),
-  offset: z.number().int().nonnegative(),
-  committed_at: z.number().int().nonnegative(),
+const logCursorRowSchema = v.object({
+  consumer: v.string(),
+  offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  committed_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
 /** One contiguous run of records moved out of the object into cold storage. */
-const logSegmentRowSchema = z.object({
-  first_offset: z.number().int().nonnegative(),
-  last_offset: z.number().int().nonnegative(),
-  locator: z.string(),
-  bytes: z.number().int().nonnegative(),
-  flushed_at: z.number().int().nonnegative(),
+const logSegmentRowSchema = v.object({
+  first_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  last_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  locator: v.string(),
+  bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  flushed_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-type LogSegmentRow = z.infer<typeof logSegmentRowSchema>;
+type LogSegmentRow = v.InferOutput<typeof logSegmentRowSchema>;
 
 /**
  * One in-flight or settled range of offsets held by a consumer. A range is
  * redelivered under a fresh `batch_id`, so an ack from a previous holder is
  * rejected rather than advancing a range someone else now owns.
  */
-const logLeaseRowSchema = z.object({
-  batch_id: z.string(),
-  consumer: z.string(),
-  first_offset: z.number().int().nonnegative(),
-  last_offset: z.number().int().nonnegative(),
-  state: z.enum(['active', 'pending', 'acked', 'skipped']),
-  attempt: z.number().int().positive(),
-  expires_at: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
+const logLeaseRowSchema = v.object({
+  batch_id: v.string(),
+  consumer: v.string(),
+  first_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  last_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  state: v.picklist(['active', 'pending', 'acked', 'skipped']),
+  attempt: v.pipe(v.number(), v.safeInteger(), v.gtValue(0)),
+  expires_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-export type LogLeaseRow = z.infer<typeof logLeaseRowSchema>;
+export type LogLeaseRow = v.InferOutput<typeof logLeaseRowSchema>;
 
 type LogLeaseState = LogLeaseRow['state'];
 
-const allocationRowSchema = z.object({
-  allocated_offset: z.number().int().nonnegative(),
+const allocationRowSchema = v.object({
+  allocated_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-const offsetRowSchema = z.object({ offset: z.number().int().nonnegative() });
-const seqRowSchema = z.object({ seq: z.number().int().nonnegative() });
-const countRowSchema = z.object({ count: z.number().int().nonnegative() });
-const totalBytesRowSchema = z.object({
-  total_bytes: z.number().int().nonnegative(),
+const offsetRowSchema = v.object({
+  offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
-const boundsRowSchema = z.object({
-  hot: z.number().int().nonnegative().nullable(),
-  cold: z.number().int().nonnegative().nullable(),
-  next_offset: z.number().int().nonnegative(),
+const seqRowSchema = v.object({
+  seq: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
+const countRowSchema = v.object({
+  count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
+const totalBytesRowSchema = v.object({
+  total_bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
+const boundsRowSchema = v.object({
+  hot: v.nullable(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  cold: v.nullable(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
+  next_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
 export type LogBounds = {
@@ -116,7 +122,8 @@ const appendRecords = (
 ): number[] => {
   const assigned = new Map<string, number>();
   for (const record of records) {
-    const existing = offsetRowSchema.optional().parse(
+    const existing = v.parse(
+      v.optional(offsetRowSchema),
       sql
         .exec(
           `SELECT "offset" FROM durability_log_records
@@ -138,7 +145,8 @@ const appendRecords = (
   }
 
   // A channel's counter row is created by its first append.
-  const first = seqRowSchema.parse(
+  const first = v.parse(
+    seqRowSchema,
     sql
       .exec(
         `INSERT INTO durability_log_seq (channel, next_offset, total_bytes)
@@ -186,7 +194,8 @@ const readRecords = (
   from: number,
   limit: number
 ): LogRecordRow[] =>
-  logRecordRowSchema.array().parse(
+  v.parse(
+    v.array(logRecordRowSchema),
     sql
       .exec(
         `SELECT * FROM durability_log_records
@@ -201,7 +210,8 @@ const readRecords = (
   );
 
 const readBounds = (sql: SqlStorage, channel: string): LogBounds => {
-  const row = boundsRowSchema.parse(
+  const row = v.parse(
+    boundsRowSchema,
     sql
       .exec(
         `SELECT
@@ -226,7 +236,8 @@ const readBounds = (sql: SqlStorage, channel: string): LogBounds => {
 };
 
 const countRecords = (sql: SqlStorage, channel: string): number =>
-  countRowSchema.parse(
+  v.parse(
+    countRowSchema,
     sql
       .exec(
         'SELECT COUNT(*) AS count FROM durability_log_records WHERE channel = ?',
@@ -237,7 +248,8 @@ const countRecords = (sql: SqlStorage, channel: string): number =>
 
 /** Bytes of record payloads held in the object, excluding flushed segments. */
 const totalBytes = (sql: SqlStorage, channel: string): number =>
-  totalBytesRowSchema.parse(
+  v.parse(
+    totalBytesRowSchema,
     sql
       .exec(
         `SELECT COALESCE(
@@ -255,7 +267,8 @@ const listOldest = (
   channel: string,
   limit: number
 ): LogRecordRow[] =>
-  logRecordRowSchema.array().parse(
+  v.parse(
+    v.array(logRecordRowSchema),
     sql
       .exec(
         `SELECT * FROM durability_log_records
@@ -278,7 +291,8 @@ const trimThrough = (
   through: number,
   limit: number
 ): number => {
-  const removed = logRecordRowSchema.array().parse(
+  const removed = v.parse(
+    v.array(logRecordRowSchema),
     sql
       .exec(
         `DELETE FROM durability_log_records
@@ -337,7 +351,8 @@ const findSegment = (
   channel: string,
   offset: number
 ): LogSegmentRow | undefined =>
-  logSegmentRowSchema.optional().parse(
+  v.parse(
+    v.optional(logSegmentRowSchema),
     sql
       .exec(
         `SELECT * FROM durability_log_segments
@@ -350,7 +365,8 @@ const findSegment = (
   );
 
 const readCursors = (sql: SqlStorage, channel: string) =>
-  logCursorRowSchema.array().parse(
+  v.parse(
+    v.array(logCursorRowSchema),
     sql
       .exec(
         `SELECT * FROM durability_log_cursors
@@ -366,7 +382,8 @@ const readCursor = (
   channel: string,
   consumer: string
 ): number | undefined =>
-  offsetRowSchema.optional().parse(
+  v.parse(
+    v.optional(offsetRowSchema),
     sql
       .exec(
         `SELECT "offset" FROM durability_log_cursors
@@ -405,7 +422,8 @@ const readAllocation = (
   channel: string,
   consumer: string
 ): number | undefined =>
-  allocationRowSchema.optional().parse(
+  v.parse(
+    v.optional(allocationRowSchema),
     sql
       .exec(
         `SELECT allocated_offset FROM durability_log_allocations
@@ -468,7 +486,8 @@ const claimExpired = (
   batchId: string,
   expiresAt: number
 ): LogLeaseRow | undefined =>
-  logLeaseRowSchema.optional().parse(
+  v.parse(
+    v.optional(logLeaseRowSchema),
     sql
       .exec(
         `UPDATE durability_log_leases
@@ -500,7 +519,8 @@ const countHeld = (
   consumer: string,
   now: number
 ): number =>
-  countRowSchema.parse(
+  v.parse(
+    countRowSchema,
     sql
       .exec(
         `SELECT COUNT(*) AS count FROM durability_log_leases
@@ -546,7 +566,8 @@ const leasesFrom = (
   from: number,
   limit: number
 ): LogLeaseRow[] =>
-  logLeaseRowSchema.array().parse(
+  v.parse(
+    v.array(logLeaseRowSchema),
     sql
       .exec(
         `SELECT * FROM durability_log_leases
@@ -1164,7 +1185,8 @@ export class DurabilityLog<Body = unknown> {
   /** In-flight and settled-but-uncommitted ranges, for operators and tests. */
   async leases(consumer: string): Promise<LogLeaseRow[]> {
     this.#requireLeases();
-    return logLeaseRowSchema.array().parse(
+    return v.parse(
+      v.array(logLeaseRowSchema),
       this.#engine.sql
         .exec(
           `SELECT * FROM durability_log_leases

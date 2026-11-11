@@ -1,3 +1,4 @@
+import * as v from 'valibot';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { SemaphoreProtocolError } from '../errors';
 import { DurabilitySemaphoreQueue } from './queue';
@@ -153,14 +154,14 @@ it('preserves v1 requests and requires a channel for v2', () => {
     demand: [],
     grants: [],
   };
-  expect(semaphoreRequestSchema.parse(legacy)).toEqual(legacy);
+  expect(v.parse(semaphoreRequestSchema, legacy)).toEqual(legacy);
   const named = { ...legacy, v: 2, clientChannel: 'library' };
-  expect(semaphoreRequestSchema.parse(named)).toEqual(named);
-  expect(() => semaphoreRequestSchema.parse({ ...legacy, v: 2 })).toThrow(
+  expect(v.parse(semaphoreRequestSchema, named)).toEqual(named);
+  expect(() => v.parse(semaphoreRequestSchema, { ...legacy, v: 2 })).toThrow(
     /protocol version/
   );
   expect(() =>
-    semaphoreRequestSchema.parse({ ...legacy, clientChannel: 'library' })
+    v.parse(semaphoreRequestSchema, { ...legacy, clientChannel: 'library' })
   ).toThrow(/protocol version/);
 });
 

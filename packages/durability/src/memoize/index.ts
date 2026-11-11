@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceFunction } from '../dev.js';
 import {
   DurableMemoLimitError,
@@ -38,10 +38,10 @@ export const maxMemosPerRecord = 1_000;
 /** The largest serialized memoized result, in UTF-8 bytes. */
 export const maxMemoBytes = 1_048_576;
 
-const memoLookupSchema = z.object({
-  result: z.string().nullable(),
-  owned: z.number().int(),
-  saved: z.number().int(),
+const memoLookupSchema = v.object({
+  result: v.nullable(v.string()),
+  owned: v.pipe(v.number(), v.safeInteger()),
+  saved: v.pipe(v.number(), v.safeInteger()),
 });
 
 const supersededError = (key: string): Error =>
@@ -113,7 +113,8 @@ export const createMemoize = (
       throw new TypeError('Memoize keys must be non-empty strings');
     }
 
-    const lookup = memoLookupSchema.parse(
+    const lookup = v.parse(
+      memoLookupSchema,
       sql
         .exec(
           `SELECT
@@ -180,7 +181,7 @@ export const createMemoize = (
     })();
 };
 
-const memoKeySchema = z.object({ memo_key: z.string() });
+const memoKeySchema = v.object({ memo_key: v.string() });
 
 /** Keys a record's current generation has results for, in the order they were saved. */
 export const memoizedKeys = (
@@ -189,9 +190,9 @@ export const memoizedKeys = (
   key: string,
   generation: string
 ): string[] =>
-  memoKeySchema
-    .array()
+  v
     .parse(
+      v.array(memoKeySchema),
       sql
         .exec(
           `SELECT memo_key FROM durability_memos

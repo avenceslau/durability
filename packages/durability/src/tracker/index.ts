@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceMethods } from '../dev.js';
 import type { AnyDurabilityAlarms, DurabilityAlarms } from '../alarms/index.js';
 import type {
@@ -129,10 +129,15 @@ type AnyHandle = AnyItem & {
 };
 type Found = { source: UntypedSource; item: AnyItem };
 
-const limitSchema = z.number().int().min(1).max(100);
-const cursorSchema = z.tuple([
-  z.number().int().nonnegative(),
-  z.string().nullable(),
+const limitSchema = v.pipe(
+  v.number(),
+  v.safeInteger(),
+  v.minValue(1),
+  v.maxValue(100)
+);
+const cursorSchema = v.strictTuple([
+  v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  v.nullable(v.string()),
 ]);
 
 const resultFor = (
@@ -225,13 +230,13 @@ export class DurabilityTracker<Sources extends TrackerSources> {
   async #collect(
     query: TrackerQuery<Sources, SourceKey<Sources>>
   ): Promise<{ found: Found[]; cursor: string | undefined }> {
-    const limit = limitSchema.parse(query.limit ?? 50);
+    const limit = v.parse(limitSchema, query.limit ?? 50);
     const candidates =
       query.source === undefined ? this.#sources : [this.#source(query.source)];
     const [start, startCursor] =
       query.cursor === undefined
         ? [0, null]
-        : cursorSchema.parse(JSON.parse(query.cursor));
+        : v.parse(cursorSchema, JSON.parse(query.cursor));
 
     const found: Found[] = [];
     for (const [offset, [key, source]] of candidates.slice(start).entries()) {

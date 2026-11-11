@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { z } from 'zod';
+import * as v from 'valibot';
 import { DurabilityScheduler } from '../../src';
 import {
   DurabilitySchedule,
@@ -24,12 +24,12 @@ const bindAll = <Target extends object>(
   });
 
 /** Window settings encoded in the schedule expression. */
-const windowSchema = z.object({
-  every: z.number().int().positive(),
-  until: z.number().int().nonnegative(),
+const windowSchema = v.object({
+  every: v.pipe(v.number(), v.safeInteger(), v.gtValue(0)),
+  until: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
-type Window = z.infer<typeof windowSchema>;
+type Window = v.InferOutput<typeof windowSchema>;
 
 export class ScheduleObject extends DurableObject {
   // Only statements durability issues are counted, not the test's bookkeeping.
@@ -52,7 +52,7 @@ export class ScheduleObject extends DurableObject {
     scheduler: this.scheduler,
     maxConcurrentRuns: 2,
     nextOccurrence: (expression, after) => {
-      const { every, until } = windowSchema.parse(JSON.parse(expression));
+      const { every, until } = v.parse(windowSchema, JSON.parse(expression));
       const next = (Math.floor(after / every) + 1) * every;
       return next <= until ? next : undefined;
     },

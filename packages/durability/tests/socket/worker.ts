@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { z } from 'zod';
+import * as v from 'valibot';
 import {
   Durability,
   type DurableCall,
@@ -10,10 +10,10 @@ import { DurabilitySocket, event, type SocketCall } from '../../src/socket';
 
 export type Todo = { id: string; title: string; done: boolean };
 
-const todoSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  done: z.boolean(),
+const todoSchema = v.object({
+  id: v.string(),
+  title: v.string(),
+  done: v.boolean(),
 });
 
 type Env = { SOCKET_TEST: DurableObjectNamespace<SocketTestObject> };
@@ -32,7 +32,7 @@ const createLibrarySocket = (context: DurableObjectState, channel: string) => {
       whoami: (_input: unknown, call: SocketCall<{ user: string }>) =>
         `${JSON.stringify(channel)}:${call.metadata.user}`,
       toggle: {
-        input: z.string(),
+        input: v.string(),
         handle: (id: string) => {
           socket.updated(id);
           return id;
@@ -74,11 +74,11 @@ export class SocketTestObject extends DurableObject<Env> {
       whoami: (_input: unknown, call: SocketCall<{ user: string }>) =>
         call.metadata.user,
       create: {
-        input: z.object({ id: z.string(), payload: todoSchema }),
+        input: v.object({ id: v.string(), payload: todoSchema }),
         handle: this.durability.create,
       },
       toggle: {
-        input: z.string(),
+        input: v.string(),
         handle: (id: string) => {
           const todo = this.todos.get(id);
           if (!todo) {

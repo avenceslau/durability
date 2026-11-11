@@ -7,7 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { z } from 'zod';
+import * as v from 'valibot';
 import { serialize } from '../serialization';
 import { DurabilitySocket, event, SocketInputError } from './index';
 import type {
@@ -21,7 +21,7 @@ import { FakeStorage, FakeWebSocket, socketContextFor } from '../test-fakes';
 
 type Todo = { id: string; title: string };
 
-const todoSchema = z.object({ id: z.string(), title: z.string() });
+const todoSchema = v.object({ id: v.string(), title: v.string() });
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -451,7 +451,7 @@ describe('DurabilitySocket', () => {
       inbound: {},
       outbound: { tick: event<Date>() },
     });
-    expect(() => socket.tick(new Date())).toThrow(/invalid_union/);
+    expect(() => socket.tick(new Date())).toThrow('Invalid JSON value');
   });
 });
 
@@ -483,7 +483,7 @@ const createChannelSocket = (
         return `${label}:${call.metadata.user}`;
       },
       publish: {
-        input: z.string(),
+        input: v.string(),
         handle: (payload: string) => {
           calls.push(label);
           socket.changed(payload);

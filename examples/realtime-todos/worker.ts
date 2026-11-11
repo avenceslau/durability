@@ -13,16 +13,16 @@ import {
   type DurabilityLifecycleEvent,
 } from 'durability';
 import { DurabilitySocket, event, type SocketCall } from 'durability/socket';
-import { z } from 'zod';
+import * as v from 'valibot';
 
 type Env = { TODO_LISTS: DurableObjectNamespace<TodoList> };
 
-const todoSchema = z.object({
-  id: z.string(),
-  title: z.string().min(1),
-  done: z.boolean(),
+const todoSchema = v.object({
+  id: v.string(),
+  title: v.pipe(v.string(), v.minLength(1)),
+  done: v.boolean(),
 });
-export type Todo = z.infer<typeof todoSchema>;
+export type Todo = v.InferOutput<typeof todoSchema>;
 
 type Metadata = { userId: string };
 
@@ -49,11 +49,11 @@ export class TodoList extends DurableObject<Env> {
     inbound: {
       list: () => this.list(),
       createTodo: {
-        input: z.object({ id: z.string(), payload: todoSchema }),
+        input: v.object({ id: v.string(), payload: todoSchema }),
         handle: this.durability.createTodo,
       },
       toggle: {
-        input: z.string(),
+        input: v.string(),
         handle: (id: string, call: SocketCall<Metadata>) => {
           const todo = this.list().find((candidate) => candidate.id === id);
           if (!todo) {

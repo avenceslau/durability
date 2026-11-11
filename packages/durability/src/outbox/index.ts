@@ -35,28 +35,30 @@ import {
   type DurableTable,
 } from '../storage.js';
 import { exponential, jitter } from '../utils.js';
-import { z } from 'zod';
+import * as v from 'valibot';
 
 const outboxTable: DurableTable = { name: 'durability_outbox', key: 'id' };
 
-const outboxRowSchema = z.object({
-  id: z.string(),
-  channel: z.string(),
-  entry_key: z.string(),
-  version: z.number().int().positive(),
-  payload: z.string(),
-  status: z.literal('pending'),
-  attempt: z.number().int().nonnegative(),
-  next_attempt_at: z.number().int().nonnegative(),
-  last_error: z.string().nullable(),
-  last_error_name: z.string().nullable(),
-  created_at: z.number().int().nonnegative(),
-  generation_id: z.string(),
+const outboxRowSchema = v.object({
+  id: v.string(),
+  channel: v.string(),
+  entry_key: v.string(),
+  version: v.pipe(v.number(), v.safeInteger(), v.gtValue(0)),
+  payload: v.string(),
+  status: v.literal('pending'),
+  attempt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  next_attempt_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  last_error: v.nullable(v.string()),
+  last_error_name: v.nullable(v.string()),
+  created_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  generation_id: v.string(),
 });
 
-type OutboxRow = z.infer<typeof outboxRowSchema>;
+type OutboxRow = v.InferOutput<typeof outboxRowSchema>;
 
-const versionRowSchema = z.object({ version: z.number().int().positive() });
+const versionRowSchema = v.object({
+  version: v.pipe(v.number(), v.safeInteger(), v.gtValue(0)),
+});
 
 const listDueForChannel = (
   sql: SqlStorage,
@@ -65,7 +67,8 @@ const listDueForChannel = (
   limit: number,
   key?: string
 ): OutboxRow[] =>
-  outboxRowSchema.array().parse(
+  v.parse(
+    v.array(outboxRowSchema),
     sql
       .exec(
         `SELECT * FROM durability_outbox
@@ -84,7 +87,8 @@ const listDueForChannel = (
 
 /** Allocates a version from a durable counter that survives row deletion. */
 const nextVersion = (sql: SqlStorage): number => {
-  const { version } = versionRowSchema.parse(
+  const { version } = v.parse(
+    versionRowSchema,
     sql
       .exec(
         `UPDATE durability_outbox_seq

@@ -19,7 +19,7 @@ import {
   type TrackedStatus,
 } from 'durability/experimental';
 import { DurabilitySocket, event } from 'durability/socket';
-import { z } from 'zod';
+import * as v from 'valibot';
 import type { Env, JobEvent, Jobs } from './shared';
 
 type JobRow = {
@@ -39,9 +39,9 @@ const toRecord = (row: JobRow): TrackedRecord<Jobs> => ({
   state: JSON.parse(row.state),
 });
 
-const workQuery = z.object({
-  cursor: z.string().optional(),
-  status: z.enum(['pending', 'completed', 'failed']).optional(),
+const workQuery = v.object({
+  cursor: v.optional(v.string()),
+  status: v.optional(v.picklist(['pending', 'completed', 'failed'])),
 });
 
 export class Dashboard extends DurableObject<Env> {
@@ -104,7 +104,7 @@ export class Dashboard extends DurableObject<Env> {
     context: this.ctx,
     inbound: {
       importOrder: {
-        input: z.string().min(1),
+        input: v.pipe(v.string(), v.minLength(1)),
         handle: async (orderId: string) => {
           const pipeline = this.env.PIPELINE.getByName(this.tenant);
           await pipeline.importOrder(orderId);

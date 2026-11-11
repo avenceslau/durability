@@ -1,5 +1,5 @@
 import type { DurableMigrations } from '@durability/storage';
-import { z } from 'zod';
+import * as v from 'valibot';
 import { traceStorage } from './dev.js';
 
 export const migrationTableName = 'durability_migrations';
@@ -35,14 +35,14 @@ const maxFutureMigrations = 2;
 
 type MigrationStorage = Pick<DurableObjectStorage, 'sql' | 'transactionSync'>;
 
-const historyRowSchema = z.object({
-  id: z.number().int(),
-  name: z.string(),
-  capability: z.string().nullable(),
-  down: z.string().nullable(),
+const historyRowSchema = v.object({
+  id: v.pipe(v.number(), v.safeInteger()),
+  name: v.string(),
+  capability: v.nullable(v.string()),
+  down: v.nullable(v.string()),
 });
 
-type HistoryRow = z.infer<typeof historyRowSchema>;
+type HistoryRow = v.InferOutput<typeof historyRowSchema>;
 
 /**
  * Versions before 3.0 tracked the v4 rewrite of both tables under one name.
@@ -118,7 +118,8 @@ const readHistory = (
       name
     );
   }
-  return historyRowSchema.array().parse(
+  return v.parse(
+    v.array(historyRowSchema),
     sql
       .exec(
         `SELECT id, name, capability, down FROM ${scope.table}
@@ -170,9 +171,9 @@ const revertFutureMigrations = (
   return future.map(({ name }) => name);
 };
 
-const currentRowSchema = z.object({
-  name: z.string(),
-  down: z.string().nullable(),
+const currentRowSchema = v.object({
+  name: v.string(),
+  down: v.nullable(v.string()),
 });
 
 /**
@@ -186,18 +187,17 @@ export const isSchemaCurrent = (
   capability: MigrationCapability,
   migrations: DurableMigrations
 ): boolean => {
-  let rows: z.infer<typeof currentRowSchema>[];
+  let rows: v.InferOutput<typeof currentRowSchema>[];
   try {
-    rows = currentRowSchema
-      .array()
-      .parse(
-        sql
-          .exec(
-            `SELECT name, down FROM ${migrationTableName} WHERE capability = ?`,
-            capability
-          )
-          .toArray()
-      );
+    rows = v.parse(
+      v.array(currentRowSchema),
+      sql
+        .exec(
+          `SELECT name, down FROM ${migrationTableName} WHERE capability = ?`,
+          capability
+        )
+        .toArray()
+    );
   } catch {
     // A first construction has no history table, and an older one lacks the
     // capability column; migrateCapability() creates both, and retries any other failure.
@@ -281,13 +281,12 @@ const migrateScope = (
     }
   });
 
-  const remaining = z
-    .object({ count: z.number().int() })
-    .parse(
-      storage.sql
-        .exec(`SELECT COUNT(*) AS count FROM ${scope.table}`)
-        .toArray()[0]
-    ).count;
+  const remaining = v.parse(
+    v.object({ count: v.pipe(v.number(), v.safeInteger()) }),
+    storage.sql
+      .exec(`SELECT COUNT(*) AS count FROM ${scope.table}`)
+      .toArray()[0]
+  ).count;
   if (remaining === 0) {
     storage.sql.exec(`DROP TABLE IF EXISTS ${scope.table}`);
   }

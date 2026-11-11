@@ -370,7 +370,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:log'],
           source: sourceFocus(
             appendRecords,
-            'const first = seqRowSchema.parse(',
+            'const first = v.parse(',
             'UPDATE durability_log_seq SET total_bytes = total_bytes + ?'
           ),
           durable:
@@ -479,7 +479,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sqlite'],
           source: sourceFocus(
             appendRecords,
-            'const existing = offsetRowSchema.optional().parse(',
+            'const existing = v.parse(',
             'assigned.set(record.dedup_key, existing.offset);'
           ),
           durable: 'No duplicate rows and no offsets consumed.',
