@@ -707,12 +707,12 @@ export const walkthrough = validateWalkthrough({
           id: 'no-regress',
           title: 'Never move readers backwards',
           description:
-            'KV is eventually consistent. If a lagging replica returns an older version from the same coordinator, the cached newer snapshot is kept. A different coordinator ID starts over.',
+            'KV is eventually consistent. If a lagging replica returns an older version from the same coordinator, the cached newer snapshot is kept; if a missing read already dropped it, the older one is refused as well. A different coordinator ID starts over.',
           stage: ['focus:client'],
           source: sourceFocus(
             clientLoad,
-            'const keep =',
-            'previous.view.version > snapshot.version;'
+            'const outdated =',
+            'previous.newestSeen.version > snapshot.version;'
           ),
           durable: 'Unchanged.',
           volatile: 'The isolate’s newest snapshot per group.',
