@@ -395,12 +395,45 @@ describe('migrations', () => {
         undefined
       )
     ).toThrow(/syntax error/);
-    expect(tableNames(storage)).not.toContain('test_one');
+    expect(tableNames(storage)).toEqual([]);
+  });
+
+  it('keeps a future migration when the rest of the batch fails', () => {
+    const storage = new FakeStorage();
+    const context = contextFor(storage);
+    Durability.migrate(context);
+    storage.sql.exec('CREATE TABLE durability_future (id TEXT PRIMARY KEY)');
+    storage.sql.exec(
+      `INSERT INTO durability_migrations (name, capability, down)
+       VALUES (?, 'operations', ?)`,
+      'durability_0005_calls_future',
+      'DROP TABLE durability_future;'
+    );
+
+    expect(() =>
+      migrateCapability(
+        context.storage,
+        'operations',
+        [
+          ...durabilityOperationMigrations,
+          {
+            name: 'durability_0006_calls_broken',
+            up: 'NOT SQL;',
+            down: 'SELECT 1;',
+          },
+        ],
+        undefined
+      )
+    ).toThrow(/syntax error/);
+    expect(tableNames(storage)).toContain('durability_future');
     expect(
       storage.sql
-        .exec('SELECT COUNT(*) AS count FROM durability_migrations')
-        .toArray()[0]?.['count']
-    ).toBe(0);
+        .exec<{ name: string }>(
+          'SELECT name FROM durability_migrations WHERE name = ?',
+          'durability_0005_calls_future'
+        )
+        .toArray()
+    ).toHaveLength(1);
   });
 
   it('refreshes stored down scripts only for migrations applied earlier', () => {
@@ -513,6 +546,39 @@ describe('migrate', () => {
         .toArray()
         .map(({ name }) => name)
     ).toEqual(['id']);
+  });
+
+  it('leaves the schema unchanged when a batch after a downgrade fails', () => {
+    const storage = new FakeStorage();
+    const [createJobs] = jobsMigrations;
+    const createRuns = {
+      name: '0002_create_runs',
+      up: 'CREATE TABLE runs (id TEXT);',
+      down: 'DROP TABLE runs;',
+    };
+    const broken = {
+      name: '0003_broken',
+      up: 'NOT SQL;',
+      down: 'SELECT 1;',
+    };
+    migrate(asStorage(storage), [createJobs!, createRuns]);
+    storage.sql.exec("INSERT INTO runs (id) VALUES ('kept')");
+
+    expect(() => migrate(asStorage(storage), [createJobs!, broken])).toThrow(
+      /syntax error/
+    );
+    expect(tableNames(storage)).toEqual(['jobs', 'runs', 'schema_migrations']);
+    expect(storage.sql.exec('SELECT id FROM runs').toArray()).toEqual([
+      { id: 'kept' },
+    ]);
+    expect(
+      storage.sql
+        .exec<{ name: string }>(
+          'SELECT name FROM schema_migrations ORDER BY id'
+        )
+        .toArray()
+        .map(({ name }) => name)
+    ).toEqual(['0001_create_jobs', '0002_create_runs']);
   });
 
   it('rejects a history table it cannot safely name', () => {
