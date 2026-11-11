@@ -169,12 +169,11 @@ export const socketCollectionOptions = <
     },
   };
 
-  const awaitSyncedFrom =
-    (keys: Key[]) =>
-    ({ timeoutMs = 30_000 }: { timeoutMs?: number } = {}) => {
-      const since = new Map(
-        keys.map((key) => [key, writeCounts.get(key) ?? 0])
-      );
+  const awaitSyncedFrom = (keys: Key[]) => {
+    // Counted before the handler runs: a server usually publishes the
+    // confirming event before it answers the RPC the handler awaits.
+    const since = new Map(keys.map((key) => [key, writeCounts.get(key) ?? 0]));
+    return ({ timeoutMs = 30_000 }: { timeoutMs?: number } = {}) => {
       const synced = () =>
         keys.every(
           (key) => (writeCounts.get(key) ?? 0) > (since.get(key) ?? 0)
@@ -199,6 +198,7 @@ export const socketCollectionOptions = <
         waiters.add(check);
       });
     };
+  };
 
   const withContext =
     <Params extends { transaction: { mutations: { key: Key }[] } }>(
