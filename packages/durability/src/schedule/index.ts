@@ -189,7 +189,8 @@ export type DurabilityScheduleConfig = SchedulerAttachment & {
   channel?: string;
   /**
    * Returns the first tick strictly after `after`, or `undefined` for none.
-   * Must be synchronous and deterministic; durability ships no cron parser.
+   * Must be synchronous; durability ships no cron parser. When its answers
+   * change, call {@link DurabilitySchedule.reschedule}.
    */
   nextOccurrence(expression: string, after: number): number | undefined;
   /** The work of one tick. Throwing or timing out makes the run `errored`. */
@@ -480,6 +481,45 @@ export class DurabilitySchedule {
     });
     this.#wake();
     return applied;
+  }
+
+  /**
+   * Recomputes the stored next tick with `nextOccurrence`, for when its answers
+   * changed for a reason durability can't see, and resolves `true` when the
+   * stored next tick changed. Resolves `false` when it didn't, when no schedule
+   * is live, or when the stored tick is already due: the alarm fires it, and
+   * the advance after it asks `nextOccurrence` again. The search starts from
+   * `now - jitterMs`, so a tick whose firing time is still ahead is kept and
+   * one whose firing time passed is skipped, not run. The version, the stored
+   * jitter, cancellations, and runs are unchanged.
+   */
+  async reschedule(): Promise<boolean> {
+    const changed = await this.#engine.transaction((sql) => {
+      const schedule = readSchedule(sql, this.#channel);
+      if (schedule === undefined || schedule.expression === null) {
+        return false;
+      }
+      const now = Date.now();
+      const dueAt = firesAt(schedule);
+      if (dueAt !== undefined && dueAt <= now) {
+        return false;
+      }
+      const nextAt =
+        this.#nextAfter(schedule.expression, now - schedule.jitter_ms) ?? null;
+      if (nextAt === schedule.next_at) {
+        return false;
+      }
+      sql.exec(
+        'UPDATE durability_schedule SET next_at = ? WHERE channel = ? AND id = 1',
+        nextAt,
+        this.#channel
+      );
+      return true;
+    });
+    if (changed) {
+      this.#wake();
+    }
+    return changed;
   }
 
   /**
