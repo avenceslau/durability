@@ -1014,13 +1014,18 @@ export class DurabilityLog<Body = unknown> {
     if (!this.#retention) {
       return 0;
     }
+    const { maxAgeMs } = this.#retention;
+    // Taken once: a cutoff that moved with each cold write would keep one
+    // call flushing the records appended while it ran.
+    const cutoff = maxAgeMs === undefined ? undefined : Date.now() - maxAgeMs;
+
     if (!this.#cold) {
-      return this.#deleteExpired(this.#retention);
+      return this.#deleteExpired(this.#retention, cutoff);
     }
-    return this.#flushExpired(this.#retention, this.#cold);
+    return this.#flushExpired(this.#retention, cutoff, this.#cold);
   }
 
-  #deleteExpired(retention: LogRetention): number {
+  #deleteExpired(retention: LogRetention, cutoff: number | undefined): number {
     let removed = 0;
     for (;;) {
       const oldest = listOldest(
@@ -1028,7 +1033,7 @@ export class DurabilityLog<Body = unknown> {
         this.#channel,
         this.#maxBatchSize
       );
-      const expiring = this.#expiring(retention, oldest);
+      const expiring = this.#expiring(retention, cutoff, oldest);
       if (expiring.length === 0) {
         return removed;
       }
@@ -1052,6 +1057,7 @@ export class DurabilityLog<Body = unknown> {
    */
   async #flushExpired(
     retention: LogRetention,
+    cutoff: number | undefined,
     cold: LogColdStorage<Body>
   ): Promise<number> {
     let removed = 0;
@@ -1084,7 +1090,7 @@ export class DurabilityLog<Body = unknown> {
       // records to a trim while cold storage was not configured.
       let flush = pending?.first_offset === hotOffset ? pending : undefined;
       if (!flush) {
-        const expiring = this.#expiring(retention, oldest);
+        const expiring = this.#expiring(retention, cutoff, oldest);
         if (expiring.length === 0) {
           return removed;
         }
@@ -1143,13 +1149,16 @@ export class DurabilityLog<Body = unknown> {
     }
   }
 
-  /** The oldest records retention expires now, in offset order. */
+  /**
+   * The oldest records retention expires, in offset order: those over the
+   * record or byte budget now, and those appended before `cutoff`.
+   */
   #expiring(
     retention: LogRetention,
+    cutoff: number | undefined,
     oldest: readonly LogRecordRow[]
   ): LogRecordRow[] {
-    const { maxAgeMs, maxRecords, maxBytes } = retention;
-    const cutoff = maxAgeMs === undefined ? undefined : Date.now() - maxAgeMs;
+    const { maxRecords, maxBytes } = retention;
     const excess =
       maxRecords === undefined
         ? 0

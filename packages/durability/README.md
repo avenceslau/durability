@@ -1521,7 +1521,7 @@ if (lease) {
 }
 ```
 
-`lease` claims a range of offsets durably **before** returning the records, so a second caller gets the next range or `undefined` rather than the same offsets. That holds for overlapping calls too, including ones that read a flushed range from cold storage: the transaction that records the range first checks that no other call took those offsets or the last free slot meanwhile, and selects again if one did. `undefined` means nothing is available right now — either the consumer is at `maxParallelism` or the log has no unleased records — so treat it as a signal to back off.
+`lease` claims a range of offsets durably **before** returning the records, so a second caller gets the next range or `undefined` rather than the same offsets. That holds for overlapping calls too, including ones that read a flushed range from cold storage: the transaction that records the range first checks that no other call took those offsets or the last free slot meanwhile, and selects again if one did. `undefined` means nothing is available right now — the consumer is at `maxParallelism`, the log has no unleased records, or other calls kept taking the ranges this one selected — so treat it as a signal to back off.
 
 A range is held until it is acked, nacked, or its lease expires after `leaseMs`. Redelivery always issues a **fresh `batchId`**, which fences the previous holder: its `ack` throws `LogLeaseError` rather than committing a range someone else now owns. Double settlement throws for the same reason, and so does an `ack` or `nack` naming a consumer other than the one holding the batch, which leaves the range untouched.
 

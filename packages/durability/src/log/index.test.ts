@@ -485,6 +485,32 @@ describe('log', () => {
     expect(await readableOffsets(log)).toEqual([0, 1, 2, 3]);
   });
 
+  it('expires by age as of the start of the trim, not records appended during it', async () => {
+    const written: number[] = [];
+    const { log } = fixture({
+      maxBatchSize: 1,
+      retention: { maxAgeMs: 1 },
+      cold: {
+        write: async ({ firstOffset }) => {
+          written.push(firstOffset);
+          if (written.length > 3) {
+            throw new Error('trim kept flushing records appended during it');
+          }
+          // Arrives during the write and is past maxAgeMs once it returns.
+          await offsetsOf(log, [`during-${firstOffset}`]);
+          vi.advanceTimersByTime(2);
+          return `segment-${firstOffset}`;
+        },
+        read: async () => undefined,
+      },
+    });
+    await offsetsOf(log, ['a']);
+    vi.advanceTimersByTime(2);
+
+    expect(await log.trim()).toBe(1);
+    expect(written).toEqual([0]);
+  });
+
   it('flushes the same range when a second trim starts during a cold write', async () => {
     const store = refusingColdStore();
     let releaseFirstWrite!: () => void;
