@@ -627,6 +627,44 @@ describe('log', () => {
     expect(await log.cursor('search')).toBe(2);
   });
 
+  it('hands one range to overlapping lease calls at the parallelism limit', async () => {
+    const { log } = fixture({ leases: {} });
+    await offsetsOf(log, ['a', 'b', 'c', 'd']);
+
+    const leases = await Promise.all([
+      log.lease('search', 1),
+      log.lease('search', 2),
+    ]);
+    expect(leases.map((lease) => lease?.firstOffset)).toEqual([0, undefined]);
+    expect(await log.leases('search')).toMatchObject([
+      { first_offset: 0, last_offset: 0, state: 'active' },
+    ]);
+  });
+
+  it('hands distinct ranges to overlapping lease calls that read cold storage', async () => {
+    const cold = coldStore();
+    const { log } = fixture({
+      retention: { maxRecords: 1 },
+      cold,
+      leases: { maxParallelism: 3 },
+    });
+    await offsetsOf(log, ['a', 'b', 'c']);
+    await log.trim();
+
+    const leases = await Promise.all([
+      log.lease('search', 1),
+      log.lease('search', 1),
+      log.lease('search', 1),
+      log.lease('search', 1),
+    ]);
+    expect(leases.map((lease) => lease?.records[0]?.body)).toEqual([
+      'a',
+      'b',
+      'c',
+      undefined,
+    ]);
+  });
+
   it('redelivers a nacked range under a fresh batch id', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a', 'b']);

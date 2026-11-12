@@ -98,7 +98,7 @@ const lease = sourceExcerpt(
   'lease',
   'Record a range before returning it',
   '  async lease(',
-  '      expiresAt: now + this.#leaseMs,\n    };\n  }'
+  '    return undefined;\n  }'
 );
 const settle = sourceExcerpt(
   log,
@@ -704,7 +704,7 @@ export const walkthrough = validateWalkthrough({
           id: 'lease',
           title: 'Record the range before returning it',
           description:
-            'lease() reads the consumer’s allocation, reads the records, then writes an active lease row and the new allocation in one transaction before returning them. A hot read does not yield in between. A cold read awaits R2, and the allocation is not read again before the write, so two concurrent cold leases under one consumer can receive the same range.',
+            'lease() reads the consumer’s allocation and the records, then, in one transaction, checks that the allocation and the free slots are unchanged and writes an active lease row and the new allocation before returning them. The read yields, and a cold read awaits R2, so another call may lease those offsets meanwhile; the check catches that and the selection starts again from the new allocation.',
           stage: ['*', 'focus:sqlite'],
           source: sourceFocus(
             lease,
