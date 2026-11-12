@@ -842,6 +842,26 @@ describe('log', () => {
     );
   });
 
+  it('rejects an ack or nack from a consumer that does not hold the batch', async () => {
+    const { log } = fixture({ leases: {} });
+    await offsetsOf(log, ['a']);
+    const lease = await log.lease('search', 1);
+
+    await expect(log.ack('billing', lease!.batchId)).rejects.toThrow(
+      LogLeaseError
+    );
+    await expect(log.nack('billing', lease!.batchId)).rejects.toThrow(
+      LogLeaseError
+    );
+    expect(await log.leases('search')).toMatchObject([
+      { batch_id: lease!.batchId, state: 'active', attempt: 1 },
+    ]);
+    expect(await log.cursors()).toEqual({});
+
+    await log.ack('search', lease!.batchId);
+    expect(await log.cursor('search')).toBe(1);
+  });
+
   it('keeps consumers independent', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a', 'b']);

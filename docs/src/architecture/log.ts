@@ -752,7 +752,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['flow:consume'],
           source: sourceFocus(
             settle,
-            "this.#settle(batchId, 'acked');",
+            "this.#settle(consumer, batchId, 'acked');",
             'this.#advance(consumer);'
           ),
           durable: 'The cursor advances and settled lease rows are deleted.',

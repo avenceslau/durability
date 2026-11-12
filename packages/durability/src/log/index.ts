@@ -575,10 +575,14 @@ const countHeld = (
       .toArray()[0]
   ).count;
 
-/** Settles one range, failing when the batch was fenced or already settled. */
+/**
+ * Settles one range, failing when the batch was fenced, already settled, or
+ * is held by another consumer.
+ */
 const settleLease = (
   sql: SqlStorage,
   channel: string,
+  consumer: string,
   batchId: string,
   state: LogLeaseState,
   expiresAt: number
@@ -587,12 +591,16 @@ const settleLease = (
     .exec(
       `UPDATE durability_log_leases
        SET state = ?, expires_at = ?
-       WHERE channel = ? AND batch_id = ? AND state = 'active'
+       WHERE channel = ?
+         AND batch_id = ?
+         AND consumer = ?
+         AND state = 'active'
        RETURNING batch_id`,
       state,
       expiresAt,
       channel,
-      batchId
+      batchId,
+      consumer
     )
     .toArray().length > 0;
 
@@ -1314,7 +1322,7 @@ export class DurabilityLog<Body = unknown> {
     // handler cannot resurrect a range that already exhausted its attempts.
     // A skipped range counts as settled, so the cursor moves past it as for an ack.
     this.#engine.transactionSync(() => {
-      this.#settle(reclaimed.batch_id, 'skipped');
+      this.#settle(consumer, reclaimed.batch_id, 'skipped');
       this.#advance(consumer);
     });
     try {
@@ -1337,7 +1345,7 @@ export class DurabilityLog<Body = unknown> {
   async ack(consumer: string, batchId: string): Promise<void> {
     this.#requireLeases();
     this.#engine.transactionSync(() => {
-      this.#settle(batchId, 'acked');
+      this.#settle(consumer, batchId, 'acked');
       this.#advance(consumer);
     });
   }
@@ -1345,7 +1353,7 @@ export class DurabilityLog<Body = unknown> {
   /** Returns a leased range for redelivery under a fresh batch id. */
   async nack(consumer: string, batchId: string): Promise<void> {
     this.#requireLeases();
-    this.#settle(batchId, 'pending');
+    this.#settle(consumer, batchId, 'pending');
   }
 
   /** In-flight and settled-but-uncommitted ranges, for operators and tests. */
@@ -1365,11 +1373,16 @@ export class DurabilityLog<Body = unknown> {
     );
   }
 
-  #settle(batchId: string, state: 'acked' | 'pending' | 'skipped'): void {
+  #settle(
+    consumer: string,
+    batchId: string,
+    state: 'acked' | 'pending' | 'skipped'
+  ): void {
     // Pending ranges are immediately claimable, so their expiry is in the past.
     const settled = settleLease(
       this.#engine.sql,
       this.#channel,
+      consumer,
       batchId,
       state,
       state === 'pending' ? 0 : Date.now()
@@ -1377,8 +1390,9 @@ export class DurabilityLog<Body = unknown> {
     if (settled) {
       return;
     }
-    // Either the batch never existed, was fenced by a redelivery, or was
-    // already settled; all three are the caller holding a stale handle.
+    // The batch never existed, was fenced by a redelivery, was already
+    // settled, or belongs to another consumer; each is the caller holding a
+    // handle that is not its own.
     throw new LogLeaseError(batchId);
   }
 
