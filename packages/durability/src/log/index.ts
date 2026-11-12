@@ -631,20 +631,27 @@ const leasesFrom = (
       .toArray()
   );
 
-const deleteLeases = (
+/**
+ * Deletes a consumer's settled ranges that end below an offset: the run a
+ * commit just passed, and ranges retention trimmed entirely, which no commit
+ * reaches. A range rather than a list of batch ids keeps the bindings constant
+ * however many ranges waited behind a late ack.
+ */
+const deleteSettledBefore = (
   sql: SqlStorage,
   channel: string,
-  batchIds: readonly string[]
+  consumer: string,
+  offset: number
 ): void => {
-  if (batchIds.length === 0) {
-    return;
-  }
   sql.exec(
     `DELETE FROM durability_log_leases
      WHERE channel = ?
-       AND batch_id IN (${batchIds.map(() => '?').join(', ')})`,
+       AND consumer = ?
+       AND state IN ('acked', 'skipped')
+       AND last_offset < ?`,
     channel,
-    ...batchIds
+    consumer,
+    offset
   );
 };
 
@@ -1410,7 +1417,12 @@ export class DurabilityLog<Body = unknown> {
   ): void {
     this.#engine.transactionSync((sql) => {
       if (lease.last_offset < oldestOffset) {
-        deleteLeases(sql, this.#channel, [lease.batch_id]);
+        sql.exec(
+          `DELETE FROM durability_log_leases
+           WHERE channel = ? AND batch_id = ?`,
+          this.#channel,
+          lease.batch_id
+        );
       } else {
         sql.exec(
           `UPDATE durability_log_leases
@@ -1436,7 +1448,6 @@ export class DurabilityLog<Body = unknown> {
       readBounds(sql, this.#channel).oldestOffset
     );
     let cursor = from;
-    const settled: string[] = [];
     // Ranges settled while an earlier one was outstanding wait behind it; when
     // it settles the cursor must pass all of them, however many pages that is.
     for (let page = true; page; ) {
@@ -1456,14 +1467,15 @@ export class DurabilityLog<Body = unknown> {
           break;
         }
         cursor = Math.max(cursor, row.last_offset + 1);
-        settled.push(row.batch_id);
       }
     }
-    if (settled.length === 0) {
-      return;
+    if (cursor > from) {
+      commitCursor(sql, this.#channel, consumer, cursor, Date.now());
     }
-    commitCursor(sql, this.#channel, consumer, cursor, Date.now());
-    deleteLeases(sql, this.#channel, settled);
+    // A consumer's ranges never overlap and the walk stopped at the first gap
+    // or unsettled range, so every settled range past that ends beyond the
+    // cursor and stays.
+    deleteSettledBefore(sql, this.#channel, consumer, cursor);
   }
 
   /** Reads a stored range, rehydrating it when retention already flushed it. */

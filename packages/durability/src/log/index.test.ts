@@ -829,6 +829,45 @@ describe('log', () => {
     expect(await log.cursor('search')).toBe(6);
   });
 
+  it('acks a late range behind a hundred settled ones within the bound-parameter limit', async () => {
+    const { log, storage } = fixture({ leases: { maxParallelism: 2 } });
+    await offsetsOf(
+      log,
+      Array.from({ length: 100 }, (_, index) => `r${index}`)
+    );
+    const late = await log.lease('search', 1);
+    for (let index = 1; index < 100; index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const lease = await log.lease('search', 1);
+      // eslint-disable-next-line no-await-in-loop
+      await log.ack('search', lease!.batchId);
+    }
+    const exec = vi.spyOn(storage.sql, 'exec');
+
+    await log.ack('search', late!.batchId);
+    // SQLite-backed Durable Objects accept at most 100 bound parameters.
+    const bindings = exec.mock.calls.map(([, ...values]) => values.length);
+    expect(Math.max(...bindings)).toBeLessThanOrEqual(100);
+    expect(await log.cursor('search')).toBe(100);
+    expect(await log.leases('search')).toEqual([]);
+  });
+
+  it('deletes an acked range that retention trimmed entirely', async () => {
+    const { log } = fixture({ retention: { maxRecords: 1 }, leases: {} });
+    await offsetsOf(log, ['a']);
+    const trimmed = await log.lease('search', 1);
+    await offsetsOf(log, ['b']);
+    await log.trim();
+
+    await log.ack('search', trimmed!.batchId);
+    expect(await log.leases('search')).toEqual([]);
+
+    const next = await log.lease('search', 1);
+    await log.ack('search', next!.batchId);
+    expect(await log.cursor('search')).toBe(2);
+    expect(await log.leases('search')).toEqual([]);
+  });
+
   it('rejects double settlement of one batch', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a']);
