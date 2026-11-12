@@ -325,6 +325,132 @@ describe('DO transforms', () => {
     await expect(new DerivedService().greet()).resolves.toBe('derived');
   });
 
+  describe('super calls from a transformed override', () => {
+    const labelled = (calls: string[]) =>
+      defineTransform<object, Record<never, never>>().callee(
+        (options: { label: string }) =>
+          async ({ next }) => {
+            calls.push(options.label);
+            return next();
+          }
+      );
+
+    it('runs the base method and its transforms when both classes are transformed', async () => {
+      const calls: string[] = [];
+      const tracking = labelled(calls);
+      class BaseService {
+        async greet() {
+          return 'base';
+        }
+      }
+      class DerivedService extends BaseService {
+        override async greet() {
+          return `derived>${await super.greet()}`;
+        }
+      }
+      applyTransforms(BaseService, {
+        all: [registerTransform(tracking, { label: 'base' })],
+      });
+      applyTransforms(DerivedService, {
+        all: [registerTransform(tracking, { label: 'derived' })],
+      });
+
+      await expect(new DerivedService().greet()).resolves.toBe('derived>base');
+      expect(calls).toEqual(['base', 'derived', 'base']);
+    });
+
+    it('runs the base transforms once when only the base class is transformed', async () => {
+      const calls: string[] = [];
+      class BaseService {
+        async greet() {
+          return 'base';
+        }
+      }
+      class DerivedService extends BaseService {
+        override async greet() {
+          return `derived>${await super.greet()}`;
+        }
+      }
+      applyTransforms(BaseService, {
+        all: [registerTransform(labelled(calls), { label: 'base' })],
+      });
+
+      await expect(new DerivedService().greet()).resolves.toBe('derived>base');
+      expect(calls).toEqual(['base']);
+    });
+
+    it('walks three transformed levels down to the root method', async () => {
+      const calls: string[] = [];
+      const tracking = labelled(calls);
+      class RootService {
+        async greet() {
+          return 'root';
+        }
+      }
+      class MiddleService extends RootService {
+        override async greet() {
+          return `middle>${await super.greet()}`;
+        }
+      }
+      class LeafService extends MiddleService {
+        override async greet() {
+          return `leaf>${await super.greet()}`;
+        }
+      }
+      applyTransforms(RootService, {
+        all: [registerTransform(tracking, { label: 'root' })],
+      });
+      applyTransforms(MiddleService, {
+        all: [registerTransform(tracking, { label: 'middle' })],
+      });
+      applyTransforms(LeafService, {
+        all: [registerTransform(tracking, { label: 'leaf' })],
+      });
+
+      await expect(new LeafService().greet()).resolves.toBe('leaf>middle>root');
+      expect(calls).toEqual([
+        'root',
+        'middle',
+        'leaf',
+        'root',
+        'middle',
+        'root',
+      ]);
+    });
+
+    it('resolves a context-target call the same way as a direct call', async () => {
+      const calls: string[] = [];
+      const tracking = labelled(calls);
+      class BaseService {
+        setContext(context: ObservabilityContext) {
+          return createTransformContextTarget(this, context);
+        }
+
+        async greet() {
+          return 'base';
+        }
+      }
+      class DerivedService extends BaseService {
+        override async greet() {
+          return `derived>${await super.greet()}`;
+        }
+      }
+      applyTransforms(BaseService, {
+        all: [registerTransform(tracking, { label: 'base' })],
+      });
+      applyTransforms(DerivedService, {
+        all: [registerTransform(tracking, { label: 'derived' })],
+      });
+
+      await expect(
+        new DerivedService()
+          .setContext({ requestId: 'request-1' })
+          .invoke('greet', [])
+      ).resolves.toBe('derived>base');
+      expect(calls).toEqual(['base', 'derived', 'base']);
+    });
+  });
+
   it('rejects malformed context targets', async () => {
     const target = {
       setContext: () => ({}),
