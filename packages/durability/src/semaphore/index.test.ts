@@ -7,6 +7,7 @@ import {
   type DurabilitySemaphoreConfig,
   type DurabilitySemaphoreEvent,
 } from './server';
+import type { SemaphoreProvisioning } from './leases';
 import { FakeStorage } from '../test-fakes';
 
 beforeEach(() => {
@@ -694,6 +695,245 @@ describe('semaphore', () => {
       expect(leased(second!)).toEqual([
         { group: 'capped', permits: 1, retired: false },
       ]);
+    });
+
+    it.each([
+      { mode: 'strict' },
+      { mode: 'under', reserve: 4 },
+      { mode: 'over', extra: 10 },
+    ] satisfies SemaphoreProvisioning[])(
+      '$mode: grants count lease footprint against the group limit until the lease settles',
+      async (provisioning) => {
+        const { round } = fixture({
+          limit: 10,
+          groupLimit: (group) => (group === 'capped' ? 3 : undefined),
+          leases: { provisioning, limitedGroups: 'withinGroupLimit' },
+        });
+        const [first] = await round(
+          leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
+        );
+        expect(given(first!)).toEqual([{ group: 'capped', permits: 2 }]);
+        expect(leased(first!)).toEqual([
+          { group: 'capped', permits: 1, retired: false },
+        ]);
+        const leaseId = first!.leases![0]!.leaseId;
+
+        // 2 granted + 1 leased: the group is at its limit of 3.
+        const [other] = await round(
+          leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
+        );
+        expect(given(other!)).toEqual([]);
+        expect(leased(other!)).toEqual([]);
+        expect(other!.blocked).toEqual([
+          { group: 'capped', reason: 'group_limit' },
+        ]);
+
+        // The lease holder drew its permit and asks for more: still full.
+        const [holder] = await round(
+          leasing(
+            'a',
+            [{ group: 'capped', count: 1, oldestAt: 3 }],
+            [{ leaseId, drawn: 1, released: 0 }]
+          )
+        );
+        expect(given(holder!)).toEqual([]);
+        expect(leased(holder!)).toEqual([
+          { group: 'capped', permits: 1, retired: false },
+        ]);
+
+        // Releasing the drawn permit settles the lease and frees its room in
+        // the same round.
+        const [settled, waiting] = await round(
+          leasing('a', [], [{ leaseId, drawn: 1, released: 1 }]),
+          leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
+        );
+        expect(leased(settled!)).toEqual([
+          { group: 'capped', permits: 1, retired: true },
+        ]);
+        expect(given(waiting!)).toEqual([{ group: 'capped', permits: 1 }]);
+        expect(leased(waiting!)).toEqual([]);
+      }
+    );
+
+    it('charges a group with the permits of its leases not yet released', async () => {
+      const { round } = fixture({
+        limit: 10,
+        groupLimit: (group) => (group === 'capped' ? 5 : undefined),
+        leases: {
+          provisioning: { mode: 'over', extra: 10 },
+          limitedGroups: 'withinGroupLimit',
+        },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'capped', permits: 2 }]);
+      expect(leased(first!)).toEqual([
+        { group: 'capped', permits: 3, retired: false },
+      ]);
+      const leaseId = first!.leases![0]!.leaseId;
+
+      // Drawn permits do not matter, only released ones: 3 - 1 = 2 stay
+      // charged, leaving 5 - 2 - 2 = 1.
+      const [, second] = await round(
+        leasing('a', [], [{ leaseId, drawn: 2, released: 1 }]),
+        leasing('b', [{ group: 'capped', count: 3, oldestAt: 2 }])
+      );
+      expect(given(second!)).toEqual([{ group: 'capped', permits: 1 }]);
+      expect(leased(second!)).toEqual([]);
+
+      // Confirming the retirement shrinks the lease to what was drawn: 2 - 1.
+      const [, third] = await round(
+        leasing('a', [], [{ leaseId, drawn: 2, released: 1, retired: true }]),
+        leasing('c', [{ group: 'capped', count: 3, oldestAt: 3 }])
+      );
+      expect(given(third!)).toEqual([{ group: 'capped', permits: 1 }]);
+
+      const [, fourth] = await round(
+        leasing('a', [], [{ leaseId, drawn: 2, released: 2, retired: true }]),
+        leasing('d', [{ group: 'capped', count: 3, oldestAt: 4 }])
+      );
+      expect(given(fourth!)).toEqual([{ group: 'capped', permits: 1 }]);
+    });
+
+    it('keeps an expired lease charged to its group until its client confirms', async () => {
+      const { semaphore, round } = fixture({
+        limit: 10,
+        groupLimit: (group) => (group === 'capped' ? 3 : undefined),
+        grantTimeoutMs: 60_000,
+        leases: {
+          provisioning: { mode: 'over', extra: 10 },
+          limitedGroups: 'withinGroupLimit',
+          ttlMs: 5_000,
+        },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
+      );
+      const leaseId = first!.leases![0]!.leaseId;
+
+      vi.setSystemTime(Date.now() + 6_000);
+      const [expired] = await round(
+        leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
+      );
+      expect(given(expired!)).toEqual([]);
+      expect(expired!.blocked).toEqual([
+        { group: 'capped', reason: 'group_limit' },
+      ]);
+
+      await semaphore.handle({
+        type: 'sync',
+        v: 1,
+        clientId: 'a',
+        grants: [],
+        leases: [{ leaseId, drawn: 0, released: 0, retired: true }],
+      });
+      const [confirmed] = await round(
+        leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
+      );
+      expect(given(confirmed!)).toEqual([{ group: 'capped', permits: 1 }]);
+    });
+
+    it('exclude: a retired lease of a newly limited group counts against its limit until confirmed', async () => {
+      let capped = false;
+      const { semaphore, round } = fixture({
+        limit: 10,
+        groupLimit: (group) => (capped && group === 'g' ? 3 : undefined),
+        grantTimeoutMs: 60_000,
+        leases: { provisioning: { mode: 'over', extra: 4 } },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'g', permits: 1 }]);
+      expect(leased(first!)).toEqual([
+        { group: 'g', permits: 4, retired: false },
+      ]);
+      const leaseId = first!.leases![0]!.leaseId;
+
+      capped = true;
+      const [second] = await round(
+        leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }])
+      );
+      expect(given(second!)).toEqual([]);
+      expect(second!.blocked).toEqual([{ group: 'g', reason: 'group_limit' }]);
+
+      // The client drew one before it stopped: 1 granted + 1 leased of 3.
+      await semaphore.handle({
+        type: 'sync',
+        v: 1,
+        clientId: 'a',
+        grants: [],
+        leases: [{ leaseId, drawn: 1, released: 0, retired: true }],
+      });
+      const [third] = await round(
+        leasing('b', [{ group: 'g', count: 2, oldestAt: 2 }])
+      );
+      expect(given(third!)).toEqual([{ group: 'g', permits: 1 }]);
+      expect(leased(third!)).toEqual([]);
+    });
+
+    it('issues a new lease within the group limit without charging an existing lease twice', async () => {
+      const { round } = fixture({
+        limit: 3,
+        groupLimit: (group) => (group === 'capped' ? 4 : undefined),
+        grantTimeoutMs: 60_000,
+        leases: {
+          provisioning: { mode: 'over', extra: 10 },
+          limitedGroups: 'withinGroupLimit',
+        },
+      });
+      const [first] = await round(
+        leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
+      );
+      expect(given(first!)).toEqual([{ group: 'capped', permits: 2 }]);
+      expect(leased(first!)).toEqual([
+        { group: 'capped', permits: 2, retired: false },
+      ]);
+      const leaseId = first!.leases![0]!.leaseId;
+
+      // 'z' takes the last permit of the limit, so only a lease can serve
+      // 'a'. The group holds 2 granted + 1 leased of 4: one permit is left.
+      const [, second] = await round(
+        request('z', [{ group: 'other', count: 1, oldestAt: 0 }]),
+        leasing(
+          'a',
+          [{ group: 'capped', count: 1, oldestAt: 2 }],
+          [{ leaseId, drawn: 2, released: 1 }]
+        )
+      );
+      expect(given(second!)).toEqual([]);
+      expect(leased(second!)).toEqual([
+        { group: 'capped', permits: 2, retired: false },
+        { group: 'capped', permits: 1, retired: false },
+      ]);
+    });
+
+    it('keeps a grant and a lease issued to one group in the same round within its limit', async () => {
+      const { round } = fixture({
+        limit: 10,
+        groupLimit: (group) => (group === 'capped' ? 3 : undefined),
+        leases: {
+          provisioning: { mode: 'over', extra: 10 },
+          limitedGroups: 'withinGroupLimit',
+        },
+      });
+      const [a, b] = await round(
+        leasing('a', [{ group: 'capped', count: 1, oldestAt: 1 }]),
+        leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
+      );
+      expect(given(a!)).toEqual([{ group: 'capped', permits: 1 }]);
+      expect(given(b!)).toEqual([{ group: 'capped', permits: 1 }]);
+      expect(leased(a!)).toEqual([
+        { group: 'capped', permits: 1, retired: false },
+      ]);
+      expect(leased(b!)).toEqual([]);
+
+      const [c] = await round(
+        leasing('c', [{ group: 'capped', count: 1, oldestAt: 3 }])
+      );
+      expect(given(c!)).toEqual([]);
+      expect(leased(c!)).toEqual([]);
     });
   });
 
