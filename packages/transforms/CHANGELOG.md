@@ -1,5 +1,12 @@
 # @durability/transforms
 
+## 0.6.2
+
+### Patch Changes
+
+- 661d392: Fix `super.method()` from a transformed override recursing until the stack overflowed. Each method wrapper installed by `applyTransforms` now starts dispatch at the prototype it was installed on, so the super call runs the base class's transforms once around the base method and returns.
+- 661d392: Fix the Vite plugin failing on `.ts`, `.mts`, and `.cts` files that use `<T>value` type assertions. Every module was parsed with JSX enabled, which rejects that syntax and broke `vite build` once any binding was configured; JSX is now enabled only for `.tsx`, `.jsx`, and JavaScript modules, and bindings reached through an angle-bracket assertion such as `(<Env>env).MY_BINDING` are wrapped like any other access.
+
 ## 0.6.1
 
 ### Patch Changes
