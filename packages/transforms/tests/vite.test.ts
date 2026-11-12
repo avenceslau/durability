@@ -370,6 +370,43 @@ export default {
     expect(result).not.toContain('createTransformStub');
   });
 
+  it('parses angle-bracket type assertions in TypeScript modules', async () => {
+    const result = await plugin.transform(
+      `
+type Env = { CONTEXT_SERVICE: { greet(): string } };
+export default {
+  fetch(request: Request, env: Env) {
+    const raw = <unknown>JSON.parse('{}');
+    return (<Env>env).CONTEXT_SERVICE.greet();
+  }
+};
+`,
+      join(packageRoot, 'worker.ts?import')
+    );
+
+    expect(result?.code).toContain(
+      '__doTransformsCreateStub((<Env>env).CONTEXT_SERVICE).greet()'
+    );
+  });
+
+  it('parses JSX in TSX modules', async () => {
+    const result = await plugin.transform(
+      `
+export default {
+  fetch(request, env) {
+    env.CONTEXT_SERVICE.greet();
+    return <p title="greeting">{env.GREETING}</p>;
+  }
+};
+`,
+      join(packageRoot, 'worker.tsx')
+    );
+
+    expect(result?.code).toContain(
+      '__doTransformsCreateStub(env.CONTEXT_SERVICE).greet()'
+    );
+  });
+
   it('reports invalid Wrangler configuration', async () => {
     const wranglerPath = join(packageRoot, 'invalid.jsonc');
     const invalidPlugin = doTransforms({

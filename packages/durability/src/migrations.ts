@@ -149,7 +149,7 @@ const runDown = (
  * {@link maxFutureMigrations}.
  */
 const revertFutureMigrations = (
-  storage: MigrationStorage,
+  sql: SqlStorage,
   scope: HistoryScope,
   history: HistoryRow[],
   known: ReadonlySet<string>
@@ -163,11 +163,9 @@ const revertFutureMigrations = (
       `${scope.label} schema is ${future.length} migrations ahead of this version; refusing to revert more than ${maxFutureMigrations}`
     );
   }
-  storage.transactionSync(() => {
-    for (const row of future) {
-      runDown(storage.sql, scope.table, row.name, row.down);
-    }
-  });
+  for (const row of future) {
+    runDown(sql, scope.table, row.name, row.down);
+  }
   return future.map(({ name }) => name);
 };
 
@@ -232,33 +230,41 @@ const migrateScope = (
     );
   }
 
-  ensureHistoryTable(storage.sql, scope.table);
-  if (scope.table === migrationTableName) {
-    translateLegacyHistory(storage.sql);
-  }
-  const known = new Set(migrations.map(({ name }) => name));
-  const history = readHistory(storage.sql, scope, migrations);
-  const rolledBack = revertFutureMigrations(storage, scope, history, known);
-  const applied = new Map(
-    history
-      .filter(({ name }) => known.has(name))
-      .map((row) => [row.name, row] as const)
-  );
-
-  const toRevert = migrations
-    .slice(targetIndex + 1)
-    .filter(({ name }) => applied.has(name))
-    .reverse();
-  const toApply = migrations
-    .slice(0, targetIndex + 1)
-    .filter(({ name }) => !applied.has(name));
-  const toRefresh = migrations
-    .slice(0, targetIndex + 1)
-    .filter(
-      ({ name, down }) => applied.has(name) && applied.get(name)?.down !== down
+  // Every step shares one transaction so a failure anywhere, including after
+  // future migrations were reverted, leaves the schema and history as they were.
+  return storage.transactionSync(() => {
+    ensureHistoryTable(storage.sql, scope.table);
+    if (scope.table === migrationTableName) {
+      translateLegacyHistory(storage.sql);
+    }
+    const known = new Set(migrations.map(({ name }) => name));
+    const history = readHistory(storage.sql, scope, migrations);
+    const rolledBack = revertFutureMigrations(
+      storage.sql,
+      scope,
+      history,
+      known
+    );
+    const applied = new Map(
+      history
+        .filter(({ name }) => known.has(name))
+        .map((row) => [row.name, row] as const)
     );
 
-  storage.transactionSync(() => {
+    const toRevert = migrations
+      .slice(targetIndex + 1)
+      .filter(({ name }) => applied.has(name))
+      .reverse();
+    const toApply = migrations
+      .slice(0, targetIndex + 1)
+      .filter(({ name }) => !applied.has(name));
+    const toRefresh = migrations
+      .slice(0, targetIndex + 1)
+      .filter(
+        ({ name, down }) =>
+          applied.has(name) && applied.get(name)?.down !== down
+      );
+
     for (const migration of toRevert) {
       runDown(storage.sql, scope.table, migration.name, migration.down);
     }
@@ -279,22 +285,22 @@ const migrateScope = (
         migration.name
       );
     }
+
+    const remaining = v.parse(
+      v.object({ count: v.pipe(v.number(), v.safeInteger()) }),
+      storage.sql
+        .exec(`SELECT COUNT(*) AS count FROM ${scope.table}`)
+        .toArray()[0]
+    ).count;
+    if (remaining === 0) {
+      storage.sql.exec(`DROP TABLE IF EXISTS ${scope.table}`);
+    }
+
+    return {
+      applied: toApply.map(({ name }) => name),
+      rolledBack: [...rolledBack, ...toRevert.map(({ name }) => name)],
+    };
   });
-
-  const remaining = v.parse(
-    v.object({ count: v.pipe(v.number(), v.safeInteger()) }),
-    storage.sql
-      .exec(`SELECT COUNT(*) AS count FROM ${scope.table}`)
-      .toArray()[0]
-  ).count;
-  if (remaining === 0) {
-    storage.sql.exec(`DROP TABLE IF EXISTS ${scope.table}`);
-  }
-
-  return {
-    applied: toApply.map(({ name }) => name),
-    rolledBack: [...rolledBack, ...toRevert.map(({ name }) => name)],
-  };
 };
 
 /**

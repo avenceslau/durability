@@ -36,8 +36,15 @@ type InstalledTransforms = {
 
 const installedTransforms = new WeakMap<object, InstalledTransforms>();
 
+/**
+ * Runs `method` through the transforms installed on `startPrototype` and its
+ * ancestors. A wrapper passes the prototype it was installed on, so a
+ * `super.method()` call from an override reaches the base original instead of
+ * the instance's most-derived one again.
+ */
 function dispatchWithContext(
   instance: object,
+  startPrototype: object,
   method: string,
   args: unknown[],
   context: TransformContext
@@ -47,7 +54,7 @@ function dispatchWithContext(
   }
 
   const states: InstalledTransforms[] = [];
-  let currentPrototype: object | null = Object.getPrototypeOf(instance);
+  let currentPrototype: object | null = startPrototype;
   while (currentPrototype) {
     const state = installedTransforms.get(currentPrototype);
     if (state?.originals.has(method)) {
@@ -123,7 +130,13 @@ export class TransformContextTarget<
       throw new TypeError('Unable to resolve transform context target');
     }
 
-    return dispatchWithContext(target.instance, method, args, target.context);
+    return dispatchWithContext(
+      target.instance,
+      Object.getPrototypeOf(target.instance),
+      method,
+      args,
+      target.context
+    );
   }
 }
 
@@ -291,7 +304,7 @@ export function applyTransforms<
       Object.defineProperty(prototype, method, {
         ...descriptor,
         value: function (this: object, ...args: unknown[]) {
-          return dispatchWithContext(this, method, args, {});
+          return dispatchWithContext(this, prototype, method, args, {});
         },
       });
     }

@@ -137,6 +137,31 @@ describe('topology client', () => {
     expect(await client.get('acme')).toMatchObject({ version: 2 });
   });
 
+  it('keeps refusing an older version after a missing read', async () => {
+    const answers: Array<TopologySnapshot | null> = [
+      snapshot(2),
+      null,
+      snapshot(1),
+      snapshot(3),
+    ];
+    const { client, reads } = clientFor(async () => {
+      const answer = answers.shift();
+      return answer ? encodeSnapshot(answer) : null;
+    });
+    await client.get('acme');
+    vi.advanceTimersByTime(10_000);
+    expect(await reasonOf(client.get('acme'))).toBe('missing');
+
+    vi.advanceTimersByTime(1_000);
+    expect(await reasonOf(client.get('acme'))).toBe('missing');
+    expect(reads).toHaveBeenCalledTimes(3);
+    await reasonOf(client.get('acme'));
+    expect(reads).toHaveBeenCalledTimes(3);
+
+    vi.advanceTimersByTime(1_000);
+    expect(await client.get('acme')).toMatchObject({ version: 3 });
+  });
+
   it('accepts a lower version from a coordinator the group moved to', async () => {
     let current = snapshot(40);
     const { client } = clientFor(async () => encodeSnapshot(current));

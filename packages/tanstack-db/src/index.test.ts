@@ -310,6 +310,29 @@ describe('socketCollectionOptions', () => {
     expect(order).toEqual(['accepted', 'synced', 'accepted', 'synced']);
   });
 
+  it('awaitSynced counts a confirming write that arrived before the RPC answered', async () => {
+    vi.useFakeTimers();
+    const fake = fakeConnection();
+    fake.rpc.create.mockImplementation(async (row: Todo) => {
+      fake.emit('created', row);
+      return row;
+    });
+    const order: string[] = [];
+    const todos = createTodos(fake, {
+      onInsert: async ({ transaction, rpc, awaitSynced }) => {
+        await rpc.create(transaction.mutations[0].modified);
+        await awaitSynced({ timeoutMs: 1_000 });
+        order.push('synced');
+      },
+    });
+    fake.resync();
+    await todos.preload();
+
+    todos.insert(todo('a'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(order).toEqual(['synced']);
+  });
+
   it('exposes utils.write for authoritative changes outside the event stream', async () => {
     const fake = fakeConnection();
     const todos = createTodos(fake);

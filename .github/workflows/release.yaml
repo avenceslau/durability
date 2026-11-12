@@ -62,3 +62,6 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/docs-deploy.yaml
+    # A called workflow reads no secrets unless its caller passes them, not even
+    # those of the docs-production environment its deploy job uses.
+    secrets: inherit

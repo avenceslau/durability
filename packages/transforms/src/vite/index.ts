@@ -87,9 +87,13 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         return null;
       }
 
+      // TypeScript forbids JSX in .ts files, and parsing them with JSX enabled
+      // rejects valid `<T>value` type assertions.
       const ast = parseJavaScript(code, {
         sourceType: 'unambiguous',
-        plugins: ['decorators-legacy', 'jsx', 'typescript'],
+        plugins: /\.[cm]?ts$/.test(cleanId)
+          ? ['decorators-legacy', 'typescript']
+          : ['decorators-legacy', 'jsx', 'typescript'],
       });
       const program = syntaxNode(
         (ast as unknown as { program?: unknown }).program

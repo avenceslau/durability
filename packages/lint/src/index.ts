@@ -103,6 +103,21 @@ const propertyName = (node: AstNode | undefined) => {
   return undefined;
 };
 
+const resolveVariable = (context: RuleContext, node: AstNode | undefined) => {
+  if (node?.type !== 'Identifier' || !node.name) {
+    return undefined;
+  }
+  let scope: Scope | null = context.sourceCode.getScope(node);
+  while (scope) {
+    const variable = scope.set.get(node.name);
+    if (variable) {
+      return variable;
+    }
+    scope = scope.upper;
+  }
+  return undefined;
+};
+
 const durabilityConstructors = new Set([
   'Durability',
   'DurabilityAlarms',
@@ -110,8 +125,42 @@ const durabilityConstructors = new Set([
   'DurabilityScheduler',
 ]);
 
+/**
+ * The name exported by `durability` that a `new` callee is bound to, so
+ * `new Jobs()` after `import { Durability as Jobs }` and `new d.Durability()`
+ * after `import * as d` both resolve to `Durability`.
+ */
+const durabilityImportName = (
+  context: RuleContext,
+  callee: AstNode
+): string | undefined => {
+  const namespaced = callee.type === 'MemberExpression';
+  const variable = resolveVariable(
+    context,
+    namespaced ? callee.object : callee
+  );
+  const definition = variable?.defs[0];
+  if (
+    definition?.type !== 'ImportBinding' ||
+    propertyName(definition.node.parent?.source) !== 'durability'
+  ) {
+    return undefined;
+  }
+  if (namespaced) {
+    return definition.node.type === 'ImportNamespaceSpecifier'
+      ? propertyName(callee.property)
+      : undefined;
+  }
+  return definition.node.type === 'ImportSpecifier'
+    ? propertyName(definition.node.imported)
+    : undefined;
+};
+
 /** Class fields holding a durability helper, by declared name. */
-const durabilityFields = (members: AstNode[]): Set<string> => {
+const durabilityFields = (
+  context: RuleContext,
+  members: AstNode[]
+): Set<string> => {
   const fields = new Set<string>();
   for (const member of members) {
     if (member.type !== 'PropertyDefinition') {
@@ -119,10 +168,14 @@ const durabilityFields = (members: AstNode[]): Set<string> => {
     }
     const name = propertyName(member.key);
     const value = nodeValue(member.value);
-    const constructed =
-      value?.type === 'NewExpression' &&
-      value.callee?.type === 'Identifier' &&
-      durabilityConstructors.has(value.callee.name ?? '');
+    const callee = value?.type === 'NewExpression' ? value.callee : undefined;
+    // An unimported bare name, or one imported through a local re-export, is
+    // still recognized by its spelling.
+    const constructorName =
+      callee &&
+      (durabilityImportName(context, callee) ??
+        (callee.type === 'Identifier' ? callee.name : undefined));
+    const constructed = durabilityConstructors.has(constructorName ?? '');
     const created =
       value?.type === 'CallExpression' &&
       propertyName(value.callee) === 'createDurability';
@@ -184,7 +237,7 @@ const alarmRunnerRule = {
           member.type === 'MethodDefinition' &&
           propertyName(member.key) === 'alarm'
       );
-      const fields = durabilityFields(members);
+      const fields = durabilityFields(context, members);
       const statements = bodyMembers(nodeValue(alarm?.value));
       const usesDurability =
         fields.size > 0 ||
@@ -315,22 +368,6 @@ const transformNextOnceRule = {
     const contextBindingRoots = new Map<ScopeVariable, ScopeVariable>();
     const calledBindings = new Set<ScopeVariable>();
 
-    const resolveVariable = (node: AstNode | undefined) => {
-      if (node?.type !== 'Identifier' || !node.name) {
-        return undefined;
-      }
-
-      let scope: Scope | null = context.sourceCode.getScope(node);
-      while (scope) {
-        const variable = scope.set.get(node.name);
-        if (variable) {
-          return variable;
-        }
-        scope = scope.upper;
-      }
-      return undefined;
-    };
-
     const declaredVariable = (node: AstNode, name: string | undefined) =>
       context.sourceCode
         .getDeclaredVariables(node)
@@ -408,7 +445,7 @@ const transformNextOnceRule = {
     };
 
     const nextBindingRoot = (node: AstNode | undefined) => {
-      const directBinding = resolveVariable(node);
+      const directBinding = resolveVariable(context, node);
       if (directBinding) {
         return nextBindingRoots.get(directBinding);
       }
@@ -419,7 +456,7 @@ const transformNextOnceRule = {
         return undefined;
       }
 
-      const contextBinding = resolveVariable(node.object);
+      const contextBinding = resolveVariable(context, node.object);
       return contextBinding
         ? contextBindingRoots.get(contextBinding)
         : undefined;
@@ -475,21 +512,6 @@ const durabilityMigrationsRule = {
     const migrationCalls: AstNode[] = [];
     const fieldWrites = new WeakMap<AstNode, Map<string, FieldWrite[]>>();
 
-    const resolveVariable = (node: AstNode | undefined) => {
-      if (node?.type !== 'Identifier' || !node.name) {
-        return undefined;
-      }
-      let scope: Scope | null = context.sourceCode.getScope(node);
-      while (scope) {
-        const variable = scope.set.get(node.name);
-        if (variable) {
-          return variable;
-        }
-        scope = scope.upper;
-      }
-      return undefined;
-    };
-
     const classForThis = (node: AstNode) => {
       let current = node.parent;
       while (current) {
@@ -525,13 +547,13 @@ const durabilityMigrationsRule = {
         return false;
       }
       if (node.type === 'NewExpression') {
-        const constructor = resolveVariable(node.callee);
+        const constructor = resolveVariable(context, node.callee);
         if (constructor && queryBuilderConstructors.has(constructor)) {
           return true;
         }
       }
       if (node.type === 'Identifier') {
-        const variable = resolveVariable(node);
+        const variable = resolveVariable(context, node);
         if (!variable || seenVariables.has(variable)) {
           return false;
         }
@@ -650,7 +672,7 @@ const durabilityMigrationsRule = {
             }
           }
           if (
-            source === '@durability/storage' &&
+            (source === '@durability/storage' || source === 'durability') &&
             importedName === 'DurableMigrations'
           ) {
             for (const variable of variables) {
@@ -662,9 +684,10 @@ const durabilityMigrationsRule = {
       VariableDeclarator(node: AstNode) {
         const satisfiesType =
           node.init?.type === 'TSSatisfiesExpression'
-            ? resolveVariable(node.init.typeAnnotation?.typeName)
+            ? resolveVariable(context, node.init.typeAnnotation?.typeName)
             : undefined;
         const declaredType = resolveVariable(
+          context,
           node.id?.typeAnnotation?.typeAnnotation?.typeName
         );
         if (

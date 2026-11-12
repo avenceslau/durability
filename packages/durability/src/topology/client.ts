@@ -44,6 +44,8 @@ export type TopologyClientConfig<Meta = undefined> = {
 type Entry<Meta> = {
   /** The last good published snapshot. */
   view?: TopologyView<Meta>;
+  /** Outlives `view`, which a missing read drops, so an older snapshot stays refused. */
+  newestSeen?: { coordinator: string; version: number };
   staleUntil: number;
   /** When the next get reads the store again. */
   expiresAt: number;
@@ -119,34 +121,47 @@ export class TopologyClient<Meta = undefined> {
     const result = await this.#read(group);
     const now = Date.now();
 
+    let failure: NonNullable<Entry<Meta>['failure']>;
     if ('snapshot' in result) {
       const { snapshot } = result;
       // The store is eventually consistent; a lagging replica must not move readers backwards.
       // Versions only compare within one coordinator: a group moved to another starts over.
-      const keep =
-        previous?.view !== undefined &&
-        previous.view.coordinator === snapshot.coordinator &&
-        previous.view.version > snapshot.version;
-      const view = keep
-        ? previous.view!
-        : { ...snapshot, source: 'published' as const, fetchedAt: now };
-      const expiresAt = now + jittered(this.#ttlMs);
-      this.#remember(group, {
-        view,
-        expiresAt,
-        staleUntil: expiresAt + (this.#config.staleIfErrorMs ?? 0),
-      });
-      return view;
+      const outdated =
+        previous?.newestSeen !== undefined &&
+        previous.newestSeen.coordinator === snapshot.coordinator &&
+        previous.newestSeen.version > snapshot.version;
+      if (!outdated || previous.view !== undefined) {
+        const view = outdated
+          ? previous.view!
+          : { ...snapshot, source: 'published' as const, fetchedAt: now };
+        const expiresAt = now + jittered(this.#ttlMs);
+        this.#remember(group, {
+          view,
+          newestSeen: {
+            coordinator: view.coordinator,
+            version: view.version,
+          },
+          expiresAt,
+          staleUntil: expiresAt + (this.#config.staleIfErrorMs ?? 0),
+        });
+        return view;
+      }
+      // Only a failed read leaves a newer version seen without a view, so the
+      // older snapshot answers the same way that read did.
+      failure = previous.failure!;
+    } else {
+      failure = result.failure;
     }
 
     const entry: Entry<Meta> = {
       // A missing group is not an error, so nothing stale may be served for it.
-      ...(result.failure.reason === 'missing' || !previous?.view
+      ...(failure.reason === 'missing' || !previous?.view
         ? {}
         : { view: previous.view }),
+      ...(previous?.newestSeen ? { newestSeen: previous.newestSeen } : {}),
       staleUntil: previous?.staleUntil ?? 0,
       expiresAt: now + jittered(this.#negativeTtlMs),
-      failure: result.failure,
+      failure,
     };
     this.#remember(group, entry);
     return this.#fallback(group, entry);

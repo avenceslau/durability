@@ -37,7 +37,7 @@ class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead.
+When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead. Helpers imported from `durability` under another name (`import { Durability as Jobs }`) or through a namespace import (`new durability.Durability(...)`) are recognized too.
 
 ## `transform-next-once`
 
@@ -54,7 +54,7 @@ Caller and callee handlers are checked separately. The rule supports inline cont
 
 ## `durability-migrations-only`
 
-Every static `CREATE TABLE`, `CREATE TEMP TABLE`, or `CREATE TEMPORARY TABLE` statement must live in a migration list typed with `DurableMigrations`. Keywords are matched case-insensitively across whitespace. The rule supports explicit annotations, `satisfies`, and aliased type imports from `@durability/storage`.
+Every static `CREATE TABLE`, `CREATE TEMP TABLE`, or `CREATE TEMPORARY TABLE` statement must live in a migration list typed with `DurableMigrations`. Keywords are matched case-insensitively across whitespace. The rule supports explicit annotations, `satisfies`, and aliased type imports from `durability` or `@durability/storage`.
 
 ```ts
 import type { DurableMigrations } from '@durability/storage';
