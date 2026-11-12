@@ -1497,7 +1497,7 @@ type LogColdStorage<Body> = {
 };
 ```
 
-`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
+`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log records the run's first and last offsets durably **before** calling `write`, then stores the locator in a durable segment index, deletes the records, and clears the recorded run in one transaction, so a crash at any point leaves either the records in the object or a written, readable segment, never records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped. Writes are at-least-once, but a retried write for a given first offset always carries the same records — whether the earlier write failed, lost its response, or the object restarted, and however many records were appended since — so key segments by first offset and refuse to overwrite.
 
 `read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
 
@@ -1521,9 +1521,9 @@ if (lease) {
 }
 ```
 
-`lease` claims a range of offsets durably **before** returning the records, so a second caller gets `undefined` rather than the same offsets. `undefined` means nothing is available right now — either the consumer is at `maxParallelism` or the log has no unleased records — so treat it as a signal to back off.
+`lease` claims a range of offsets durably **before** returning the records, so a second caller gets the next range or `undefined` rather than the same offsets. That holds for overlapping calls too, including ones that read a flushed range from cold storage: the transaction that records the range first checks that no other call took those offsets or the last free slot meanwhile, and selects again if one did. `undefined` means nothing is available right now — the consumer is at `maxParallelism`, the log has no unleased records, or other calls kept taking the ranges this one selected — so treat it as a signal to back off.
 
-A range is held until it is acked, nacked, or its lease expires after `leaseMs`. Redelivery always issues a **fresh `batchId`**, which fences the previous holder: its `ack` throws `LogLeaseError` rather than committing a range someone else now owns. Double settlement throws for the same reason.
+A range is held until it is acked, nacked, or its lease expires after `leaseMs`. Redelivery always issues a **fresh `batchId`**, which fences the previous holder: its `ack` throws `LogLeaseError` rather than committing a range someone else now owns. Double settlement throws for the same reason, and so does an `ack` or `nack` naming a consumer other than the one holding the batch, which leaves the range untouched.
 
 `maxParallelism` lets one consumer hold several ranges at once, and `ack` commits only over an **unbroken run** of settled ranges starting at the cursor. Acking a later range while an earlier one is still in flight advances nothing, so parallelism never skips offsets. Leases are durable, so eviction mid-flight does not release a range early, and a range that retention flushed while it was held is rehydrated on redelivery.
 

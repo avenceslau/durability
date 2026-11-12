@@ -1,5 +1,8 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
+/** SQLite-backed Durable Objects reject a query with more bound parameters. */
+const maxBoundParameters = 100;
+
 export class NodeSqlStorage {
   private readonly database = new DatabaseSync(':memory:');
 
@@ -61,6 +64,11 @@ export class NodeSqlStorage {
     query: string,
     ...bindings: SqlStorageValue[]
   ): SqlStorageCursor<T> {
+    if (bindings.length > maxBoundParameters) {
+      throw new Error(
+        `too many SQL variables: ${bindings.length} bound parameters exceed ${maxBoundParameters}`
+      );
+    }
     const statements = query.split(';').filter((statement) => statement.trim());
     if (bindings.length === 0 && statements.length > 1) {
       this.database.exec(query);

@@ -118,6 +118,22 @@ export class LogTestObject extends DurableObject<Env> {
     return this.log.cursor(consumer);
   }
 
+  /**
+   * Leases one range, acks `count` more behind it, then acks it last. Runs in
+   * the object so the late lease cannot expire over that many round trips.
+   */
+  async ackLateLease(consumer: string, count: number) {
+    const late = await this.log.lease(consumer, 1);
+    for (let index = 0; index < count; index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const lease = await this.log.lease(consumer, 1);
+      // eslint-disable-next-line no-await-in-loop
+      await this.log.ack(consumer, lease!.batchId);
+    }
+    await this.log.ack(consumer, late!.batchId);
+    return this.log.cursor(consumer);
+  }
+
   forgetColdBefore(offset: number) {
     return this.log.forgetColdBefore(offset);
   }
