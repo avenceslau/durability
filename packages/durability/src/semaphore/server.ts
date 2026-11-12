@@ -510,9 +510,18 @@ export class DurabilitySemaphoreServer {
       ? budgets(this.#leases.provisioning, limit)
       : { grants: limit, leases: 0, shared: false };
     let leased = 0;
-    if (this.#leases && budget.shared) {
+    // A group's limit counts its live lease footprint in every mode, retired
+    // leases included until their clients confirm. Kept apart from `used`,
+    // which the lease pass reads as grants only.
+    const leasedByGroup = new Map<string, number>();
+    if (this.#leases) {
       for (const lease of store.listLeases()) {
-        leased += leaseFootprint(lease);
+        const footprint = leaseFootprint(lease);
+        leased += footprint;
+        leasedByGroup.set(
+          lease.grp,
+          (leasedByGroup.get(lease.grp) ?? 0) + footprint
+        );
       }
     }
     let remaining = budget.grants - total - (budget.shared ? leased : 0);
@@ -547,7 +556,9 @@ export class DurabilitySemaphoreServer {
 
       const groupUsed = used.get(demand.group) ?? 0;
       const groupRemaining =
-        policy.limit === undefined ? Infinity : policy.limit - groupUsed;
+        policy.limit === undefined
+          ? Infinity
+          : policy.limit - groupUsed - (leasedByGroup.get(demand.group) ?? 0);
       const give = Math.max(
         0,
         Math.min(demand.count, groupRemaining, remaining)
