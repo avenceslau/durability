@@ -82,7 +82,7 @@ const trim = sourceExcerpt(
   'trim',
   'Flush or delete the oldest records',
   '  async trim(): Promise<number> {',
-  '      if (deleted < expiring.length) {\n        return removed;\n      }\n    }\n  }'
+  '        (cutoff !== undefined && row.appended_at < cutoff)\n      );\n    });\n  }'
 );
 const claimExpired = sourceExcerpt(
   log,
@@ -266,7 +266,7 @@ export const walkthrough = validateWalkthrough({
     },
     sqlite: {
       description:
-        'Every log table is keyed by channel first. durability_log_records holds the hot window by channel and offset, with a deduplication key unique per channel; durability_log_seq one row per channel with the next offset and byte count; durability_log_cursors one row per channel and consumer; durability_log_segments the cold index by channel and first offset. Leases add durability_log_leases and durability_log_allocations.',
+        'Every log table is keyed by channel first. durability_log_records holds the hot window by channel and offset, with a deduplication key unique per channel; durability_log_seq one row per channel with the next offset and byte count; durability_log_cursors one row per channel and consumer; durability_log_segments the cold index by channel and first offset; durability_log_pending_flushes the range of an unfinished cold flush, one row per channel. Leases add durability_log_leases and durability_log_allocations.',
       href: '/reference/storage/',
       source: 'construct',
     },
@@ -577,7 +577,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:log'],
           source: sourceFocus(
             trim,
-            'const expiring = takeWhile(oldest, (row, index) => {',
+            'return takeWhile(oldest, (row, index) => {',
             '(cutoff !== undefined && row.appended_at < cutoff)'
           ),
           durable: 'Rows are read, not changed.',
@@ -585,14 +585,30 @@ export const walkthrough = validateWalkthrough({
           status: 'normal',
         },
         {
+          id: 'record',
+          title: 'Record the range before writing',
+          description:
+            'With cold storage, a range left by an unfinished flush is flushed again exactly as recorded. Otherwise the selected run’s first and last offsets go into durability_log_pending_flushes before anything is written, so a retry cannot widen the run.',
+          stage: ['focus:sqlite'],
+          source: sourceFocus(
+            trim,
+            'const pending = readPendingFlush(sql, this.#channel);',
+            'setPendingFlush(sql, this.#channel, flush);'
+          ),
+          durable:
+            'The range in durability_log_pending_flushes; the records are still hot.',
+          volatile: 'The rows about to be written.',
+          status: 'commit',
+        },
+        {
           id: 'write',
           title: 'Write the segment to R2 first',
           description:
-            'The run goes to cold.write with the log’s channel and its first and last offsets. The example puts it under the object ID and first offset, refusing to overwrite. If the write fails, trim() throws with every record still in the object and the named alarm retries.',
+            'The run goes to cold.write with the log’s channel and its first and last offsets. The example puts it under the object ID and first offset, refusing to overwrite. If the write fails, trim() throws with every record still in the object and the range still recorded, and the named alarm retries.',
           stage: ['focus:r2'],
           source: sourceFocus(
             trim,
-            'if (this.#cold) {',
+            'const locator = await cold.write({',
             "throw new TypeError('Cold storage must return a non-empty locator');"
           ),
           durable: 'The R2 object; the records are still hot.',
@@ -601,25 +617,25 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'index',
-          title: 'Index the segment, then delete hot rows',
+          title: 'Index, delete, and clear in one transaction',
           description:
-            'The locator is stored in durability_log_segments before the records are deleted, so a crash in between leaves a written, readable segment.',
+            'The locator goes into durability_log_segments, the hot records are deleted, and the recorded range is cleared in one transaction, so a crash leaves either the records hot with their range recorded or a readable segment. If an overlapping trim() already finished the range, the transaction changes nothing.',
           stage: ['focus:sqlite'],
           source: sourceFocus(
             trim,
-            'insertSegment(this.#engine.sql, this.#channel, {',
-            'trimThrough(sql, this.#channel, last.offset + 1, expiring.length)'
+            'insertSegment(transaction, this.#channel, {',
+            'return trimThrough('
           ),
           durable:
-            'The segment row, then fewer records and a smaller byte count.',
+            'The segment row, fewer records, a smaller byte count, and no recorded range.',
           volatile: 'Nothing.',
           status: 'commit',
         },
         {
-          id: 'rewrite',
-          title: 'A retried flush may cover different records',
+          id: 'retry',
+          title: 'A retried flush carries the same records',
           description:
-            'After a crash before deletion, the next sweep recomputes the run, which may now be wider. The key holds only the first offset, so R2 refuses the put and returns null, which the example ignores; the index then records the new last offset and the hot rows are deleted. The refusing put is safe only if a retry has exactly the same records, and this example does not persist the run’s boundaries.',
+            'After a failed write, a lost response, or a crash before the transaction, the next sweep finds the recorded range and writes exactly those records again under the same first offset, however many records were appended meanwhile. R2 refuses the put and returns null, which the example ignores; that is safe because the stored object holds the same records.',
           stage: ['focus:r2'],
           source: sourceFocus(
             partition,
@@ -627,9 +643,9 @@ export const walkthrough = validateWalkthrough({
             'return locator;'
           ),
           durable:
-            'The first R2 object, an index row past its last record, and the deleted hot rows.',
+            'The R2 object, then the index row, the deleted hot rows, and the cleared range.',
           volatile: 'The null result of the refused put.',
-          status: 'gap',
+          status: 'recovery',
         },
         {
           id: 'rehydrate',

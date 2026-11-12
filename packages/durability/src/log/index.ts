@@ -54,6 +54,14 @@ const logSegmentRowSchema = v.object({
 
 type LogSegmentRow = v.InferOutput<typeof logSegmentRowSchema>;
 
+/** A range of records committed to a cold write that has not been indexed. */
+const pendingFlushRowSchema = v.object({
+  first_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  last_offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
+
+type PendingFlushRow = v.InferOutput<typeof pendingFlushRowSchema>;
+
 /**
  * One in-flight or settled range of offsets held by a consumer. A range is
  * redelivered under a fresh `batch_id`, so an ack from a previous holder is
@@ -342,6 +350,39 @@ const insertSegment = (
     row.locator,
     row.bytes,
     row.flushed_at
+  );
+};
+
+const readPendingFlush = (
+  sql: SqlStorage,
+  channel: string
+): PendingFlushRow | undefined =>
+  v.parse(
+    v.optional(pendingFlushRowSchema),
+    sql
+      .exec(
+        `SELECT first_offset, last_offset FROM durability_log_pending_flushes
+         WHERE channel = ?`,
+        channel
+      )
+      .toArray()[0]
+  );
+
+const setPendingFlush = (
+  sql: SqlStorage,
+  channel: string,
+  row: PendingFlushRow
+): void => {
+  sql.exec(
+    `INSERT INTO durability_log_pending_flushes
+       (channel, first_offset, last_offset)
+     VALUES (?, ?, ?)
+     ON CONFLICT(channel) DO UPDATE SET
+       first_offset = excluded.first_offset,
+       last_offset = excluded.last_offset`,
+    channel,
+    row.first_offset,
+    row.last_offset
   );
 };
 
@@ -958,8 +999,13 @@ export class DurabilityLog<Body = unknown> {
     if (!this.#retention) {
       return 0;
     }
-    const { maxAgeMs, maxRecords, maxBytes } = this.#retention;
-    const cutoff = maxAgeMs === undefined ? undefined : Date.now() - maxAgeMs;
+    if (!this.#cold) {
+      return this.#deleteExpired(this.#retention);
+    }
+    return this.#flushExpired(this.#retention, this.#cold);
+  }
+
+  #deleteExpired(retention: LogRetention): number {
     let removed = 0;
     for (;;) {
       const oldest = listOldest(
@@ -967,67 +1013,147 @@ export class DurabilityLog<Body = unknown> {
         this.#channel,
         this.#maxBatchSize
       );
-      if (oldest.length === 0) {
-        return removed;
-      }
-      const excess =
-        maxRecords === undefined
-          ? 0
-          : Math.max(
-              0,
-              countRecords(this.#engine.sql, this.#channel) - maxRecords
-            );
-      const heldBytes =
-        maxBytes === undefined
-          ? 0
-          : totalBytes(this.#engine.sql, this.#channel);
-      let overBytes = Math.max(0, heldBytes - (maxBytes ?? 0));
-      const expiring = takeWhile(oldest, (row, index) => {
-        const reclaiming = overBytes > 0;
-        overBytes -= row.bytes;
-        return (
-          index < excess ||
-          reclaiming ||
-          (cutoff !== undefined && row.appended_at < cutoff)
-        );
-      });
+      const expiring = this.#expiring(retention, oldest);
       if (expiring.length === 0) {
         return removed;
       }
-      const first = expiring[0]!;
       const last = expiring[expiring.length - 1]!;
-      if (this.#cold) {
-        const records = expiring.map((row) => this.#record(row));
-        // eslint-disable-next-line no-await-in-loop
-        const locator = await this.#cold.write({
-          channel: this.#channel,
-          firstOffset: first.offset,
-          lastOffset: last.offset,
-          records,
-        });
-        if (typeof locator !== 'string' || locator.length === 0) {
-          throw new TypeError('Cold storage must return a non-empty locator');
-        }
-        // Indexed before deletion: a crash in between leaves the segment
-        // written and readable, never records that point nowhere.
-        insertSegment(this.#engine.sql, this.#channel, {
-          first_offset: first.offset,
-          last_offset: last.offset,
-          locator,
-          bytes: expiring.reduce((total, row) => total + row.bytes, 0),
-          flushed_at: Date.now(),
-        });
-      }
       const deleted = this.#engine.transactionSync((sql) =>
         trimThrough(sql, this.#channel, last.offset + 1, expiring.length)
       );
       removed += deleted;
-      // Records are flushed before deletion, so stopping on partial progress
-      // keeps the next pass from writing the remainder a second time.
       if (deleted < expiring.length) {
         return removed;
       }
     }
+  }
+
+  /**
+   * Each flush records its range before the cold write, then indexes the
+   * segment, deletes the records, and clears the range in one transaction. A
+   * retried write for a first offset therefore carries the same records,
+   * whether the earlier write failed, lost its response, or the object
+   * restarted, and however many records were appended meanwhile.
+   */
+  async #flushExpired(
+    retention: LogRetention,
+    cold: LogColdStorage<Body>
+  ): Promise<number> {
+    let removed = 0;
+    for (;;) {
+      const sql = this.#engine.sql;
+      const oldest = listOldest(sql, this.#channel, this.#maxBatchSize);
+      if (oldest.length === 0) {
+        return removed;
+      }
+      const hotOffset = oldest[0]!.offset;
+
+      const flushed = findSegment(sql, this.#channel, hotOffset);
+      if (flushed) {
+        // Earlier versions indexed a segment outside the transaction that
+        // deleted its records, so a crash in between left both. The records
+        // are readable from cold storage; only the deletion is left.
+        removed += this.#engine.transactionSync((transaction) =>
+          trimThrough(
+            transaction,
+            this.#channel,
+            flushed.last_offset + 1,
+            flushed.last_offset - hotOffset + 1
+          )
+        );
+        continue;
+      }
+
+      const pending = readPendingFlush(sql, this.#channel);
+      // A pending range that no longer starts at the oldest record lost its
+      // records to a trim while cold storage was not configured.
+      let flush = pending?.first_offset === hotOffset ? pending : undefined;
+      if (!flush) {
+        const expiring = this.#expiring(retention, oldest);
+        if (expiring.length === 0) {
+          return removed;
+        }
+        flush = {
+          first_offset: hotOffset,
+          last_offset: expiring[expiring.length - 1]!.offset,
+        };
+        setPendingFlush(sql, this.#channel, flush);
+      }
+      const count = flush.last_offset - flush.first_offset + 1;
+      const rows = readRecords(sql, this.#channel, flush.first_offset, count);
+
+      // eslint-disable-next-line no-await-in-loop
+      const locator = await cold.write({
+        channel: this.#channel,
+        firstOffset: flush.first_offset,
+        lastOffset: flush.last_offset,
+        records: rows.map((row) => this.#record(row)),
+      });
+      if (typeof locator !== 'string' || locator.length === 0) {
+        throw new TypeError('Cold storage must return a non-empty locator');
+      }
+
+      const deleted = this.#engine.transactionSync((transaction) => {
+        const current = readPendingFlush(transaction, this.#channel);
+        const finishedByAnotherTrim =
+          current === undefined ||
+          current.first_offset !== flush.first_offset ||
+          current.last_offset !== flush.last_offset;
+        // The overlapping call continues past this range, so this one stops.
+        if (finishedByAnotherTrim) {
+          return 0;
+        }
+        insertSegment(transaction, this.#channel, {
+          first_offset: flush.first_offset,
+          last_offset: flush.last_offset,
+          locator,
+          bytes: rows.reduce((total, row) => total + row.bytes, 0),
+          flushed_at: Date.now(),
+        });
+        transaction.exec(
+          'DELETE FROM durability_log_pending_flushes WHERE channel = ?',
+          this.#channel
+        );
+        return trimThrough(
+          transaction,
+          this.#channel,
+          flush.last_offset + 1,
+          count
+        );
+      });
+      removed += deleted;
+      if (deleted < count) {
+        return removed;
+      }
+    }
+  }
+
+  /** The oldest records retention expires now, in offset order. */
+  #expiring(
+    retention: LogRetention,
+    oldest: readonly LogRecordRow[]
+  ): LogRecordRow[] {
+    const { maxAgeMs, maxRecords, maxBytes } = retention;
+    const cutoff = maxAgeMs === undefined ? undefined : Date.now() - maxAgeMs;
+    const excess =
+      maxRecords === undefined
+        ? 0
+        : Math.max(
+            0,
+            countRecords(this.#engine.sql, this.#channel) - maxRecords
+          );
+    const heldBytes =
+      maxBytes === undefined ? 0 : totalBytes(this.#engine.sql, this.#channel);
+    let overBytes = Math.max(0, heldBytes - (maxBytes ?? 0));
+    return takeWhile(oldest, (row, index) => {
+      const reclaiming = overBytes > 0;
+      overBytes -= row.bytes;
+      return (
+        index < excess ||
+        reclaiming ||
+        (cutoff !== undefined && row.appended_at < cutoff)
+      );
+    });
   }
 
   /**

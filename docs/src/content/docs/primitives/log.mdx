@@ -9,7 +9,7 @@ Import `DurabilityLog` from `durability`. Use retained records when consumers ne
 
 `DurabilityLog` adds no stream service of its own. It uses the Durable Object it is constructed in:
 
-- **`ctx.storage.sql`** holds the hot records, the offset sequence, every consumer's cursor, the index of flushed segments, and, with leases, each held range, all keyed by the log's [channel](#channels). A partition's history and positions belong to that object alone.
+- **`ctx.storage.sql`** holds the hot records, the offset sequence, every consumer's cursor, the index of flushed segments, the range of a cold flush still in progress, and, with leases, each held range, all keyed by the log's [channel](#channels). A partition's history and positions belong to that object alone.
 - **The object's one alarm** is never set by the log. The log joins the object's one scheduler and claims its channel there, but registers no due work with it, so retention runs only when your code calls `trim()`, typically from a `DurabilityAlarms` handler whose `alarm()` your class delegates to `scheduler.alarm()`.
 - **RPC from outside:** producers call your object to append and pollers call it to read and commit. Cold segments are the only external I/O, written by `trim()` and read back for consumers behind the hot window.
 - **The live instance** holds only configuration. Lease expiry is a stored timestamp rather than a timer, so eviction loses nothing the log needs. A producer whose reply was lost retries with the same deduplication keys.
@@ -22,13 +22,13 @@ Import `DurabilityLog` from `durability`. Use retained records when consumers ne
 
 ## Behind the scenes
 
-**Durable state:** `durability_log_records` holds hot records by `(channel, offset)`, with a retained deduplication key unique within the channel. Cursor, sequence/byte-count, and cold-segment metadata tables track readers and storage, each keyed by channel first. Optional leasing adds durable lease/allocation tables, keyed the same way.
+**Durable state:** `durability_log_records` holds hot records by `(channel, offset)`, with a retained deduplication key unique within the channel. Cursor, sequence/byte-count, and cold-segment metadata tables track readers and storage, and `durability_log_pending_flushes` holds the range of a cold flush that has not finished, each keyed by channel first. Optional leasing adds durable lease/allocation tables, keyed the same way.
 
 `append()` allocates offsets and inserts the batch atomically. Reading does not acknowledge anything: `commit()` only advances one consumer cursor. Optional `lease()` persists an exclusive range before returning records; fresh batch IDs fence expired or superseded holders, and acknowledgements advance only across contiguous settled ranges.
 
 **Not an automatic background loop:** the log joins the object's one scheduler but does not register a due-work participant. Nothing periodically calls `trim()` for you. Compose a named alarm when retention needs a clock.
 
-**Cold-storage failure:** the external segment is written before its locator is committed and hot records are removed. A failed write preserves hot data. A crash after the remote write may repeat it or leave an orphan. The retry recomputes the run, so it may cover more records than the first write; a key that refuses to overwrite is safe only if retries keep exactly the same segment boundaries. The cold store's lifecycle and removal of obsolete locators are application policy.
+**Cold-storage failure:** the run's first and last offsets are recorded before the external segment is written, and its locator is committed, its hot records removed, and the recorded run cleared in one transaction. A failed write preserves hot data. A crash after the remote write may repeat it, and the retry carries exactly the same records under the same first offset, so a key that refuses to overwrite is safe. The cold store's lifecycle and removal of obsolete locators are application policy.
 
 **Lifetime:** retention ignores consumer cursors. A slow reader can lose readable history and gets `LogTruncatedError`. Append deduplication ends when the original hot record is flushed or deleted. Processing can repeat after an effect succeeds but before cursor/lease settlement, so effects still need idempotency.
 
@@ -114,7 +114,7 @@ type LogColdStorage<Body> = {
 };
 ```
 
-`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once. A retried flush recomputes the run and may cover more records than the object already written, so keying segments by first offset and refusing to overwrite is safe only if the retry writes exactly the same records. R2's conditional `put` returns `null` when it refuses, and the example above ignores that result.
+`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log records the run's first and last offsets durably **before** calling `write`, then stores the locator in a durable segment index, deletes the records, and clears the recorded run in one transaction, so a crash at any point leaves either the records in the object or a written, readable segment, never records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped. Writes are at-least-once, but a retried write for a given first offset always carries the same records — whether the earlier write failed, lost its response, or the object restarted, and however many records were appended since — so key segments by first offset and refuse to overwrite. R2's conditional `put` returns `null` when it refuses; the example above ignores that result, which is safe because the object already stored holds the same records.
 
 `read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
 

@@ -378,6 +378,221 @@ describe('log', () => {
     await expect(log.read({ from: 0 })).rejects.toThrow(LogTruncatedError);
   });
 
+  /** Keys segments by first offset and refuses to overwrite, as the README advises. */
+  const refusingColdStore = (): LogColdStorage<string> & {
+    written: Array<[number, number]>;
+  } => {
+    const segments = new Map<string, LogRecord<string>[]>();
+    const written: Array<[number, number]> = [];
+    return {
+      written,
+      write: async ({ records, firstOffset, lastOffset }) => {
+        written.push([firstOffset, lastOffset]);
+        const locator = `segment-${firstOffset}`;
+        if (!segments.has(locator)) {
+          segments.set(locator, records);
+        }
+        return locator;
+      },
+      read: async (locator) => segments.get(locator),
+    };
+  };
+
+  const readableOffsets = async (
+    log: DurabilityLog<string>
+  ): Promise<number[]> => {
+    const { nextOffset } = await log.bounds();
+    const offsets: number[] = [];
+    for (let from = 0; from < nextOffset; ) {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await log.read({ from });
+      offsets.push(...page.records.map((record) => record.offset));
+      from = page.nextOffset;
+    }
+    return offsets;
+  };
+
+  it('retries a failed cold write over the same range after more appends', async () => {
+    const storage = new FakeStorage();
+    const store = refusingColdStore();
+    let failing = true;
+    const cold: LogColdStorage<string> = {
+      write: async (segment) => {
+        if (failing) {
+          store.written.push([segment.firstOffset, segment.lastOffset]);
+          throw new Error('cold storage unavailable');
+        }
+        return store.write(segment);
+      },
+      read: store.read,
+    };
+    const options = { retention: { maxRecords: 1 }, cold };
+    const before = new DurabilityLog<string>({
+      context: contextFor(storage),
+      ...options,
+    });
+    await offsetsOf(before, ['a', 'b']);
+    await expect(before.trim()).rejects.toThrow('cold storage unavailable');
+
+    // The object restarts and more records arrive before the retry.
+    const after = new DurabilityLog<string>({
+      context: contextFor(storage),
+      ...options,
+    });
+    await offsetsOf(after, ['c', 'd']);
+    failing = false;
+    expect(await after.trim()).toBe(3);
+    expect(store.written).toEqual([
+      [0, 0],
+      [0, 0],
+      [1, 2],
+    ]);
+    expect(await readableOffsets(after)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('keeps every record readable when a retried write finds its segment already stored', async () => {
+    const store = refusingColdStore();
+    let loseResponse = true;
+    const { log } = fixture({
+      retention: { maxRecords: 1 },
+      cold: {
+        write: async (segment) => {
+          const locator = await store.write(segment);
+          if (loseResponse) {
+            loseResponse = false;
+            throw new Error('response lost');
+          }
+          return locator;
+        },
+        read: store.read,
+      },
+    });
+    await offsetsOf(log, ['a', 'b']);
+    await expect(log.trim()).rejects.toThrow('response lost');
+
+    await offsetsOf(log, ['c', 'd']);
+    expect(await log.trim()).toBe(3);
+    expect(store.written).toEqual([
+      [0, 0],
+      [0, 0],
+      [1, 2],
+    ]);
+    expect(await log.bounds()).toEqual({
+      oldestOffset: 0,
+      hotOffset: 3,
+      nextOffset: 4,
+    });
+    expect(await readableOffsets(log)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('flushes the same range when a second trim starts during a cold write', async () => {
+    const store = refusingColdStore();
+    let releaseFirstWrite!: () => void;
+    const firstWriteReleased = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    const { log, storage } = fixture({
+      retention: { maxRecords: 1 },
+      cold: {
+        write: async (segment) => {
+          const locator = await store.write(segment);
+          if (store.written.length === 1) {
+            await firstWriteReleased;
+          }
+          return locator;
+        },
+        read: store.read,
+      },
+    });
+    await offsetsOf(log, ['a', 'b']);
+    const first = log.trim();
+    await offsetsOf(log, ['c', 'd']);
+    const removedBySecond = await log.trim();
+    releaseFirstWrite();
+    const removedByFirst = await first;
+
+    expect(store.written).toEqual([
+      [0, 0],
+      [0, 0],
+      [1, 2],
+    ]);
+    expect(removedByFirst + removedBySecond).toBe(3);
+    expect(
+      storage.sql
+        .exec(
+          'SELECT first_offset, last_offset FROM durability_log_segments ORDER BY first_offset'
+        )
+        .toArray()
+    ).toEqual([
+      { first_offset: 0, last_offset: 0 },
+      { first_offset: 1, last_offset: 2 },
+    ]);
+    expect(await readableOffsets(log)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('drops a pending range whose records were deleted without cold storage', async () => {
+    const storage = new FakeStorage();
+    const store = refusingColdStore();
+    const retention = { maxRecords: 1 };
+    const failing = new DurabilityLog<string>({
+      context: contextFor(storage),
+      retention,
+      cold: {
+        write: async () => {
+          throw new Error('cold storage unavailable');
+        },
+        read: async () => undefined,
+      },
+    });
+    await offsetsOf(failing, ['a', 'b']);
+    await expect(failing.trim()).rejects.toThrow('cold storage unavailable');
+
+    const withoutCold = new DurabilityLog<string>({
+      context: contextFor(storage),
+      retention,
+    });
+    expect(await withoutCold.trim()).toBe(1);
+
+    const withCold = new DurabilityLog<string>({
+      context: contextFor(storage),
+      retention,
+      cold: store,
+    });
+    await offsetsOf(withCold, ['c']);
+    expect(await withCold.trim()).toBe(1);
+    expect(store.written).toEqual([[1, 1]]);
+  });
+
+  it('finishes deleting records an earlier version indexed but did not delete', async () => {
+    const cold = coldStore();
+    const { log, storage } = fixture({ retention: { maxRecords: 1 }, cold });
+    await offsetsOf(log, ['a', 'b', 'c']);
+    // Earlier versions indexed a segment outside the transaction that deleted
+    // its records, so a crash in between left both.
+    cold.segments.set(
+      'segment-0',
+      (await log.read({ from: 0, limit: 2 })).records
+    );
+    storage.sql.exec(
+      `INSERT INTO durability_log_segments
+         (channel, first_offset, last_offset, locator, bytes, flushed_at)
+       VALUES ('default', 0, 1, 'segment-0', 2, 0)`
+    );
+    const write = vi.spyOn(cold, 'write');
+
+    expect(await log.trim()).toBe(2);
+    expect(write).not.toHaveBeenCalled();
+    expect(await log.bounds()).toEqual({
+      oldestOffset: 0,
+      hotOffset: 2,
+      nextOffset: 3,
+    });
+    expect((await log.read({ from: 0 })).records.map((r) => r.body)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
   it('never hands the same offsets to two concurrent consumers', async () => {
     const { log } = fixture({ leases: {} });
     await offsetsOf(log, ['a', 'b', 'c', 'd']);
@@ -1138,6 +1353,7 @@ describe('log channels', () => {
       ).rolledBack
     ).toEqual(['durability_0024_log_lease_channels']);
     expect(DurabilityLog.migrate(context, beforeChannels).rolledBack).toEqual([
+      'durability_0025_create_log_pending_flushes',
       'durability_0019_log_channels',
     ]);
     expect(
