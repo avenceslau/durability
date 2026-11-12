@@ -1,5 +1,12 @@
 # @durability/lint
 
+## 0.3.1
+
+### Patch Changes
+
+- 661d392: `alarm-runner-only` now follows imports from `durability`, so a helper constructed under an alias (`import { Durability as Jobs } from 'durability'; new Jobs(...)`) or through a namespace import (`new durability.Durability(...)`) is checked like `new Durability(...)`. Before, both forms let a class skip its `alarm()` delegation without a report.
+- 661d392: `durability-migrations-only` now recognizes `DurableMigrations` imported from `durability`, the form the `durability` README documents. Migration lists typed through that import were reported as "CREATE TABLE statements must be declared in DurableMigrations."
+
 ## 0.3.0
 
 ### Minor Changes

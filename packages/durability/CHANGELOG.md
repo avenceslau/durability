@@ -1,5 +1,16 @@
 # durability
 
+## 5.2.2
+
+### Patch Changes
+
+- 661d392: Make `migrate()` and each helper's `migrate()` fully atomic. Reverting migrations recorded by a newer version used to commit on its own, so a later failure in the same call (for example a broken `up` script) left those migrations reverted; now the downgrade, the batch, and the history-table bookkeeping share one transaction, and a failed call leaves the schema and its history exactly as they were.
+- 661d392: Keep the topology client's version fence across a missing read. After a read returned nothing, the client forgot the newest version it had seen, so a lagging replica could hand back an older snapshot from the same coordinator and readers resumed routing to members that had already left. The client now remembers the newest version separately from the cached view; an older snapshot that arrives with no view to keep serving is answered like the failed read before it, and the negative TTL is renewed.
+- d2a80b7: Count a group's lease footprint against its `groupLimit` when the semaphore allocates grants. With `limitedGroups: 'withinGroupLimit'`, a group whose ceiling was filled by grants plus leased permits could still receive grants, in every provisioning mode, so more items ran than the group limit allowed. Retired leases stay charged to their group until their client confirms what it drew.
+- Updated dependencies [661d392]
+- Updated dependencies [661d392]
+  - @durability/transforms@0.6.2
+
 ## 5.2.1
 
 ### Patch Changes
