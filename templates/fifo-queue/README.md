@@ -62,9 +62,10 @@ Other Workers can skip HTTP and the tokens by binding the `QueueBinding` entrypo
 ```ts
 await env.QUEUE.send('orders', [{ key: 'customer-42', body: { total: 12 } }]);
 
-// Replay every dead letter of the queue, or only one target's.
-const { redriven, left } = await env.QUEUE.redrive('orders');
+// Start replaying every dead letter of the queue, or only one target's.
+await env.QUEUE.redrive('orders');
 await env.QUEUE.redrive('orders', 'billing');
+const status = await env.QUEUE.redriveStatus('orders');
 ```
 
 ### Targets
@@ -109,7 +110,19 @@ A redrive replays dead letters through the queue. Each message goes only to the 
 | `env.QUEUE.redrive(queue)` or `POST /api/queues/<queue>/redrive`        | Every target's dead letters. |
 | `env.QUEUE.redrive(queue, target)` or `POST …/targets/<target>/redrive` | One target's dead letters.   |
 
-The answer is `{ redriven, left }`: messages accepted back, and messages the queue refused (backpressure), whose dead letters stay for the next redrive. Redriven messages arrive after whatever the target received since, so order does not cover them. Dead letters written while a redrive runs wait for the next one, and those of a target that was removed are left in R2. A redrive runs inside one Worker invocation, so a very large set can stop at the platform's subrequest limit; nothing is lost, and calling again continues.
+The call starts a job and returns at once. The job runs in its own Durable Object, the `Redriver`, one page of dead letters per alarm run, so a large set takes nothing from the partitions or the orchestrator and is not bound by one request's limits. `env.QUEUE.redriveStatus(queue)` or `GET /api/queues/<queue>/redrive` reports it:
+
+```json
+{
+  "running": false,
+  "startedAt": 1767225600000,
+  "finishedAt": 1767225604000,
+  "redriven": 240,
+  "left": 0
+}
+```
+
+`redriven` counts messages accepted back; `left` counts messages the queue refused (backpressure), whose dead letters stay for the next redrive. One redrive runs per queue at a time: a call made during a run reports that run and starts nothing. Redriven messages arrive after whatever the target received since, so order does not cover them. Dead letters written while a redrive runs wait for the next one, and those of a target that was removed are left in R2.
 
 ### Order and failure
 
@@ -134,6 +147,7 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 | `Partition`                        | An ordered log. Accepts messages; hands each target its next batch, in offset order.                                                                      | `DurabilityLog` leases, `DurabilityAlarms`, `DurabilityOutbox`, `DurabilitySemaphoreQueue` |
 | `Limiter`                          | Holds a share of the queue's concurrency limit and hands out permits.                                                                                     | `DurabilitySemaphore`                                                                      |
 | `Orchestrator`                     | Control plane: owns the partition and limiter sets, pushes configuration, autoscales, stores metrics, serves the dashboard. No message passes through it. | `DurabilityTopology` (two instances), `DurabilityAlarms`, `DurabilitySocket`               |
+| `Redriver`                         | Replays a queue's dead letters as a job, one page per alarm run, apart from delivery and the control plane.                                               | `DurabilityAlarms`                                                                         |
 
 **The partition list in KV has no expiry** and is written only by the orchestrator, when the partitions change.
 

@@ -172,6 +172,21 @@ export type LimiterSample = {
   blocked: number;
 };
 
+/** Progress of a queue's current or most recent redrive. */
+export type RedriveStatus = {
+  running: boolean;
+  /** Set when the redrive is for one target rather than the whole queue. */
+  target?: string;
+  startedAt: number;
+  finishedAt?: number;
+  /** Messages accepted back into the queue. */
+  redriven: number;
+  /** Messages the queue refused; their dead letters stay where they are. */
+  left: number;
+  /** Why the last page failed, while it is being retried. */
+  lastError?: string;
+};
+
 export type TargetTotals = {
   settled: number;
   pending: number;

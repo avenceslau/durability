@@ -3,6 +3,7 @@ import type { Directory } from './directory';
 import type { Limiter } from './limiter';
 import type { Orchestrator } from './orchestrator';
 import type { Partition } from './partition';
+import type { Redriver } from './redriver';
 
 /**
  * The Worker's own Durable Object classes, reached through its exports. They
@@ -18,5 +19,6 @@ const namespace = <T extends Rpc.DurableObjectBranded>(
 export const partitions = () => namespace<Partition>('Partition');
 export const limiters = () => namespace<Limiter>('Limiter');
 export const orchestrators = () => namespace<Orchestrator>('Orchestrator');
+export const redrivers = () => namespace<Redriver>('Redriver');
 export const directory = () =>
   namespace<Directory>('Directory').getByName('directory');

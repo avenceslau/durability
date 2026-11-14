@@ -3,6 +3,7 @@ import layoutSource from '../../../templates/fifo-queue/src/layout.ts?raw';
 import limiterSource from '../../../templates/fifo-queue/src/limiter.ts?raw';
 import orchestratorSource from '../../../templates/fifo-queue/src/orchestrator.ts?raw';
 import partitionSource from '../../../templates/fifo-queue/src/partition.ts?raw';
+import redriverSource from '../../../templates/fifo-queue/src/redriver.ts?raw';
 import scalingSource from '../../../templates/fifo-queue/src/scaling.ts?raw';
 import sendSource from '../../../templates/fifo-queue/src/send.ts?raw';
 import targetsSource from '../../../templates/fifo-queue/src/targets.ts?raw';
@@ -18,6 +19,7 @@ const layoutFile = 'templates/fifo-queue/src/layout.ts';
 const limiterFile = 'templates/fifo-queue/src/limiter.ts';
 const orchestratorFile = 'templates/fifo-queue/src/orchestrator.ts';
 const partitionFile = 'templates/fifo-queue/src/partition.ts';
+const redriverFile = 'templates/fifo-queue/src/redriver.ts';
 const scalingFile = 'templates/fifo-queue/src/scaling.ts';
 const sendFile = 'templates/fifo-queue/src/send.ts';
 const targetsFile = 'templates/fifo-queue/src/targets.ts';
@@ -190,6 +192,30 @@ const balanceLimiters = sourceExcerpt(
   '  private async balanceLimiters(): Promise<LimiterSample[]> {',
   '    return samples;\n  }'
 );
+const startRedrive = sourceExcerpt(
+  redriverSource,
+  redriverFile,
+  'start-redrive',
+  'Start a redrive',
+  '  async start(queue: string, target?: string): Promise<RedriveStatus> {',
+  '    return statusOf(job);\n  }'
+);
+const replayPage = sourceExcerpt(
+  redriverSource,
+  redriverFile,
+  'replay-page',
+  'Replay one page of dead letters',
+  '  private async replayPage(job: Job): Promise<void> {',
+  "    delete job.lastError;\n    this.ctx.storage.kv.put('job', job);\n  }"
+);
+const replayEntry = sourceExcerpt(
+  redriverSource,
+  redriverFile,
+  'replay-entry',
+  'Send one dead letter, then delete it',
+  '  private async replayEntry(',
+  '    return { redriven: entry.messages.length, left: 0 };\n  }'
+);
 const planPartitions = sourceExcerpt(
   scalingSource,
   scalingFile,
@@ -219,7 +245,7 @@ export const walkthrough = validateWalkthrough({
   id: 'fifo-queue',
   title: 'How the queue uses its Durable Objects',
   summary:
-    'A Worker hashes each key to a Partition object, an ordered log that hands every target its batches in offset order. One Orchestrator per queue owns the partition list and the limiters and never sees a message. Step through a send, a delivery, a resize that keeps order, a shared concurrency limit, and the metrics.',
+    'A Worker hashes each key to a Partition object, an ordered log that hands every target its batches in offset order. One Orchestrator per queue owns the partition list and the limiters and never sees a message. Step through a send, a delivery, a redrive, a resize that keeps order, a shared concurrency limit, and the metrics.',
   diagram: {
     canvas: { width: 1000, height: 900 },
     direction: 'down',
@@ -228,6 +254,7 @@ export const walkthrough = validateWalkthrough({
       send: { label: 'accept messages', color: 'blue' },
       deliver: { label: 'deliver batches', color: 'orange' },
       control: { label: 'configure and observe', color: 'purple' },
+      redrive: { label: 'replay dead letters', color: 'green' },
     },
     nodes: {
       producer: {
@@ -298,16 +325,24 @@ export const walkthrough = validateWalkthrough({
       },
       storage: {
         rank: 3,
-        row: 0,
+        row: 1,
         label: 'STORAGE',
         sublabel: 'R2 dead letters',
         size: [230, 72],
         icon: 'r2',
         tone: 'external',
       },
+      redriver: {
+        rank: 3,
+        row: 2,
+        label: 'Redriver',
+        sublabel: 'one per queue',
+        size: [230, 72],
+        icon: 'durable-objects',
+      },
       target: {
         rank: 3,
-        row: 1,
+        row: 0,
         label: 'Target',
         sublabel: 'webhook · service',
         size: [245, 72],
@@ -333,6 +368,14 @@ export const walkthrough = validateWalkthrough({
         label: 'dead letter',
         flow: 'deliver',
       },
+      {
+        from: 'storage',
+        to: 'redriver',
+        label: 'read · delete',
+        flow: 'redrive',
+        both: true,
+      },
+      { from: 'redriver', to: 'partition', label: 'replay', flow: 'redrive' },
       { from: 'orchestrator', to: 'kv', label: 'publish', flow: 'control' },
       {
         from: 'orchestrator',
@@ -418,6 +461,12 @@ export const walkthrough = validateWalkthrough({
       href: '/reference/guarantees/',
       source: 'dead-letter',
     },
+    redriver: {
+      description:
+        'One object per queue that replays its dead letters. A redrive is a job it works through one page per alarm run, so a large set takes nothing from the partitions’ delivery or from the Orchestrator. It sends through the same path as the Worker.',
+      href: '/primitives/alarms/',
+      source: 'start-redrive',
+    },
     target: {
       description:
         'A destination that receives every message of the queue: a webhook, a service binding, another queue, or the R2 archive. A 2xx answer acknowledges the batch. Delivery is at least once, so the receiver deduplicates on the Idempotency-Key header.',
@@ -447,6 +496,9 @@ export const walkthrough = validateWalkthrough({
     report,
     tick,
     balanceLimiters,
+    startRedrive,
+    replayPage,
+    replayEntry,
     planPartitions,
     planLimiters,
     planShares,
@@ -669,6 +721,117 @@ export const walkthrough = validateWalkthrough({
           ),
           durable: 'The leased range; the position has not moved.',
           volatile: 'The interrupted call and its answer.',
+          status: 'gap',
+        },
+      ],
+    },
+    {
+      id: 'redrive',
+      title: 'Replay dead letters',
+      description:
+        'A redrive sends dead letters through the queue again. It runs in its own object, as a job, so its size costs the partitions and the Orchestrator nothing.',
+      steps: [
+        {
+          id: 'start',
+          title: 'A redrive is a job, not a request',
+          description:
+            'The call from the binding or the admin API reaches the queue’s Redriver, which stores the job, schedules its alarm, and answers at once. One redrive runs at a time; a call during a run reports that run.',
+          stage: ['*', 'focus:redriver'],
+          source: sourceFocus(
+            startRedrive,
+            "this.ctx.storage.kv.put('job', job);",
+            'await this.alarms.replay(Date.now());'
+          ),
+          durable: 'The job: its targets, its counters, and the alarm.',
+          volatile: 'Nothing.',
+          status: 'commit',
+        },
+        {
+          id: 'page',
+          title: 'One page of dead letters per alarm run',
+          description:
+            'Each run lists up to 100 dead letters of one target, continuing after the last one it handled, and then schedules the next run. No single invocation has to hold the whole set, so the size of a redrive is not bound by one request’s limits.',
+          stage: ['focus:storage'],
+          source: sourceFocus(
+            replayPage,
+            'const page = await env.STORAGE.list({',
+            '...(job.after === undefined ? {} : { startAfter: job.after }),'
+          ),
+          durable: 'The last dead letter handled.',
+          volatile: 'The page being worked through.',
+          status: 'normal',
+        },
+        {
+          id: 'entry',
+          title: 'Send through the queue, for one target',
+          description:
+            'The Redriver sends the batch’s messages the way the Worker does: each key is hashed to a partition of the current epoch. The messages are marked for the target that gave up on them, and every other target skips them.',
+          stage: ['focus:partition'],
+          source: sourceFocus(
+            replayEntry,
+            'const outcome = await send(',
+            '[target]'
+          ),
+          durable: 'The messages, appended as new ones.',
+          volatile: 'Nothing.',
+          status: 'commit',
+        },
+        {
+          id: 'delete',
+          title: 'Delete only what was accepted',
+          description:
+            'A dead letter is deleted after the queue accepted its messages. If the queue refused them, for example under backpressure, it stays and is counted as left for the next redrive.',
+          stage: ['focus:storage'],
+          source: sourceFocus(
+            replayEntry,
+            'if (outcome.rejected.length > 0) {',
+            'await env.STORAGE.delete(key);'
+          ),
+          durable: 'The dead letter is gone, or still there.',
+          volatile: 'Nothing.',
+          status: 'commit',
+        },
+        {
+          id: 'later',
+          title: 'Dead letters written during the run wait',
+          description:
+            'A redriven batch that fails again becomes a new dead letter. The run handles only those written before it started; otherwise a target that keeps failing would make it replay its own output without end.',
+          stage: ['focus:redriver'],
+          source: sourceFocus(
+            replayPage,
+            'if (object.uploaded.getTime() < job.startedAt) {'
+          ),
+          durable: 'When the job started.',
+          volatile: 'Nothing.',
+          status: 'normal',
+        },
+        {
+          id: 'crash',
+          title: 'A crash repeats at most one entry',
+          description:
+            'Progress is stored after every dead letter. An eviction between sending and deleting sends that one batch again, with the same message ids, which the partition that accepted them accepts once.',
+          stage: ['focus:redriver'],
+          source: sourceFocus(
+            replayPage,
+            'job.after = object.key;',
+            "this.ctx.storage.kv.put('job', job);"
+          ),
+          durable: 'The job and how far it got.',
+          volatile: 'The page in progress.',
+          status: 'recovery',
+        },
+        {
+          id: 'order',
+          title: 'Redriven messages are new messages',
+          description:
+            'They get new offsets, after everything the target has received since they failed, and a fresh set of attempts. Order no longer covers them, and a receiver may see a message it already handled.',
+          stage: ['focus:target'],
+          source: sourceFocus(
+            replayEntry,
+            'id: `redrive/${key}/${message.offset}`,'
+          ),
+          durable: 'New offsets in the current epoch.',
+          volatile: 'Nothing.',
           status: 'gap',
         },
       ],

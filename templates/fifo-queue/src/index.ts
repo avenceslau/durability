@@ -7,15 +7,16 @@ import {
   targetInputSchema,
   targetNameSchema,
   type MessageInput,
+  type RedriveStatus,
 } from './model';
-import { directory, orchestrators } from './namespaces';
-import { redrive, UnknownTargetError, type RedriveOutcome } from './redrive';
+import { directory, orchestrators, redrivers } from './namespaces';
 import { send, UnknownQueueError, type SendOutcome } from './send';
 
 export { Directory } from './directory';
 export { Limiter } from './limiter';
 export { Orchestrator } from './orchestrator';
 export { Partition } from './partition';
+export { Redriver } from './redriver';
 
 /**
  * For other Workers: bind this entrypoint as a service and call it directly,
@@ -26,12 +27,21 @@ export class QueueBinding extends WorkerEntrypoint<Cloudflare.Env> {
     return send(queue, v.parse(sendSchema, messages));
   }
 
-  /** Replays every dead letter of the queue, or only those of one target. */
-  redrive(queue: string, target?: string): Promise<RedriveOutcome> {
-    return redrive(
-      v.parse(queueNameSchema, queue),
-      target === undefined ? undefined : v.parse(targetNameSchema, target)
-    );
+  /**
+   * Starts replaying every dead letter of the queue, or only those of one
+   * target, and returns at once. `redriveStatus` reports how far it got.
+   */
+  redrive(queue: string, target?: string): Promise<RedriveStatus> {
+    return redrivers()
+      .getByName(v.parse(queueNameSchema, queue))
+      .start(
+        queue,
+        target === undefined ? undefined : v.parse(targetNameSchema, target)
+      );
+  }
+
+  redriveStatus(queue: string): Promise<RedriveStatus | undefined> {
+    return redrivers().getByName(v.parse(queueNameSchema, queue)).status();
   }
 }
 
@@ -216,7 +226,12 @@ const queue = async (
     return accept(queueName, request);
   }
   if (resource === 'redrive' && request.method === 'POST') {
-    return Response.json(await redrive(queueName));
+    const status = await redrivers().getByName(queueName).start(queueName);
+    return Response.json(status, { status: 202 });
+  }
+  if (resource === 'redrive' && request.method === 'GET') {
+    const status = await redrivers().getByName(queueName).status();
+    return Response.json(status ?? null);
   }
   if (resource === 'resize' && request.method === 'POST') {
     const { partitions } = await parse(
@@ -251,7 +266,10 @@ const queue = async (
     return new Response(null, { status: 204 });
   }
   if (action === 'redrive' && request.method === 'POST') {
-    return Response.json(await redrive(queueName, target));
+    const status = await redrivers()
+      .getByName(queueName)
+      .start(queueName, target);
+    return Response.json(status, { status: 202 });
   }
   throw new HttpError(404, 'Not found');
 };
@@ -303,13 +321,13 @@ export default {
           { status: error.status }
         );
       }
-      if (
-        error instanceof UnknownQueueError ||
-        error instanceof UnknownTargetError
-      ) {
+      if (error instanceof UnknownQueueError) {
         return Response.json({ error: error.message }, { status: 404 });
       }
       // An error thrown inside a Durable Object keeps its name, not its class.
+      if (error instanceof Error && error.name === 'UnknownTargetError') {
+        return Response.json({ error: error.message }, { status: 404 });
+      }
       if (error instanceof Error && error.name === 'QueueError') {
         return Response.json({ error: error.message }, { status: 409 });
       }

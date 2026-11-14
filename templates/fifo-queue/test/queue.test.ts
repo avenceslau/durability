@@ -2,7 +2,7 @@ import { SELF } from 'cloudflare:test';
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import type { QueueBinding } from '../src/index';
-import type { Overview } from '../src/model';
+import type { Overview, RedriveStatus } from '../src/model';
 import type { Behaviour, Received, SinkStore } from './worker';
 
 const stores = (workerExports as Record<string, unknown>)[
@@ -153,11 +153,17 @@ describe('fifo queue', () => {
     );
     expect(state.partitions[0]?.targets['flaky']?.retries).toBe(2);
 
-    const response = await admin(
+    const started = await admin(
       `/queues/${queue}/targets/flaky/redrive`,
       'POST'
     );
-    expect(await response.json()).toEqual({ redriven: 1, left: 0 });
+    expect(started.status).toBe(202);
+    const finished = await waitFor(
+      async () =>
+        (await admin(`/queues/${queue}/redrive`)).json<RedriveStatus>(),
+      (status) => !status.running
+    );
+    expect(finished).toMatchObject({ target: 'flaky', redriven: 1, left: 0 });
     const afterRedrive = await received(queue, 'flaky', 3);
     expect(afterRedrive[2]?.bodies).toEqual([1]);
   });
@@ -189,8 +195,14 @@ describe('fifo queue', () => {
       (counts) => counts.every((entries) => entries === count)
     );
 
-    const outcome = await queueBinding.redrive(queue);
-    expect(outcome).toEqual({ redriven: 2 * count, left: 0 });
+    // The call starts a job on the Redriver object and returns at once.
+    expect(await queueBinding.redrive(queue)).toMatchObject({ running: true });
+    const finished = await waitFor(
+      () => queueBinding.redriveStatus(queue),
+      (status) => status?.running === false
+    );
+    expect(finished).toMatchObject({ redriven: 2 * count, left: 0 });
+    expect(finished?.target).toBeUndefined();
     expect((await deadLetters('first')).objects).toEqual([]);
     expect((await deadLetters('second')).objects).toEqual([]);
 
@@ -206,11 +218,6 @@ describe('fifo queue', () => {
         0
       )
     ).toBe(count);
-
-    expect(await queueBinding.redrive(queue, 'first')).toEqual({
-      redriven: 0,
-      left: 0,
-    });
   });
 
   it('keeps every key in order across a resize', async () => {

@@ -6,8 +6,8 @@ tableOfContents: false
 
 This design is a queue service rather than a recipe: queues, targets, and limits are
 created at runtime, partitions are added and removed with the load, and a dashboard shows
-what is moving. It is built from a stateless Worker and three kinds of Durable Object (a
-fourth only lists the queues for the dashboard).
+what is moving. It is built from a stateless Worker and four kinds of Durable Object (a
+fifth only lists the queues for the dashboard).
 This page explains how they fit together and why; it does not go into the primitives
 underneath, which have their own pages.
 
@@ -51,6 +51,7 @@ and nothing a message does waits on a single object.
 | `Partition`    | N per queue          | An ordered log of messages, one position per target, the batch each target has in flight.                 | Yes           |
 | `Limiter`      | none, or L per queue | A share of the queue's concurrency limit and the permits handed out under it.                             | No            |
 | `Orchestrator` | one per queue        | Settings, targets, the list of partitions and limiters, each partition's latest sample, dashboard points. | No            |
+| `Redriver`     | one per queue        | The redrive in progress: which dead letters are left to replay, and what it has replayed so far.          | Dead letters only |
 | KV entry       | one per queue        | The published partition list. Written only by the orchestrator, no expiry.                                | No            |
 
 A partition is named `queue/epoch/index`. The epoch is a generation of the queue's
@@ -94,14 +95,38 @@ Two rules give the ordering guarantee:
   target's position, and other partitions are separate objects.
 
 A batch is settled in one of two ways: the target answers `2xx`, or the batch reaches
-`maxAttempts` and is written to R2 as a dead letter. A redrive, from the admin API or
-from the `redrive` method other Workers call on the queue's service binding, replays every
-dead letter through the queue for the target that gave up on it. The dead letter is written first and
+`maxAttempts` and is written to R2 as a dead letter. A [redrive](#replaying-dead-letters) sends those messages through the queue again. The dead letter is written first and
 the position moved second, so a crash between the two repeats the write, which leaves the
 first copy in place, rather than losing the batch.
 
 Targets can also be limited per partition: `batchSize` is the number of messages in
 flight for one partition, and `maxPerSecond` spaces the batches out.
+
+## Replaying dead letters
+
+`redrive` on the queue's service binding, or the admin API, replays every dead letter of
+a queue or of one target. The work is not done by the caller, a partition, or the
+orchestrator. It goes to a `Redriver`, one object per queue, for two reasons:
+
+- **Size.** A set of dead letters can be far larger than one request may read and
+  re-send. The redriver treats a redrive as a job: the call stores it and returns, and
+  each alarm run handles one page of a hundred dead letters, then schedules the next.
+- **Isolation.** Listing R2 and re-sending is work the partitions and the orchestrator
+  should not do. Partitions keep delivering and the orchestrator keeps ticking while a
+  redrive of any size runs; they see it only as ordinary sends.
+
+The redriver sends the way the Worker does, so each message is hashed to a partition of
+the current epoch. The messages are marked for the target that gave up on them, and every
+other target skips them. A dead letter is deleted only after the queue accepted its
+messages; one the queue refused stays for the next redrive.
+
+Two rules keep a redrive from misbehaving. It handles only dead letters written before it
+started, so a target that still fails cannot make it replay its own output forever. And it
+stores its position after every dead letter, so a crash sends at most one batch again,
+with the same message ids.
+
+Redriven messages are new messages: they get new offsets, after everything the target
+received since they failed, and a fresh set of attempts. Order does not cover them.
 
 ## Resizing without losing order
 
@@ -208,7 +233,7 @@ ticking and can be evicted.
 Partitions compose [`log`](/primitives/log/) leases with named
 [`alarms`](/primitives/alarms/), an [`outbox`](/primitives/outbox/) for samples, and a
 [`semaphore queue`](/primitives/semaphore-queue/) for permits. Limiters hold a
-[`semaphore`](/primitives/semaphore/). The orchestrator uses two
+[`semaphore`](/primitives/semaphore/). The redriver is one named alarm. The orchestrator uses two
 [`topology`](/primitives/topology/) instances, one for partitions and one for limiters,
 and a [`socket`](/primitives/socket/) for the dashboard. The Worker uses the topology
 client and [`routing`](/primitives/routing/). Each object has one shared

@@ -1,5 +1,10 @@
 import { DurabilitySocketClient, type SocketStatus } from 'durability/client';
-import type { MessageInput, Overview, Point } from '../src/model';
+import type {
+  MessageInput,
+  Overview,
+  Point,
+  RedriveStatus,
+} from '../src/model';
 import type { Orchestrator } from '../src/orchestrator';
 import { api, ApiError, queuePath } from './api';
 import { lineChart } from './charts';
@@ -126,20 +131,28 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
   };
 
   const redrive = async (name: string): Promise<void> => {
-    const outcome = (await api(
+    // The redrive runs as a job on the server; this only watches it finish.
+    let progress = (await api(
       'POST',
       `${queuePath(queue)}/targets/${encodeURIComponent(name)}/redrive`
-    )) as {
-      redriven: number;
-      left: number;
-    };
+    )) as RedriveStatus;
+    while (progress.running) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      // eslint-disable-next-line no-await-in-loop
+      progress = (await api(
+        'GET',
+        `${queuePath(queue)}/redrive`
+      )) as RedriveStatus;
+    }
+
     const left =
-      outcome.left > 0
-        ? `; the queue refused ${outcome.left}, which stay as dead letters`
+      progress.left > 0
+        ? `; the queue refused ${progress.left}, which stay as dead letters`
         : '';
     showNotice(
       notice,
-      `Redrove ${outcome.redriven} messages to ${name}${left}`
+      `Redrove ${progress.redriven} messages to ${progress.target ?? 'every target'}${left}`
     );
   };
 
