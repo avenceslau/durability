@@ -1044,7 +1044,10 @@ export class Engine {
   /**
    * Registers the execution in its active map synchronously, then claims and
    * runs one attempt in the background. The returned promise settles when the
-   * attempt's outcome has been persisted, not when a timed-out handler settles.
+   * attempt's outcome has been persisted. The key leaves the active map and
+   * its permit is released then too, whether or not a timed-out handler has
+   * settled: nothing can stop a handler, and one that never settles would
+   * otherwise keep its retry from ever starting.
    */
   startExecution(spec: ExecutionSpec, eagerPermit?: () => void): Promise<void> {
     const { key, row, policy } = spec;
@@ -1061,15 +1064,6 @@ export class Engine {
     this.trackActive(spec.table.name, activeKey(spec.table.channel, key));
 
     let releasePermit = eagerPermit;
-    let handlerStarted = false;
-    let handlerSettled = false;
-    let policySettled = false;
-    const releaseIfSettled = (): void => {
-      if (policySettled && (!handlerStarted || handlerSettled)) {
-        releasePermit?.();
-        settleActive();
-      }
-    };
 
     const execution = (async (): Promise<void> => {
       releasePermit ??= await this.acquirePermit();
@@ -1096,16 +1090,11 @@ export class Engine {
       activeExecution.controller = controller;
       let cancelTimeout: (() => void) | undefined;
       try {
-        handlerStarted = true;
         const handlerResult = Promise.resolve().then(() =>
           spec.invoke(attempt, controller.signal)
         );
-        void handlerResult
-          .finally(() => {
-            handlerSettled = true;
-            releaseIfSettled();
-          })
-          .catch(() => undefined);
+        // After a timeout nothing awaits the handler, which may still reject.
+        void handlerResult.catch(() => undefined);
         const timeoutResult = new Promise<never>((_resolve, reject) => {
           cancelTimeout = this.timer.schedule(() => {
             const error = spec.timeoutError();
@@ -1141,8 +1130,8 @@ export class Engine {
         cancelTimeout?.();
       }
     })().finally(() => {
-      policySettled = true;
-      releaseIfSettled();
+      releasePermit?.();
+      settleActive();
     });
 
     void settled.finally(() => {

@@ -30,6 +30,6 @@ const durability = new Durability({
 });
 ```
 
-Each attempt receives its own `AbortSignal`. A timed-out operation follows the normal retry policy; a timed-out named alarm is terminal unless `retryTimeouts` is set. If a handler ignores abort, its in-memory lock and concurrency permit remain held until it actually settles, so a same-isolate retry cannot overlap it.
+Each attempt receives its own `AbortSignal`. A timed-out operation follows the normal retry policy; a timed-out named alarm is terminal unless `retryTimeouts` is set. A timeout ends the attempt: its concurrency permit is returned and the next attempt starts on schedule, whether or not the handler has stopped. Nothing can stop a running handler, so one that ignores abort keeps running beside the retry; its result is discarded, and once the retry has started its `memoize` calls reject. Stop work when the signal aborts, and make side effects safe to repeat.
 
 Throw `NonRetryableError` to move work directly to `failed` without another attempt. Errors named `NonRetryableError` from other packages, such as `cloudflare:workflows`, are recognized too.

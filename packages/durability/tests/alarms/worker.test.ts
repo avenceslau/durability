@@ -139,7 +139,7 @@ describe('durability in workerd', () => {
     expect(await runDurableObjectAlarm(exhausted)).toBe(false);
   });
 
-  it('prevents overlap when a timed-out handler ignores abort', async () => {
+  it('retries on schedule when a timed-out handler ignores abort', async () => {
     const stub = env.ALARM_TEST.get(env.ALARM_TEST.newUniqueId());
     await stub.startTimeout();
     await waitFor(async () => {
@@ -150,16 +150,14 @@ describe('durability in workerd', () => {
     await stub.armNow();
     await scheduler.wait(10);
     await runDurableObjectAlarm(stub);
-    expect(await stub.getTimeoutAttempts()).toEqual([1]);
-
-    await stub.releaseTimeout();
-    await scheduler.wait(1);
-    await stub.armNow();
-    await scheduler.wait(10);
-    await runDurableObjectAlarm(stub);
     await waitFor(async () => {
       expect(await stub.getTimeoutAttempts()).toEqual([1, 2]);
     });
+
+    // The first handler settling late starts nothing further.
+    await stub.releaseTimeout();
+    await scheduler.wait(10);
+    expect(await stub.getTimeoutAttempts()).toEqual([1, 2]);
   });
 
   it('retries operation timeouts by default in workerd', async () => {

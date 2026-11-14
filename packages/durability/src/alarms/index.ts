@@ -476,7 +476,10 @@ class DurabilityAlarmsCore<Names extends string> {
     return true;
   }
 
-  /** One name never has more than one running handler in this instance. */
+  /**
+   * One name never has more than one attempt in progress in this instance. A
+   * handler whose attempt timed out may still be running beside the next one.
+   */
   #execute(
     row: AlarmRow,
     platform: AlarmInvocationInfo | undefined

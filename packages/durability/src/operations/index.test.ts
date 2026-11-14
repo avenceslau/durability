@@ -653,24 +653,22 @@ describe('Durability', () => {
     ).toThrow('"purgeBefore" is reserved by DurabilityAlarms');
   });
 
-  it('keeps a timed-out operation locked until its handler settles', async () => {
+  it('retries a timed-out operation while its handler is still running', async () => {
     vi.useFakeTimers();
-    let finishFirst: (() => void) | undefined;
-    const firstPending = new Promise<void>((resolve) => {
+    let finishFirst: ((value: string) => void) | undefined;
+    const firstPending = new Promise<string>((resolve) => {
       finishFirst = resolve;
     });
     const attempts: number[] = [];
     const handler = vi.fn(async ({ attempt }: DurableCall<null>) => {
       attempts.push(attempt);
-      if (attempt === 1) {
-        await firstPending;
-      }
+      return attempt === 1 ? firstPending : 'second';
     });
     const storage = new FakeStorage();
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
-      alarmHandoffMs: 50,
+      // One permit: the retry can only start if the timed-out attempt gave its own back.
       alarmConcurrency: 1,
       methods: {
         work: {
@@ -680,25 +678,66 @@ describe('Durability', () => {
       },
     });
 
-    await durability.work({ id: 'timeout-lock', payload: null });
+    await durability.work({ id: 'timeout-retry', payload: null });
     await vi.advanceTimersByTimeAsync(100);
-    storage.alarmAt = null;
-    const blocked = durability.alarm();
-    await vi.advanceTimersByTimeAsync(50);
-    await blocked;
-    expect(handler).toHaveBeenCalledTimes(1);
-
-    finishFirst?.();
-    await firstPending;
-    await vi.advanceTimersByTimeAsync(0);
     storage.alarmAt = null;
     await durability.alarm();
 
     expect(attempts).toEqual([1, 2]);
-    await expect(durability.work.getResult('timeout-lock')).resolves.toEqual({
+    await expect(durability.work.getResult('timeout-retry')).resolves.toEqual({
       status: 'completed',
-      result: undefined,
+      result: 'second',
     });
+
+    // The first handler settling late changes nothing.
+    finishFirst?.('first');
+    await firstPending;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(handler).toHaveBeenCalledTimes(2);
+    await expect(durability.work.getResult('timeout-retry')).resolves.toEqual({
+      status: 'completed',
+      result: 'second',
+    });
+  });
+
+  it('fails an operation whose handler never settles once its attempts run out', async () => {
+    vi.useFakeTimers();
+    const handler = vi.fn(async (_call: DurableCall<null>) => {
+      await new Promise(() => undefined);
+    });
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: { work: handler },
+      alarmConcurrency: 1,
+      methods: {
+        work: {
+          attemptTimeoutMs: 100,
+          retries: { delay: () => 0, maxAttempts: 3 },
+        },
+      },
+    });
+
+    await durability.work({ id: 'never-settles', payload: null });
+    // Each retry is due at once, so the in-memory timer starts it without an alarm.
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(handler).toHaveBeenCalledTimes(3);
+    await expect(durability.work.getResult('never-settles')).resolves.toEqual({
+      status: 'failed',
+      attempt: 3,
+      error: {
+        name: 'DurableAttemptTimeoutError',
+        message: 'Durable operation "work" timed out after 100ms',
+      },
+    });
+
+    // Its permit is free again, so other work on the object still runs.
+    const other = new Promise<void>((resolve) => {
+      handler.mockImplementationOnce(async () => resolve());
+    });
+    await durability.work({ id: 'after', payload: null });
+    await other;
   });
 
   it('never claims an exhausted operation', async () => {
