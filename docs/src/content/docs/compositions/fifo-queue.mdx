@@ -6,8 +6,8 @@ tableOfContents: false
 
 This design is a queue service rather than a recipe: queues, targets, and limits are
 created at runtime, partitions are added and removed with the load, and a dashboard shows
-what is moving. It is built from a stateless Worker and four kinds of Durable Object (a
-fifth only lists the queues for the dashboard).
+what is moving. It is built from a stateless Worker and five kinds of Durable Object (a
+sixth only lists the queues for the dashboard).
 This page explains how they fit together and why; it does not go into the primitives
 underneath, which have their own pages.
 
@@ -26,6 +26,8 @@ own directory.
 - **At least once.** A batch is delivered again after a failed answer, a timeout, or a
   crash mid-delivery. Receivers deduplicate on the `Idempotency-Key` header.
 - **A ceiling on batches in flight** across the whole queue, when one is configured.
+- **Push and pull.** Targets are called; pull consumers ask. Both see every message in
+  per-key order.
 
 It does not promise order between different keys, a global order across partitions, or
 exactly-once effects. A batch that exhausts its attempts is written to R2 and skipped, so
@@ -52,6 +54,8 @@ and nothing a message does waits on a single object.
 | `Limiter`      | none, or L per queue | A share of the queue's concurrency limit and the permits handed out under it.                             | No            |
 | `Orchestrator` | one per queue        | Settings, targets, the list of partitions and limiters, each partition's latest sample, dashboard points. | No            |
 | `Redriver`     | one per queue        | The redrive in progress: which dead letters are left to replay, and what it has replayed so far.          | Dead letters only |
+| `PullConsumer` | one per consumer     | That consumer's position in each partition's stored batches, and the range it has been handed.            | Reads the bucket  |
+| Pull bucket    | one, when enabled    | Every batch of queues with pull consumers, by partition and offset, until its retention ends.             | Yes               |
 | KV entry       | one per queue        | The published partition list. Written only by the orchestrator, no expiry.                                | No            |
 
 A partition is named `queue/epoch/index`. The epoch is a generation of the queue's
@@ -101,6 +105,41 @@ first copy in place, rather than losing the batch.
 
 Targets can also be limited per partition: `batchSize` is the number of messages in
 flight for one partition, and `maxPerSecond` spaces the batches out.
+
+A queue with no target at all has nobody to deliver to. Rather than leave its messages in
+the partitions until retention removes them, each partition writes them straight to the
+dead letters, and a redrive of the whole queue delivers them to every target the queue has
+by then.
+
+## Pull consumers
+
+A target is called with each batch. A pull consumer asks for messages when it wants them,
+which a partition cannot serve cheaply: every poll would wake an object whose job is to
+accept and deliver. So pulling is built beside the partitions rather than into them.
+
+- **One more target.** Turning `pullConsumers` on gives the queue a target of its own that
+  writes every batch to a second R2 bucket, under the partition's name and the batch's
+  offsets. It is an ordinary target in every other respect, which is where its guarantees
+  come from: it has its own position in each partition, it is retried, and across a resize
+  a new epoch's partitions write nothing until the old epoch is completely written.
+- **One object per consumer.** A `PullConsumer` reads the bucket and stores how far that
+  consumer got in each partition. It finds epochs and partitions by listing the bucket, so
+  it needs neither the partition list nor the orchestrator, and no pull reaches a
+  partition.
+- **Leases instead of deliveries.** A pull returns consecutive messages of one partition
+  and records a lease on them. Until the consumer acknowledges, or the lease ends, that
+  partition hands this consumer nothing else, which keeps keys in order while different
+  partitions are pulled in parallel. A lease that ends is handed out again under a new
+  name, so a late acknowledgement of the old one is refused.
+- **Epochs in order.** A later epoch appearing in the bucket proves the current one will
+  get nothing more. The consumer finishes it, partition by partition, before reading the
+  next.
+
+How long a message can be pulled is a queue setting, up to 50 days. Each partition deletes
+its own batches when that time is over, and remembers when its oldest batch ends so that it
+lists the bucket only when something can have expired. Retention does not wait for
+consumers, and a slow pull consumer causes no backpressure: one that falls further behind
+than the retention misses messages.
 
 ## Replaying dead letters
 
@@ -206,6 +245,9 @@ ticking and can be evicted.
 | Send fails without an answer                     | Uncertain. A retry with the same ids is stored once by the same partition.                               | Producer retry limits; a retry after a resize can store a message twice.    |
 | Worker holds an old partition list               | The replaced partition refuses and names the new layout; the Worker sends there.                         | Nothing.                                                                    |
 | Target answers an error or times out             | The same batch is retried with backoff before anything after it, for that target.                        | `maxAttempts`, the timeout, and whether a long block is acceptable.         |
+| Queue has no targets                             | Messages go straight to the dead letters; a redrive of the queue delivers them to every later target.     | Whether to redrive once a target exists.                                    |
+| Pull consumer does not acknowledge               | The lease ends and the same messages are handed out again, with a higher attempt.                         | The lease length, and receiver deduplication.                               |
+| Pull consumer falls behind retention             | Its batches are deleted; it continues with the oldest that remain.                                        | The retention, up to 50 days, and monitoring of consumer progress.          |
 | Batch exhausts its attempts                      | Written to R2, then skipped. Redrive sends it through the queue again for that target only.              | When to redrive, and that order no longer covers those messages.            |
 | Partition evicted during a delivery              | The range stays leased for 60 seconds, then is delivered again.                                          | Receiver deduplication on `Idempotency-Key`.                                |
 | Target falls behind retention                    | Sends are refused at `maxBacklog` for running targets, before retention can remove undelivered messages. | A paused target is not protected: it loses what expires while it is paused. |
@@ -222,8 +264,11 @@ ticking and can be evicted.
   longer sample interval first.
 - **Thresholds.** The autoscaler's target rates and cooldowns, and the request rate one
   limiter should carry, are starting points, not measurements of your workload.
-- **Retention.** Messages are kept for 4 days or 512 MB per partition. There is no cold
-  storage behind the log.
+- **Retention.** A partition keeps messages for 4 days or 512 MB; targets that are behind
+  read from there. Only pull consumers have the longer, configurable retention of the
+  pull bucket.
+- **Pull consumer visibility.** The dashboard shows the pull target writing to the bucket,
+  not how far each consumer has read.
 - **Access.** The dashboard and admin API share one token. Put real authentication in
   front of them, and treat webhook URLs as something an admin can point anywhere.
 - **Receivers.** Exactly-once effects need the receiver's own record of what it applied.
@@ -233,7 +278,7 @@ ticking and can be evicted.
 Partitions compose [`log`](/primitives/log/) leases with named
 [`alarms`](/primitives/alarms/), an [`outbox`](/primitives/outbox/) for samples, and a
 [`semaphore queue`](/primitives/semaphore-queue/) for permits. Limiters hold a
-[`semaphore`](/primitives/semaphore/). The redriver is one named alarm. The orchestrator uses two
+[`semaphore`](/primitives/semaphore/). The redriver is one named alarm, and a pull consumer is plain SQLite storage. The orchestrator uses two
 [`topology`](/primitives/topology/) instances, one for partitions and one for limiters,
 and a [`socket`](/primitives/socket/) for the dashboard. The Worker uses the topology
 client and [`routing`](/primitives/routing/). Each object has one shared

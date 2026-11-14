@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
-import type { Destination } from './model';
+import { pullLogKey } from './layout';
+import type { TargetDestination } from './model';
 import { send } from './send';
 
 export type Delivery = {
@@ -118,9 +119,21 @@ const archive = async (delivery: Delivery): Promise<DeliveryOutcome> => {
   return { ok: true };
 };
 
+const writeToPullLog = async (delivery: Delivery): Promise<DeliveryOutcome> => {
+  const first = delivery.messages[0]!.offset;
+  const last = delivery.messages[delivery.messages.length - 1]!.offset;
+  await env.PULL.put(
+    pullLogKey(delivery.partition, first, last),
+    JSON.stringify(delivery),
+    // A redelivered batch must not replace the copy a consumer may be reading.
+    { onlyIf: { etagDoesNotMatch: '*' } }
+  );
+  return { ok: true };
+};
+
 /** Hands one batch to a target. A thrown error counts as a failed attempt. */
 export const deliver = (
-  destination: Destination,
+  destination: TargetDestination,
   delivery: Delivery,
   timeoutMs: number
 ): Promise<DeliveryOutcome> => {
@@ -138,6 +151,9 @@ export const deliver = (
   }
   if (destination.type === 'archive') {
     return archive(delivery);
+  }
+  if (destination.type === 'pull') {
+    return writeToPullLog(delivery);
   }
 
   const service = (env as unknown as Record<string, unknown>)[

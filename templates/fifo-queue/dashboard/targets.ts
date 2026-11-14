@@ -100,12 +100,19 @@ export const targetsTable = (
       element(
         'td',
         { class: 'row-actions' },
-        button(target.paused ? 'Resume' : 'Pause', () =>
-          actions.pause(name, !target.paused)
-        ),
-        button('Edit', async () => actions.edit(name, target)),
+        // The queue's own pull target is switched in the settings, not here.
+        ...(target.destination.type === 'pull'
+          ? []
+          : [
+              button(target.paused ? 'Resume' : 'Pause', () =>
+                actions.pause(name, !target.paused)
+              ),
+              button('Edit', async () => actions.edit(name, target)),
+            ]),
         button('Redrive', () => actions.redrive(name)),
-        button('Delete', () => actions.remove(name), 'danger')
+        ...(target.destination.type === 'pull'
+          ? []
+          : [button('Delete', () => actions.remove(name), 'danger')])
       )
     );
   };

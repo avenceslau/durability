@@ -128,6 +128,21 @@ export const settingsForm = (
     limitModeChoices(),
     element(
       'div',
+      { class: 'inline' },
+      element(
+        'label',
+        { class: 'check' },
+        element('input', { type: 'checkbox', name: 'pullConsumers' }),
+        'Pull consumers: also write every message to the pull bucket'
+      ),
+      field(
+        'Pull retention (days)',
+        numberInput('pullRetentionDays', { min: 1, max: 50, required: true }),
+        'How long a message can be pulled, up to 50'
+      )
+    ),
+    element(
+      'div',
       { class: 'actions' },
       element('button', { type: 'submit' }, 'Save settings')
     ),
@@ -151,6 +166,8 @@ export const settingsForm = (
       limitMode: textField(form, 'limitMode') === 'fast' ? 'fast' : 'strict',
       limiterTargetRate: numberField(form, 'limiterTargetRate') ?? 200,
       maxBacklog: numberField(form, 'maxBacklog') ?? 100_000,
+      pullConsumers: new FormData(form).has('pullConsumers'),
+      pullRetentionDays: numberField(form, 'pullRetentionDays') ?? 7,
     });
     edited = false;
     return 'Settings saved';
@@ -167,6 +184,8 @@ export const settingsForm = (
     setField(form, 'maxConcurrency', settings.maxConcurrency);
     setField(form, 'limiterTargetRate', settings.limiterTargetRate);
     setField(form, 'limitMode', settings.limitMode);
+    setField(form, 'pullConsumers', settings.pullConsumers);
+    setField(form, 'pullRetentionDays', settings.pullRetentionDays);
   };
 
   return { form, update };

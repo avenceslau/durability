@@ -1,4 +1,8 @@
-import type { Destination, Overview, PartitionSample } from '../src/model';
+import type {
+  Overview,
+  PartitionSample,
+  TargetDestination,
+} from '../src/model';
 import { compact, dateTime, element, perSecond } from './dom';
 import {
   acceptedCounter,
@@ -8,7 +12,10 @@ import {
   slowestTarget,
 } from './metrics';
 
-export const describeDestination = (destination: Destination): string => {
+export const describeDestination = (destination: TargetDestination): string => {
+  if (destination.type === 'pull') {
+    return 'pull bucket, for pull consumers';
+  }
   if (destination.type === 'webhook') {
     return `webhook ${destination.url}`;
   }
@@ -64,8 +71,13 @@ export const statTiles = (overview: Overview): HTMLElement[] => {
     ),
     tile(
       'Dead letters',
-      compact(all.reduce((sum, target) => sum + target.deadLettered, 0)),
-      'all targets'
+      compact(
+        all.reduce((sum, target) => sum + target.deadLettered, 0) +
+          (last?.withoutTarget ?? 0)
+      ),
+      (last?.withoutTarget ?? 0) > 0
+        ? `${compact(last?.withoutTarget ?? 0)} had no target`
+        : 'all targets'
     ),
     tile(
       'Rejected',

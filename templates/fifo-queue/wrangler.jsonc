@@ -20,9 +20,13 @@
         "Orchestrator",
         "Directory",
         "Redriver",
+        "PullConsumer",
       ],
     },
   ],
   "kv_namespaces": [{ "binding": "TOPOLOGY" }],
-  "r2_buckets": [{ "binding": "STORAGE", "bucket_name": "fifo-queue" }],
+  "r2_buckets": [
+    { "binding": "STORAGE", "bucket_name": "fifo-queue" },
+    { "binding": "PULL", "bucket_name": "fifo-queue-pull" },
+  ],
 }

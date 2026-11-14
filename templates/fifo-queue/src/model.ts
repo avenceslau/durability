@@ -12,6 +12,16 @@ const positive = v.pipe(v.number(), v.safeInteger(), v.minValue(1));
 
 export const queueNameSchema = name;
 export const targetNameSchema = name;
+export const consumerNameSchema = name;
+
+/** The target a queue with pull consumers gets by itself; nobody else may use the name. */
+export const pullTargetName = 'pull';
+
+/**
+ * Where dead letters go when a queue has no target at all. It cannot be a
+ * target's name: those start with a letter or a digit.
+ */
+export const noTargetName = '_no-target';
 
 export const messageInputSchema = v.object({
   /** Messages sharing a key are delivered in the order they were accepted. */
@@ -60,6 +70,12 @@ const destinationSchema = v.variant('type', [
 ]);
 export type Destination = v.InferOutput<typeof destinationSchema>;
 
+/**
+ * Where a target's batches go. `pull` is the queue's own target: it writes
+ * every batch to the pull bucket, which is what pull consumers read.
+ */
+export type TargetDestination = Destination | { type: 'pull' };
+
 export const targetInputSchema = v.object({
   destination: destinationSchema,
   /** Messages one partition hands this target at a time. */
@@ -101,6 +117,10 @@ export const settingsInputSchema = v.object({
   limiterTargetRate: v.optional(positive, 200),
   /** Undelivered messages one partition holds before it rejects sends. */
   maxBacklog: v.optional(positive, 100_000),
+  /** Also writes every message to the pull bucket, for consumers that ask for messages. */
+  pullConsumers: v.optional(v.boolean(), false),
+  /** Days a message stays in the pull bucket. */
+  pullRetentionDays: v.optional(v.pipe(positive, v.maxValue(50)), 7),
 });
 export type QueueSettings = v.InferOutput<typeof settingsInputSchema>;
 
@@ -109,7 +129,8 @@ export type Layout = { epoch: number; count: number };
 
 export type PartitionIdentity = { queue: string; epoch: number; index: number };
 
-export type PartitionTarget = TargetSettings & {
+export type PartitionTarget = Omit<TargetSettings, 'destination'> & {
+  destination: TargetDestination;
   /**
    * The oldest epoch that still holds messages for this target. Partitions of
    * a later epoch wait, so messages of one key are never delivered out of order
@@ -124,6 +145,8 @@ export type PartitionConfig = {
   /** Limiter object names; empty when the queue has no concurrency limit. */
   limiters: string[];
   maxBacklog: number;
+  /** How long a batch stays in the pull bucket. */
+  pullRetentionMs: number;
 };
 
 export type TargetProgress = {
@@ -143,6 +166,8 @@ export type PartitionSample = PartitionIdentity & {
   /** Total messages ever accepted: the log's next offset. */
   accepted: number;
   rejected: number;
+  /** Messages dead-lettered because the queue had no target to deliver them to. */
+  withoutTarget: number;
   /** False once a resize replaced this partition; it then only delivers. */
   accepting: boolean;
   targets: Record<string, TargetProgress>;
@@ -170,6 +195,25 @@ export type LimiterSample = {
   granted: number;
   /** Permits asked for in the last round that stayed queued. */
   blocked: number;
+};
+
+/** What one pull hands a consumer: consecutive messages of one partition. */
+export type PullBatch = {
+  /** Names this delivery; acknowledge with it before `expiresAt`. */
+  lease: string;
+  /** `queue/epoch/index` of the partition the messages came from. */
+  partition: string;
+  /** One-based; higher when an earlier delivery was not acknowledged in time. */
+  attempt: number;
+  expiresAt: number;
+  messages: {
+    id: string;
+    key: string;
+    offset: number;
+    /** Whatever JSON the producer sent: a primitive, an array, or an object. */
+    body: string | number | boolean | null | object;
+    sentAt: number;
+  }[];
 };
 
 /** Progress of a queue's current or most recent redrive. */
@@ -200,6 +244,8 @@ export type Point = {
   at: number;
   accepted: number;
   rejected: number;
+  /** Messages dead-lettered because the queue had no target to deliver them to. */
+  withoutTarget: number;
   partitions: number;
   targets: Record<string, TargetTotals>;
   permits?: {

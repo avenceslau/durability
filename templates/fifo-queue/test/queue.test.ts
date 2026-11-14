@@ -1,13 +1,22 @@
-import { SELF } from 'cloudflare:test';
+import { runInDurableObject, SELF } from 'cloudflare:test';
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import type { QueueBinding } from '../src/index';
-import type { Overview, RedriveStatus } from '../src/model';
+import type {
+  Overview,
+  PartitionConfig,
+  PullBatch,
+  RedriveStatus,
+} from '../src/model';
+import type { Partition } from '../src/partition';
 import type { Behaviour, Received, SinkStore } from './worker';
 
 const stores = (workerExports as Record<string, unknown>)[
   'SinkStore'
 ] as DurableObjectNamespace<SinkStore>;
+const partitions = (workerExports as Record<string, unknown>)[
+  'Partition'
+] as DurableObjectNamespace<Partition>;
 /** The service binding another Worker would declare; see `wrangler.test.jsonc`. */
 const queueBinding = (env as unknown as { QUEUE: Service<QueueBinding> }).QUEUE;
 
@@ -76,6 +85,36 @@ const waitFor = async <T>(
   }
   await scheduler.wait(50);
   return waitFor(read, done, remaining - 1);
+};
+
+/** Pulls and acknowledges until the consumer has received `count` messages. */
+const pullAll = async (
+  queue: string,
+  consumer: string,
+  count: number,
+  remaining = 300
+): Promise<Record<string, number[]>> => {
+  const byKey: Record<string, number[]> = {};
+  let received = 0;
+  for (let attempt = 0; received < count; attempt += 1) {
+    if (attempt === remaining) {
+      throw new Error(`Pulled only ${received} of ${count} messages`);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const batch = await queueBinding.pull(queue, consumer);
+    if (!batch) {
+      // eslint-disable-next-line no-await-in-loop
+      await scheduler.wait(100);
+      continue;
+    }
+    for (const message of batch.messages) {
+      (byKey[message.key] ??= []).push(message.body as number);
+    }
+    received += batch.messages.length;
+    // eslint-disable-next-line no-await-in-loop
+    expect(await queueBinding.ack(queue, consumer, batch.lease)).toBe(true);
+  }
+  return byKey;
 };
 
 const bodiesByKey = (deliveries: Received[]): Record<string, number[]> => {
@@ -218,6 +257,167 @@ describe('fifo queue', () => {
         0
       )
     ).toBe(count);
+  });
+
+  it('lets several pull consumers read every key in order', async () => {
+    const queue = await createQueue({
+      partitions: { min: 3, max: 3 },
+      pullConsumers: true,
+    });
+    expect((await overview(queue)).targets['pull']?.destination).toEqual({
+      type: 'pull',
+    });
+    const reserved = await admin(`/queues/${queue}/targets/pull`, 'PUT', {
+      destination: { type: 'archive' },
+    });
+    expect(reserved.status).toBe(409);
+
+    const keys = ['a', 'b', 'c', 'd', 'e', 'f'];
+    for (let round = 0; round < 5; round += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await produce(
+        queue,
+        keys.map((key) => ({ key, body: round }))
+      );
+    }
+
+    for (const consumer of ['billing', 'search']) {
+      // eslint-disable-next-line no-await-in-loop
+      const byKey = await pullAll(queue, consumer, 30);
+      for (const key of keys) {
+        expect(byKey[key]).toEqual([0, 1, 2, 3, 4]);
+      }
+      // eslint-disable-next-line no-await-in-loop
+      expect(await queueBinding.pull(queue, consumer)).toBeUndefined();
+    }
+  });
+
+  it('hands unacknowledged messages out again, over HTTP too', async () => {
+    const queue = await createQueue({ pullConsumers: true });
+    await produce(queue, [
+      { key: 'k', body: 1 },
+      { key: 'k', body: 2 },
+    ]);
+
+    const first = await waitFor(
+      () => queueBinding.pull(queue, 'slow', { visibilityMs: 300 }),
+      (batch) => batch !== undefined
+    );
+    expect(first?.attempt).toBe(1);
+    // The lease is still running, and one partition hands out one range at a time.
+    expect(await queueBinding.pull(queue, 'slow')).toBeUndefined();
+
+    const request = (action: string, body: object, token = 'consumer') =>
+      SELF.fetch(
+        `https://queue.test/queues/${queue}/consumers/slow/${action}`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        }
+      );
+    expect((await request('pull', {}, 'producer')).status).toBe(401);
+    const second = await waitFor(
+      async () => (await request('pull', {})).json<PullBatch | null>(),
+      (batch) => batch !== null
+    );
+    expect(second?.attempt).toBe(2);
+    expect(second?.messages.map((message) => message.body)).toEqual(
+      first?.messages.map((message) => message.body)
+    );
+
+    const stale = await request('ack', { lease: first!.lease });
+    expect(stale.status).toBe(409);
+    const current = await request('ack', { lease: second!.lease });
+    expect(await current.json()).toEqual({ settled: true });
+  });
+
+  it('removes batches from the pull bucket when their retention ends', async () => {
+    const queue = await createQueue({ pullConsumers: true });
+    await produce(queue, [
+      { key: 'a', body: 1 },
+      { key: 'b', body: 2 },
+    ]);
+    const stored = () => env.PULL.list({ prefix: `${queue}/` });
+    await waitFor(stored, (page) => page.objects.length > 0);
+
+    // Retention is counted in days, so the test moves the partition's clock
+    // instead: its batches are made due, with a retention that has passed.
+    const { epochs } = await overview(queue);
+    const partition = partitions.getByName(`${queue}/${epochs[0]!.epoch}/0`);
+    await runInDurableObject(partition, async (instance, state) => {
+      const config = state.storage.kv.get<PartitionConfig>('config')!;
+      state.storage.kv.put('config', { ...config, pullRetentionMs: 1 });
+      state.storage.kv.put('pullLogExpiresAt', 1);
+      await (
+        instance as unknown as { enforceRetention(): Promise<void> }
+      ).enforceRetention();
+      expect(state.storage.kv.get('pullLogExpiresAt')).toBeUndefined();
+    });
+    expect((await stored()).objects).toEqual([]);
+  });
+
+  it('keeps pulled keys in order across a resize', async () => {
+    const queue = await createQueue({
+      partitions: { min: 2, max: 8 },
+      pullConsumers: true,
+    });
+    const keys = Array.from({ length: 8 }, (_, index) => `key-${index}`);
+    const sendRound = (body: number) =>
+      produce(
+        queue,
+        keys.map((key) => ({ key, body }))
+      );
+
+    for (let body = 0; body < 5; body += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await sendRound(body);
+    }
+    await expectOk(
+      await admin(`/queues/${queue}/resize`, 'POST', { partitions: 5 })
+    );
+    for (let body = 5; body < 10; body += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await sendRound(body);
+    }
+
+    const byKey = await pullAll(queue, 'reader', keys.length * 10);
+    for (const key of keys) {
+      expect(byKey[key]).toEqual(Array.from({ length: 10 }, (_, n) => n));
+    }
+  });
+
+  it('dead-letters what a queue without targets accepts, for a later redrive', async () => {
+    const queue = await createQueue();
+    await produce(queue, [
+      { key: 'a', body: 1 },
+      { key: 'a', body: 2 },
+      { key: 'b', body: 3 },
+    ]);
+
+    const point = await waitFor(
+      async () => {
+        const { points } = await overview(queue);
+        return points[points.length - 1];
+      },
+      (latest) => latest?.withoutTarget === 3
+    );
+    expect(point?.accepted).toBe(3);
+    const stored = await env.STORAGE.list({
+      prefix: `dead-letters/${queue}/_no-target/`,
+    });
+    expect(stored.objects.length).toBeGreaterThan(0);
+
+    // A target added later was not there for those messages; a redrive
+    // delivers them to it.
+    await addTarget(queue, 'late');
+    await queueBinding.redrive(queue);
+    const byKey = bodiesByKey(await received(queue, 'late', 3));
+    expect(byKey).toEqual({ a: [1, 2], b: [3] });
+    await produce(queue, [{ key: 'a', body: 4 }]);
+    expect(bodiesByKey(await received(queue, 'late', 4))['a']).toEqual([
+      1, 2, 4,
+    ]);
   });
 
   it('keeps every key in order across a resize', async () => {

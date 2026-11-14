@@ -12,12 +12,16 @@
         "Orchestrator",
         "Directory",
         "Redriver",
+        "PullConsumer",
         "SinkStore",
       ],
     },
   ],
   "kv_namespaces": [{ "binding": "TOPOLOGY", "id": "topology-test" }],
-  "r2_buckets": [{ "binding": "STORAGE", "bucket_name": "fifo-queue-test" }],
+  "r2_buckets": [
+    { "binding": "STORAGE", "bucket_name": "fifo-queue-test" },
+    { "binding": "PULL", "bucket_name": "fifo-queue-pull-test" },
+  ],
   "services": [
     { "binding": "SINK", "service": "fifo-queue-test", "entrypoint": "Sink" },
     // What another Worker would declare to call the queue without HTTP.
@@ -27,5 +31,9 @@
       "entrypoint": "QueueBinding",
     },
   ],
-  "vars": { "ADMIN_TOKEN": "admin", "PRODUCER_TOKEN": "producer" },
+  "vars": {
+    "ADMIN_TOKEN": "admin",
+    "PRODUCER_TOKEN": "producer",
+    "CONSUMER_TOKEN": "consumer",
+  },
 }

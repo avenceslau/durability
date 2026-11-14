@@ -6,16 +6,25 @@ import {
   settingsInputSchema,
   targetInputSchema,
   targetNameSchema,
+  consumerNameSchema,
   type MessageInput,
+  type PullBatch,
   type RedriveStatus,
 } from './model';
-import { directory, orchestrators, redrivers } from './namespaces';
+import {
+  directory,
+  orchestrators,
+  pullConsumers,
+  redrivers,
+} from './namespaces';
+import type { PullOptions } from './pull-consumer';
 import { send, UnknownQueueError, type SendOutcome } from './send';
 
 export { Directory } from './directory';
 export { Limiter } from './limiter';
 export { Orchestrator } from './orchestrator';
 export { Partition } from './partition';
+export { PullConsumer } from './pull-consumer';
 export { Redriver } from './redriver';
 
 /**
@@ -43,7 +52,34 @@ export class QueueBinding extends WorkerEntrypoint<Cloudflare.Env> {
   redriveStatus(queue: string): Promise<RedriveStatus | undefined> {
     return redrivers().getByName(v.parse(queueNameSchema, queue)).status();
   }
+
+  /**
+   * Hands the named consumer its next messages from a queue that has pull
+   * consumers enabled, or nothing when it has caught up. Acknowledge them
+   * with the batch's `lease`, or they are handed out again.
+   */
+  pull(
+    queue: string,
+    consumer: string,
+    options?: PullOptions
+  ): Promise<PullBatch | undefined> {
+    return pullConsumer(queue, consumer).pull(queue, options);
+  }
+
+  ack(queue: string, consumer: string, lease: string): Promise<boolean> {
+    return pullConsumer(queue, consumer).ack(lease);
+  }
+
+  nack(queue: string, consumer: string, lease: string): Promise<boolean> {
+    return pullConsumer(queue, consumer).nack(lease);
+  }
 }
+
+/** One object per consumer of a queue: it holds that consumer's positions. */
+const pullConsumer = (queue: string, consumer: string) =>
+  pullConsumers().getByName(
+    `${v.parse(queueNameSchema, queue)}/${v.parse(consumerNameSchema, consumer)}`
+  );
 
 class HttpError extends Error {
   constructor(
@@ -148,6 +184,43 @@ const accept = async (queue: string, request: Request): Promise<Response> => {
   );
   const status = outcome.rejected.length === 0 ? 202 : backpressure ? 429 : 503;
   return Response.json(outcome, { status });
+};
+
+/** A pull consumer asks for messages, or settles the ones it was given. */
+const consume = async (
+  queue: string,
+  consumer: string,
+  action: string | undefined,
+  request: Request
+): Promise<Response> => {
+  const stub = pullConsumer(queue, consumer);
+  if (action === 'pull') {
+    const options = await parse(
+      v.object({
+        batches: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(1))),
+        visibilityMs: v.optional(
+          v.pipe(v.number(), v.safeInteger(), v.minValue(1_000))
+        ),
+      }),
+      request
+    );
+    const batch = await stub.pull(queue, {
+      ...(options.batches === undefined ? {} : { batches: options.batches }),
+      ...(options.visibilityMs === undefined
+        ? {}
+        : { visibilityMs: options.visibilityMs }),
+    });
+    return Response.json(batch ?? null);
+  }
+  if (action !== 'ack' && action !== 'nack') {
+    throw new HttpError(404, 'Not found');
+  }
+
+  const { lease } = await parse(v.object({ lease: v.string() }), request);
+  const settled =
+    action === 'ack' ? await stub.ack(lease) : await stub.nack(lease);
+  // A lease that ran out was handed to someone else under a new name.
+  return Response.json({ settled }, { status: settled ? 200 : 409 });
 };
 
 const signIn = async (request: Request): Promise<Response> => {
@@ -279,16 +352,30 @@ const route = async (request: Request): Promise<Response> => {
     .split('/')
     .filter((segment) => segment.length > 0);
 
-  if (root === 'queues') {
-    const [queueSegment, resource] = segments;
-    if (resource !== 'messages' || request.method !== 'POST') {
-      throw new HttpError(404, 'Not found');
-    }
+  if (root === 'queues' && request.method === 'POST') {
+    const [queueSegment, resource, consumerSegment, action] = segments;
+    const queueName = name(queueNameSchema, queueSegment);
     const token = bearer(request);
-    if (token === undefined || !(await matches(token, env.PRODUCER_TOKEN))) {
-      throw new HttpError(401, 'A producer token is required');
+    if (resource === 'messages') {
+      if (token === undefined || !(await matches(token, env.PRODUCER_TOKEN))) {
+        throw new HttpError(401, 'A producer token is required');
+      }
+      return accept(queueName, request);
     }
-    return accept(name(queueNameSchema, queueSegment), request);
+    if (resource === 'consumers') {
+      if (token === undefined || !(await matches(token, env.CONSUMER_TOKEN))) {
+        throw new HttpError(401, 'A consumer token is required');
+      }
+      return consume(
+        queueName,
+        name(consumerNameSchema, consumerSegment),
+        action,
+        request
+      );
+    }
+  }
+  if (root === 'queues') {
+    throw new HttpError(404, 'Not found');
   }
 
   if (root !== 'api') {

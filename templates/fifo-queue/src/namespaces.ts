@@ -3,6 +3,7 @@ import type { Directory } from './directory';
 import type { Limiter } from './limiter';
 import type { Orchestrator } from './orchestrator';
 import type { Partition } from './partition';
+import type { PullConsumer } from './pull-consumer';
 import type { Redriver } from './redriver';
 
 /**
@@ -20,5 +21,6 @@ export const partitions = () => namespace<Partition>('Partition');
 export const limiters = () => namespace<Limiter>('Limiter');
 export const orchestrators = () => namespace<Orchestrator>('Orchestrator');
 export const redrivers = () => namespace<Redriver>('Redriver');
+export const pullConsumers = () => namespace<PullConsumer>('PullConsumer');
 export const directory = () =>
   namespace<Directory>('Directory').getByName('directory');

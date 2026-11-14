@@ -66,3 +66,16 @@ export const limiterFor = (
 };
 
 export const topologyKey = (queue: string): string => `topology/${queue}`;
+
+const offsetDigits = 16;
+
+/**
+ * Where a partition's batch lives in the pull bucket. Offsets are padded so
+ * that listing a partition's prefix returns its batches in offset order.
+ */
+export const pullLogKey = (
+  partition: string,
+  firstOffset: number,
+  lastOffset: number
+): string =>
+  `${partition}/${String(firstOffset).padStart(offsetDigits, '0')}-${String(lastOffset).padStart(offsetDigits, '0')}`;

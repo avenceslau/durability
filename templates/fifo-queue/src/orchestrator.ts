@@ -13,6 +13,7 @@ import {
   topologyKey,
 } from './layout';
 import {
+  pullTargetName,
   settingsInputSchema,
   targetInputSchema,
   targetNameSchema,
@@ -52,6 +53,7 @@ type LimiterState = ShareState & {
 type RemovedEpochTotals = {
   accepted: number;
   rejected: number;
+  withoutTarget: number;
   targets: Record<
     string,
     Pick<TargetTotals, 'settled' | 'retries' | 'deadLettered'>
@@ -72,6 +74,8 @@ const rateWindowMs = 30_000;
 const rawPointsMs = 30 * 60_000;
 const minutePointsMs = 48 * 60 * 60_000;
 const eventsKept = 100;
+const dayMs = 24 * 60 * 60 * 1_000;
+const pullBatchSize = 100;
 
 const noLimiters: LimiterState = {
   active: [],
@@ -269,7 +273,38 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       targets: this.targets,
       limiters: this.limiterState.active,
       maxBacklog: this.settings.maxBacklog,
+      pullRetentionMs: this.settings.pullRetentionDays * dayMs,
     };
+  }
+
+  /**
+   * A queue with pull consumers has one target of its own, which writes every
+   * batch to the pull bucket. It is stored like any other target, so order
+   * across a resize, retries, and the dashboard treat it the same way.
+   */
+  private syncPullTarget(): void {
+    const { [pullTargetName]: existing, ...others } = this.targets;
+    if (!this.settings.pullConsumers) {
+      this.kv.put('targets', others);
+      return;
+    }
+    if (existing) {
+      return;
+    }
+    const epochs = this.epochs;
+    this.kv.put('targets', {
+      ...others,
+      [pullTargetName]: {
+        destination: { type: 'pull' },
+        batchSize: pullBatchSize,
+        // The pull bucket is the only copy consumers read, so do not give up early.
+        maxAttempts: 100,
+        attemptTimeoutMs: 10_000,
+        paused: false,
+        startAt: 'latest',
+        deliverFromEpoch: epochs[epochs.length - 1]!.epoch,
+      } satisfies PartitionTarget,
+    });
   }
 
   private async publishConfig(): Promise<void> {
@@ -313,6 +348,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       this.kv.put('epochs', [first]);
       this.kv.put('lastEpoch', first.epoch);
       this.kv.put('resizedAt', Date.now());
+      this.syncPullTarget();
 
       await this.topology.update(queue, () => ({
         members: partitionsOf(queue, first).map(memberOf),
@@ -377,6 +413,11 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   putTarget(name: string, target: TargetSettings): Promise<void> {
     return this.exclusive(async () => {
       const queue = this.queue;
+      if (name === pullTargetName) {
+        throw new QueueError(
+          `"${pullTargetName}" is the queue's own target; turn pull consumers on or off in the settings`
+        );
+      }
       if (
         target.maxConcurrency !== undefined &&
         this.settings.maxConcurrency === null
@@ -412,6 +453,11 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
   removeTarget(name: string): Promise<void> {
     return this.exclusive(async () => {
+      if (name === pullTargetName) {
+        throw new QueueError(
+          `"${pullTargetName}" is the queue's own target; turn pull consumers off in the settings`
+        );
+      }
       const { [name]: removed, ...rest } = this.targets;
       if (!removed) {
         throw new QueueError(`No target named "${name}"`);
@@ -457,6 +503,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       }
 
       this.kv.put('settings', settings);
+      this.syncPullTarget();
       await this.balanceLimiters();
       await this.publishConfig();
       this.record('settings', 'Queue settings saved');
@@ -627,11 +674,13 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     const removed = this.kv.get<RemovedEpochTotals>('removedEpochTotals') ?? {
       accepted: 0,
       rejected: 0,
+      withoutTarget: 0,
       targets: {},
     };
     for (const sample of this.samplesOf(epoch)) {
       removed.accepted += sample.accepted;
       removed.rejected += sample.rejected;
+      removed.withoutTarget += sample.withoutTarget;
       for (const [name, progress] of Object.entries(sample.targets)) {
         const before = removed.targets[name] ?? {
           settled: 0,
@@ -740,6 +789,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       at: Date.now(),
       accepted: removed?.accepted ?? 0,
       rejected: removed?.rejected ?? 0,
+      withoutTarget: removed?.withoutTarget ?? 0,
       partitions: epochs[epochs.length - 1]!.count,
       targets: Object.fromEntries(
         Object.keys(this.targets).map((name) => [
@@ -759,6 +809,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     for (const sample of this.samplesOf()) {
       point.accepted += sample.accepted;
       point.rejected += sample.rejected;
+      point.withoutTarget += sample.withoutTarget;
       for (const [name, progress] of Object.entries(sample.targets)) {
         const totals = point.targets[name];
         if (!totals) {

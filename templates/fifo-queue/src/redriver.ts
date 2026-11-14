@@ -1,6 +1,6 @@
 import { DurableObject, env } from 'cloudflare:workers';
 import { DurabilityAlarms } from 'durability';
-import type { RedriveStatus } from './model';
+import { noTargetName, type RedriveStatus } from './model';
 import { orchestrators } from './namespaces';
 import { send } from './send';
 import type { Delivery } from './targets';
@@ -80,9 +80,12 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
       return statusOf(this.runningJob);
     }
 
+    // Dead letters written while the queue had no target belong to every
+    // target. With still none, replaying them would only write them again.
+    const everything = targets.length > 0 ? [...targets, noTargetName] : [];
     const job: Job = {
       queue,
-      remaining: target === undefined ? targets : [target],
+      remaining: target === undefined ? everything : [target],
       startedAt: Date.now(),
       redriven: 0,
       left: 0,
@@ -159,8 +162,9 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Sends one dead-lettered batch through the queue again, for its target
-   * only. The entry is deleted once its messages were accepted, so a crash in
+   * Sends one dead-lettered batch through the queue again: for its target
+   * only, or for every target when it was written while the queue had none.
+   * The entry is deleted once its messages were accepted, so a crash in
    * between can deliver a message twice but never loses one.
    */
   private async replayEntry(
@@ -180,7 +184,7 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
         body: message.body,
         id: `redrive/${key}/${message.offset}`,
       })),
-      [target]
+      target === noTargetName ? undefined : [target]
     );
     if (outcome.rejected.length > 0) {
       return { redriven: 0, left: entry.messages.length };

@@ -7,10 +7,11 @@ A queue service on Durable Objects, built from the [`durability`](https://github
 - **Ordered per key.** Messages that share a key are delivered in the order they were accepted.
 - **Many in, many out.** Any number of producers; every target of a queue receives every message, at its own pace, with its own retries and dead letters.
 - **Autoscaling.** Partitions are added and removed with the accept rate and the backlog, without breaking order. Queues, targets, and limits are created at runtime: nothing is redeployed.
+- **Push or pull.** Targets are called with each batch. Turn pull consumers on and every message is also kept in R2, for up to 50 days, for consumers that ask for messages instead.
 - **Limits.** Messages in flight per partition, messages per second per partition, and batches in flight across the whole queue.
 - **Dashboard.** Accepted and delivered messages per second, backlog, in-flight work, retries, dead letters, partitions, and scaling events, live over a WebSocket.
 
-The button creates the Worker, a KV namespace, an R2 bucket, and asks for two secrets: `ADMIN_TOKEN` (dashboard and admin API) and `PRODUCER_TOKEN` (sending messages).
+The button creates the Worker, a KV namespace, two R2 buckets, and asks for three secrets: `ADMIN_TOKEN` (dashboard and admin API), `PRODUCER_TOKEN` (sending messages), and `CONSUMER_TOKEN` (pulling messages).
 
 ## Use it
 
@@ -101,6 +102,35 @@ Answer `2xx` to acknowledge the batch. Anything else is retried with backoff (`R
 
 Per target: `batchSize` (messages in flight per partition, default 10), `maxPerSecond` (per partition), `maxConcurrency` (batches in flight across the queue; needs the queue's own `maxConcurrency`), `maxAttempts`, `attemptTimeoutMs`, `paused`, and `startAt` (`latest` or `earliest`, for a new target).
 
+### Pull consumers
+
+A target is called with each batch. A pull consumer asks instead. Set `pullConsumers` on a queue (in the dashboard's settings, or `PATCH /api/queues/<queue>` with `{ "pullConsumers": true }`) and the queue gets a target of its own, `pull`, that writes every message to the second R2 bucket. Consumers read from there, through a Durable Object per consumer, so pulling takes nothing from the partitions.
+
+```sh
+# Ask for messages. The answer is null when the consumer has caught up.
+curl -X POST $ORIGIN/queues/orders/consumers/reports/pull \
+  -H "Authorization: Bearer $CONSUMER_TOKEN" -d '{}'
+# → { "lease": "…", "partition": "orders/3/1", "attempt": 1, "expiresAt": …, "messages": [ … ] }
+
+# Acknowledge them, or they are handed out again when the lease ends.
+curl -X POST $ORIGIN/queues/orders/consumers/reports/ack \
+  -H "Authorization: Bearer $CONSUMER_TOKEN" -d '{ "lease": "…" }'
+```
+
+```ts
+const batch = await env.QUEUE.pull('orders', 'reports');
+if (batch) {
+  await handle(batch.messages);
+  await env.QUEUE.ack('orders', 'reports', batch.lease);
+}
+```
+
+- **A consumer is a name.** Each name has its own position, so `reports` and `search` both receive every message. Several processes may pull under one name: they share its messages.
+- **Order.** One pull returns consecutive messages of one partition, and that partition hands the consumer nothing else until they are acknowledged, given back (`nack`), or the lease ends (`visibilityMs`, 30 seconds by default). Keys therefore stay in order, also across a resize; different partitions are pulled in parallel.
+- **At least once.** A lease that ends is handed out again with a higher `attempt`. Acknowledging the old lease then answers `409` (`false` from the binding).
+- **Size.** `batches` is how many stored batches one pull may return, 10 by default, each up to 100 messages.
+- **Retention.** `pullRetentionDays` (1 to 50, default 7) is how long a message can be pulled. Each partition deletes its batches when that time is over. Retention does not wait for consumers, and a slow pull consumer does not cause backpressure: one that falls further behind than the retention misses messages. A new consumer name starts at the oldest message still stored.
+
 ### Redrive
 
 A redrive replays dead letters through the queue. Each message goes only to the target that gave up on it, with a fresh set of attempts, and its dead letter is deleted once the queue accepted it. One call replays everything there is:
@@ -122,7 +152,11 @@ The call starts a job and returns at once. The job runs in its own Durable Objec
 }
 ```
 
-`redriven` counts messages accepted back; `left` counts messages the queue refused (backpressure), whose dead letters stay for the next redrive. One redrive runs per queue at a time: a call made during a run reports that run and starts nothing. Redriven messages arrive after whatever the target received since, so order does not cover them. Dead letters written while a redrive runs wait for the next one, and those of a target that was removed are left in R2.
+Dead letters written while the queue had no target are replayed too, to every target. `redriven` counts messages accepted back; `left` counts messages the queue refused (backpressure), whose dead letters stay for the next redrive. One redrive runs per queue at a time: a call made during a run reports that run and starts nothing. Redriven messages arrive after whatever the target received since, so order does not cover them. Dead letters written while a redrive runs wait for the next one, and those of a target that was removed are left in R2.
+
+### A queue without targets
+
+Messages a queue accepts while it has no target at all are written straight to the dead letters, rather than left in the partitions until retention removes them. A redrive of the whole queue delivers them to every target the queue has by then. Pull consumers count as a target.
 
 ### Order and failure
 
@@ -148,6 +182,7 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 | `Limiter`                          | Holds a share of the queue's concurrency limit and hands out permits.                                                                                     | `DurabilitySemaphore`                                                                      |
 | `Orchestrator`                     | Control plane: owns the partition and limiter sets, pushes configuration, autoscales, stores metrics, serves the dashboard. No message passes through it. | `DurabilityTopology` (two instances), `DurabilityAlarms`, `DurabilitySocket`               |
 | `Redriver`                         | Replays a queue's dead letters as a job, one page per alarm run, apart from delivery and the control plane.                                               | `DurabilityAlarms`                                                                         |
+| `PullConsumer`                     | One per pull consumer of a queue: reads batches from the pull bucket and holds the consumer's positions and leases.                                       | SQLite storage only                                                                        |
 
 **The partition list in KV has no expiry** and is written only by the orchestrator, when the partitions change.
 
@@ -171,7 +206,7 @@ A target's own `maxConcurrency` is split between limiters in the same proportion
 
 ## Limits of this template
 
-- Messages are kept for 4 days or 512 MB per partition, whichever comes first. A target that stays behind longer loses messages; `maxBacklog` rejects sends before that happens for running targets, not for paused ones.
+- A partition keeps messages for 4 days or 512 MB, whichever comes first; `pullRetentionDays` applies to the pull bucket only. A target that stays behind longer loses messages; `maxBacklog` rejects sends before that happens for running targets, not for paused ones.
 - One orchestrator receives every partition's samples, so the dashboard, not the queue, is what stops scaling first. Lengthen `sampleIntervalMs` in `src/partition.ts` for queues with many hundreds of busy partitions.
 - The autoscaler's thresholds (`src/scaling.ts`) and `limiterTargetRate` are starting points, not measurements of your workload.
 - A removed target's position is kept: a target created again under the same name continues where the old one stopped.

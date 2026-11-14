@@ -3,6 +3,7 @@ import layoutSource from '../../../templates/fifo-queue/src/layout.ts?raw';
 import limiterSource from '../../../templates/fifo-queue/src/limiter.ts?raw';
 import orchestratorSource from '../../../templates/fifo-queue/src/orchestrator.ts?raw';
 import partitionSource from '../../../templates/fifo-queue/src/partition.ts?raw';
+import pullConsumerSource from '../../../templates/fifo-queue/src/pull-consumer.ts?raw';
 import redriverSource from '../../../templates/fifo-queue/src/redriver.ts?raw';
 import scalingSource from '../../../templates/fifo-queue/src/scaling.ts?raw';
 import sendSource from '../../../templates/fifo-queue/src/send.ts?raw';
@@ -19,6 +20,7 @@ const layoutFile = 'templates/fifo-queue/src/layout.ts';
 const limiterFile = 'templates/fifo-queue/src/limiter.ts';
 const orchestratorFile = 'templates/fifo-queue/src/orchestrator.ts';
 const partitionFile = 'templates/fifo-queue/src/partition.ts';
+const pullConsumerFile = 'templates/fifo-queue/src/pull-consumer.ts';
 const redriverFile = 'templates/fifo-queue/src/redriver.ts';
 const scalingFile = 'templates/fifo-queue/src/scaling.ts';
 const sendFile = 'templates/fifo-queue/src/send.ts';
@@ -192,6 +194,70 @@ const balanceLimiters = sourceExcerpt(
   '  private async balanceLimiters(): Promise<LimiterSample[]> {',
   '    return samples;\n  }'
 );
+const deadLetterWithoutTarget = sourceExcerpt(
+  partitionSource,
+  partitionFile,
+  'dead-letter-without-target',
+  'Dead-letter when there is no target',
+  '  private async deadLetterWithoutTarget(): Promise<',
+  "    return 'more';\n  }"
+);
+const expirePullLog = sourceExcerpt(
+  partitionSource,
+  partitionFile,
+  'expire-pull-log',
+  'Delete batches past their retention',
+  '  private async expirePullLog(): Promise<number | undefined> {',
+  '    return undefined;\n  }'
+);
+const syncPullTarget = sourceExcerpt(
+  orchestratorSource,
+  orchestratorFile,
+  'sync-pull-target',
+  'The queue’s own pull target',
+  '  private syncPullTarget(): void {',
+  '    });\n  }'
+);
+const writeToPullLog = sourceExcerpt(
+  targetsSource,
+  targetsFile,
+  'write-to-pull-log',
+  'Write a batch to the pull bucket',
+  'const writeToPullLog = async (',
+  '  return { ok: true };\n};'
+);
+const pull = sourceExcerpt(
+  pullConsumerSource,
+  pullConsumerFile,
+  'pull',
+  'Hand out the next messages',
+  '  async pull(',
+  '    return undefined;\n  }'
+);
+const acknowledge = sourceExcerpt(
+  pullConsumerSource,
+  pullConsumerFile,
+  'acknowledge',
+  'Move past acknowledged messages',
+  '  ack(lease: string): boolean {',
+  '    );\n  }'
+);
+const discover = sourceExcerpt(
+  pullConsumerSource,
+  pullConsumerFile,
+  'discover',
+  'Find the epoch and partitions to read',
+  '  private async discover(queue: string): Promise<void> {',
+  '        partition\n      );\n    }\n  }'
+);
+const readPartition = sourceExcerpt(
+  pullConsumerSource,
+  pullConsumerFile,
+  'read-partition',
+  'Read one partition’s next range',
+  '  private async read(',
+  '    return batch;\n  }'
+);
 const startRedrive = sourceExcerpt(
   redriverSource,
   redriverFile,
@@ -245,7 +311,7 @@ export const walkthrough = validateWalkthrough({
   id: 'fifo-queue',
   title: 'How the queue uses its Durable Objects',
   summary:
-    'A Worker hashes each key to a Partition object, an ordered log that hands every target its batches in offset order. One Orchestrator per queue owns the partition list and the limiters and never sees a message. Step through a send, a delivery, a redrive, a resize that keeps order, a shared concurrency limit, and the metrics.',
+    'A Worker hashes each key to a Partition object, an ordered log that hands every target its batches in offset order. One Orchestrator per queue owns the partition list and the limiters and never sees a message. Step through a send, a delivery, a redrive, pull consumers, a resize that keeps order, a shared concurrency limit, and the metrics.',
   diagram: {
     canvas: { width: 1000, height: 900 },
     direction: 'down',
@@ -255,6 +321,7 @@ export const walkthrough = validateWalkthrough({
       deliver: { label: 'deliver batches', color: 'orange' },
       control: { label: 'configure and observe', color: 'purple' },
       redrive: { label: 'replay dead letters', color: 'green' },
+      pull: { label: 'pull messages', color: 'blue' },
     },
     nodes: {
       producer: {
@@ -300,8 +367,8 @@ export const walkthrough = validateWalkthrough({
         icon: 'durable-objects',
       },
       log: {
-        rank: 2,
-        row: 0,
+        rank: 3,
+        row: 1,
         label: 'Message log',
         sublabel: 'ctx.storage.sql',
         size: [230, 72],
@@ -325,7 +392,7 @@ export const walkthrough = validateWalkthrough({
       },
       storage: {
         rank: 3,
-        row: 1,
+        row: 2,
         label: 'STORAGE',
         sublabel: 'R2 dead letters',
         size: [230, 72],
@@ -333,15 +400,41 @@ export const walkthrough = validateWalkthrough({
         tone: 'external',
       },
       redriver: {
-        rank: 3,
+        rank: 4,
         row: 2,
         label: 'Redriver',
         sublabel: 'one per queue',
         size: [230, 72],
         icon: 'durable-objects',
       },
-      target: {
+      'pull-bucket': {
         rank: 3,
+        row: 0,
+        label: 'PULL',
+        sublabel: 'R2 messages to pull',
+        size: [250, 72],
+        icon: 'r2',
+        tone: 'external',
+      },
+      'pull-consumer': {
+        rank: 4,
+        row: 0,
+        label: 'PullConsumer',
+        sublabel: 'one per consumer',
+        size: [250, 72],
+        icon: 'durable-objects',
+      },
+      consumer: {
+        rank: 4,
+        row: 1,
+        label: 'Pull consumer',
+        sublabel: 'pull · ack',
+        size: [230, 72],
+        icon: 'user',
+        tone: 'external',
+      },
+      target: {
+        rank: 2,
         row: 0,
         label: 'Target',
         sublabel: 'webhook · service',
@@ -376,6 +469,24 @@ export const walkthrough = validateWalkthrough({
         both: true,
       },
       { from: 'redriver', to: 'partition', label: 'replay', flow: 'redrive' },
+      {
+        from: 'partition',
+        to: 'pull-bucket',
+        label: 'every batch',
+        flow: 'pull',
+      },
+      {
+        from: 'pull-consumer',
+        to: 'pull-bucket',
+        label: 'list · read',
+        flow: 'pull',
+      },
+      {
+        from: 'consumer',
+        to: 'pull-consumer',
+        label: 'pull · ack',
+        flow: 'pull',
+      },
       { from: 'orchestrator', to: 'kv', label: 'publish', flow: 'control' },
       {
         from: 'orchestrator',
@@ -461,6 +572,24 @@ export const walkthrough = validateWalkthrough({
       href: '/reference/guarantees/',
       source: 'dead-letter',
     },
+    'pull-bucket': {
+      description:
+        'A second R2 bucket. A queue with pull consumers enabled has a target of its own that writes every batch here, keyed by partition and offset. Each partition deletes its batches when their retention, up to 50 days, ends.',
+      href: '/reference/guarantees/',
+      source: 'write-to-pull-log',
+    },
+    'pull-consumer': {
+      description:
+        'One object per consumer of a queue. It reads batches from the pull bucket and stores how far the consumer got in each partition and which range it has been handed. Pulling never reaches a partition.',
+      href: '/reference/guarantees/',
+      source: 'pull',
+    },
+    consumer: {
+      description:
+        'Anything that asks for messages instead of being called: an HTTP client with the consumer token, or a Worker using the queue binding. It acknowledges each batch by its lease, or the batch is handed out again.',
+      href: '/reference/guarantees/',
+      source: 'pull',
+    },
     redriver: {
       description:
         'One object per queue that replays its dead letters. A redrive is a job it works through one page per alarm run, so a large set takes nothing from the partitions’ delivery or from the Orchestrator. It sends through the same path as the Worker.',
@@ -496,6 +625,14 @@ export const walkthrough = validateWalkthrough({
     report,
     tick,
     balanceLimiters,
+    deadLetterWithoutTarget,
+    expirePullLog,
+    syncPullTarget,
+    writeToPullLog,
+    pull,
+    acknowledge,
+    discover,
+    readPartition,
     startRedrive,
     replayPage,
     replayEntry,
@@ -709,6 +846,21 @@ export const walkthrough = validateWalkthrough({
           status: 'recovery',
         },
         {
+          id: 'no-target',
+          title: 'A queue without targets dead-letters at once',
+          description:
+            'With no target there is nobody to deliver to, and messages left in the log would only wait for retention to remove them. The partition writes them straight to the dead letters; a redrive delivers them to every target once the queue has one.',
+          stage: ['focus:storage'],
+          source: sourceFocus(
+            deadLetterWithoutTarget,
+            'const lease = await this.log.lease(noTargetName, deadLetterBatchSize);',
+            "'The queue has no targets'"
+          ),
+          durable: 'The dead letters, and the position past them.',
+          volatile: 'Nothing.',
+          status: 'normal',
+        },
+        {
           id: 'crash',
           title: 'A crash mid-batch delivers it again',
           description:
@@ -831,6 +983,143 @@ export const walkthrough = validateWalkthrough({
             'id: `redrive/${key}/${message.offset}`,'
           ),
           durable: 'New offsets in the current epoch.',
+          volatile: 'Nothing.',
+          status: 'gap',
+        },
+      ],
+    },
+    {
+      id: 'pull',
+      title: 'Pull instead of being called',
+      description:
+        'With pull consumers enabled, every message is also written to a second bucket. A consumer asks for messages through an object of its own, which reads that bucket and never a partition.',
+      steps: [
+        {
+          id: 'enable',
+          title: 'Pull consumers add one target',
+          description:
+            'Turning the setting on gives the queue a target of its own, stored like any other. Everything a target already has applies to it: its own position in every partition, retries, and order across a resize.',
+          stage: ['*', 'focus:orchestrator'],
+          source: sourceFocus(
+            syncPullTarget,
+            "destination: { type: 'pull' },",
+            'deliverFromEpoch: epochs[epochs.length - 1]!.epoch,'
+          ),
+          durable: 'The target, pushed to every partition.',
+          volatile: 'Nothing.',
+          status: 'commit',
+        },
+        {
+          id: 'write',
+          title: 'Every batch is written to the pull bucket',
+          description:
+            'For that target, delivering means writing the batch to R2 under the partition’s name and the batch’s offsets. Listing a partition’s prefix therefore returns its messages in order. A repeated write leaves the first copy in place.',
+          stage: ['focus:pull-bucket'],
+          source: sourceFocus(
+            writeToPullLog,
+            'await env.PULL.put(',
+            "{ onlyIf: { etagDoesNotMatch: '*' } }"
+          ),
+          durable: 'The batch in R2, and the target’s position past it.',
+          volatile: 'Nothing.',
+          status: 'commit',
+        },
+        {
+          id: 'discover',
+          title: 'A consumer finds its place by listing',
+          description:
+            'Each consumer of a queue has its own object. It learns which epochs and partitions exist from the bucket itself, every couple of seconds, so it needs neither the partition list nor the Orchestrator. A new consumer starts at the oldest batch still stored.',
+          stage: ['focus:pull-consumer'],
+          source: sourceFocus(
+            discover,
+            'const epochs = await numbersUnder(`${queue}/`);',
+            'const later = epochs.find((candidate) => candidate > current);'
+          ),
+          durable: 'The epoch being read and its partitions.',
+          volatile: 'When the bucket was last listed.',
+          status: 'normal',
+        },
+        {
+          id: 'read',
+          title: 'One partition hands out one range',
+          description:
+            'A pull takes the partition that has waited longest and has no range out, and reads the batches after the consumer’s position there. Two pulls of the same consumer get different partitions, so keys are never handed out out of order.',
+          stage: ['focus:pull-bucket'],
+          source: sourceFocus(
+            pull,
+            '// Least recently checked first, so every partition gets its turn.',
+            'AND checked_at <= ?'
+          ),
+          durable: 'The consumer’s position in the partition.',
+          volatile: 'Which partitions are being read right now.',
+          status: 'normal',
+        },
+        {
+          id: 'lease',
+          title: 'The messages are the consumer’s for a while',
+          description:
+            'The range is stored with a lease name and an expiry before the messages are returned. Until the consumer acknowledges or the lease runs out, 30 seconds by default, that partition hands out nothing else to this consumer.',
+          stage: ['focus:consumer'],
+          source: sourceFocus(
+            readPartition,
+            'lease: crypto.randomUUID(),',
+            'expiresAt: Date.now() + (options.visibilityMs ?? defaultVisibilityMs),'
+          ),
+          durable: 'The lease: its name, its last batch, and its expiry.',
+          volatile: 'Nothing.',
+          status: 'commit',
+        },
+        {
+          id: 'ack',
+          title: 'Acknowledge to move on',
+          description:
+            'An acknowledgement moves the position to the end of the range. A lease that ran out is handed out again under a new name and a higher attempt, so a late acknowledgement of the old one changes nothing and is refused.',
+          stage: ['focus:pull-consumer'],
+          source: sourceFocus(acknowledge, 'SET position = lease_through,'),
+          durable: 'The position.',
+          volatile: 'Nothing.',
+          status: 'commit',
+        },
+        {
+          id: 'epoch',
+          title: 'An epoch is read to its end before the next',
+          description:
+            'Partitions write to a new epoch only after the previous one is completely written, so a later epoch in the bucket means the current one gets nothing more. The consumer moves on once every partition was listed empty after that became known, which keeps keys in order across a resize.',
+          stage: ['focus:pull-consumer'],
+          source: sourceFocus(
+            discover,
+            'later !== undefined && this.finished(current) ? later : current;'
+          ),
+          durable: 'The epoch being read, and when it was found closed.',
+          volatile: 'Nothing.',
+          status: 'normal',
+        },
+        {
+          id: 'expire',
+          title: 'Partitions delete what is past retention',
+          description:
+            'Each partition deletes its own batches when their time in the bucket, a queue setting of up to 50 days, is over. It remembers when its oldest batch ends, so it lists the bucket only when something can have expired.',
+          stage: ['focus:pull-bucket'],
+          source: sourceFocus(
+            expirePullLog,
+            'const kept = page.objects.findIndex(',
+            'await env.PULL.delete(expired.map((object) => object.key));'
+          ),
+          durable: 'When the oldest remaining batch ends.',
+          volatile: 'Nothing.',
+          status: 'normal',
+        },
+        {
+          id: 'behind',
+          title: 'A consumer slower than retention misses messages',
+          description:
+            'Retention does not wait for consumers, and nothing stops sends when a pull consumer falls behind. A consumer that returns after its batches expired continues with the oldest that remain.',
+          stage: ['focus:consumer'],
+          source: sourceFocus(
+            readPartition,
+            '// Retention removed the batches between the listing and the read.'
+          ),
+          durable: 'The position, now past batches that no longer exist.',
           volatile: 'Nothing.',
           status: 'gap',
         },

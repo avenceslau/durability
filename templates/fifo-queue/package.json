@@ -40,11 +40,17 @@
       "PRODUCER_TOKEN": {
         "description": "Sent by producers as a bearer token when posting messages. Generate one with `openssl rand -hex 32`."
       },
+      "CONSUMER_TOKEN": {
+        "description": "Sent by pull consumers as a bearer token when asking for messages. Generate one with `openssl rand -hex 32`."
+      },
       "TOPOLOGY": {
         "description": "Holds each queue's published partition list, read by the Worker on every send."
       },
       "STORAGE": {
         "description": "Holds dead letters and the batches written by archive targets."
+      },
+      "PULL": {
+        "description": "Holds the messages of queues with pull consumers enabled, until their retention ends."
       }
     }
   }

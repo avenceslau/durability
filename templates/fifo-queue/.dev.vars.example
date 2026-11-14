@@ -1,2 +1,3 @@
 ADMIN_TOKEN=change-me
 PRODUCER_TOKEN=change-me-too
+CONSUMER_TOKEN=change-me-as-well
