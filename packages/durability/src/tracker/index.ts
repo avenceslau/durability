@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { traceMethods } from '../dev.js';
+import { SharedTimer } from '../shared-timer.js';
 import type { AnyDurabilityAlarms, DurabilityAlarms } from '../alarms/index.js';
 import type {
   AnyDurability,
@@ -180,6 +181,8 @@ const itemFor = (key: string, record: UntypedRecord): AnyItem => ({
  */
 export class DurabilityTracker<Sources extends TrackerSources> {
   readonly #sources: Array<[string, UntypedSource]>;
+  // Every wait holds a timeout, and nothing limits how many waits are open.
+  readonly #timer = new SharedTimer();
 
   constructor(config: DurabilityTrackerConfig<Sources>) {
     this.#sources = Object.entries(config.sources).map(([key, input]) => [
@@ -295,13 +298,13 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     return new Promise<AnyResult>((resolve, reject) => {
       let done = false;
       let unwatch: (() => void) | undefined;
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let cancelTimeout: (() => void) | undefined;
       const finish = (settle: () => void) => {
         if (done) {
           return;
         }
         done = true;
-        clearTimeout(timer);
+        cancelTimeout?.();
         unwatch?.();
         settle();
       };
@@ -325,7 +328,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
         unwatch?.();
         return;
       }
-      timer = setTimeout(() => {
+      cancelTimeout = this.#timer.schedule(() => {
         read().then((result) => finish(() => resolve(result)), fail);
       }, timeoutMs);
       check();

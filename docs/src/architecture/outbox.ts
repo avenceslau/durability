@@ -98,7 +98,7 @@ const deadline = sourceExcerpt(
   'deadline',
   'Time out without cancelling',
   '  async #deadline(run: () => unknown): Promise<void> {',
-  '        clearTimeout(timer);\n      }\n    }\n  }'
+  '    );\n  }'
 );
 const transaction = sourceExcerpt(
   scheduler,
@@ -619,8 +619,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sink'],
           source: sourceFocus(
             deadline,
-            'await Promise.race([',
-            'reject(new OutboxTimeoutError(this.#attemptTimeoutMs)),'
+            'await this.#engine.timer.withTimeout(',
+            '() => new OutboxTimeoutError(this.#attemptTimeoutMs)'
           ),
           durable: 'Whatever the sink keeps.',
           volatile: 'The abandoned write, beyond the object’s reach.',

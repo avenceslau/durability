@@ -437,6 +437,20 @@ const removedAlarms = await this.alarms.purgeBefore(retentionCutoff);
 
 The purge runs in one transaction. It best-effort aborts matching active handlers, but cannot force an abort-ignoring handler to stop. Operation IDs can be reused immediately; a late old generation cannot overwrite the replacement record.
 
+## In-memory timeouts
+
+The runtime makes the global `setTimeout` throw `QuotaExceededError` once 10,000 timers are pending in one Durable Object. The helpers keep their own timeouts in a min-heap behind one native timer, and `scheduler.setTimeout` puts yours in the same heap, so the number pending does not count against that limit:
+
+```ts
+const cancel = this.scheduler.setTimeout(() => {
+  this.sockets.get(id)?.close(4000, 'Idle');
+}, 30_000);
+
+cancel();
+```
+
+It returns a cancel function instead of an id. Callbacks due at the same time run one after another in one task, and one that throws is reported as `durability.timer.callback_failed` instead of becoming an uncaught exception. The timeout exists only in memory, so an eviction drops it; use a named alarm for work that must still run after one.
+
 ## Experimental options
 
 These options, methods, and capabilities are opt-in: none takes effect unless you set, call, or construct it, so leaving them alone keeps every behavior described above. Their names and behavior may change in a minor release. Scheduler options can also be passed to a helper configured with `context`.

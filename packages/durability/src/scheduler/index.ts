@@ -21,6 +21,7 @@ import {
 } from '../migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from '../policy.js';
 import { deleteMemos, deleteStaleMemos } from '../memoize/index.js';
+import { SharedTimer } from '../shared-timer.js';
 import {
   channelBindings,
   channelClause,
@@ -99,9 +100,6 @@ const schedulerOptionKeys = [
   'onAlarmRetry',
 ] as const satisfies ReadonlyArray<keyof DurabilitySchedulerOptions>;
 const maxAlarmDelayMs = 15_000;
-// setTimeout treats delays past this as zero, so anything further out can only
-// be served by the physical alarm fallback.
-const maxTimerMs = 2 ** 31 - 1;
 
 const pendingHeadRowSchema = v.object({
   pk: v.string(),
@@ -262,6 +260,8 @@ const decideRetry = (
  */
 export class Engine {
   readonly sql: SqlStorage;
+  /** Holds the timeouts of every helper on the object behind one native timer. */
+  readonly timer = new SharedTimer();
   private context: DurabilityContext;
   private readonly storage: DurableObjectStorage;
   private alarmConcurrency = defaultAlarmConcurrency;
@@ -284,9 +284,7 @@ export class Engine {
   private alarmRefresh: Promise<void> | undefined;
   private alarmRefreshRequested = false;
   private failedRuns = 0;
-  private earlyAlarm:
-    | { timestamp: number; timer: ReturnType<typeof setTimeout> }
-    | undefined;
+  private earlyAlarm: { timestamp: number; cancel: () => void } | undefined;
   private readonly watchers = new Map<
     string,
     Map<string, Set<SettlementListener>>
@@ -717,7 +715,7 @@ export class Engine {
       return;
     }
     if (this.earlyAlarm) {
-      clearTimeout(this.earlyAlarm.timer);
+      this.earlyAlarm.cancel();
       this.earlyAlarm = undefined;
     }
     if (timestamp === undefined) {
@@ -726,34 +724,27 @@ export class Engine {
     const delay = timestamp - Date.now();
     // Without liveTimers the in-memory timer only covers the sub-min-delay
     // window; the physical alarm handles everything beyond it. With liveTimers
-    // it fires at the exact due time no matter how far out, except past the
-    // timer's range where only the physical fallback can serve it.
+    // it fires at the exact due time no matter how far out.
     if (!this.liveTimers && delay >= this.alarmMinDelayMs) {
       return;
     }
-    if (delay > maxTimerMs) {
-      return;
-    }
 
-    const timer = setTimeout(
-      () => {
-        if (this.earlyAlarm?.timer !== timer) {
-          return;
-        }
-        this.earlyAlarm = undefined;
-        trace('scheduler.early_alarm', { scheduledTime: timestamp });
-        const onError = (error: unknown) =>
-          reportFailure(
-            'durability.background_execution.failed',
-            { scheduledTime: timestamp },
-            error
-          );
-        const execution = this.alarm().catch(onError);
-        this.waitUntil(execution, onError);
-      },
-      Math.max(delay, 0)
-    );
-    this.earlyAlarm = { timestamp, timer };
+    const cancel = this.timer.schedule(() => {
+      if (this.earlyAlarm?.cancel !== cancel) {
+        return;
+      }
+      this.earlyAlarm = undefined;
+      trace('scheduler.early_alarm', { scheduledTime: timestamp });
+      const onError = (error: unknown) =>
+        reportFailure(
+          'durability.background_execution.failed',
+          { scheduledTime: timestamp },
+          error
+        );
+      const execution = this.alarm().catch(onError);
+      this.waitUntil(execution, onError);
+    }, delay);
+    this.earlyAlarm = { timestamp, cancel };
   }
 
   /** Coalesces refreshes without dropping requests arriving after the pending-work read. */
@@ -1007,19 +998,20 @@ export class Engine {
 
     const handoff = Symbol('alarm handoff');
     const remaining = this.alarmHandoffMs - (Date.now() - startedAt);
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let cancelTimeout: (() => void) | undefined;
     let result: void | typeof handoff;
     try {
       result = await Promise.race([
         execution,
         new Promise<typeof handoff>((resolve) => {
-          timeout = setTimeout(() => resolve(handoff), Math.max(remaining, 0));
+          cancelTimeout = this.timer.schedule(
+            () => resolve(handoff),
+            remaining
+          );
         }),
       ]);
     } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
+      cancelTimeout?.();
     }
 
     if (result === handoff) {
@@ -1102,7 +1094,7 @@ export class Engine {
       });
       const controller = new AbortController();
       activeExecution.controller = controller;
-      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let cancelTimeout: (() => void) | undefined;
       try {
         handlerStarted = true;
         const handlerResult = Promise.resolve().then(() =>
@@ -1115,7 +1107,7 @@ export class Engine {
           })
           .catch(() => undefined);
         const timeoutResult = new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(() => {
+          cancelTimeout = this.timer.schedule(() => {
             const error = spec.timeoutError();
             controller.abort(error);
             reject(error);
@@ -1146,9 +1138,7 @@ export class Engine {
       } catch (caught) {
         await this.settleFailure(spec, attempt, startedAt, caught);
       } finally {
-        if (timeout !== undefined) {
-          clearTimeout(timeout);
-        }
+        cancelTimeout?.();
       }
     })().finally(() => {
       policySettled = true;
@@ -1329,6 +1319,25 @@ export class DurabilityScheduler {
   /** Runs due work for every attached helper and re-arms the physical alarm. */
   alarm(info?: AlarmInvocationInfo): Promise<void> {
     return engineFor({ scheduler: this }).alarm(info);
+  }
+
+  /**
+   * Runs `callback` once after `delayMs`, like the global `setTimeout`, and
+   * returns a function that cancels it. The timeout shares one native timer
+   * with every helper on the object, so any number of them can be pending
+   * without reaching the runtime's limit of 10,000 native timers.
+   *
+   * The timeout exists only in memory and an eviction drops it; schedule work
+   * that must survive one with `DurabilityAlarms`. Callbacks due at the same
+   * time run one after another in the same task, and one that throws is
+   * reported as `durability.timer.callback_failed` instead of being thrown.
+   */
+  setTimeout(callback: () => void, delayMs: number): () => void {
+    if (typeof callback !== 'function') {
+      throw new TypeError('callback must be a function');
+    }
+
+    return engineFor({ scheduler: this }).timer.schedule(callback, delayMs);
   }
 }
 

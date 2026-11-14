@@ -456,7 +456,7 @@ export const walkthrough = validateWalkthrough({
           ),
           durable: 'Still pending in durability_calls.',
           volatile:
-            'A listener in the engine’s watchers map and a setTimeout for timeoutMs.',
+            'A listener in the engine’s watchers map and a timeout for timeoutMs on the tracker’s shared timer.',
           status: 'normal',
         },
         {
