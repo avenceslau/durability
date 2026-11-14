@@ -158,27 +158,6 @@ class TopologyTimeoutError extends Error {
   }
 }
 
-const withTimeout = async <T>(
-  work: Promise<T>,
-  timeoutMs: number,
-  label: string
-): Promise<T> => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new TopologyTimeoutError(label, timeoutMs)),
-          timeoutMs
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
 // setTimeout overflows past this, and the outbox enforces the same ceiling.
 const maxTimeoutMs = 2 ** 31 - 1;
 
@@ -639,7 +618,11 @@ export class DurabilityTopology<
               )
         );
         try {
-          await withTimeout(write, timeoutMs, 'publish');
+          await this.#engine.timer.withTimeout(
+            write,
+            timeoutMs,
+            () => new TopologyTimeoutError('publish', timeoutMs)
+          );
         } catch (error) {
           if (error instanceof TopologyTimeoutError) {
             this.#settleLate(entry.key, id, write);
@@ -737,10 +720,10 @@ export class DurabilityTopology<
         };
         try {
           // Members ignore versions they have passed, so an abandoned delivery landing late is harmless.
-          await withTimeout(
+          await this.#engine.timer.withTimeout(
             Promise.resolve().then(() => channel.deliver(member, update)),
             timeoutMs,
-            'delivery'
+            () => new TopologyTimeoutError('delivery', timeoutMs)
           );
         } catch (error) {
           reportFailure(

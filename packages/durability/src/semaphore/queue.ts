@@ -1233,28 +1233,15 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     return 60_000;
   }
 
-  async #deadline<T>(what: string, run: () => T | Promise<T>): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        Promise.resolve().then(run),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `Semaphore ${what} timed out after ${this.#attemptTimeoutMs}ms`
-                )
-              ),
-            this.#attemptTimeoutMs
-          );
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    }
+  #deadline<T>(what: string, run: () => T | Promise<T>): Promise<T> {
+    return this.#engine.timer.withTimeout(
+      Promise.resolve().then(run),
+      this.#attemptTimeoutMs,
+      () =>
+        new Error(
+          `Semaphore ${what} timed out after ${this.#attemptTimeoutMs}ms`
+        )
+    );
   }
 }
 

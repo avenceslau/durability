@@ -482,6 +482,52 @@ describe('DurabilityScheduler', () => {
     );
   });
 
+  it('runs a setTimeout callback after its delay unless it is cancelled', () => {
+    vi.useFakeTimers();
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(new FakeStorage()),
+    });
+    const ran: string[] = [];
+
+    scheduler.setTimeout(() => ran.push('later'), 200);
+    scheduler.setTimeout(() => ran.push('sooner'), 100);
+    const cancel = scheduler.setTimeout(() => ran.push('cancelled'), 150);
+    cancel();
+
+    vi.advanceTimersByTime(199);
+    expect(ran).toEqual(['sooner']);
+    vi.advanceTimersByTime(1);
+    expect(ran).toEqual(['sooner', 'later']);
+  });
+
+  it('keeps every setTimeout of one object behind one native timer', () => {
+    vi.useFakeTimers();
+    const context = contextFor(new FakeStorage());
+    const scheduler = new DurabilityScheduler({ context });
+    const joined = new DurabilityScheduler({ context });
+    const callback = vi.fn();
+
+    for (let index = 0; index < 6_000; index += 1) {
+      scheduler.setTimeout(callback, 1_000 + index);
+      joined.setTimeout(callback, 1_000 + index);
+    }
+
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(7_000);
+    expect(callback).toHaveBeenCalledTimes(12_000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejects a setTimeout callback that is not a function', () => {
+    const scheduler = new DurabilityScheduler({
+      context: contextFor(new FakeStorage()),
+    });
+
+    expect(() =>
+      Reflect.apply(scheduler.setTimeout, scheduler, [undefined, 10])
+    ).toThrow('callback must be a function');
+  });
+
   it('rejects attaching two helpers of the same kind', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),

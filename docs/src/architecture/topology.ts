@@ -482,7 +482,11 @@ export const walkthrough = validateWalkthrough({
           description:
             'The limits rows are published by the outbox on the next timer or alarm pass, not by update. Each member gets its own RPC call with its own timeout; a failure retries only that member.',
           stage: ['shard', 'member-objects', 'flow:deliver'],
-          source: sourceFocus(deliver, 'await withTimeout(', 'entry.retry();'),
+          source: sourceFocus(
+            deliver,
+            'await this.#engine.timer.withTimeout(',
+            'entry.retry();'
+          ),
           durable: 'Each member’s outbox row stays until its call returns.',
           volatile: 'The RPC calls in flight.',
           status: 'normal',
@@ -519,7 +523,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             publish,
             'const write = Promise.resolve().then(() =>',
-            "await withTimeout(write, timeoutMs, 'publish');"
+            "() => new TopologyTimeoutError('publish', timeoutMs)"
           ),
           durable:
             'The group, the claimed outbox row, the write record, and the alarm.',

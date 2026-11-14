@@ -80,7 +80,7 @@ const earlyTimer = sourceExcerpt(
   'early-timer',
   'Start near-due work from memory',
   '  private scheduleEarlyAlarm(timestamp: number | undefined): void {',
-  '    this.earlyAlarm = { timestamp, timer };\n  }'
+  '    this.earlyAlarm = { timestamp, cancel };\n  }'
 );
 const permits = sourceExcerpt(
   scheduler,
@@ -163,7 +163,7 @@ export const walkthrough = validateWalkthrough({
         rank: 2,
         row: 2,
         label: 'Early timer',
-        sublabel: 'setTimeout',
+        sublabel: 'shared timer',
         icon: 'clock',
       },
       durability: {
@@ -268,7 +268,7 @@ export const walkthrough = validateWalkthrough({
     },
     timer: {
       description:
-        'A setTimeout for work due before the alarm may fire (within alarmMinDelayMs, or at any time with liveTimers). It exists only in this instance; the alarm is the fallback after eviction.',
+        'A timeout on the object’s shared timer for work due before the alarm may fire (within alarmMinDelayMs, or at any time with liveTimers). It exists only in this instance; the alarm is the fallback after eviction.',
       href: '/primitives/scheduler/',
       source: 'early-timer',
     },
@@ -425,7 +425,7 @@ export const walkthrough = validateWalkthrough({
           id: 'timer',
           title: 'Near-due work starts from memory',
           description:
-            'The alarm cannot fire sooner than alarmMinDelayMs, so work due earlier gets a setTimeout at its exact time. When it fires, it runs the same alarm pass in the background.',
+            'The alarm cannot fire sooner than alarmMinDelayMs, so work due earlier gets an in-memory timeout at its exact time. When it fires, it runs the same alarm pass in the background.',
           stage: ['focus:timer'],
           source: sourceFocus(
             earlyTimer,

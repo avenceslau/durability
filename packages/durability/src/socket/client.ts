@@ -12,6 +12,7 @@ import {
   type SocketOutboundPayload,
   type SocketServerFrame,
 } from './protocol.js';
+import { SharedTimer } from '../shared-timer.js';
 import { exponential, jitter } from '../utils.js';
 
 /** Rejection for calls still waiting when `close()` was called. */
@@ -126,7 +127,7 @@ type PendingCall = {
   sent: boolean;
   resolve: (output: unknown) => void;
   reject: (error: unknown) => void;
-  timer: ReturnType<typeof setTimeout>;
+  cancelTimeout: () => void;
 };
 
 const pingText = JSON.stringify({ v: socketProtocolVersion, type: 'ping' });
@@ -149,8 +150,10 @@ class Connection {
   #nextId = 0;
   #lastSeq: number | undefined;
   #attempt = 0;
-  #retryTimer: ReturnType<typeof setTimeout> | undefined;
-  #pingTimer: ReturnType<typeof setInterval> | undefined;
+  // Every pending call holds a timeout, and nothing limits how many are pending.
+  readonly #timer = new SharedTimer();
+  #cancelRetry: (() => void) | undefined;
+  #cancelPing: (() => void) | undefined;
   #lastReceivedAt = 0;
 
   constructor(
@@ -222,7 +225,7 @@ class Connection {
     this.#stopTimers();
     this.#generation += 1;
     for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timer);
+      pending.cancelTimeout();
       pending.reject(new SocketClosedError());
     }
     this.#pending.clear();
@@ -252,7 +255,7 @@ class Connection {
         sent: false,
         resolve,
         reject,
-        timer: setTimeout(
+        cancelTimeout: this.#timer.schedule(
           () => {
             this.#pending.delete(id);
             reject(new SocketTimeoutError(method, this.#config.timeoutMs));
@@ -316,7 +319,7 @@ class Connection {
 
   /** Opens a socket unless one is open, opening, or already scheduled by backoff. */
   #connect(): void {
-    if (this.#status !== 'disconnected' || this.#retryTimer !== undefined) {
+    if (this.#status !== 'disconnected' || this.#cancelRetry !== undefined) {
       return;
     }
 
@@ -400,7 +403,7 @@ class Connection {
       return;
     }
     this.#pending.delete(frame.id);
-    clearTimeout(pending.timer);
+    pending.cancelTimeout();
     settle(pending);
   }
 
@@ -431,7 +434,7 @@ class Connection {
         continue;
       }
       this.#pending.delete(id);
-      clearTimeout(pending.timer);
+      pending.cancelTimeout();
       pending.reject(new SocketConnectionLostError(pending.method));
     }
     if (code === socketProtocolErrorCode) {
@@ -440,9 +443,9 @@ class Connection {
     }
     this.#setStatus('disconnected');
     this.#attempt += 1;
-    this.#retryTimer = setTimeout(
+    this.#cancelRetry = this.#timer.schedule(
       () => {
-        this.#retryTimer = undefined;
+        this.#cancelRetry = undefined;
         this.#connect();
       },
       jitter(exponential(this.#attempt, 250, 60_000))
@@ -453,7 +456,7 @@ class Connection {
   #abandon(error: SocketProtocolError): void {
     reportFailure('durability.socket.protocol_error', {}, error);
     for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timer);
+      pending.cancelTimeout();
       pending.reject(error);
     }
     this.#pending.clear();
@@ -462,24 +465,24 @@ class Connection {
 
   #startPing(): void {
     const interval = this.#config.pingIntervalMs;
-    this.#pingTimer = setInterval(() => {
+    const ping = (): void => {
+      // Scheduled before the socket is used, so a close that stops the timers
+      // also stops the next ping.
+      this.#cancelPing = this.#timer.schedule(ping, interval);
       if (Date.now() - this.#lastReceivedAt > interval * 2) {
         this.#ws?.close(4000, 'Keep-alive timeout');
         return;
       }
       this.#ws?.send(pingText);
-    }, interval);
+    };
+    this.#cancelPing = this.#timer.schedule(ping, interval);
   }
 
   #stopTimers(): void {
-    if (this.#pingTimer !== undefined) {
-      clearInterval(this.#pingTimer);
-      this.#pingTimer = undefined;
-    }
-    if (this.#retryTimer !== undefined) {
-      clearTimeout(this.#retryTimer);
-      this.#retryTimer = undefined;
-    }
+    this.#cancelPing?.();
+    this.#cancelPing = undefined;
+    this.#cancelRetry?.();
+    this.#cancelRetry = undefined;
   }
 
   #setStatus(status: SocketStatus): void {

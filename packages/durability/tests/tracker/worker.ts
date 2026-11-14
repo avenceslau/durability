@@ -39,6 +39,45 @@ export class TrackerTestObject extends DurableObject {
     return this.tracker.list();
   }
 
+  async waitManyTimes(id: string, count: number, timeoutMs: number) {
+    const handle = await this.tracker.get('jobs', id);
+    if (!handle) {
+      throw new Error(`Job "${id}" was not registered`);
+    }
+
+    const results = await Promise.all(
+      Array.from({ length: count }, () => handle.wait({ timeoutMs }))
+    );
+    return results.filter(({ status }) => status === 'pending').length;
+  }
+
+  async waitTwiceWithNoNativeTimerLeft(id: string) {
+    const handle = await this.tracker.get('jobs', id);
+    if (!handle) {
+      throw new Error(`Job "${id}" was not registered`);
+    }
+
+    const first = handle.wait({ timeoutMs: 50 });
+    const otherTimers: ReturnType<typeof setTimeout>[] = [];
+    try {
+      for (;;) {
+        otherTimers.push(setTimeout(() => undefined, 60_000));
+      }
+    } catch {
+      // setTimeout throws once the runtime's limit is reached.
+    }
+    const second = handle.wait({ timeoutMs: 100 });
+
+    const results = await Promise.all([first, second]);
+    for (const timer of otherTimers) {
+      clearTimeout(timer);
+    }
+    return {
+      otherTimers: otherTimers.length,
+      statuses: results.map(({ status }) => status),
+    };
+  }
+
   release(id: string): boolean {
     const release = this.gates.get(id);
     release?.();
