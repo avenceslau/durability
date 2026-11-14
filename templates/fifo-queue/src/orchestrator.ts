@@ -496,10 +496,10 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Seals the current partitions, then publishes the next ones. The order is
-   * what keeps keys in order: once every old partition refuses sends, nothing
-   * can be accepted behind messages that already went to the new ones.
-   * Every step can be repeated.
+   * Stops the current partitions accepting, then publishes the next ones. The
+   * order is what keeps keys in order: once every old partition refuses
+   * sends, nothing can be accepted behind messages that already went to the
+   * new ones. Every step can be repeated.
    */
   private async finishResize(): Promise<void> {
     const next = this.kv.get<Layout>('resize');

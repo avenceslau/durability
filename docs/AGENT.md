@@ -62,10 +62,10 @@ outside with `tone: 'external'`, explicit `rank`/`row` hints, sublabels of about
 characters or fewer, and no two parallel edges between one pair of nodes. Flows: blue
 writes and registration, orange execution, green recovery.
 
-Import actual example and library files with `?raw`; never maintain copied code or line numbers.
+Import actual example, template, and library files with `?raw`; never maintain copied code or line numbers.
 Use unique anchors with `sourceExcerpt()` / `sourceFocus()`. Build-time validation must
-fail when an anchor disappears or graph references become invalid. Example files and
-`packages/durability/src` and `tests` are docs Turbo inputs.
+fail when an anchor disappears or graph references become invalid. Example files,
+`templates/*/src`, and `packages/durability/src` and `tests` are docs Turbo inputs.
 
 Walkthroughs are explanatory traces, **not executable simulations**. Keep failure windows
 and unimplemented recovery explicit. A passed idempotency header is not receiver-side

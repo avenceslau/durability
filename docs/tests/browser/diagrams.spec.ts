@@ -6,6 +6,7 @@ const pages = [
   'compositions/job-dashboard',
   'compositions/account-concurrency',
   'compositions/event-stream',
+  'compositions/fifo-queue',
   'primitives/operations',
   'primitives/alarms',
   'primitives/scheduler',

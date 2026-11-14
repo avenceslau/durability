@@ -5,19 +5,20 @@ description: End-to-end designs combining durable capabilities, application stat
 
 A capability reference answers "what does this method do?" A composition answers **"where does this application's state live, what drives progress, and what happens when one part fails?"**
 
-These walkthroughs follow complete Workers in the repository, rather than isolated API calls. Each explains the object boundaries, request path, durable handoffs, recovery behavior, and application-owned pieces needed to ship it.
+These walkthroughs follow complete Workers in the repository, rather than isolated API calls. The FIFO queue is a deployable template rather than a recipe: a complete application with its own tests. Each explains the object boundaries, request path, durable handoffs, recovery behavior, and application-owned pieces needed to ship it.
 
 ## Pick a design
 
-| Application                                                     | Capabilities composed                                     | Learn how to…                                                                                     |
-| --------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| [Recurring billing](/compositions/recurring-billing/)           | Named alarms + operations + shared scheduler              | Separate the renewal clock from independently retried payment work                                |
-| [Email delivery with an archive](/compositions/email-delivery/) | Routing + fanout + consumer RPC + R2 + transforms         | Accept a batch, progress independent targets, and redrive only failed deliveries                  |
-| [Live job dashboard](/compositions/job-dashboard/)              | Operations + tracker + fanout + application SQL + sockets | Separate authoritative work from a browser-facing read model, using both push and RPC waits       |
-| [Account-wide concurrency](/compositions/account-concurrency/)  | Semaphore + admission queue + operations + outbox         | Limit work across many job shards and recover permits when release notifications are lost         |
-| [Replayable event stream](/compositions/event-stream/)          | Routing + retained log + named alarms + R2                | Partition writes, maintain independent consumer positions, and move old records into cold storage |
+| Application                                                     | Capabilities composed                                     | Learn how to…                                                                                      |
+| --------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| [Recurring billing](/compositions/recurring-billing/)           | Named alarms + operations + shared scheduler              | Separate the renewal clock from independently retried payment work                                 |
+| [Email delivery with an archive](/compositions/email-delivery/) | Routing + fanout + consumer RPC + R2 + transforms         | Accept a batch, progress independent targets, and redrive only failed deliveries                   |
+| [Live job dashboard](/compositions/job-dashboard/)              | Operations + tracker + fanout + application SQL + sockets | Separate authoritative work from a browser-facing read model, using both push and RPC waits        |
+| [Account-wide concurrency](/compositions/account-concurrency/)  | Semaphore + admission queue + operations + outbox         | Limit work across many job shards and recover permits when release notifications are lost          |
+| [Replayable event stream](/compositions/event-stream/)          | Routing + retained log + named alarms + R2                | Partition writes, maintain independent consumer positions, and move old records into cold storage  |
+| [Partitioned FIFO queue](/compositions/fifo-queue/)             | Log leases + topology + semaphore + outbox + sockets      | Keep per-key order across several targets and across a resize, and split one limit between objects |
 
-The concurrency and dashboard designs include experimental capabilities. The billing, email, and event-stream designs use stable entry points.
+The concurrency, dashboard, and FIFO queue designs include experimental capabilities. The billing, email, and event-stream designs use stable entry points.
 
 ## The composition pattern
 

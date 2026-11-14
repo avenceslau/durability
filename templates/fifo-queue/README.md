@@ -104,6 +104,8 @@ Order is kept per key, per target. A partition hands a target one batch at a tim
 
 ## How it works
 
+The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/) steps through a send, a delivery, a resize, the concurrency limit, and the metrics against this source.
+
 ```
  producers ──► Worker ──hash(key)──► Partition (N per queue) ──► targets
                  ▲                       │   ▲

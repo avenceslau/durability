@@ -12,6 +12,7 @@ For architecture, durable handoffs, and diagrams of failure and recovery, start 
 - [Live job dashboard](/compositions/job-dashboard/): authoritative jobs, a durable projection, and browser synchronization.
 - [Account-wide concurrency](/compositions/account-concurrency/): shared admission across job objects and recovery of lost releases.
 - [Replayable event stream](/compositions/event-stream/): partitioned logs, independent consumers, and cold storage.
+- [Partitioned FIFO queue](/compositions/fifo-queue/): per-key order to several targets, resizing by epoch, and a shared concurrency limit.
 
 See [composition design](/compositions/) for how to choose object boundaries and recovery paths.
 
@@ -19,9 +20,9 @@ See [composition design](/compositions/) for how to choose object boundaries and
 
 A template is a complete application that deploys as it is, with a Deploy to Cloudflare button. It installs the published packages and has its own tests.
 
-| Template               | Demonstrates                                                                                                                            | Source                                                                                     |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Partitioned FIFO queue | Per-key ordering, several targets per queue, partitions that autoscale without losing order, queue-wide concurrency limits, a dashboard | [Template](https://github.com/avenceslau/durability/tree/main/templates/fifo-queue#readme) |
+| Template               | Demonstrates                                                                                                                            | Source                                                                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Partitioned FIFO queue | Per-key ordering, several targets per queue, partitions that autoscale without losing order, queue-wide concurrency limits, a dashboard | [Template](https://github.com/avenceslau/durability/tree/main/templates/fifo-queue#readme), [architecture](/compositions/fifo-queue/) |
 
 ## Source examples
 

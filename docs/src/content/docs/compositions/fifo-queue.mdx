@@ -1,0 +1,213 @@
+---
+title: Partitioned FIFO queue
+description: Accept messages into partitions, deliver every key in order to several targets, resize without losing order, and share one concurrency limit.
+tableOfContents: false
+---
+
+This design is a queue service rather than a recipe: queues, targets, and limits are
+created at runtime, partitions are added and removed with the load, and a dashboard shows
+what is moving. It is built from a stateless Worker and three kinds of Durable Object (a
+fourth only lists the queues for the dashboard).
+This page explains how they fit together and why; it does not go into the primitives
+underneath, which have their own pages.
+
+The complete application is the
+[`fifo-queue` template](https://github.com/avenceslau/durability/tree/main/templates/fifo-queue).
+It has a Deploy to Cloudflare button, its own tests, and a README that covers the HTTP API.
+Unlike the other compositions it installs the published packages, so it deploys from its
+own directory.
+
+## What it promises
+
+- **Order per key, per target.** Messages that share a key reach a target in the order
+  they were accepted, including across a resize.
+- **Every target gets every message**, at its own pace, with its own retries and dead
+  letters. A slow or failing target does not slow the others.
+- **At least once.** A batch is delivered again after a failed answer, a timeout, or a
+  crash mid-delivery. Receivers deduplicate on the `Idempotency-Key` header.
+- **A ceiling on batches in flight** across the whole queue, when one is configured.
+
+It does not promise order between different keys, a global order across partitions, or
+exactly-once effects. A batch that exhausts its attempts is written to R2 and skipped, so
+order no longer covers its messages.
+
+## Architecture
+
+<ArchitectureWalkthrough example="fifo-queue">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+## Who owns what
+
+The design splits into a data plane that messages pass through and a control plane that
+they never touch. That split is what lets the queue grow: adding partitions adds capacity,
+and nothing a message does waits on a single object.
+
+| Piece          | How many             | Owns                                                                                                      | Sees messages |
+| -------------- | -------------------- | --------------------------------------------------------------------------------------------------------- | ------------- |
+| Worker         | stateless            | Nothing. Reads the partition list, hashes keys, calls partitions.                                         | Yes           |
+| `Partition`    | N per queue          | An ordered log of messages, one position per target, the batch each target has in flight.                 | Yes           |
+| `Limiter`      | none, or L per queue | A share of the queue's concurrency limit and the permits handed out under it.                             | No            |
+| `Orchestrator` | one per queue        | Settings, targets, the list of partitions and limiters, each partition's latest sample, dashboard points. | No            |
+| KV entry       | one per queue        | The published partition list. Written only by the orchestrator, no expiry.                                | No            |
+
+A partition is named `queue/epoch/index`. The epoch is a generation of the queue's
+partition set: a resize does not change partitions, it starts a new epoch beside the old
+one.
+
+## Accepting a message
+
+1. The Worker reads the queue's partition list. The list lives in KV because every send
+   needs it and no send should wait on the orchestrator; the Worker caches it in memory.
+2. It hashes each message's key to a partition of the current epoch and groups the
+   messages by partition, keeping their order.
+3. Each partition appends its group to its log in one transaction. An append assigns the
+   next offsets, and the offset is the order: everything after this point follows it.
+4. The partition schedules a delivery run and answers. **Accepted means stored**, not
+   delivered.
+
+A partition refuses a send in two cases. If a resize replaced it, it answers with the new
+layout and the Worker sends there instead. If a running target is more than `maxBacklog`
+behind, it answers with backpressure and the producer sees `429`: messages are removed by
+retention whether or not a target received them, so refusing early is what prevents a
+silent loss later.
+
+A send that fails without an answer is uncertain. Sending again with the same message
+`id`s is safe within a partition, which accepts an id once. It is not safe across a
+resize: the retry goes to a partition of the new epoch, which has never seen the id.
+
+## Delivering in order
+
+A partition runs one delivery loop per target, all inside the object's alarm. For each
+target the loop repeats: take the messages after the target's position, hand them to the
+target, and move the position only when the target acknowledged them.
+
+Two rules give the ordering guarantee:
+
+- **One batch per target at a time.** The partition does not take the next range for a
+  target until the current one is settled. A batch that fails is retried before anything
+  after it, so a failing target holds back the later messages of that partition, for that
+  target only.
+- **Positions are per target.** One target's retry does not move or block another
+  target's position, and other partitions are separate objects.
+
+A batch is settled in one of two ways: the target answers `2xx`, or the batch reaches
+`maxAttempts` and is written to R2 as a dead letter. The dead letter is written first and
+the position moved second, so a crash between the two repeats the write, which leaves the
+first copy in place, rather than losing the batch.
+
+Targets can also be limited per partition: `batchSize` is the number of messages in
+flight for one partition, and `maxPerSecond` spaces the batches out.
+
+## Resizing without losing order
+
+Changing the partition count changes which partition a key hashes to. If old and new
+partitions both accepted and delivered freely, a later message of a key could overtake an
+earlier one. The queue therefore moves to a new epoch in a fixed order:
+
+1. **Store the intent.** The orchestrator records the next epoch before calling anything,
+   so an interrupted resize is finished by its next tick.
+2. **Stop the old partitions accepting.** It calls every partition of the current epoch
+   and waits for all of them. Each now refuses sends and answers with the new layout.
+3. **Publish the new partitions.** Only then does the list in KV change.
+4. **Hold delivery.** New partitions accept at once, but each target carries the oldest
+   epoch that still holds messages for it, and partitions of a later epoch skip that
+   target.
+5. **Advance.** When every old partition reports that a target has reached the end of its
+   log, the target moves to the next epoch and its new partitions start delivering.
+6. **Drop the old epoch** once no target reads it.
+
+Step 2 before step 3 is the whole argument. KV is eventually consistent and Workers
+cache, so for a while some Workers hash with the old count. Because every old partition
+already refuses, such a Worker is redirected rather than accepted: nothing can be stored
+in the old epoch after a message of the same key went to the new one. Step 4 then makes
+sure the old epoch's messages are delivered first.
+
+The cost is that accepting scales immediately while delivery of new messages waits for
+the old backlog. The autoscaler accounts for that by at least doubling when it grows, and
+by not shrinking while a target is behind.
+
+**One resize runs at a time.** A target that is paused, or whose batches keep failing,
+holds the old epoch until it has worked through it, and no further resize starts before
+then.
+
+## One limit, several limiters
+
+`maxConcurrency` caps the batches in flight across all partitions and targets. A single
+object holding that limit would see a request from every busy partition, so the limit is
+split:
+
+- A `Limiter` holds a **share** of the limit and hands out permits within it. The shares
+  the orchestrator publishes never add up to more than the limit.
+- A partition finds its limiter by hashing its own name against the limiter names and
+  taking the highest score. No assignment is stored, and adding a limiter moves only the
+  partitions that now rank it first.
+- A target keeps its permit across batches while it has work, for at most ten seconds,
+  so permits cost a request per busy period rather than per batch.
+- Every tick the orchestrator asks the limiters what is in use and what is still asked
+  for, and moves shares towards the demand. It adds a limiter when the rate of permit
+  requests exceeds what the current ones should carry, which is the only scaling signal.
+
+Moving a share between limiters has one subtlety: lowering a share does not stop work a
+limiter already admitted. `limitMode` chooses what to do about it.
+
+| Mode     | How a share moves                                                                                  | Result                                                                   |
+| -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `strict` | Lower one limiter, wait until it reports the lower share applied and its work done, raise another. | The limit is never exceeded; a busy limiter waits for another to finish. |
+| `fast`   | Lower and raise in the same change.                                                                | Shares follow demand within seconds; the queue can briefly run above it. |
+
+## Metrics from positions
+
+Nothing is counted per message. A partition's log already knows how many messages it
+accepted (its next offset) and how far each target is (its position). A busy partition
+sends those numbers to the orchestrator about once a second, keeping only the newest
+sample when several are waiting. The orchestrator adds the samples into one point of
+cumulative counters every two seconds, stores it, and pushes it to connected dashboards,
+which turn consecutive points into rates.
+
+The same samples drive everything else the control plane decides: whether an epoch has
+nothing left for a target, how the accept rate compares with the partition count, and
+whether a target is falling behind. When partitions stop reporting, the orchestrator stops
+ticking and can be evicted.
+
+## Failure and recovery decisions
+
+| Failure or edge                                  | What the design does                                                                                     | Still yours to decide                                                       |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Send fails without an answer                     | Uncertain. A retry with the same ids is stored once by the same partition.                               | Producer retry limits; a retry after a resize can store a message twice.    |
+| Worker holds an old partition list               | The replaced partition refuses and names the new layout; the Worker sends there.                         | Nothing.                                                                    |
+| Target answers an error or times out             | The same batch is retried with backoff before anything after it, for that target.                        | `maxAttempts`, the timeout, and whether a long block is acceptable.         |
+| Batch exhausts its attempts                      | Written to R2, then skipped. Redrive sends it through the queue again for that target only.              | When to redrive, and that order no longer covers those messages.            |
+| Partition evicted during a delivery              | The range stays leased for 60 seconds, then is delivered again.                                          | Receiver deduplication on `Idempotency-Key`.                                |
+| Target falls behind retention                    | Sends are refused at `maxBacklog` for running targets, before retention can remove undelivered messages. | A paused target is not protected: it loses what expires while it is paused. |
+| Orchestrator evicted mid-resize                  | The stored intent makes the next tick repeat the steps, each of which can be repeated.                   | Nothing.                                                                    |
+| Orchestrator evicted between storing and pushing | Every tick pushes the stored configuration and shares again.                                             | Ticks run only while partitions report; an idle queue repairs on next use.  |
+| Limiter unreachable                              | Its partitions cannot take permits and stop delivering; accepting is unaffected.                         | Alerting on backlog without delivery.                                       |
+| Permit held by an evicted partition              | Adopted when the target next has work, otherwise returned by a check a minute after it was granted.      | Nothing.                                                                    |
+| A target that never succeeds during a resize     | It holds the old epoch, and the next resize, until its batches are dead-lettered.                        | Pause, fix, or remove the target.                                           |
+
+## What the template leaves to you
+
+- **Scale of the control plane.** One orchestrator receives every partition's samples.
+  The queue's data plane keeps growing with partitions; the dashboard is what needs a
+  longer sample interval first.
+- **Thresholds.** The autoscaler's target rates and cooldowns, and the request rate one
+  limiter should carry, are starting points, not measurements of your workload.
+- **Retention.** Messages are kept for 4 days or 512 MB per partition. There is no cold
+  storage behind the log.
+- **Access.** The dashboard and admin API share one token. Put real authentication in
+  front of them, and treat webhook URLs as something an admin can point anywhere.
+- **Receivers.** Exactly-once effects need the receiver's own record of what it applied.
+
+## Primitive map
+
+Partitions compose [`log`](/primitives/log/) leases with named
+[`alarms`](/primitives/alarms/), an [`outbox`](/primitives/outbox/) for samples, and a
+[`semaphore queue`](/primitives/semaphore-queue/) for permits. Limiters hold a
+[`semaphore`](/primitives/semaphore/). The orchestrator uses two
+[`topology`](/primitives/topology/) instances, one for partitions and one for limiters,
+and a [`socket`](/primitives/socket/) for the dashboard. The Worker uses the topology
+client and [`routing`](/primitives/routing/). Each object has one shared
+[`scheduler`](/primitives/scheduler/).
