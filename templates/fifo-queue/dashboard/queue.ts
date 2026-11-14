@@ -131,12 +131,15 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
       `${queuePath(queue)}/targets/${encodeURIComponent(name)}/redrive`
     )) as {
       redriven: number;
-      more: boolean;
+      left: number;
     };
-    const more = outcome.more ? '; more remain, redrive again' : '';
+    const left =
+      outcome.left > 0
+        ? `; the queue refused ${outcome.left}, which stay as dead letters`
+        : '';
     showNotice(
       notice,
-      `Redrove ${outcome.redriven} messages to ${name}${more}`
+      `Redrove ${outcome.redriven} messages to ${name}${left}`
     );
   };
 

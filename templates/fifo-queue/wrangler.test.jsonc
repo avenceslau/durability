@@ -19,6 +19,12 @@
   "r2_buckets": [{ "binding": "STORAGE", "bucket_name": "fifo-queue-test" }],
   "services": [
     { "binding": "SINK", "service": "fifo-queue-test", "entrypoint": "Sink" },
+    // What another Worker would declare to call the queue without HTTP.
+    {
+      "binding": "QUEUE",
+      "service": "fifo-queue-test",
+      "entrypoint": "QueueBinding",
+    },
   ],
   "vars": { "ADMIN_TOKEN": "admin", "PRODUCER_TOKEN": "producer" },
 }

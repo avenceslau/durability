@@ -11,6 +11,8 @@ import type { Delivery } from '../src/targets';
 
 export * from '../src/index';
 export { default } from '../src/index';
+// The test runner finds entrypoints by name in this file, not through `export *`.
+export { QueueBinding } from '../src/index';
 
 export type Behaviour = {
   /** Deliveries answered with 500 before the target starts accepting. */

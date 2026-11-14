@@ -1048,6 +1048,16 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     }));
   }
 
+  targetNames(): string[] {
+    if (
+      this.kv.get<string>('queue') === undefined ||
+      this.kv.get<boolean>('deleting')
+    ) {
+      throw new QueueError('Queue does not exist');
+    }
+    return Object.keys(this.targets);
+  }
+
   overview(): Overview {
     const state = this.limiterState;
     return {

@@ -366,7 +366,7 @@ export const walkthrough = validateWalkthrough({
   details: {
     producer: {
       description:
-        'Anything that sends: an HTTP client with the producer token, or another Worker bound to the QueueProducer entrypoint. It gets 202 once every message is stored, 429 when a target is too far behind, and an uncertain 5xx otherwise.',
+        'Anything that sends: an HTTP client with the producer token, or another Worker bound to the QueueBinding entrypoint. It gets 202 once every message is stored, 429 when a target is too far behind, and an uncertain 5xx otherwise.',
       href: '/primitives/routing/',
       source: 'accept',
     },

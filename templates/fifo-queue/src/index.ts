@@ -9,8 +9,8 @@ import {
   type MessageInput,
 } from './model';
 import { directory, orchestrators } from './namespaces';
+import { redrive, UnknownTargetError, type RedriveOutcome } from './redrive';
 import { send, UnknownQueueError, type SendOutcome } from './send';
-import type { Delivery } from './targets';
 
 export { Directory } from './directory';
 export { Limiter } from './limiter';
@@ -18,12 +18,20 @@ export { Orchestrator } from './orchestrator';
 export { Partition } from './partition';
 
 /**
- * For other Workers: bind this entrypoint as a service and call `send`
- * directly, without a token or an HTTP round trip.
+ * For other Workers: bind this entrypoint as a service and call it directly,
+ * without a token or an HTTP round trip.
  */
-export class QueueProducer extends WorkerEntrypoint<Cloudflare.Env> {
+export class QueueBinding extends WorkerEntrypoint<Cloudflare.Env> {
   send(queue: string, messages: MessageInput[]): Promise<SendOutcome> {
     return send(queue, v.parse(sendSchema, messages));
+  }
+
+  /** Replays every dead letter of the queue, or only those of one target. */
+  redrive(queue: string, target?: string): Promise<RedriveOutcome> {
+    return redrive(
+      v.parse(queueNameSchema, queue),
+      target === undefined ? undefined : v.parse(targetNameSchema, target)
+    );
   }
 }
 
@@ -37,7 +45,6 @@ class HttpError extends Error {
 }
 
 const sessionCookie = 'fifo_queue_session';
-const redrivePageSize = 100;
 
 const digest = async (text: string): Promise<ArrayBuffer> =>
   crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -133,48 +140,6 @@ const accept = async (queue: string, request: Request): Promise<Response> => {
   return Response.json(outcome, { status });
 };
 
-/**
- * Sends a target's dead letters through the queue again, for that target
- * only. An entry is deleted once its messages were accepted, so a crash in
- * between can deliver a message twice but never loses one.
- */
-const redrive = async (
-  queue: string,
-  target: string
-): Promise<{ redriven: number; more: boolean }> => {
-  const page = await env.STORAGE.list({
-    prefix: `dead-letters/${queue}/${target}/`,
-    limit: redrivePageSize,
-  });
-  let redriven = 0;
-  for (const object of page.objects) {
-    // eslint-disable-next-line no-await-in-loop
-    const stored = await env.STORAGE.get(object.key);
-    if (!stored) {
-      continue;
-    }
-    // eslint-disable-next-line no-await-in-loop
-    const entry = await stored.json<Delivery>();
-    // eslint-disable-next-line no-await-in-loop
-    const outcome = await send(
-      queue,
-      entry.messages.map((message) => ({
-        key: message.key,
-        body: message.body,
-        id: `redrive/${object.key}/${message.offset}`,
-      })),
-      [target]
-    );
-    if (outcome.rejected.length > 0) {
-      continue;
-    }
-    // eslint-disable-next-line no-await-in-loop
-    await env.STORAGE.delete(object.key);
-    redriven += entry.messages.length;
-  }
-  return { redriven, more: page.truncated };
-};
-
 const signIn = async (request: Request): Promise<Response> => {
   const { token } = await parse(v.object({ token: v.string() }), request);
   if (!(await matches(token, env.ADMIN_TOKEN))) {
@@ -250,6 +215,9 @@ const queue = async (
   if (resource === 'messages' && request.method === 'POST') {
     return accept(queueName, request);
   }
+  if (resource === 'redrive' && request.method === 'POST') {
+    return Response.json(await redrive(queueName));
+  }
   if (resource === 'resize' && request.method === 'POST') {
     const { partitions } = await parse(
       v.object({
@@ -283,12 +251,6 @@ const queue = async (
     return new Response(null, { status: 204 });
   }
   if (action === 'redrive' && request.method === 'POST') {
-    // Messages redriven to a target that no longer exists would be skipped
-    // by every other target and their dead letters deleted.
-    const { targets } = await orchestrator.overview();
-    if (!(target in targets)) {
-      throw new HttpError(404, `No target named "${target}"`);
-    }
     return Response.json(await redrive(queueName, target));
   }
   throw new HttpError(404, 'Not found');
@@ -341,7 +303,10 @@ export default {
           { status: error.status }
         );
       }
-      if (error instanceof UnknownQueueError) {
+      if (
+        error instanceof UnknownQueueError ||
+        error instanceof UnknownTargetError
+      ) {
         return Response.json({ error: error.message }, { status: 404 });
       }
       // An error thrown inside a Durable Object keeps its name, not its class.

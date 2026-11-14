@@ -94,7 +94,9 @@ Two rules give the ordering guarantee:
   target's position, and other partitions are separate objects.
 
 A batch is settled in one of two ways: the target answers `2xx`, or the batch reaches
-`maxAttempts` and is written to R2 as a dead letter. The dead letter is written first and
+`maxAttempts` and is written to R2 as a dead letter. A redrive, from the admin API or
+from the `redrive` method other Workers call on the queue's service binding, replays every
+dead letter through the queue for the target that gave up on it. The dead letter is written first and
 the position moved second, so a crash between the two repeats the write, which leaves the
 first copy in place, rather than losing the batch.
 

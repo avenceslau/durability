@@ -1,12 +1,15 @@
 import { SELF } from 'cloudflare:test';
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
+import type { QueueBinding } from '../src/index';
 import type { Overview } from '../src/model';
 import type { Behaviour, Received, SinkStore } from './worker';
 
 const stores = (workerExports as Record<string, unknown>)[
   'SinkStore'
 ] as DurableObjectNamespace<SinkStore>;
+/** The service binding another Worker would declare; see `wrangler.test.jsonc`. */
+const queueBinding = (env as unknown as { QUEUE: Service<QueueBinding> }).QUEUE;
 
 const admin = (path: string, method = 'GET', body?: unknown) =>
   SELF.fetch(`https://queue.test/api${path}`, {
@@ -154,9 +157,60 @@ describe('fifo queue', () => {
       `/queues/${queue}/targets/flaky/redrive`,
       'POST'
     );
-    expect(await response.json()).toEqual({ redriven: 1, more: false });
+    expect(await response.json()).toEqual({ redriven: 1, left: 0 });
     const afterRedrive = await received(queue, 'flaky', 3);
     expect(afterRedrive[2]?.bodies).toEqual([1]);
+  });
+
+  it('replays every dead letter of every target through the binding', async () => {
+    const queue = await createQueue({ partitions: { min: 2, max: 2 } });
+    // More dead letters than one listing page holds, across two targets.
+    const count = 120;
+    const failing = { batchSize: 1, maxAttempts: 1 };
+    await addTarget(queue, 'first', failing, { failures: count });
+    await addTarget(queue, 'second', failing, { failures: count });
+    await addTarget(queue, 'healthy');
+
+    await produce(
+      queue,
+      Array.from({ length: count }, (_, body) => ({ key: `key-${body}`, body }))
+    );
+    await received(queue, 'healthy', count);
+    const deadLetters = (target: string) =>
+      env.STORAGE.list({
+        prefix: `dead-letters/${queue}/${target}/`,
+        limit: 1000,
+      });
+    await waitFor(
+      async () => [
+        (await deadLetters('first')).objects.length,
+        (await deadLetters('second')).objects.length,
+      ],
+      (counts) => counts.every((entries) => entries === count)
+    );
+
+    const outcome = await queueBinding.redrive(queue);
+    expect(outcome).toEqual({ redriven: 2 * count, left: 0 });
+    expect((await deadLetters('first')).objects).toEqual([]);
+    expect((await deadLetters('second')).objects).toEqual([]);
+
+    for (const target of ['first', 'second']) {
+      // eslint-disable-next-line no-await-in-loop
+      const byKey = bodiesByKey(await received(queue, target, count));
+      expect(Object.keys(byKey)).toHaveLength(count);
+    }
+    // Redriven messages are marked for the target that failed them.
+    expect(
+      (await stores.getByName(queue).deliveries('healthy')).reduce(
+        (all, entry) => all + entry.keys.length,
+        0
+      )
+    ).toBe(count);
+
+    expect(await queueBinding.redrive(queue, 'first')).toEqual({
+      redriven: 0,
+      left: 0,
+    });
   });
 
   it('keeps every key in order across a resize', async () => {

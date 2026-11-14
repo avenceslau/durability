@@ -52,15 +52,19 @@ PRODUCER_TOKEN=... node scripts/load.mjs $ORIGIN orders --rate 200 --keys 50 --s
 | `503`  | Some messages were rejected for another reason; the response lists which.                                                                                                           |
 | `5xx`  | Unknown: the messages may or may not be stored. Retry **with the same `id`s**: a partition accepts an id once, so only a retry that lands after a resize can store a message twice. |
 
-Other Workers can skip HTTP and the token by binding the `QueueProducer` entrypoint:
+Other Workers can skip HTTP and the tokens by binding the `QueueBinding` entrypoint:
 
 ```jsonc
 // The other Worker's wrangler.jsonc
-"services": [{ "binding": "QUEUE", "service": "fifo-queue", "entrypoint": "QueueProducer" }]
+"services": [{ "binding": "QUEUE", "service": "fifo-queue", "entrypoint": "QueueBinding" }]
 ```
 
 ```ts
 await env.QUEUE.send('orders', [{ key: 'customer-42', body: { total: 12 } }]);
+
+// Replay every dead letter of the queue, or only one target's.
+const { redriven, left } = await env.QUEUE.redrive('orders');
+await env.QUEUE.redrive('orders', 'billing');
 ```
 
 ### Targets
@@ -96,7 +100,16 @@ Answer `2xx` to acknowledge the batch. Anything else is retried with backoff (`R
 
 Per target: `batchSize` (messages in flight per partition, default 10), `maxPerSecond` (per partition), `maxConcurrency` (batches in flight across the queue; needs the queue's own `maxConcurrency`), `maxAttempts`, `attemptTimeoutMs`, `paused`, and `startAt` (`latest` or `earliest`, for a new target).
 
-`POST /api/queues/<queue>/targets/<target>/redrive` sends that target's dead letters through the queue again, for that target only.
+### Redrive
+
+A redrive replays dead letters through the queue. Each message goes only to the target that gave up on it, with a fresh set of attempts, and its dead letter is deleted once the queue accepted it. One call replays everything there is:
+
+| Call                                                                    | Replays                      |
+| ----------------------------------------------------------------------- | ---------------------------- |
+| `env.QUEUE.redrive(queue)` or `POST /api/queues/<queue>/redrive`        | Every target's dead letters. |
+| `env.QUEUE.redrive(queue, target)` or `POST …/targets/<target>/redrive` | One target's dead letters.   |
+
+The answer is `{ redriven, left }`: messages accepted back, and messages the queue refused (backpressure), whose dead letters stay for the next redrive. Redriven messages arrive after whatever the target received since, so order does not cover them. Dead letters written while a redrive runs wait for the next one, and those of a target that was removed are left in R2. A redrive runs inside one Worker invocation, so a very large set can stop at the platform's subrequest limit; nothing is lost, and calling again continues.
 
 ### Order and failure
 
