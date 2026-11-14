@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "fifo-queue",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-07",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/queues/*"],
+  },
+  // The Durable Objects are reached through the Worker's own exports, so they
+  // need a migration but no binding.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Partition",
+        "Limiter",
+        "Orchestrator",
+        "Directory",
+      ],
+    },
+  ],
+  "kv_namespaces": [{ "binding": "TOPOLOGY" }],
+  "r2_buckets": [{ "binding": "STORAGE", "bucket_name": "fifo-queue" }],
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "fifo-queue-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-07-07",
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Partition",
+        "Limiter",
+        "Orchestrator",
+        "Directory",
+        "SinkStore",
+      ],
+    },
+  ],
+  "kv_namespaces": [{ "binding": "TOPOLOGY", "id": "topology-test" }],
+  "r2_buckets": [{ "binding": "STORAGE", "bucket_name": "fifo-queue-test" }],
+  "services": [
+    { "binding": "SINK", "service": "fifo-queue-test", "entrypoint": "Sink" },
+  ],
+  "vars": { "ADMIN_TOKEN": "admin", "PRODUCER_TOKEN": "producer" },
+}

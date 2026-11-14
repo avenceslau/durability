@@ -15,6 +15,14 @@ For architecture, durable handoffs, and diagrams of failure and recovery, start 
 
 See [composition design](/compositions/) for how to choose object boundaries and recovery paths.
 
+## Deployable templates
+
+A template is a complete application that deploys as it is, with a Deploy to Cloudflare button. It installs the published packages and has its own tests.
+
+| Template               | Demonstrates                                                                                                                            | Source                                                                                     |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Partitioned FIFO queue | Per-key ordering, several targets per queue, partitions that autoscale without losing order, queue-wide concurrency limits, a dashboard | [Template](https://github.com/avenceslau/durability/tree/main/templates/fifo-queue#readme) |
+
 ## Source examples
 
 The repository's `examples/` workspace is typechecked with the libraries. The [getting-started example](/getting-started/) is self-contained. The other examples are integration recipes and may need application authentication, external service bindings, R2/KV resources, or build-time wiring before deployment.
