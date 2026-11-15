@@ -6,7 +6,6 @@
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/packages/*/README.md",
         "$TURBO_ROOT$/examples/**/*.ts",
-        "$TURBO_ROOT$/templates/*/src/**/*.ts",
         "$TURBO_ROOT$/packages/durability/src/**/*.ts",
         "$TURBO_ROOT$/packages/durability/tests/**/*.ts"
       ]
@@ -16,7 +15,6 @@
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/packages/*/README.md",
         "$TURBO_ROOT$/examples/**/*.ts",
-        "$TURBO_ROOT$/templates/*/src/**/*.ts",
         "$TURBO_ROOT$/packages/durability/src/**/*.ts",
         "$TURBO_ROOT$/packages/durability/tests/**/*.ts"
       ]

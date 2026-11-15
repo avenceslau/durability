@@ -17,7 +17,6 @@
     "lint": "turbo run lint",
     "pack:check": "pnpm --filter durability --filter @durability/storage --filter @durability/transforms --filter @durability/lint --filter @durability/tanstack-db exec publint",
     "release": "pnpm build && changeset publish",
-    "templates:check": "node scripts/check-templates.mjs",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "version-packages": "changeset version && pnpm install --lockfile-only"

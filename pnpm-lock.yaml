@@ -101,7 +101,7 @@ importers:
         version: 6.0.3
       wrangler:
         specifier: ^4.156.0
-        version: 4.156.0(@types/node@24.13.3)
+        version: 4.156.0(@cloudflare/workers-types@4.20260702.1)(@types/node@24.13.3)
 
   examples:
     dependencies:
@@ -133,6 +133,37 @@ importers:
       vite:
         specifier: ^8.0.0
         version: 8.1.5(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)
+
+  examples/queues/queue:
+    dependencies:
+      '@durability/transforms':
+        specifier: workspace:^
+        version: link:../../../packages/transforms
+      durability:
+        specifier: workspace:^
+        version: link:../../../packages/durability
+      valibot:
+        specifier: ^1.5.0
+        version: 1.5.0(typescript@6.0.3)
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: ^0.17.0
+        version: 0.17.0(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@types/node@24.13.3)(vite@8.3.5(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: ^4.20260702.1
+        version: 4.20260702.1
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.2
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.10(@types/node@24.13.3)(vite@8.3.5(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.156.0
+        version: 4.156.0(@cloudflare/workers-types@4.20260702.1)(@types/node@24.13.3)
 
   packages/durability:
     dependencies:
@@ -263,37 +294,6 @@ importers:
         version: 4.107.0(@cloudflare/workers-types@4.20260702.1)
 
   packages/typescript-config: {}
-
-  templates/fifo-queue:
-    dependencies:
-      '@durability/transforms':
-        specifier: 0.6.1
-        version: link:../../packages/transforms
-      durability:
-        specifier: 5.2.1
-        version: link:../../packages/durability
-      valibot:
-        specifier: ^1.5.0
-        version: 1.5.0(typescript@6.0.3)
-    devDependencies:
-      '@cloudflare/vitest-pool-workers':
-        specifier: ^0.17.0
-        version: 0.17.0(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@types/node@24.13.3)(vite@8.3.5(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)))
-      '@cloudflare/workers-types':
-        specifier: ^4.20260702.1
-        version: 4.20260702.1
-      esbuild:
-        specifier: ^0.28.0
-        version: 0.28.2
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.5
-        version: 4.1.10(@types/node@24.13.3)(vite@8.3.5(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-      wrangler:
-        specifier: 4.107.0
-        version: 4.107.0(@cloudflare/workers-types@4.20260702.1)
 
 packages:
 
@@ -9032,7 +9032,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  wrangler@4.156.0(@types/node@24.13.3):
+  wrangler@4.156.0(@cloudflare/workers-types@4.20260702.1)(@types/node@24.13.3):
     dependencies:
       '@cloudflare/kv-asset-handler': 0.5.0
       '@cloudflare/unenv-preset': 2.16.2(unenv@2.0.0-rc.24)(workerd@1.20261023.1)
@@ -9043,6 +9043,7 @@ snapshots:
       unenv: 2.0.0-rc.24
       workerd: 1.20261023.1
     optionalDependencies:
+      '@cloudflare/workers-types': 4.20260702.1
       fsevents: 2.3.3
     transitivePeerDependencies:
       - '@types/node'

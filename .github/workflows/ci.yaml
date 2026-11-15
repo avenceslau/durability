@@ -34,8 +34,6 @@ jobs:
           - name: Package validation
             command: pnpm pack:check
             build: true
-          - name: Templates standalone
-            command: pnpm templates:check
           - name: Docs browser checks
             command: pnpm --filter durability-docs test:browser
             build: true

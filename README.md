@@ -24,11 +24,7 @@ To build and deploy it, see [docs/README.md](./docs/README.md).
 
 Each package has its own API documentation. Complete example Workers for every primitive live in [`examples/`](./examples); they are type-checked as part of the validation suite.
 
-[`templates/`](./templates) holds complete applications with a Deploy to Cloudflare button. Each one is self-contained: it depends on the published packages by exact version, so it deploys from its own directory. `pnpm templates:check` installs every template outside the workspace with npm, as the button does, and runs its typecheck, build, tests, and a dry-run deploy.
-
-| Template                               | Description                                                                                                         |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| [`fifo-queue`](./templates/fifo-queue) | Partitioned FIFO queue: per-key ordering, several targets, autoscaling partitions, concurrency limits, a dashboard. |
+[`examples/queues`](./examples/queues) is a larger example with its own small workspace: a queue service and a consumer for it, as two Workers.
 
 ## Development
 

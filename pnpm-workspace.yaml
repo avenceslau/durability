@@ -2,7 +2,7 @@ packages:
   - docs
   - examples
   - packages/*
-  - templates/*
+  - examples/queues/*
 
 autoInstallPeers: true
 linkWorkspacePackages: true

@@ -1,0 +1,9 @@
+{
+  "name": "queues-example",
+  "private": true,
+  "description": "A queue service and a consumer for it, as two Workers",
+  "workspaces": [
+    "queue",
+    "push_consumer"
+  ]
+}

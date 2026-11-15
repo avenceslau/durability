@@ -1,13 +1,13 @@
-import indexSource from '../../../templates/fifo-queue/src/index.ts?raw';
-import layoutSource from '../../../templates/fifo-queue/src/layout.ts?raw';
-import limiterSource from '../../../templates/fifo-queue/src/limiter.ts?raw';
-import orchestratorSource from '../../../templates/fifo-queue/src/orchestrator.ts?raw';
-import partitionSource from '../../../templates/fifo-queue/src/partition.ts?raw';
-import pullConsumerSource from '../../../templates/fifo-queue/src/pull-consumer.ts?raw';
-import redriverSource from '../../../templates/fifo-queue/src/redriver.ts?raw';
-import scalingSource from '../../../templates/fifo-queue/src/scaling.ts?raw';
-import sendSource from '../../../templates/fifo-queue/src/send.ts?raw';
-import targetsSource from '../../../templates/fifo-queue/src/targets.ts?raw';
+import indexSource from '../../../examples/queues/queue/src/index.ts?raw';
+import layoutSource from '../../../examples/queues/queue/src/layout.ts?raw';
+import limiterSource from '../../../examples/queues/queue/src/limiter.ts?raw';
+import orchestratorSource from '../../../examples/queues/queue/src/orchestrator.ts?raw';
+import partitionSource from '../../../examples/queues/queue/src/partition.ts?raw';
+import pullConsumerSource from '../../../examples/queues/queue/src/pull-consumer.ts?raw';
+import redriverSource from '../../../examples/queues/queue/src/redriver.ts?raw';
+import scalingSource from '../../../examples/queues/queue/src/scaling.ts?raw';
+import sendSource from '../../../examples/queues/queue/src/send.ts?raw';
+import targetsSource from '../../../examples/queues/queue/src/targets.ts?raw';
 import {
   sourceExcerpt,
   sourceFocus,
@@ -15,16 +15,16 @@ import {
   type ArchitectureWalkthrough,
 } from '../lib/architecture.ts';
 
-const indexFile = 'templates/fifo-queue/src/index.ts';
-const layoutFile = 'templates/fifo-queue/src/layout.ts';
-const limiterFile = 'templates/fifo-queue/src/limiter.ts';
-const orchestratorFile = 'templates/fifo-queue/src/orchestrator.ts';
-const partitionFile = 'templates/fifo-queue/src/partition.ts';
-const pullConsumerFile = 'templates/fifo-queue/src/pull-consumer.ts';
-const redriverFile = 'templates/fifo-queue/src/redriver.ts';
-const scalingFile = 'templates/fifo-queue/src/scaling.ts';
-const sendFile = 'templates/fifo-queue/src/send.ts';
-const targetsFile = 'templates/fifo-queue/src/targets.ts';
+const indexFile = 'examples/queues/queue/src/index.ts';
+const layoutFile = 'examples/queues/queue/src/layout.ts';
+const limiterFile = 'examples/queues/queue/src/limiter.ts';
+const orchestratorFile = 'examples/queues/queue/src/orchestrator.ts';
+const partitionFile = 'examples/queues/queue/src/partition.ts';
+const pullConsumerFile = 'examples/queues/queue/src/pull-consumer.ts';
+const redriverFile = 'examples/queues/queue/src/redriver.ts';
+const scalingFile = 'examples/queues/queue/src/scaling.ts';
+const sendFile = 'examples/queues/queue/src/send.ts';
+const targetsFile = 'examples/queues/queue/src/targets.ts';
 
 const accept = sourceExcerpt(
   indexSource,
