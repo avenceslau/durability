@@ -771,6 +771,8 @@ export class Partition extends DurableObject<Cloudflare.Env> {
 
     const status = await this.permits.status(item);
     if (status?.state === 'admitted') {
+      // Recorded again: a permit held without its record could never be returned.
+      this.ctx.storage.kv.put(`permit:${name}`, item);
       this.heldSince.set(item, Date.now());
       return true;
     }
@@ -794,13 +796,14 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     if (item === undefined) {
       return;
     }
-    this.heldSince.delete(item);
-    this.ctx.storage.kv.delete(`permit:${name}`);
-    // An item the limiter is confirming right now is neither; `admit`
-    // releases it when it arrives.
+    // Given back before it is forgotten: if this fails, the record is what
+    // makes the next run try again. An item the limiter is confirming right
+    // now is neither held nor queued; `admit` releases it when it arrives.
     if (!(await this.permits.release(item))) {
       await this.permits.cancel(item);
     }
+    this.heldSince.delete(item);
+    this.ctx.storage.kv.delete(`permit:${name}`);
   }
 
   private async sample(identity: PartitionIdentity): Promise<PartitionSample> {
