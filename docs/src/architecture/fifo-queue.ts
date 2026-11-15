@@ -1,3 +1,5 @@
+import ordersSource from '../../../examples/queues/push_consumer/src/index.ts?raw';
+import consumerSource from '../../../examples/queues/queue/src/consumer.ts?raw';
 import indexSource from '../../../examples/queues/queue/src/index.ts?raw';
 import layoutSource from '../../../examples/queues/queue/src/layout.ts?raw';
 import limiterSource from '../../../examples/queues/queue/src/limiter.ts?raw';
@@ -15,6 +17,8 @@ import {
   type ArchitectureWalkthrough,
 } from '../lib/architecture.ts';
 
+const ordersFile = 'examples/queues/push_consumer/src/index.ts';
+const consumerFile = 'examples/queues/queue/src/consumer.ts';
 const indexFile = 'examples/queues/queue/src/index.ts';
 const layoutFile = 'examples/queues/queue/src/layout.ts';
 const limiterFile = 'examples/queues/queue/src/limiter.ts';
@@ -80,23 +84,47 @@ const deliverNext = sourceExcerpt(
   'deliver-next',
   'Decide a target’s next batch',
   '  private async deliverNext(',
-  "    await this.deliverLease(identity, name, target, lease);\n    return 'more';\n  }"
+  "    return wait ?? 'more';\n  }"
 );
-const deliverLease = sourceExcerpt(
+const deliverNextBatch = sourceExcerpt(
   partitionSource,
   partitionFile,
-  'deliver-lease',
-  'Deliver one batch and settle it',
-  '  private async deliverLease(',
-  '    this.ctx.storage.kv.put(`retry:${name}`, Date.now() + delay);\n  }'
+  'deliver-next-batch',
+  'Deliver one batch to a consumer',
+  '  private async deliverNextBatch(',
+  '      this.rateLimitedUntil.set(name, Date.now() + spacing);\n    }\n  }'
 );
-const deadLetter = sourceExcerpt(
+const claim = sourceExcerpt(
   partitionSource,
   partitionFile,
-  'dead-letter',
-  'Write a dead letter',
-  '  private async deadLetter(',
-  '      lastError: error,\n    });\n  }'
+  'claim',
+  'Choose the next batch and record it',
+  '  private async claim(',
+  '      exhausted: await messagesOf(exhausted, 0),\n    };\n  }'
+);
+const settle = sourceExcerpt(
+  partitionSource,
+  partitionFile,
+  'settle',
+  'Apply what the consumer answered',
+  '  private async settle(',
+  "        failure ?? 'Retries exhausted'\n      );\n    }\n  }"
+);
+const deadLetterMessages = sourceExcerpt(
+  partitionSource,
+  partitionFile,
+  'dead-letter-messages',
+  'Write a dead letter per message',
+  '  private async deadLetterMessages(',
+  '      this.count(name, { deadLettered: 1, lastError: error });\n    }\n  }'
+);
+const storeNextBatch = sourceExcerpt(
+  partitionSource,
+  partitionFile,
+  'store-next-batch',
+  'Store whole batches in order',
+  '  private async storeNextBatch(',
+  '      Date.now() + jitter(exponential(lease.attempt))\n    );\n    return undefined;\n  }'
 );
 const holdPermit = sourceExcerpt(
   partitionSource,
@@ -120,7 +148,31 @@ const post = sourceExcerpt(
   'post',
   'POST a batch to a target',
   'const post = async (',
-  '  };\n};'
+  '  });\n};'
+);
+const call = sourceExcerpt(
+  targetsSource,
+  targetsFile,
+  'call',
+  'Call a QueueEntrypoint',
+  'const call = async (',
+  '    clearTimeout(timer);\n  }\n};'
+);
+const queueEntrypoint = sourceExcerpt(
+  consumerSource,
+  consumerFile,
+  'queue-entrypoint',
+  'The consumer’s base class',
+  'export abstract class QueueEntrypoint<',
+  '    return settlement;\n  }\n}'
+);
+const orders = sourceExcerpt(
+  ordersSource,
+  ordersFile,
+  'orders',
+  'A consumer Worker',
+  'export class Orders extends QueueEntrypoint<Env, Order> {',
+  '        message.retry({ delaySeconds: 2 ** message.attempts });\n      }\n    }\n  }\n}'
 );
 const limiterFor = sourceExcerpt(
   layoutSource,
@@ -218,13 +270,13 @@ const syncPullTarget = sourceExcerpt(
   '  private syncPullTarget(): void {',
   '    });\n  }'
 );
-const writeToPullLog = sourceExcerpt(
+const store = sourceExcerpt(
   targetsSource,
   targetsFile,
-  'write-to-pull-log',
-  'Write a batch to the pull bucket',
-  'const writeToPullLog = async (',
-  '  return { ok: true };\n};'
+  'store',
+  'Write a batch to R2',
+  'export const store = async (',
+  '  return key;\n};'
 );
 const pull = sourceExcerpt(
   pullConsumerSource,
@@ -248,7 +300,7 @@ const discover = sourceExcerpt(
   'discover',
   'Find the epoch and partitions to read',
   '  private async discover(queue: string): Promise<void> {',
-  '        partition\n      );\n    }\n  }'
+  "      this.kv.put('closedAt', Date.now());\n    }\n  }"
 );
 const readPartition = sourceExcerpt(
   pullConsumerSource,
@@ -311,7 +363,7 @@ export const walkthrough = validateWalkthrough({
   id: 'fifo-queue',
   title: 'How the queue uses its Durable Objects',
   summary:
-    'A Worker hashes each key to a Partition object, an ordered log that hands every target its batches in offset order. One Orchestrator per queue owns the partition list and the limiters and never sees a message. Step through a send, a delivery, a redrive, pull consumers, a resize that keeps order, a shared concurrency limit, and the metrics.',
+    'A Worker hashes each key to a Partition object, an ordered log that hands every target its messages in per-key order and tracks each message until the target settles it. One Orchestrator per queue owns the partition list and the limiters and never sees a message. Step through a send, a delivery, a redrive, pull consumers, a resize that keeps order, a shared concurrency limit, and the metrics.',
   diagram: {
     canvas: { width: 1000, height: 900 },
     direction: 'down',
@@ -328,7 +380,7 @@ export const walkthrough = validateWalkthrough({
         rank: 0,
         row: 0,
         label: 'Producer',
-        sublabel: 'POST messages',
+        sublabel: 'send() or POST',
         size: [225, 72],
         icon: 'user',
         tone: 'external',
@@ -436,15 +488,15 @@ export const walkthrough = validateWalkthrough({
       target: {
         rank: 2,
         row: 0,
-        label: 'Target',
-        sublabel: 'webhook · service',
+        label: 'Push target',
+        sublabel: 'rpc · webhook',
         size: [245, 72],
         icon: 'browser',
         tone: 'external',
       },
     },
     edges: [
-      { from: 'producer', to: 'worker', label: 'POST', flow: 'send' },
+      { from: 'producer', to: 'worker', label: 'send', flow: 'send' },
       { from: 'worker', to: 'kv', label: 'read list', flow: 'send' },
       { from: 'worker', to: 'partition', label: 'append()', flow: 'send' },
       {
@@ -520,7 +572,7 @@ export const walkthrough = validateWalkthrough({
   details: {
     producer: {
       description:
-        'Anything that sends: an HTTP client with the producer token, or another Worker bound to the QueueBinding entrypoint. It gets 202 once every message is stored, 429 when a target is too far behind, and an uncertain 5xx otherwise.',
+        'Anything that sends: another Worker bound to the QueueBinding entrypoint, or an HTTP client with the producer token. Each message is reported accepted once it is stored, or rejected, for example under backpressure; a call that fails without an answer is uncertain.',
       href: '/primitives/routing/',
       source: 'accept',
     },
@@ -550,13 +602,13 @@ export const walkthrough = validateWalkthrough({
     },
     log: {
       description:
-        'The partition’s SQLite: messages by offset, one position per target, and the range each target has in flight. Messages stay until retention removes them (4 days or 512 MB), whatever the positions are.',
+        'The partition’s SQLite: messages by offset and one position per target. For targets that answer per message, a pending table holds every message handed out and not yet settled, and every message held behind a retried one of its key. Messages stay until retention removes them (4 days or 512 MB), whatever the positions are.',
       href: '/primitives/log/',
-      source: 'deliver-next',
+      source: 'claim',
     },
     partition: {
       description:
-        'One object per queue, epoch, and index. It accepts messages for the keys that hash to it and delivers them to every target in offset order, one batch per target at a time.',
+        'One object per queue, epoch, and index. It accepts messages for the keys that hash to it and delivers them to every target, one batch per target at a time, keeping each key in order.',
       href: '/primitives/log/',
       source: 'append',
     },
@@ -568,15 +620,15 @@ export const walkthrough = validateWalkthrough({
     },
     storage: {
       description:
-        'The R2 bucket. A batch a target gave up on is written under dead-letters/<queue>/<target>/ and never overwritten; an archive target writes its batches under archive/.',
+        'The R2 bucket. A message a target gave up on is written under dead-letters/<queue>/<target>/, one entry per message, and never overwritten; an archive target writes its batches under archive/.',
       href: '/reference/guarantees/',
-      source: 'dead-letter',
+      source: 'dead-letter-messages',
     },
     'pull-bucket': {
       description:
         'A second R2 bucket. A queue with pull consumers enabled has a target of its own that writes every batch here, keyed by partition and offset. Each partition deletes its batches when their retention, up to 50 days, ends.',
       href: '/reference/guarantees/',
-      source: 'write-to-pull-log',
+      source: 'store-next-batch',
     },
     'pull-consumer': {
       description:
@@ -598,9 +650,9 @@ export const walkthrough = validateWalkthrough({
     },
     target: {
       description:
-        'A destination that receives every message of the queue: a webhook, a service binding, another queue, or the R2 archive. A 2xx answer acknowledges the batch. Delivery is at least once, so the receiver deduplicates on the Idempotency-Key header.',
+        'A destination that receives every message of the queue: a Worker class that extends QueueEntrypoint, called over RPC, or a webhook or service binding that is POSTed to. It acknowledges or retries each message. Delivery is at least once, so the receiver deduplicates on the message id.',
       href: '/reference/guarantees/',
-      source: 'post',
+      source: 'queue-entrypoint',
     },
   },
   excerpts: [
@@ -611,11 +663,17 @@ export const walkthrough = validateWalkthrough({
     append,
     stopAccepting,
     deliverNext,
-    deliverLease,
-    deadLetter,
+    deliverNextBatch,
+    claim,
+    settle,
+    deadLetterMessages,
+    storeNextBatch,
     holdPermit,
     sample,
     post,
+    call,
+    queueEntrypoint,
+    orders,
     limiterFor,
     limiter,
     startResize,
@@ -628,7 +686,7 @@ export const walkthrough = validateWalkthrough({
     deadLetterWithoutTarget,
     expirePullLog,
     syncPullTarget,
-    writeToPullLog,
+    store,
     pull,
     acknowledge,
     discover,
@@ -645,7 +703,7 @@ export const walkthrough = validateWalkthrough({
       id: 'send',
       title: 'Accept a message',
       description:
-        'Follow one POST from a producer into a partition’s log. Accepting is separate from delivering.',
+        'Follow one send from a producer into a partition’s log. Accepting is separate from delivering.',
       steps: [
         {
           id: 'list',
@@ -713,7 +771,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             append,
             'const result = await this.log.append(',
-            'deduplicationKey: message.id,'
+            'deduplicationKey: message.dedupeId ?? message.id,'
           ),
           durable: 'The messages and their offsets.',
           volatile: 'Nothing.',
@@ -723,7 +781,7 @@ export const walkthrough = validateWalkthrough({
           id: 'answer',
           title: 'Answer for every partition',
           description:
-            'Each partition accepted or rejected its group on its own, so one POST can be partly accepted; the response lists the ids either way. A rejection is definite. A thrown call is not: the group may have been stored, and a retry must reuse the ids.',
+            'Each partition accepted or rejected its group on its own, so one send can be partly accepted; the outcome lists the ids either way, and over HTTP becomes 202, 429 for backpressure, or 503. A rejection is definite. A thrown call is not: the group may have been stored, and a retry must reuse the ids.',
           stage: ['focus:producer'],
           source: sourceFocus(
             accept,
@@ -739,13 +797,13 @@ export const walkthrough = validateWalkthrough({
       id: 'deliver',
       title: 'Deliver to every target in order',
       description:
-        'One delivery run of a partition. Each target is advanced on its own, one batch at a time, so a slow or failing target holds back only itself.',
+        'One delivery run of a partition, for a target that answers per message. Each target is advanced on its own, one batch at a time, and a retried message holds back only the later messages of its key.',
       steps: [
         {
           id: 'gate',
           title: 'Check that the target may run',
           description:
-            'A run advances every target concurrently. A target is skipped while it is paused, and while it is still working through an older epoch of the queue: that second rule is what keeps order across a resize.',
+            'A run advances every target concurrently. A target is skipped while it is paused, and while it is still working through an older epoch of the queue: that second rule is what keeps order across a resize. The pull and archive targets then store whole batches; every other target is delivered message by message, which is the path followed here.',
           stage: ['*', 'focus:partition'],
           source: sourceFocus(
             deliverNext,
@@ -772,76 +830,182 @@ export const walkthrough = validateWalkthrough({
           status: 'normal',
         },
         {
-          id: 'lease',
-          title: 'Lease the next range of offsets',
+          id: 'due',
+          title: 'Retries that are due come first',
           description:
-            'The target takes the messages after its position, up to batchSize. A target holds one range at a time, so nothing after this batch is delivered to it until this batch is settled.',
+            'The batch starts with messages that were retried and whose delay is over, oldest first, each followed by the messages of its key held behind it. Only the first waiting message of a key can be due. One that has used up maxRetries is dead-lettered instead of delivered.',
           stage: ['focus:log'],
           source: sourceFocus(
-            deliverNext,
-            'lease = await this.log.lease(name, target.batchSize);'
+            claim,
+            'const due = this.sql',
+            'limit - waiting.length'
           ),
-          durable: 'The leased range and its attempt number.',
-          volatile: 'The batch in this run’s memory.',
+          durable: 'The pending rows: attempts and when each may be retried.',
+          volatile: 'The batch being assembled.',
+          status: 'normal',
+        },
+        {
+          id: 'new',
+          title: 'New messages fill the rest, unless their key waits',
+          description:
+            'Messages after the target’s position fill the batch up to maxBatchSize. A message whose key still has a message waiting outside this batch is not delivered: it is held behind that message, and so is every later message of its key in this scan. Other keys keep flowing.',
+          stage: ['focus:log'],
+          source: sourceFocus(
+            claim,
+            'const waitingOutside =',
+            'closedKeys.add(key);'
+          ),
+          durable: 'Nothing yet.',
+          volatile: 'Which messages are delivered and which are held.',
+          status: 'normal',
+        },
+        {
+          id: 'record',
+          title: 'Record the batch before the call',
+          description:
+            'In one transaction every delivered and held message gets a pending row, and each delivered one counts an attempt and becomes due again only after the target’s timeout plus a grace period. Then the position moves past everything scanned. From here, a message is tracked by its row, not by the position.',
+          stage: ['focus:log'],
+          source: sourceFocus(
+            claim,
+            'this.ctx.storage.transactionSync(() => {',
+            'await this.log.commit(name, scanned);'
+          ),
+          durable: 'The pending rows, their attempts, and the position.',
+          volatile: 'Nothing.',
           status: 'commit',
         },
         {
-          id: 'post',
-          title: 'Hand the batch to the target',
+          id: 'call',
+          title: 'One call to the consumer',
           description:
-            'The batch is POSTed as JSON with a key that is the same on every redelivery of this batch to this target, and a signature when the target has a secret.',
+            'An rpc target is a service binding to a class that extends QueueEntrypoint. The partition makes one call, deliverQueueBatch, with the whole batch, and gets back which messages were acknowledged and which retried. An RPC call cannot be cancelled: after the timeout its messages are retried while the consumer may still be working on them.',
           stage: ['focus:target'],
           source: sourceFocus(
-            post,
-            "'Idempotency-Key': `${delivery.target}/${batchKey(delivery)}`,",
-            'signal: AbortSignal.timeout(timeoutMs),'
+            call,
+            'consumer.deliverQueueBatch(delivery),',
+            'return settlementFrom(delivery, answer);'
           ),
           durable: 'Nothing changes in the partition while the call runs.',
           volatile: 'The call, bounded by the target’s timeout.',
           status: 'normal',
         },
         {
-          id: 'ack',
-          title: 'Move the target’s position',
+          id: 'post',
+          title: 'A POSTed target answers in its response',
           description:
-            'A 2xx answer acknowledges the batch: the target’s position moves past it and the loop takes the next range. Other targets have their own positions and are not affected.',
+            'A webhook or service target receives the same batch as JSON. A 2xx answer acknowledges every message except those its body lists under retried; any other status retries them all, after Retry-After when it is given. There is no batch key header: each message’s id is the same on every delivery.',
+          stage: ['focus:target'],
+          source: sourceFocus(
+            post,
+            'if (!response.ok) {',
+            'return settlementFrom(delivery, {'
+          ),
+          durable: 'Nothing changes in the partition while the call runs.',
+          volatile: 'The response.',
+          status: 'normal',
+        },
+        {
+          id: 'unknown',
+          title: 'A failed call retries every message',
+          description:
+            'When the call throws or times out, nothing is known about the batch, so every message in it is retried and the error is kept for the dashboard.',
+          stage: ['focus:partition'],
+          source: sourceFocus(
+            deliverNextBatch,
+            '// Nothing is known about a call that failed: every message is retried.',
+            'return retryAll(batch);'
+          ),
+          durable: 'Nothing yet; settling comes next.',
+          volatile: 'The error message.',
+          status: 'failure',
+        },
+        {
+          id: 'consumer',
+          title: 'The base class settles the batch',
+          description:
+            'QueueEntrypoint builds a Cloudflare Queues style batch and runs queue(). The first ack() or retry() on a message wins, and a call on a message beats ackAll() and retryAll(). A message left alone is acknowledged when queue() returns and retried when it throws.',
+          stage: ['focus:target'],
+          source: sourceFocus(
+            queueEntrypoint,
+            "let unsettled: Decision = 'ack';",
+            'const decision = decisions.get(id) ?? forAll ?? unsettled;'
+          ),
+          durable: 'Nothing: the decisions are returned, not stored.',
+          volatile: 'Each message’s decision, for this call.',
+          status: 'normal',
+        },
+        {
+          id: 'orders',
+          title: 'A consumer stops at the first failure of a key',
+          description:
+            'The push_consumer Worker charges each order and acknowledges it. When one fails it retries it with a growing delay and skips the rest of that customer’s orders in the batch, which would be delivered again after it anyway.',
+          stage: ['focus:target'],
+          source: sourceFocus(
+            orders,
+            'if (failedKeys.has(message.key)) {',
+            'message.retry({ delaySeconds: 2 ** message.attempts });'
+          ),
+          durable: 'Whatever the consumer’s own work stores.',
+          volatile: 'The keys that failed in this batch.',
+          status: 'normal',
+        },
+        {
+          id: 'ack',
+          title: 'An acknowledged message is forgotten',
+          description:
+            'Its pending row is deleted. If it was the message its key was waiting for, the next message of that key is now first and is delivered in a later batch.',
           stage: ['focus:log'],
           source: sourceFocus(
-            deliverLease,
-            'if (outcome.ok) {',
-            'await this.log.ack(name, lease.batchId);'
+            settle,
+            'const retry = retried.get(message.id);',
+            'this.forget(name, message.offset);'
           ),
-          durable: 'The target’s position.',
+          durable: 'The deleted row.',
           volatile: 'Nothing.',
           status: 'commit',
         },
         {
           id: 'retry',
-          title: 'A failed batch waits, and so does what follows it',
+          title: 'A retried message holds back its key',
           description:
-            'Any other answer returns the range and stores when to try again. The same batch is delivered next, with a higher attempt number: later messages of this partition wait behind it for this target, which is the price of order.',
-          stage: ['focus:partition'],
+            'The row stays and is due again after the delay the consumer asked for, or the target’s retryDelaySeconds. Until it is acknowledged or dead-lettered, later messages of its key wait for this target; other keys and other targets are not affected.',
+          stage: ['focus:log'],
           source: sourceFocus(
-            deliverLease,
-            'await this.log.nack(name, lease.batchId);',
-            'this.ctx.storage.kv.put(`retry:${name}`, Date.now() + delay);'
+            settle,
+            'failedKeys.add(message.key);',
+            'Math.ceil(now + delaySeconds * 1_000),'
           ),
-          durable: 'The returned range and the time of the next attempt.',
+          durable: 'When the message may be delivered again.',
           volatile: 'Nothing.',
           status: 'failure',
         },
         {
-          id: 'dead-letter',
-          title: 'Give up into R2, then move on',
+          id: 'later',
+          title: 'Later messages of that key go again after it',
           description:
-            'After maxAttempts the batch is written to R2 and only then acknowledged, so the target moves on. Order no longer covers those messages; a redrive sends them through the queue again for this target only.',
+            'Messages of the same key that came after a retried one in this batch are held behind it, whatever the consumer answered for them, and this delivery does not count against them. A consumer that acknowledged one of them will see it again.',
+          stage: ['focus:log'],
+          source: sourceFocus(
+            settle,
+            'if (failedKeys.has(message.key)) {',
+            'UPDATE pending SET attempts = attempts - 1, retry_at = 0'
+          ),
+          durable: 'The held rows, with their attempts restored.',
+          volatile: 'The keys retried in this batch.',
+          status: 'gap',
+        },
+        {
+          id: 'dead-letter',
+          title: 'After maxRetries, one dead letter per message',
+          description:
+            'A message retried more than maxRetries times is written to R2 as its own dead letter, and only then forgotten, which frees the messages of its key held behind it. Order no longer covers that message; a redrive sends it through the queue again for this target only.',
           stage: ['focus:storage'],
           source: sourceFocus(
-            deadLetter,
-            'await env.STORAGE.put(',
+            deadLetterMessages,
+            'const entry = { ...delivery, messages: [message] };',
             "{ onlyIf: { etagDoesNotMatch: '*' } }"
           ),
-          durable: 'The dead letter, then the moved position.',
+          durable: 'The dead letter, then the deleted row.',
           volatile: 'Nothing.',
           status: 'recovery',
         },
@@ -864,14 +1028,14 @@ export const walkthrough = validateWalkthrough({
           id: 'crash',
           title: 'A crash mid-batch delivers it again',
           description:
-            'If the object is evicted while a call is in flight, the range stays leased until the lease expires, 60 seconds later, and is then delivered again. The target may already have processed it, so only the receiver can avoid a second effect.',
+            'If the object is evicted while a call is in flight, nothing settles the batch. Its rows become due again once the target’s timeout plus five seconds has passed, and the messages are delivered again, with that delivery counted as an attempt. The consumer may already have processed them, so only the receiver can avoid a second effect.',
           stage: ['focus:target'],
           source: sourceFocus(
-            deliverNext,
-            '// A range leased before a restart is still held until it expires.',
-            'return now + 1_000;'
+            claim,
+            '// Until then the batch is in flight; after it, nobody settled it.',
+            'const visibleAgainAt = now + target.attemptTimeoutMs + inFlightGraceMs;'
           ),
-          durable: 'The leased range; the position has not moved.',
+          durable: 'The pending rows and their attempts.',
           volatile: 'The interrupted call and its answer.',
           status: 'gap',
         },
@@ -917,7 +1081,7 @@ export const walkthrough = validateWalkthrough({
           id: 'entry',
           title: 'Send through the queue, for one target',
           description:
-            'The Redriver sends the batch’s messages the way the Worker does: each key is hashed to a partition of the current epoch. The messages are marked for the target that gave up on them, and every other target skips them.',
+            'The Redriver sends the dead letter’s messages the way the Worker does: each key is hashed to a partition of the current epoch. The messages are marked for the target that gave up on them, and every other target skips them.',
           stage: ['focus:partition'],
           source: sourceFocus(
             replayEntry,
@@ -947,11 +1111,11 @@ export const walkthrough = validateWalkthrough({
           id: 'later',
           title: 'Dead letters written during the run wait',
           description:
-            'A redriven batch that fails again becomes a new dead letter. The run handles only those written before it started; otherwise a target that keeps failing would make it replay its own output without end.',
+            'A redriven message that fails again becomes a new dead letter. The run replays only dead letters whose failure time, stamped by the partition, is before the job started; otherwise a target that keeps failing would make it replay its own output without end. The rest stay for the next redrive.',
           stage: ['focus:redriver'],
           source: sourceFocus(
-            replayPage,
-            'if (object.uploaded.getTime() < job.startedAt) {'
+            replayEntry,
+            'if (entry.failedAt >= job.startedAt) {'
           ),
           durable: 'When the job started.',
           volatile: 'Nothing.',
@@ -961,7 +1125,7 @@ export const walkthrough = validateWalkthrough({
           id: 'crash',
           title: 'A crash repeats at most one entry',
           description:
-            'Progress is stored after every dead letter. An eviction between sending and deleting sends that one batch again, with the same message ids, which the partition that accepted them accepts once.',
+            'Progress is stored after every dead letter. An eviction between sending and deleting sends that one entry again under the same deduplication key, built from the dead letter and the offset, which the partition that accepted them accepts once.',
           stage: ['focus:redriver'],
           source: sourceFocus(
             replayPage,
@@ -976,11 +1140,12 @@ export const walkthrough = validateWalkthrough({
           id: 'order',
           title: 'Redriven messages are new messages',
           description:
-            'They get new offsets, after everything the target has received since they failed, and a fresh set of attempts. Order no longer covers them, and a receiver may see a message it already handled.',
+            'They keep their id, so a consumer can recognise them, but get new offsets, after everything the target has received since they failed, and a fresh set of attempts. Order no longer covers them, and a receiver may see a message it already handled.',
           stage: ['focus:target'],
           source: sourceFocus(
             replayEntry,
-            'id: `redrive/${key}/${message.offset}`,'
+            'id: message.id,',
+            'dedupeId: `redrive/${key}/${message.offset}`,'
           ),
           durable: 'New offsets in the current epoch.',
           volatile: 'Nothing.',
@@ -1010,17 +1175,32 @@ export const walkthrough = validateWalkthrough({
           status: 'commit',
         },
         {
-          id: 'write',
-          title: 'Every batch is written to the pull bucket',
+          id: 'whole',
+          title: 'The pull target keeps whole batches in order',
           description:
-            'For that target, delivering means writing the batch to R2 under the partition’s name and the batch’s offsets. Listing a partition’s prefix therefore returns its messages in order. A repeated write leaves the first copy in place.',
+            'Unlike a push target, the pull target is not tracked per message. The partition leases the next range after its position, writes it as one batch, and leases the next only once that one is written. A failed write is retried with backoff before anything after it, so the bucket holds a partition’s messages in offset order, which is the order pull consumers read.',
+          stage: ['focus:partition'],
+          source: sourceFocus(
+            storeNextBatch,
+            'lease = await this.log.lease(name, target.maxBatchSize);',
+            'const stored = await store(destination, delivery)'
+          ),
+          durable: 'The leased range, then the target’s position past it.',
+          volatile: 'The batch being written.',
+          status: 'commit',
+        },
+        {
+          id: 'write',
+          title: 'Each batch is one object in the pull bucket',
+          description:
+            'The batch is written to R2 under the partition’s name and its first and last offsets, so listing a partition’s prefix returns its messages in order. A repeated write leaves the first copy in place.',
           stage: ['focus:pull-bucket'],
           source: sourceFocus(
-            writeToPullLog,
-            'await env.PULL.put(',
+            store,
+            'await bucket.put(',
             "{ onlyIf: { etagDoesNotMatch: '*' } }"
           ),
-          durable: 'The batch in R2, and the target’s position past it.',
+          durable: 'The batch in R2.',
           volatile: 'Nothing.',
           status: 'commit',
         },
@@ -1098,14 +1278,14 @@ export const walkthrough = validateWalkthrough({
           id: 'expire',
           title: 'Partitions delete what is past retention',
           description:
-            'Each partition deletes its own batches when their time in the bucket, a queue setting of up to 50 days, is over. It remembers when its oldest batch ends, so it lists the bucket only when something can have expired.',
+            'Each partition records in its own SQLite when it wrote each batch to the bucket, on its own clock. A sweep deletes the batches whose time, a queue setting of up to 50 days, is over, and is scheduled again for when the oldest remaining one ends, so the bucket is never listed for retention.',
           stage: ['focus:pull-bucket'],
           source: sourceFocus(
             expirePullLog,
-            'const kept = page.objects.findIndex(',
-            'await env.PULL.delete(expired.map((object) => object.key));'
+            'SELECT object_key FROM pull_batches',
+            'await env.PULL.delete(expired);'
           ),
-          durable: 'When the oldest remaining batch ends.',
+          durable: 'Each batch’s key and the time it was written.',
           volatile: 'Nothing.',
           status: 'normal',
         },
@@ -1222,7 +1402,7 @@ export const walkthrough = validateWalkthrough({
           id: 'drained',
           title: 'Wait until the old epoch has nothing left',
           description:
-            'Partitions report their positions. An epoch has nothing left for a target once every one of its partitions has stopped accepting and the target’s position has reached the end of its log.',
+            'Partitions report what each target has settled: its position minus the messages it has not settled yet. An epoch has nothing left for a target once every one of its partitions has stopped accepting and the target has settled everything its log accepted.',
           stage: ['focus:orchestrator'],
           source: sourceFocus(
             drained,
@@ -1252,7 +1432,7 @@ export const walkthrough = validateWalkthrough({
           id: 'stuck',
           title: 'A target that cannot finish holds the epoch',
           description:
-            'Only one resize runs at a time. A target that is paused, or whose batches keep failing, keeps the old epoch alive until it has worked through it or dead-lettered it, and no further resize starts before then.',
+            'Only one resize runs at a time. A target that is paused, or whose messages keep being retried, keeps the old epoch alive until it has acknowledged or dead-lettered every message in it, and no further resize starts before then.',
           stage: ['focus:orchestrator'],
           source: sourceFocus(
             startResize,
@@ -1399,14 +1579,14 @@ export const walkthrough = validateWalkthrough({
           id: 'sample',
           title: 'A partition reports positions',
           description:
-            'The log’s next offset is the number of messages accepted, and each target’s position is the number settled for it. A sample carries those, the messages in flight, and the failure counters.',
+            'The log’s next offset is the number of messages accepted. A target’s position minus its pending rows is the number settled for it: the position has moved past messages that are still waiting to be retried. A sample carries those, the messages in flight, and the failure counters.',
           stage: ['*', 'focus:log'],
           source: sourceFocus(
             sample,
             'accepted: nextOffset,',
-            'settled: positions[name] ?? 0,'
+            'settled: (positions[name] ?? 0) - (unsettled.get(name) ?? 0),'
           ),
-          durable: 'The positions, and the sample’s sequence number.',
+          durable: 'The positions, the pending rows, and the sequence number.',
           volatile: 'The in-flight counts.',
           status: 'normal',
         },

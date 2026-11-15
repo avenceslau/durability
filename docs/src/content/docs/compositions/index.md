@@ -5,7 +5,7 @@ description: End-to-end designs combining durable capabilities, application stat
 
 A capability reference answers "what does this method do?" A composition answers **"where does this application's state live, what drives progress, and what happens when one part fails?"**
 
-These walkthroughs follow complete Workers in the repository, rather than isolated API calls. The FIFO queue is a deployable template rather than a recipe: a complete application with its own tests. Each explains the object boundaries, request path, durable handoffs, recovery behavior, and application-owned pieces needed to ship it.
+These walkthroughs follow complete Workers in the repository, rather than isolated API calls. The FIFO queue is larger than a recipe: a complete queue service and a consumer Worker, with their own tests. Each explains the object boundaries, request path, durable handoffs, recovery behavior, and application-owned pieces needed to ship it.
 
 ## Pick a design
 
