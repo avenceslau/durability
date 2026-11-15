@@ -183,10 +183,6 @@ export class PullConsumer extends DurableObject<Cloudflare.Env> {
     if (epoch !== current) {
       this.sql.exec('DELETE FROM partitions WHERE epoch = ?', current);
       this.kv.delete('closedAt');
-    } else if (later !== undefined && this.kv.get('closedAt') === undefined) {
-      // Taken after the listing: only a partition listed empty from now on
-      // is known to have nothing more coming.
-      this.kv.put('closedAt', Date.now());
     }
     this.kv.put('epoch', epoch);
 
@@ -196,6 +192,17 @@ export class PullConsumer extends DurableObject<Cloudflare.Env> {
         epoch,
         partition
       );
+    }
+    if (
+      epoch === current &&
+      later !== undefined &&
+      this.kv.get('closedAt') === undefined
+    ) {
+      // Stored only once the partitions were listed after the later epoch
+      // was seen: a failed listing would leave the epoch closed with
+      // partitions missing, and it would be left unread. A partition listed
+      // empty from now on is known to have nothing more coming.
+      this.kv.put('closedAt', Date.now());
     }
   }
 
