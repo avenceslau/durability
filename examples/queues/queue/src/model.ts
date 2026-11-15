@@ -48,6 +48,11 @@ export type Message = {
   sentAt: number;
   /** Set by a redrive: only these targets receive the message. */
   only?: string[];
+  /**
+   * What the partition deduplicates on when that is not the id. A redriven
+   * message keeps its id, so consumers recognise it, but has to be stored again.
+   */
+  dedupeId?: string;
 };
 
 const destinationSchema = v.variant('type', [

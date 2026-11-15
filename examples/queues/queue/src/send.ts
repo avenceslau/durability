@@ -101,7 +101,7 @@ const groupByPartition = (
  */
 export const send = async (
   queue: string,
-  inputs: readonly MessageInput[],
+  inputs: readonly (MessageInput & Pick<Message, 'dedupeId'>)[],
   only?: string[]
 ): Promise<SendOutcome> => {
   const sentAt = Date.now();
@@ -111,6 +111,7 @@ export const send = async (
     body: input.body,
     sentAt,
     ...(only === undefined ? {} : { only }),
+    ...(input.dedupeId === undefined ? {} : { dedupeId: input.dedupeId }),
   }));
   const outcome: SendOutcome = { accepted: [], rejected: [] };
   let layout = await layoutOf(queue);

@@ -324,7 +324,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     const result = await this.log.append(
       input.messages.map((message) => ({
         body: message,
-        deduplicationKey: message.id,
+        deduplicationKey: message.dedupeId ?? message.id,
       }))
     );
     if (result.success) {
@@ -729,8 +729,13 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       });
 
     await this.settle(name, target, batch, settlement, failure);
+    this.pace(name, target, batch.messages.length);
+  }
+
+  /** Spaces the target's next batch so it stays within `maxPerSecond`. */
+  private pace(name: string, target: PartitionTarget, messages: number): void {
     if (target.maxPerSecond !== undefined) {
-      const spacing = (batch.messages.length * 1_000) / target.maxPerSecond;
+      const spacing = (messages * 1_000) / target.maxPerSecond;
       this.rateLimitedUntil.set(name, Date.now() + spacing);
     }
   }
@@ -1122,6 +1127,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       }
       await this.log.ack(name, lease.batchId);
       this.ctx.storage.kv.delete(`retry:${name}`);
+      this.pace(name, target, delivery.messages.length);
       return undefined;
     }
     const { failure } = stored;

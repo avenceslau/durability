@@ -187,7 +187,9 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
       entry.messages.map((message) => ({
         key: message.key,
         body: message.body,
-        id: `redrive/${key}/${message.offset}`,
+        id: message.id,
+        // The same on a repeat of this entry, so it is stored once.
+        dedupeId: `redrive/${key}/${message.offset}`,
       })),
       target === noTargetName ? undefined : [target]
     );
