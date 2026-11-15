@@ -68,10 +68,11 @@ one.
    needs it and no send should wait on the orchestrator; the Worker caches it in memory.
 2. It hashes each message's key to a partition of the current epoch and groups the
    messages by partition, keeping their order.
-3. Each partition appends its group to its log in one transaction. An append assigns the
-   next offsets, and the offset is the order: everything after this point follows it.
-4. The partition schedules a delivery run and answers. **Accepted means stored**, not
-   delivered.
+3. Each partition schedules a delivery run, then appends its group to its log in one
+   transaction. An append assigns the next offsets, and the offset is the order: everything
+   after this point follows it. Scheduling comes first so that a stored message always has
+   a run coming to deliver it.
+4. The partition answers. **Accepted means stored**, not delivered.
 
 A partition refuses a send in two cases. If a resize replaced it, it answers with the new
 layout and the Worker sends there instead. If a running target is more than `maxBacklog`
@@ -251,6 +252,7 @@ ticking and can be evicted.
 | Batch exhausts its attempts                      | Written to R2, then skipped. Redrive sends it through the queue again for that target only.              | When to redrive, and that order no longer covers those messages.            |
 | Partition evicted during a delivery              | The range stays leased for 60 seconds, then is delivered again.                                          | Receiver deduplication on `Idempotency-Key`.                                |
 | Target falls behind retention                    | Sends are refused at `maxBacklog` for running targets, before retention can remove undelivered messages. | A paused target is not protected: it loses what expires while it is paused. |
+| Storage fails while scheduling work              | Alarms are scheduled before the state they serve is stored, and the alarms that drive work never give up. | Nothing.                                                                    |
 | Orchestrator evicted mid-resize                  | The stored intent makes the next tick repeat the steps, each of which can be repeated.                   | Nothing.                                                                    |
 | Orchestrator evicted between storing and pushing | Every tick pushes the stored configuration and shares again.                                             | Ticks run only while partitions report; an idle queue repairs on next use.  |
 | Limiter unreachable                              | Its partitions cannot take permits and stop delivering; accepting is unaffected.                         | Alerting on backlog without delivery.                                       |

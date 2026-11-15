@@ -15,6 +15,7 @@ import {
 import { DurabilitySemaphoreQueue } from 'durability/experimental/semaphore';
 import { DurabilityRouting } from 'durability/routing';
 import { exponential, jitter } from 'durability/utils';
+import { neverGiveUp } from './alarm-policy';
 import { limiterFor, partitionName } from './layout';
 import { limiterClient } from './limiter';
 import {
@@ -122,6 +123,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     handlers: {
       deliver: () => this.deliver(),
       enforceRetention: () => this.enforceRetention(),
+    },
+    methods: {
+      deliver: neverGiveUp,
+      enforceRetention: neverGiveUp,
     },
   });
 
@@ -238,19 +243,20 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       };
     }
 
+    // Scheduled before the messages are stored: if scheduling fails nothing
+    // was accepted, whereas a stored message without a delivery run would
+    // wait until something else happened to wake the partition.
+    await this.requestDelivery();
+    await this.sweepBy(Date.now() + retentionSweepMs);
     const result = await this.log.append(
       input.messages.map((message) => ({
         body: message,
         deduplicationKey: message.id,
       }))
     );
-    if (!result.success) {
-      return result;
+    if (result.success) {
+      await this.stageSample();
     }
-
-    await this.sweepBy(Date.now() + retentionSweepMs);
-    await this.requestDelivery();
-    await this.stageSample();
     return result;
   }
 
@@ -263,8 +269,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     if (pending !== undefined && pending <= time) {
       return;
     }
-    this.ctx.storage.kv.put('sweepAt', time);
+    // The alarm first: a recorded time without an alarm would stop every
+    // later sweep from being scheduled.
     await this.alarms.enforceRetention(time);
+    this.ctx.storage.kv.put('sweepAt', time);
   }
 
   /**
@@ -280,9 +288,15 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       console.error({ event: 'fifo_queue.pull_log.sweep_failed', error });
       return Date.now() + retentionSweepMs;
     });
-    const { hotOffset, nextOffset } = await this.log.bounds();
+    // The size limit is enforced by the sweep every append asks for. An idle
+    // partition only has to wake when its oldest message becomes too old.
+    const { hotOffset } = await this.log.bounds();
+    const { records } = await this.log.read({ from: hotOffset, limit: 1 });
+    const oldest = records[0];
     const logDue =
-      hotOffset < nextOffset ? Date.now() + retentionSweepMs : undefined;
+      oldest === undefined
+        ? undefined
+        : Math.max(oldest.appendedAt + retentionMs, Date.now()) + 1;
 
     const next = Math.min(logDue ?? Infinity, pullLogDue ?? Infinity);
     if (Number.isFinite(next)) {
@@ -388,11 +402,12 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       );
     }
 
+    // Requested before the version is recorded: a repeat of this update is
+    // ignored once it is, so a failure here must leave it unrecorded. The run
+    // starts after this call returns and sees the new config.
+    await this.requestDelivery();
     this.ctx.storage.kv.put('config', update.value);
     this.ctx.storage.kv.put('config:version', update.version);
-
-    await this.requestDelivery();
-    await this.stageSample(true);
   }
 
   /**
@@ -434,7 +449,13 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       return;
     }
     this.deliveryScheduledFor = at;
-    await this.alarms.deliver(at);
+    try {
+      await this.alarms.deliver(at);
+    } catch (error) {
+      // Remembering a run that was never scheduled would suppress the next request.
+      this.deliveryScheduledFor = undefined;
+      throw error;
+    }
   }
 
   /** Runs every target until none can make progress, then says when to resume. */
@@ -467,13 +488,13 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       this.delivering = false;
     }
 
-    await this.stageSample(true);
     if (this.requestedWhileDelivering) {
       resumeAt = Date.now();
     }
     if (resumeAt !== undefined) {
       await this.requestDelivery(resumeAt);
     }
+    await this.stageSample(true);
   }
 
   /** Resolves to when this target can next make progress; undefined when idle. */

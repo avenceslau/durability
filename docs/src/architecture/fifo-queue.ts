@@ -64,7 +64,7 @@ const append = sourceExcerpt(
   'append',
   'Accept a share of a send',
   '  async append(input: AppendInput): Promise<AppendResult> {',
-  '    await this.stageSample();\n    return result;\n  }'
+  '    return result;\n  }'
 );
 const stopAccepting = sourceExcerpt(
   partitionSource,
@@ -176,7 +176,7 @@ const report = sourceExcerpt(
   'report',
   'Receive a partition’s sample',
   '  async report(samples: PartitionSample[]): Promise<void> {',
-  '      await this.alarms.tick(Date.now() + tickMs);\n    }\n  }'
+  '    await this.scheduleTick();\n  }'
 );
 const tick = sourceExcerpt(
   orchestratorSource,
@@ -184,7 +184,7 @@ const tick = sourceExcerpt(
   'tick',
   'One control-plane tick',
   '  private async tick(): Promise<void> {',
-  '      await this.alarms.tick(Date.now() + tickMs);\n    }\n  }'
+  '    if (busy) {\n      await this.scheduleTick();\n    }\n  }'
 );
 const balanceLimiters = sourceExcerpt(
   orchestratorSource,
@@ -693,6 +693,18 @@ export const walkthrough = validateWalkthrough({
           status: 'normal',
         },
         {
+          id: 'wake',
+          title: 'Schedule a delivery run first',
+          description:
+            'Accepting does not deliver. Before it stores anything, the partition schedules its delivery alarm, unless a run is already scheduled or in progress. If scheduling fails nothing was accepted; the other order could leave a stored message with nothing coming to deliver it.',
+          stage: ['focus:partition'],
+          source: sourceFocus(append, 'await this.requestDelivery();'),
+          durable: 'The scheduled delivery alarm.',
+          volatile:
+            'Whether a run is in progress, which decides if a new alarm is needed.',
+          status: 'commit',
+        },
+        {
           id: 'append',
           title: 'Append the group in one transaction',
           description:
@@ -705,18 +717,6 @@ export const walkthrough = validateWalkthrough({
           ),
           durable: 'The messages and their offsets.',
           volatile: 'Nothing.',
-          status: 'commit',
-        },
-        {
-          id: 'wake',
-          title: 'Ask for a delivery run',
-          description:
-            'Accepting does not deliver. The partition schedules its delivery alarm, unless a run is already scheduled or in progress, and returns.',
-          stage: ['focus:partition'],
-          source: sourceFocus(append, 'await this.requestDelivery();'),
-          durable: 'The scheduled delivery alarm.',
-          volatile:
-            'Whether a run is in progress, which decides if a new alarm is needed.',
           status: 'commit',
         },
         {
@@ -887,12 +887,12 @@ export const walkthrough = validateWalkthrough({
           id: 'start',
           title: 'A redrive is a job, not a request',
           description:
-            'The call from the binding or the admin API reaches the queue’s Redriver, which stores the job, schedules its alarm, and answers at once. One redrive runs at a time; a call during a run reports that run.',
+            'The call from the binding or the admin API reaches the queue’s Redriver, which schedules its alarm, stores the job, and answers at once. One redrive runs at a time; a call during a run reports that run.',
           stage: ['*', 'focus:redriver'],
           source: sourceFocus(
             startRedrive,
-            "this.ctx.storage.kv.put('job', job);",
-            'await this.alarms.replay(Date.now());'
+            'await this.alarms.replay(Date.now());',
+            "this.ctx.storage.kv.put('job', job);"
           ),
           durable: 'The job: its targets, its counters, and the alarm.',
           volatile: 'Nothing.',

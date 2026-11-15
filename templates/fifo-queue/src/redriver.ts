@@ -1,5 +1,6 @@
 import { DurableObject, env } from 'cloudflare:workers';
 import { DurabilityAlarms } from 'durability';
+import { neverGiveUp } from './alarm-policy';
 import { noTargetName, type RedriveStatus } from './model';
 import { orchestrators } from './namespaces';
 import { send } from './send';
@@ -52,6 +53,7 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
     context: this.ctx,
     alarmMinDelayMs: 1_000,
     handlers: { replay: () => this.replay() },
+    methods: { replay: neverGiveUp },
   });
 
   private get job(): Job | undefined {
@@ -91,8 +93,9 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
       left: 0,
       ...(target === undefined ? {} : { target }),
     };
-    this.ctx.storage.kv.put('job', job);
+    // The alarm first: a stored job without one would report running for ever.
     await this.alarms.replay(Date.now());
+    this.ctx.storage.kv.put('job', job);
     return statusOf(job);
   }
 

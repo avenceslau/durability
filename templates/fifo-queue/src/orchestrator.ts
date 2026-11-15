@@ -6,6 +6,7 @@ import {
 } from 'durability/experimental';
 import { DurabilitySocket, event } from 'durability/socket';
 import * as v from 'valibot';
+import { neverGiveUp } from './alarm-policy';
 import {
   limiterName,
   partitionName,
@@ -155,6 +156,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   private readonly alarms = new DurabilityAlarms({
     scheduler: this.scheduler,
     handlers: { tick: () => this.tick() },
+    methods: { tick: neverGiveUp },
   });
 
   readonly socket = new DurabilitySocket({
@@ -368,8 +370,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       // Stored first, with a tick scheduled: a deletion interrupted halfway
       // would otherwise leave a queue whose partitions refuse every send.
       this.kv.put('deleting', true);
-      this.tickScheduled = true;
-      await this.alarms.tick(Date.now() + tickMs);
+      await this.scheduleTick();
       await this.finishDeletion();
     });
   }
@@ -739,9 +740,20 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     this.store(samples.filter((sample) => live.has(sample.epoch)));
     this.lastReportAt = Date.now();
 
-    if (!this.tickScheduled) {
-      this.tickScheduled = true;
+    await this.scheduleTick();
+  }
+
+  private async scheduleTick(): Promise<void> {
+    if (this.tickScheduled) {
+      return;
+    }
+    this.tickScheduled = true;
+    try {
       await this.alarms.tick(Date.now() + tickMs);
+    } catch (error) {
+      // Remembering a tick that was never scheduled would stop every later one.
+      this.tickScheduled = false;
+      throw error;
     }
   }
 
@@ -776,9 +788,8 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       Date.now() - this.lastReportAt < idleAfterMs ||
       this.kv.get<Layout>('resize') !== undefined ||
       this.kv.get<boolean>('deleting') === true;
-    if (busy && !this.tickScheduled) {
-      this.tickScheduled = true;
-      await this.alarms.tick(Date.now() + tickMs);
+    if (busy) {
+      await this.scheduleTick();
     }
   }
 
