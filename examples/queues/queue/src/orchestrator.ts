@@ -40,6 +40,7 @@ import {
   type ShareState,
 } from './scaling';
 import type { PartitionMeta } from './send';
+import { storesBatches } from './targets';
 
 type LimiterState = ShareState & {
   active: string[];
@@ -439,6 +440,17 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       const start =
         target.startAt === 'earliest' ? epochs[0]! : epochs[epochs.length - 1]!;
       const existing = this.targets[name];
+      // The two kinds track what is left to deliver differently, so messages
+      // waiting under one would never be delivered under the other.
+      if (
+        existing &&
+        storesBatches(existing.destination) !==
+          storesBatches(target.destination)
+      ) {
+        throw new QueueError(
+          `Target "${name}" cannot change between an archive and a consumer; remove it and add it again`
+        );
+      }
       this.kv.put('targets', {
         ...this.targets,
         [name]: {

@@ -493,6 +493,96 @@ describe('fifo queue', () => {
     ]);
   });
 
+  /** The partition that accepted `count` messages, and its Durable Object. */
+  const partitionWith = async (queue: string, count: number) => {
+    const { partitions: samples } = await waitFor(
+      () => overview(queue),
+      (current) => current.partitions.some((entry) => entry.accepted === count)
+    );
+    const { epoch, index } = samples.find((entry) => entry.accepted === count)!;
+    return partitions.getByName(`${queue}/${epoch}/${index}`);
+  };
+
+  const waitingFor = (partition: DurableObjectStub<Partition>) =>
+    runInDurableObject(partition, (_instance, state) =>
+      state.storage.sql
+        .exec<{ target: string; retry_at: number }>(
+          'SELECT target, retry_at FROM pending'
+        )
+        .toArray()
+    );
+
+  it("caps the delay a consumer asks for, and gives up a removed target's retries", async () => {
+    const queue = await createQueue();
+    // As JSON this is a number; in milliseconds it is no longer finite.
+    await addTarget(
+      queue,
+      'hook',
+      {},
+      { retryOnce: [1], retryDelaySeconds: 1e308 }
+    );
+    await produce(queue, [{ key: 'a', body: 1 }]);
+
+    const partition = await partitionWith(queue, 1);
+    const [waiting] = await waitFor(
+      () => waitingFor(partition),
+      (rows) => rows.length === 1 && rows[0]!.retry_at > Date.now()
+    );
+    expect(waiting!.retry_at).toBeLessThanOrEqual(Date.now() + 86_400_000);
+
+    await expectOk(await admin(`/queues/${queue}/targets/hook`, 'DELETE'));
+    await waitFor(
+      () => waitingFor(partition),
+      (rows) => rows.length === 0
+    );
+  });
+
+  it('moves a target past messages retention removed before it received them', async () => {
+    const queue = await createQueue();
+    await addTarget(queue, 'held', { paused: true });
+    await produce(queue, [
+      { key: 'k', body: 1 },
+      { key: 'k', body: 2 },
+    ]);
+
+    // Retention is counted in days, so the test makes the messages old and
+    // runs the sweep itself.
+    const partition = await partitionWith(queue, 2);
+    await runInDurableObject(partition, async (instance, state) => {
+      state.storage.sql.exec(
+        'UPDATE durability_log_records SET appended_at = 0'
+      );
+      await (
+        instance as unknown as { enforceRetention(): Promise<void> }
+      ).enforceRetention();
+    });
+    await expectOk(
+      await admin(`/queues/${queue}/targets/held/pause`, 'POST', {
+        paused: false,
+      })
+    );
+
+    // Nothing is left to deliver, and the target is not left behind it.
+    const held = await waitFor(
+      async () =>
+        (await overview(queue)).partitions.find((entry) => entry.accepted === 2)
+          ?.targets['held'],
+      (target) => target?.settled === 2
+    );
+    expect(held?.lastError).toMatch(/Retention removed/);
+    expect(await stores.getByName(queue).deliveries('held')).toEqual([]);
+  });
+
+  it('refuses to turn a consumer target into an archive', async () => {
+    const queue = await createQueue();
+    await addTarget(queue, 'orders');
+    const response = await admin(`/queues/${queue}/targets/orders`, 'PUT', {
+      destination: { type: 'archive' },
+    });
+    expect(response.status).toBe(409);
+    await response.body?.cancel();
+  });
+
   it('settles a batch the way Cloudflare Queues does', async () => {
     const delivery = (bodies: string[]) => ({
       queue: 'q',

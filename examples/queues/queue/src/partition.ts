@@ -468,6 +468,17 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       );
     }
 
+    // A removed target's waiting messages are given up with it. Kept, they
+    // would count as unsettled for ever and hold back the next resize.
+    const tracked = this.sql
+      .exec<{ target: string }>('SELECT DISTINCT target FROM pending')
+      .toArray();
+    for (const { target } of tracked) {
+      if (!(target in update.value.targets)) {
+        this.sql.exec('DELETE FROM pending WHERE target = ?', target);
+      }
+    }
+
     // Requested before the version is recorded: a repeat of this update is
     // ignored once it is, so a failure here must leave it unrecorded. The run
     // starts after this call returns and sees the new config.
@@ -790,12 +801,22 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     }
 
     const position = (await this.log.cursor(name)) ?? 0;
+    const { oldestOffset } = await this.log.bounds();
     const records = new Map<number, LogRecord<Message>>();
     const joining: PendingRow[] = [];
     const held: PendingRow[] = [];
     const closedKeys = new Set<string>();
-    let scanned = position;
-    for (const record of await this.recordsFrom(position, limit)) {
+    // Retention may have removed messages this target never received. The
+    // position moves past them even when none is left to read: a target that
+    // stayed behind them would be asked for its next batch over and over.
+    let scanned = Math.max(position, oldestOffset);
+    if (scanned > position) {
+      this.count(name, {
+        lastError: 'Retention removed messages before they were delivered',
+      });
+    }
+    const page = await this.log.read({ from: scanned, limit });
+    for (const record of page.records) {
       const { key, only } = record.body;
       const row = {
         target: name,
@@ -1027,19 +1048,6 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       name,
       offset
     );
-  }
-
-  /** Up to `limit` messages from `from` on; from the oldest kept when retention already removed `from`. */
-  private async recordsFrom(
-    from: number,
-    limit: number
-  ): Promise<LogRecord<Message>[]> {
-    const { oldestOffset } = await this.log.bounds();
-    const page = await this.log.read({
-      from: Math.max(from, oldestOffset),
-      limit,
-    });
-    return page.records;
   }
 
   private async recordAt(

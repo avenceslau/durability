@@ -23,6 +23,8 @@ export type Behaviour = {
   delayMs?: number;
   /** Bodies the target retries the first time it is handed them. */
   retryOnce?: number[];
+  /** The delay a POSTed target asks for with each retry. */
+  retryDelaySeconds?: number;
 };
 
 /** Messages a target acknowledged in one delivery. */
@@ -95,6 +97,10 @@ export class SinkStore extends DurableObject {
     }
   }
 
+  retryDelaySeconds(target: string): number | undefined {
+    return this.behaviours.get(target)?.retryDelaySeconds;
+  }
+
   deliveries(target: string): Received[] {
     return this.received.filter(
       (entry) => entry.target === target && entry.keys.length > 0
@@ -110,10 +116,18 @@ export class SinkStore extends DurableObject {
 export class Sink extends WorkerEntrypoint {
   override async fetch(request: Request): Promise<Response> {
     const delivery = await request.json<Delivery>();
-    const retried = await stores().getByName(delivery.queue).receive(delivery);
-    return retried === 'refused'
-      ? new Response(null, { status: 500 })
-      : Response.json({ retried });
+    const store = stores().getByName(delivery.queue);
+    const retried = await store.receive(delivery);
+    if (retried === 'refused') {
+      return new Response(null, { status: 500 });
+    }
+    const delaySeconds = await store.retryDelaySeconds(delivery.target);
+    return Response.json({
+      retried:
+        delaySeconds === undefined
+          ? retried
+          : retried.map((id) => ({ id, delaySeconds })),
+    });
   }
 }
 

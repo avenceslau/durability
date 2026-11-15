@@ -53,7 +53,7 @@ pnpm exec wrangler dev -c wrangler.jsonc -c ../push_consumer/wrangler.jsonc
 
 ## Use it
 
-`push_consumer` creates the queue and registers itself as a target on `POST /setup`, and sends orders on `POST /orders`:
+`push_consumer` creates the queue and registers itself as a target on `POST /setup`, and sends orders on `POST /orders`. Both routes are open to anyone who can reach the Worker, which suits a demo only: an application sets its queue up from a deploy script or behind authentication.
 
 ```sh
 curl -X POST http://localhost:8788/setup

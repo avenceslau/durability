@@ -89,6 +89,9 @@ export type Destination = v.InferOutput<typeof destinationSchema>;
  */
 export type TargetDestination = Destination | { type: 'pull' };
 
+/** The longest a retry can be put off, by the target's setting or by a consumer. */
+export const maxRetryDelaySeconds = 86_400;
+
 export const targetInputSchema = v.object({
   destination: destinationSchema,
   /** Messages one partition hands this target at a time. */
@@ -100,7 +103,7 @@ export const targetInputSchema = v.object({
   ),
   /** Seconds before a retried message is delivered again, unless the consumer says otherwise. */
   retryDelaySeconds: v.optional(
-    v.pipe(v.number(), v.minValue(0), v.maxValue(86_400)),
+    v.pipe(v.number(), v.minValue(0), v.maxValue(maxRetryDelaySeconds)),
     0
   ),
   /** Batches in flight for this target across the whole queue. */

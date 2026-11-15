@@ -64,6 +64,8 @@ export default {
       });
     }
 
+    // Demo only: anyone who can reach this Worker can call it. An application
+    // sets its queue up from a deploy script or behind authentication.
     if (pathname === '/setup') {
       const queues = await env.QUEUE_ADMIN.list();
       if (!queues.some((entry) => entry.name === queue)) {
@@ -77,7 +79,8 @@ export default {
         maxBatchSize: 10,
         maxRetries: 3,
       });
-      return Response.json(await env.QUEUE_ADMIN.overview(queue));
+      // Not the queue's overview: that shows every target's settings.
+      return Response.json({ queue, target: 'billing' });
     }
 
     if (pathname === '/orders') {

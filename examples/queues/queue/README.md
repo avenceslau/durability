@@ -87,7 +87,7 @@ The queue makes one RPC call per batch, `deliverQueueBatch`, which the base clas
 - When `queue()` returns, messages it left alone are acknowledged.
 - When `queue()` throws, messages that were not acknowledged, individually or by `ackAll()`, are retried.
 
-A retried message is delivered again after its `delaySeconds`, or the target's `retryDelaySeconds`. After `maxRetries` retries it is written to the dead letters.
+A retried message is delivered again after its `delaySeconds`, or the target's `retryDelaySeconds`. Either is at most a day; a delay that is not a number of seconds from zero up is ignored. After `maxRetries` retries it is written to the dead letters.
 
 Delivery is **at least once**. A message is delivered again after a retry, a timeout, or a crash of the partition mid-delivery, so the work must be safe to repeat for the same `id`. An RPC call cannot be cancelled: after the target's `attemptTimeoutMs` the batch is retried while the consumer may still be running it.
 
@@ -300,7 +300,10 @@ A target's own `maxConcurrency` is split between limiters in the same proportion
 - A partition keeps messages for 4 days or 512 MB, whichever comes first; `pullRetentionDays` applies to the pull bucket only. A target that stays behind longer loses messages; `maxBacklog` rejects sends before that happens for running targets, not for paused ones.
 - One orchestrator receives every partition's samples, so the dashboard, not the queue, is what stops scaling first. Lengthen `sampleIntervalMs` in `src/partition.ts` for queues with many hundreds of busy partitions.
 - The autoscaler's thresholds (`src/scaling.ts`) and `limiterTargetRate` are starting points, not measurements of your workload.
-- A removed target's position is kept: a target created again under the same name continues where the old one stopped.
+- A message waiting for a retry is still subject to the 4 days: retries and delays that add up to more lose it without a dead letter. The partition reports it as the target's last error.
+- A delivery counts from when the partition picks the batch, as with a visibility timeout. A partition that restarts between picking a batch and calling the consumer has spent one of the message's attempts on a call that was never made, so with `maxRetries: 0` such a message goes to the dead letters undelivered.
+- A removed target's position is kept: a target created again under the same name continues where the old one stopped. Its messages that were waiting for a retry are given up when it is removed.
+- A target cannot change between an archive and a consumer; remove it and add it again.
 - Deleting a queue stops its partitions; their stored messages expire with retention.
 - The dashboard is protected by one shared token, kept in a cookie that is honoured only for requests from the Worker's own origin. Put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of it for real use.
 - Webhook targets call any URL an admin enters, and the dashboard shows their signing secrets to every admin.

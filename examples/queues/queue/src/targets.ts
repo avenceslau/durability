@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import type { QueueDelivery, QueueSettlement } from './consumer';
 import { pullLogKey } from './layout';
-import type { TargetDestination } from './model';
+import { maxRetryDelaySeconds, type TargetDestination } from './model';
 import { send } from './send';
 
 export type Delivery = QueueDelivery;
@@ -60,6 +60,16 @@ export const retryAll = (
 });
 
 /**
+ * A delay a consumer asked for. Anything but a number of seconds from zero up
+ * is ignored, and a long one is capped: stored as it came, `Infinity` or `NaN`
+ * would leave the message waiting for a time that never arrives.
+ */
+const boundedDelay = (seconds: unknown): number | undefined =>
+  typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+    ? Math.min(seconds, maxRetryDelaySeconds)
+    : undefined;
+
+/**
  * Reads what a consumer answered. The answer crossed a trust boundary, so it
  * only counts for messages that were in the batch; a message the consumer did
  * not acknowledge is retried.
@@ -84,10 +94,7 @@ const settlementFrom = (delivery: Delivery, answer: unknown): Settlement => {
     }
     const { id, delaySeconds } = entry as Record<string, unknown>;
     if (typeof id === 'string') {
-      delays.set(
-        id,
-        typeof delaySeconds === 'number' ? delaySeconds : undefined
-      );
+      delays.set(id, boundedDelay(delaySeconds));
     }
   }
 
@@ -132,11 +139,9 @@ const post = async (
   if (!response.ok) {
     // The body is not needed; an unread one would hold the connection open.
     await response.body?.cancel();
-    const seconds = Number(response.headers.get('Retry-After'));
-    return retryAll(
-      delivery,
-      Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
-    );
+    // Absent or zero leaves the delay to the target's setting.
+    const seconds = boundedDelay(Number(response.headers.get('Retry-After')));
+    return retryAll(delivery, seconds || undefined);
   }
 
   const answer: unknown = await response.json().catch(() => undefined);
