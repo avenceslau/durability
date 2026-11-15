@@ -24,6 +24,21 @@
   ],
   "services": [
     { "binding": "SINK", "service": "fifo-queue-test", "entrypoint": "Sink" },
+    {
+      "binding": "RPC_SINK",
+      "service": "fifo-queue-test",
+      "entrypoint": "RpcSink",
+    },
+    {
+      "binding": "SCRIPTED",
+      "service": "fifo-queue-test",
+      "entrypoint": "ScriptedConsumer",
+    },
+    {
+      "binding": "ADMIN",
+      "service": "fifo-queue-test",
+      "entrypoint": "QueueAdmin",
+    },
     // What another Worker would declare to call the queue without HTTP.
     {
       "binding": "QUEUE",

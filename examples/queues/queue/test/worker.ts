@@ -1,32 +1,37 @@
 /**
- * The template's Worker plus a target the tests can observe: a service
- * binding whose deliveries are recorded in a Durable Object.
+ * The queue's Worker plus targets the tests can observe: a service binding
+ * that is POSTed to, and a `QueueEntrypoint` consumer. Both record what they
+ * accept in a Durable Object.
  */
 import {
   DurableObject,
   WorkerEntrypoint,
   exports as workerExports,
 } from 'cloudflare:workers';
+import { QueueEntrypoint, type MessageBatch } from '../src/consumer';
 import type { Delivery } from '../src/targets';
 
 export * from '../src/index';
 export { default } from '../src/index';
 // The test runner finds entrypoints by name in this file, not through `export *`.
-export { QueueBinding } from '../src/index';
+export { QueueAdmin, QueueBinding } from '../src/index';
 
 export type Behaviour = {
-  /** Deliveries answered with 500 before the target starts accepting. */
+  /** Deliveries refused outright before the target starts accepting. */
   failures?: number;
   /** How long each delivery takes. */
   delayMs?: number;
+  /** Bodies the target retries the first time it is handed them. */
+  retryOnce?: number[];
 };
 
+/** Messages a target acknowledged in one delivery. */
 export type Received = {
   target: string;
   partition: string;
-  attempt: number;
   keys: string[];
   bodies: number[];
+  attempts: number[];
 };
 
 const stores = () =>
@@ -37,6 +42,7 @@ const stores = () =>
 export class SinkStore extends DurableObject {
   private received: Received[] = [];
   private behaviours = new Map<string, Behaviour>();
+  private retriedOnce = new Set<string>();
   private running = 0;
   private mostRunning = 0;
 
@@ -44,7 +50,8 @@ export class SinkStore extends DurableObject {
     this.behaviours.set(target, behaviour);
   }
 
-  async receive(delivery: Delivery): Promise<number> {
+  /** Resolves to the ids the target retries, or `refused` for the whole delivery. */
+  async receive(delivery: Delivery): Promise<string[] | 'refused'> {
     const behaviour = this.behaviours.get(delivery.target) ?? {};
     this.running += 1;
     this.mostRunning = Math.max(this.mostRunning, this.running);
@@ -54,23 +61,44 @@ export class SinkStore extends DurableObject {
       }
       if ((behaviour.failures ?? 0) > 0) {
         behaviour.failures! -= 1;
-        return 500;
+        return 'refused';
       }
+
+      // Like a consumer that cares about order, it stops working on a key
+      // at the first message it retries.
+      const stoppedKeys = new Set<string>();
+      const retried = delivery.messages.filter((message) => {
+        const once = `${delivery.target}/${message.id}`;
+        const retry =
+          stoppedKeys.has(message.key) ||
+          (behaviour.retryOnce?.includes(message.body as number) === true &&
+            !this.retriedOnce.has(once));
+        this.retriedOnce.add(once);
+        if (retry) {
+          stoppedKeys.add(message.key);
+        }
+        return retry;
+      });
+      const accepted = delivery.messages.filter(
+        (message) => !retried.includes(message)
+      );
       this.received.push({
         target: delivery.target,
         partition: delivery.partition,
-        attempt: delivery.attempt,
-        keys: delivery.messages.map((message) => message.key),
-        bodies: delivery.messages.map((message) => message.body as number),
+        keys: accepted.map((message) => message.key),
+        bodies: accepted.map((message) => message.body as number),
+        attempts: accepted.map((message) => message.attempts),
       });
-      return 200;
+      return retried.map((message) => message.id);
     } finally {
       this.running -= 1;
     }
   }
 
   deliveries(target: string): Received[] {
-    return this.received.filter((entry) => entry.target === target);
+    return this.received.filter(
+      (entry) => entry.target === target && entry.keys.length > 0
+    );
   }
 
   mostRunningAtOnce(): number {
@@ -78,10 +106,65 @@ export class SinkStore extends DurableObject {
   }
 }
 
+/** A target the queue POSTs to. It names the messages to retry in its answer. */
 export class Sink extends WorkerEntrypoint {
   override async fetch(request: Request): Promise<Response> {
     const delivery = await request.json<Delivery>();
-    const status = await stores().getByName(delivery.queue).receive(delivery);
-    return new Response(null, { status });
+    const retried = await stores().getByName(delivery.queue).receive(delivery);
+    return retried === 'refused'
+      ? new Response(null, { status: 500 })
+      : Response.json({ retried });
+  }
+}
+
+/** A target the queue calls over RPC. */
+export class RpcSink extends QueueEntrypoint<unknown, number> {
+  // The store wants the delivery as the queue sent it, so keep it.
+  private delivery: Delivery | undefined;
+
+  override deliverQueueBatch(delivery: Delivery) {
+    this.delivery = delivery;
+    return super.deliverQueueBatch(delivery);
+  }
+
+  async queue(batch: MessageBatch<number>): Promise<void> {
+    const retried = await stores()
+      .getByName(batch.queue)
+      .receive(this.delivery!);
+    if (retried === 'refused') {
+      throw new Error('The consumer is down');
+    }
+    for (const message of batch.messages) {
+      if (retried.includes(message.id)) {
+        message.retry();
+      }
+    }
+  }
+}
+
+/** Does what each message's body says, to exercise how a batch is settled. */
+export class ScriptedConsumer extends QueueEntrypoint<unknown, string> {
+  queue(batch: MessageBatch<string>): void {
+    for (const message of batch.messages) {
+      if (message.body === 'ack then retry') {
+        message.ack();
+        message.retry();
+      }
+      if (message.body === 'retry then ack') {
+        message.retry({ delaySeconds: 5 });
+        message.ack();
+      }
+    }
+    const bodies = batch.messages.map((message) => message.body);
+    if (bodies.includes('retry all')) {
+      batch.retryAll({ delaySeconds: 9 });
+      batch.ackAll();
+    }
+    if (bodies.includes('ack all')) {
+      batch.ackAll();
+    }
+    if (bodies.includes('throw')) {
+      throw new Error('The consumer failed');
+    }
   }
 }

@@ -298,9 +298,10 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       ...others,
       [pullTargetName]: {
         destination: { type: 'pull' },
-        batchSize: pullBatchSize,
+        maxBatchSize: pullBatchSize,
         // The pull bucket is the only copy consumers read, so do not give up early.
-        maxAttempts: 100,
+        maxRetries: 100,
+        retryDelaySeconds: 0,
         attemptTimeoutMs: 10_000,
         paused: false,
         startAt: 'latest',

@@ -1,22 +1,20 @@
+// Included for Workers that import this module's types: the queue's code is
+// typed against its own bindings.
+/// <reference path="./env.d.ts" />
 import { WorkerEntrypoint, env } from 'cloudflare:workers';
 import * as v from 'valibot';
+import * as admin from './admin';
 import {
   queueNameSchema,
   sendSchema,
-  settingsInputSchema,
-  targetInputSchema,
   targetNameSchema,
   consumerNameSchema,
   type MessageInput,
+  type Overview,
   type PullBatch,
   type RedriveStatus,
 } from './model';
-import {
-  directory,
-  orchestrators,
-  pullConsumers,
-  redrivers,
-} from './namespaces';
+import { orchestrators, pullConsumers, redrivers } from './namespaces';
 import type { PullOptions } from './pull-consumer';
 import { send, UnknownQueueError, type SendOutcome } from './send';
 
@@ -72,6 +70,54 @@ export class QueueBinding extends WorkerEntrypoint<Cloudflare.Env> {
 
   nack(queue: string, consumer: string, lease: string): Promise<boolean> {
     return pullConsumer(queue, consumer).nack(lease);
+  }
+}
+
+/**
+ * For Workers that manage queues. It is a separate entrypoint from
+ * `QueueBinding` so that a Worker bound only to send and pull cannot create,
+ * reconfigure, or delete a queue.
+ */
+export class QueueAdmin extends WorkerEntrypoint<Cloudflare.Env> {
+  list() {
+    return admin.listQueues();
+  }
+
+  create(queue: string, settings?: admin.SettingsInput): Promise<void> {
+    return admin.createQueue(queue, settings);
+  }
+
+  /** Changes the settings that are given and keeps the rest. */
+  updateSettings(queue: string, changes: admin.SettingsInput): Promise<void> {
+    return admin.updateSettings(queue, changes);
+  }
+
+  putTarget(
+    queue: string,
+    target: string,
+    settings: admin.TargetInput
+  ): Promise<void> {
+    return admin.putTarget(queue, target, settings);
+  }
+
+  pauseTarget(queue: string, target: string, paused: boolean): Promise<void> {
+    return admin.pauseTarget(queue, target, paused);
+  }
+
+  removeTarget(queue: string, target: string): Promise<void> {
+    return admin.removeTarget(queue, target);
+  }
+
+  resize(queue: string, partitions: number): Promise<void> {
+    return admin.resize(queue, partitions);
+  }
+
+  overview(queue: string): Promise<Overview> {
+    return admin.overview(queue);
+  }
+
+  delete(queue: string): Promise<void> {
+    return admin.deleteQueue(queue);
   }
 }
 
@@ -238,7 +284,7 @@ const signIn = async (request: Request): Promise<Response> => {
 
 const queues = async (request: Request): Promise<Response> => {
   if (request.method === 'GET') {
-    return Response.json(await directory().list());
+    return Response.json(await admin.listQueues());
   }
   if (request.method !== 'POST') {
     throw new HttpError(405, 'Method not allowed');
@@ -247,14 +293,11 @@ const queues = async (request: Request): Promise<Response> => {
   const input = await parse(
     v.object({
       name: queueNameSchema,
-      settings: v.optional(settingsInputSchema, {}),
+      settings: v.optional(v.unknown(), {}),
     }),
     request
   );
-  await orchestrators()
-    .getByName(input.name)
-    .create(input.name, input.settings);
-  await directory().add(input.name);
+  await admin.createQueue(input.name, input.settings as admin.SettingsInput);
   return Response.json({ name: input.name }, { status: 201 });
 };
 
@@ -263,37 +306,25 @@ const queue = async (
   queueName: string,
   rest: string[]
 ): Promise<Response> => {
-  const orchestrator = orchestrators().getByName(queueName);
   const [resource, targetSegment, action] = rest;
+  const done = new Response(null, { status: 204 });
 
-  if (resource === undefined) {
-    if (request.method === 'GET') {
-      return Response.json(await orchestrator.overview());
-    }
-    if (request.method === 'PATCH') {
-      const { settings } = await orchestrator.overview();
-      const patch = await parse(v.record(v.string(), v.unknown()), request);
-      await orchestrator.updateSettings(
-        v.parse(settingsInputSchema, {
-          ...settings,
-          ...patch,
-          partitions: {
-            ...settings.partitions,
-            ...(patch['partitions'] as object | undefined),
-          },
-        })
-      );
-      return new Response(null, { status: 204 });
-    }
-    if (request.method === 'DELETE') {
-      await orchestrator.delete();
-      await directory().remove(queueName);
-      return new Response(null, { status: 204 });
-    }
+  if (resource === undefined && request.method === 'GET') {
+    return Response.json(await admin.overview(queueName));
   }
-
+  if (resource === undefined && request.method === 'PATCH') {
+    await admin.updateSettings(
+      queueName,
+      (await parse(v.unknown(), request)) as admin.SettingsInput
+    );
+    return done;
+  }
+  if (resource === undefined && request.method === 'DELETE') {
+    await admin.deleteQueue(queueName);
+    return done;
+  }
   if (resource === 'socket') {
-    return orchestrator.fetch(request);
+    return orchestrators().getByName(queueName).fetch(request);
   }
   if (resource === 'messages' && request.method === 'POST') {
     return accept(queueName, request);
@@ -308,13 +339,11 @@ const queue = async (
   }
   if (resource === 'resize' && request.method === 'POST') {
     const { partitions } = await parse(
-      v.object({
-        partitions: v.pipe(v.number(), v.safeInteger(), v.minValue(1)),
-      }),
+      v.object({ partitions: v.number() }),
       request
     );
-    await orchestrator.resize(partitions);
-    return new Response(null, { status: 204 });
+    await admin.resize(queueName, partitions);
+    return done;
   }
 
   if (resource !== 'targets' || targetSegment === undefined) {
@@ -323,20 +352,21 @@ const queue = async (
   const target = name(targetNameSchema, targetSegment);
 
   if (action === undefined && request.method === 'PUT') {
-    await orchestrator.putTarget(
+    await admin.putTarget(
+      queueName,
       target,
-      await parse(targetInputSchema, request)
+      (await parse(v.unknown(), request)) as admin.TargetInput
     );
-    return new Response(null, { status: 204 });
+    return done;
   }
   if (action === undefined && request.method === 'DELETE') {
-    await orchestrator.removeTarget(target);
-    return new Response(null, { status: 204 });
+    await admin.removeTarget(queueName, target);
+    return done;
   }
   if (action === 'pause' && request.method === 'POST') {
     const { paused } = await parse(v.object({ paused: v.boolean() }), request);
-    await orchestrator.pauseTarget(target, paused);
-    return new Response(null, { status: 204 });
+    await admin.pauseTarget(queueName, target, paused);
+    return done;
   }
   if (action === 'redrive' && request.method === 'POST') {
     const status = await redrivers()
@@ -406,6 +436,12 @@ export default {
         return Response.json(
           { error: error.message },
           { status: error.status }
+        );
+      }
+      if (error instanceof v.ValiError) {
+        return Response.json(
+          { error: error.issues.map((issue) => issue.message).join('; ') },
+          { status: 400 }
         );
       }
       if (error instanceof UnknownQueueError) {

@@ -58,8 +58,16 @@ const destinationSchema = v.variant('type', [
     secret: v.optional(v.pipe(v.string(), v.minLength(1))),
   }),
   v.object({
+    type: v.literal('rpc'),
+    /**
+     * Name of a service binding, declared in `wrangler.jsonc`, to a class
+     * that extends `QueueEntrypoint`.
+     */
+    binding: v.pipe(v.string(), v.minLength(1)),
+  }),
+  v.object({
     type: v.literal('service'),
-    /** Name of a service binding declared in `wrangler.jsonc`. */
+    /** Name of a service binding declared in `wrangler.jsonc`; the batch is POSTed to it. */
     binding: v.pipe(v.string(), v.minLength(1)),
   }),
   v.object({
@@ -79,13 +87,21 @@ export type TargetDestination = Destination | { type: 'pull' };
 export const targetInputSchema = v.object({
   destination: destinationSchema,
   /** Messages one partition hands this target at a time. */
-  batchSize: v.optional(v.pipe(positive, v.maxValue(100)), 10),
-  /** Messages per second one partition hands this target. */
-  maxPerSecond: v.optional(positive),
+  maxBatchSize: v.optional(v.pipe(positive, v.maxValue(100)), 10),
+  /** Times a message is delivered again before it is dead-lettered. */
+  maxRetries: v.optional(
+    v.pipe(v.number(), v.safeInteger(), v.minValue(0), v.maxValue(100)),
+    3
+  ),
+  /** Seconds before a retried message is delivered again, unless the consumer says otherwise. */
+  retryDelaySeconds: v.optional(
+    v.pipe(v.number(), v.minValue(0), v.maxValue(86_400)),
+    0
+  ),
   /** Batches in flight for this target across the whole queue. */
   maxConcurrency: v.optional(positive),
-  /** Deliveries of one batch before it is dead-lettered. */
-  maxAttempts: v.optional(v.pipe(positive, v.maxValue(100)), 5),
+  /** Messages per second one partition hands this target. */
+  maxPerSecond: v.optional(positive),
   attemptTimeoutMs: v.optional(
     v.pipe(positive, v.minValue(100), v.maxValue(30_000)),
     10_000

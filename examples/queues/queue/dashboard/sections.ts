@@ -19,6 +19,9 @@ export const describeDestination = (destination: TargetDestination): string => {
   if (destination.type === 'webhook') {
     return `webhook ${destination.url}`;
   }
+  if (destination.type === 'rpc') {
+    return `rpc ${destination.binding}`;
+  }
   if (destination.type === 'service') {
     return `service ${destination.binding}`;
   }

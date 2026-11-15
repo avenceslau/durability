@@ -25,6 +25,11 @@
     },
   ],
   "kv_namespaces": [{ "binding": "TOPOLOGY" }],
+  // Targets of type `rpc` and `service` name a service binding declared here.
+  // `ORDERS` is the consumer in ../push_consumer, which must be deployed first.
+  "services": [
+    { "binding": "ORDERS", "service": "push-consumer", "entrypoint": "Orders" },
+  ],
   "r2_buckets": [
     { "binding": "STORAGE", "bucket_name": "fifo-queue" },
     { "binding": "PULL", "bucket_name": "fifo-queue-pull" },

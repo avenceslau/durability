@@ -1,27 +1,27 @@
 import { env } from 'cloudflare:workers';
+import type { QueueDelivery, QueueSettlement } from './consumer';
 import { pullLogKey } from './layout';
 import type { TargetDestination } from './model';
 import { send } from './send';
 
-export type Delivery = {
-  queue: string;
-  target: string;
-  /** `queue/epoch/index` of the partition this batch came from. */
-  partition: string;
-  /** One-based; a batch is redelivered until it succeeds or is dead-lettered. */
-  attempt: number;
-  messages: {
-    id: string;
-    key: string;
-    offset: number;
-    body: unknown;
-    sentAt: number;
-  }[];
-};
+export type Delivery = QueueDelivery;
+export type Settlement = QueueSettlement;
 
-export type DeliveryOutcome =
-  | { ok: true }
-  | { ok: false; error: string; retryAfterMs?: number };
+/** Destinations that keep whole batches, so a batch is written or it is not. */
+export type StorageDestination = Extract<
+  TargetDestination,
+  { type: 'archive' | 'pull' }
+>;
+/** Destinations that answer for each message. */
+export type ConsumerDestination = Exclude<
+  TargetDestination,
+  StorageDestination
+>;
+
+export const storesBatches = (
+  destination: TargetDestination
+): destination is StorageDestination =>
+  destination.type === 'archive' || destination.type === 'pull';
 
 const hex = (bytes: ArrayBuffer): string =>
   [...new Uint8Array(bytes)]
@@ -40,32 +40,88 @@ const sign = async (secret: string, body: string): Promise<string> => {
   return hex(await crypto.subtle.sign('HMAC', key, encoder.encode(body)));
 };
 
-/** The first and last offsets identify a batch across redeliveries. */
+/** The first and last offsets name a batch in storage. */
 export const batchKey = (delivery: Delivery): string => {
   const first = delivery.messages[0]!.offset;
   const last = delivery.messages[delivery.messages.length - 1]!.offset;
   return `${delivery.partition}/${first}-${last}`;
 };
 
-const retryAfterMs = (response: Response): number | undefined => {
-  const seconds = Number(response.headers.get('Retry-After'));
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : undefined;
+export const retryAll = (
+  delivery: Delivery,
+  delaySeconds?: number
+): Settlement => ({
+  acked: [],
+  retried: delivery.messages.map((message) =>
+    delaySeconds === undefined
+      ? { id: message.id }
+      : { id: message.id, delaySeconds }
+  ),
+});
+
+/**
+ * Reads what a consumer answered. The answer crossed a trust boundary, so it
+ * only counts for messages that were in the batch; a message the consumer did
+ * not acknowledge is retried.
+ */
+const settlementFrom = (delivery: Delivery, answer: unknown): Settlement => {
+  const listed = (name: 'acked' | 'retried'): unknown[] => {
+    const list =
+      typeof answer === 'object' && answer !== null
+        ? (answer as Record<string, unknown>)[name]
+        : undefined;
+    return Array.isArray(list) ? list : [];
+  };
+  const acked = new Set(listed('acked').filter((id) => typeof id === 'string'));
+  const delays = new Map<string, number | undefined>();
+  for (const entry of listed('retried')) {
+    if (typeof entry === 'string') {
+      delays.set(entry, undefined);
+      continue;
+    }
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const { id, delaySeconds } = entry as Record<string, unknown>;
+    if (typeof id === 'string') {
+      delays.set(
+        id,
+        typeof delaySeconds === 'number' ? delaySeconds : undefined
+      );
+    }
+  }
+
+  const settlement: Settlement = { acked: [], retried: [] };
+  for (const { id } of delivery.messages) {
+    if (acked.has(id) && !delays.has(id)) {
+      settlement.acked.push(id);
+      continue;
+    }
+    const delaySeconds = delays.get(id);
+    settlement.retried.push(
+      delaySeconds === undefined ? { id } : { id, delaySeconds }
+    );
+  }
+  return settlement;
 };
 
+/**
+ * POSTs the batch. Any answer but 2xx retries every message. A 2xx answer
+ * acknowledges every message, except those its JSON body lists as `retried`:
+ * `{ "retried": ["id", { "id": "…", "delaySeconds": 30 }] }`.
+ */
 const post = async (
   fetcher: { fetch: typeof fetch },
   url: string,
   delivery: Delivery,
   timeoutMs: number,
   secret?: string
-): Promise<DeliveryOutcome> => {
+): Promise<Settlement> => {
   const body = JSON.stringify(delivery);
   const response = await fetcher.fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      // Two targets may share a receiver, so the target is part of the key.
-      'Idempotency-Key': `${delivery.target}/${batchKey(delivery)}`,
       ...(secret === undefined
         ? {}
         : { 'X-Queue-Signature': `sha256=${await sign(secret, body)}` }),
@@ -73,107 +129,136 @@ const post = async (
     body,
     signal: AbortSignal.timeout(timeoutMs),
   });
-  // The body is not needed; an unread one would hold the connection open.
-  await response.body?.cancel();
-  if (response.ok) {
-    return { ok: true };
+  if (!response.ok) {
+    // The body is not needed; an unread one would hold the connection open.
+    await response.body?.cancel();
+    const seconds = Number(response.headers.get('Retry-After'));
+    return retryAll(
+      delivery,
+      Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
+    );
   }
 
-  const wait = retryAfterMs(response);
-  return {
-    ok: false,
-    error: `Target answered ${response.status}`,
-    ...(wait === undefined ? {} : { retryAfterMs: wait }),
+  const answer: unknown = await response.json().catch(() => undefined);
+  return settlementFrom(delivery, {
+    acked: delivery.messages.map((message) => message.id),
+    retried:
+      typeof answer === 'object' && answer !== null
+        ? (answer as Record<string, unknown>)['retried']
+        : undefined,
+  });
+};
+
+const binding = (name: string): object => {
+  const service = (env as unknown as Record<string, unknown>)[name];
+  if (typeof service !== 'object' || service === null) {
+    throw new Error(`No service binding named "${name}"`);
+  }
+  return service;
+};
+
+/**
+ * One call to a `QueueEntrypoint`. A call cannot be cancelled: after the
+ * timeout the messages are retried while the consumer may still be running.
+ */
+const call = async (
+  name: string,
+  delivery: Delivery,
+  timeoutMs: number
+): Promise<Settlement> => {
+  const consumer = binding(name) as {
+    deliverQueueBatch(delivery: Delivery): Promise<unknown>;
   };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const answer = await Promise.race([
+      consumer.deliverQueueBatch(delivery),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Consumer took longer than ${timeoutMs} ms`)),
+          timeoutMs
+        );
+      }),
+    ]);
+    return settlementFrom(delivery, answer);
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 const forward = async (
   queue: string,
   delivery: Delivery
-): Promise<DeliveryOutcome> => {
+): Promise<Settlement> => {
+  // Stable across redeliveries, so the destination accepts each once.
+  const forwardedId = (offset: number) =>
+    `${delivery.target}/${delivery.partition}/${offset}`;
   const outcome = await send(
     queue,
     delivery.messages.map((message) => ({
       key: message.key,
       body: message.body,
-      // Stable across redeliveries, so the destination accepts each once.
-      id: `${delivery.target}/${delivery.partition}/${message.offset}`,
+      id: forwardedId(message.offset),
     }))
   );
-  const rejection = outcome.rejected[0];
-  return rejection
-    ? {
-        ok: false,
-        error: `${rejection.error.name}: ${rejection.error.message}`,
-      }
-    : { ok: true };
+  const accepted = new Set(outcome.accepted);
+  return settlementFrom(delivery, {
+    acked: delivery.messages
+      .filter((message) => accepted.has(forwardedId(message.offset)))
+      .map((message) => message.id),
+  });
 };
 
-const archive = async (delivery: Delivery): Promise<DeliveryOutcome> => {
-  await env.STORAGE.put(
-    `archive/${delivery.queue}/${delivery.target}/${batchKey(delivery)}`,
-    JSON.stringify(delivery),
-    // A redelivered batch must not replace the copy already written.
-    { onlyIf: { etagDoesNotMatch: '*' } }
-  );
-  return { ok: true };
-};
-
-const writeToPullLog = async (delivery: Delivery): Promise<DeliveryOutcome> => {
-  const first = delivery.messages[0]!.offset;
-  const last = delivery.messages[delivery.messages.length - 1]!.offset;
-  await env.PULL.put(
-    pullLogKey(delivery.partition, first, last),
-    JSON.stringify(delivery),
-    // A redelivered batch must not replace the copy a consumer may be reading.
-    { onlyIf: { etagDoesNotMatch: '*' } }
-  );
-  return { ok: true };
-};
-
-/** Hands one batch to a target. A thrown error counts as a failed attempt. */
+/**
+ * Hands one batch to a consumer and resolves to what it did with each
+ * message. A thrown error means nothing is known: retry every message.
+ */
 export const deliver = (
-  destination: TargetDestination,
+  destination: ConsumerDestination,
   delivery: Delivery,
   timeoutMs: number
-): Promise<DeliveryOutcome> => {
-  if (destination.type === 'webhook') {
-    return post(
-      { fetch: (input, init) => fetch(input, init) },
-      destination.url,
-      delivery,
-      timeoutMs,
-      destination.secret
-    );
+): Promise<Settlement> => {
+  if (destination.type === 'rpc') {
+    return call(destination.binding, delivery, timeoutMs);
   }
   if (destination.type === 'queue') {
     return forward(destination.queue, delivery);
   }
-  if (destination.type === 'archive') {
-    return archive(delivery);
-  }
-  if (destination.type === 'pull') {
-    return writeToPullLog(delivery);
-  }
-
-  const service = (env as unknown as Record<string, unknown>)[
-    destination.binding
-  ];
-  if (
-    typeof service !== 'object' ||
-    service === null ||
-    !('fetch' in service) ||
-    typeof service.fetch !== 'function'
-  ) {
-    return Promise.resolve({
-      ok: false,
-      error: `No service binding named "${destination.binding}"`,
-    });
+  if (destination.type === 'service') {
+    return post(
+      binding(destination.binding) as { fetch: typeof fetch },
+      'https://queue-target/',
+      delivery,
+      timeoutMs
+    );
   }
   return post(
-    service as { fetch: typeof fetch },
-    'https://queue-target/',
+    { fetch: (input, init) => fetch(input, init) },
+    destination.url,
     delivery,
-    timeoutMs
+    timeoutMs,
+    destination.secret
+  );
+};
+
+/** Writes one batch as one object. A thrown error means it was not written. */
+export const store = async (
+  destination: StorageDestination,
+  delivery: Delivery
+): Promise<void> => {
+  const first = delivery.messages[0]!.offset;
+  const last = delivery.messages[delivery.messages.length - 1]!.offset;
+  const [bucket, key] =
+    destination.type === 'pull'
+      ? [env.PULL, pullLogKey(delivery.partition, first, last)]
+      : [
+          env.STORAGE,
+          `archive/${delivery.queue}/${delivery.target}/${batchKey(delivery)}`,
+        ];
+  await bucket.put(
+    key,
+    JSON.stringify(delivery),
+    // A redelivered batch must not replace the copy already written.
+    { onlyIf: { etagDoesNotMatch: '*' } }
   );
 };

@@ -6,7 +6,13 @@ import type {
 import { element, numberField, setField, showNotice, textField } from './dom';
 import { field, handleSubmit, namePattern, numberInput } from './forms';
 
-const destinationTypes = ['webhook', 'service', 'queue', 'archive'] as const;
+const destinationTypes = [
+  'rpc',
+  'webhook',
+  'service',
+  'queue',
+  'archive',
+] as const;
 type DestinationType = (typeof destinationTypes)[number];
 
 export const targetForm = (
@@ -46,13 +52,22 @@ export const targetForm = (
         'Optional; signs bodies in X-Queue-Signature'
       )
     ),
+    rpc: element(
+      'fieldset',
+      { class: 'inline' },
+      field(
+        'Service binding',
+        element('input', { name: 'rpcBinding', required: true }),
+        'To a class that extends QueueEntrypoint, declared in wrangler.jsonc'
+      )
+    ),
     service: element(
       'fieldset',
       { class: 'inline' },
       field(
         'Service binding',
         element('input', { name: 'binding', required: true }),
-        'Declared in wrangler.jsonc'
+        'Declared in wrangler.jsonc; batches are POSTed to it'
       )
     ),
     queue: element(
@@ -103,12 +118,17 @@ export const targetForm = (
       'div',
       { class: 'inline' },
       field(
-        'Batch size',
-        numberInput('batchSize', { min: 1, max: 100, value: 10 })
+        'Max batch size',
+        numberInput('maxBatchSize', { min: 1, max: 100, value: 10 })
       ),
       field(
-        'Max attempts',
-        numberInput('maxAttempts', { min: 1, max: 100, value: 5 })
+        'Max retries',
+        numberInput('maxRetries', { min: 0, max: 100, value: 3 }),
+        'Then the message is dead-lettered'
+      ),
+      field(
+        'Retry delay (s)',
+        numberInput('retryDelaySeconds', { min: 0, max: 86_400, value: 0 })
       ),
       field(
         'Attempt timeout (ms)',
@@ -171,6 +191,9 @@ export const targetForm = (
         ? { type, url: textField(form, 'url') }
         : { type, url: textField(form, 'url'), secret };
     }
+    if (type === 'rpc') {
+      return { type, binding: textField(form, 'rpcBinding') };
+    }
     if (type === 'service') {
       return { type, binding: textField(form, 'binding') };
     }
@@ -184,8 +207,9 @@ export const targetForm = (
     const name = textField(form, 'name');
     const target: TargetSettings = {
       destination: readDestination(),
-      batchSize: numberField(form, 'batchSize') ?? 10,
-      maxAttempts: numberField(form, 'maxAttempts') ?? 5,
+      maxBatchSize: numberField(form, 'maxBatchSize') ?? 10,
+      maxRetries: numberField(form, 'maxRetries') ?? 3,
+      retryDelaySeconds: numberField(form, 'retryDelaySeconds') ?? 0,
       attemptTimeoutMs: numberField(form, 'attemptTimeoutMs') ?? 10_000,
       paused: new FormData(form).get('paused') !== null,
       startAt:
@@ -215,14 +239,18 @@ export const targetForm = (
       setField(form, 'url', destination.url);
       setField(form, 'secret', destination.secret);
     }
+    if (destination.type === 'rpc') {
+      setField(form, 'rpcBinding', destination.binding);
+    }
     if (destination.type === 'service') {
       setField(form, 'binding', destination.binding);
     }
     if (destination.type === 'queue') {
       setField(form, 'queue', destination.queue);
     }
-    setField(form, 'batchSize', target.batchSize);
-    setField(form, 'maxAttempts', target.maxAttempts);
+    setField(form, 'maxBatchSize', target.maxBatchSize);
+    setField(form, 'maxRetries', target.maxRetries);
+    setField(form, 'retryDelaySeconds', target.retryDelaySeconds);
     setField(form, 'attemptTimeoutMs', target.attemptTimeoutMs);
     setField(form, 'maxPerSecond', target.maxPerSecond);
     setField(form, 'maxConcurrency', target.maxConcurrency);

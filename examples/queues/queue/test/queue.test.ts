@@ -1,7 +1,7 @@
 import { runInDurableObject, SELF } from 'cloudflare:test';
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import type { QueueBinding } from '../src/index';
+import type { QueueAdmin, QueueBinding } from '../src/index';
 import type {
   Overview,
   PartitionConfig,
@@ -9,7 +9,12 @@ import type {
   RedriveStatus,
 } from '../src/model';
 import type { Partition } from '../src/partition';
-import type { Behaviour, Received, SinkStore } from './worker';
+import type {
+  Behaviour,
+  Received,
+  ScriptedConsumer,
+  SinkStore,
+} from './worker';
 
 const stores = (workerExports as Record<string, unknown>)[
   'SinkStore'
@@ -17,8 +22,16 @@ const stores = (workerExports as Record<string, unknown>)[
 const partitions = (workerExports as Record<string, unknown>)[
   'Partition'
 ] as DurableObjectNamespace<Partition>;
-/** The service binding another Worker would declare; see `wrangler.test.jsonc`. */
-const queueBinding = (env as unknown as { QUEUE: Service<QueueBinding> }).QUEUE;
+/** The service bindings other Workers would declare; see `wrangler.test.jsonc`. */
+const {
+  QUEUE: queueBinding,
+  ADMIN: queueAdmin,
+  SCRIPTED: scripted,
+} = env as unknown as {
+  QUEUE: Service<QueueBinding>;
+  ADMIN: Service<QueueAdmin>;
+  SCRIPTED: Service<ScriptedConsumer>;
+};
 
 const admin = (path: string, method = 'GET', body?: unknown) =>
   SELF.fetch(`https://queue.test/api${path}`, {
@@ -138,7 +151,7 @@ describe('fifo queue', () => {
   it('delivers each key in order to every target', async () => {
     const queue = await createQueue({ partitions: { min: 4, max: 4 } });
     await addTarget(queue, 'first');
-    await addTarget(queue, 'second', { batchSize: 3 });
+    await addTarget(queue, 'second', { maxBatchSize: 3 });
 
     const keys = ['a', 'b', 'c', 'd', 'e', 'f'];
     for (let round = 0; round < 5; round += 1) {
@@ -159,14 +172,14 @@ describe('fifo queue', () => {
     }
   });
 
-  it('retries a failed batch before anything after it, then dead-letters it', async () => {
+  it('retries a message before the next of its key, then dead-letters it', async () => {
     const queue = await createQueue();
-    // Attempts 1 and 2 of the first batch fail and it is dead-lettered; the
-    // third failure is the second batch's first attempt.
+    // Both deliveries of the first message fail and it is dead-lettered; the
+    // third failure is the second message's first delivery.
     await addTarget(
       queue,
       'flaky',
-      { batchSize: 1, maxAttempts: 2 },
+      { maxBatchSize: 1, maxRetries: 1 },
       { failures: 3 }
     );
 
@@ -177,9 +190,9 @@ describe('fifo queue', () => {
     ]);
 
     const deliveries = await received(queue, 'flaky', 2);
-    expect(deliveries.map((entry) => [entry.bodies, entry.attempt])).toEqual([
-      [[2], 2],
-      [[3], 1],
+    expect(deliveries.map((entry) => [entry.bodies, entry.attempts])).toEqual([
+      [[2], [2]],
+      [[3], [1]],
     ]);
 
     const deadLetters = await env.STORAGE.list({
@@ -190,7 +203,7 @@ describe('fifo queue', () => {
       () => overview(queue),
       (current) => current.partitions[0]?.targets['flaky']?.deadLettered === 1
     );
-    expect(state.partitions[0]?.targets['flaky']?.retries).toBe(2);
+    expect(state.partitions[0]?.targets['flaky']?.retries).toBe(3);
 
     const started = await admin(
       `/queues/${queue}/targets/flaky/redrive`,
@@ -211,7 +224,7 @@ describe('fifo queue', () => {
     const queue = await createQueue({ partitions: { min: 2, max: 2 } });
     // More dead letters than one listing page holds, across two targets.
     const count = 120;
-    const failing = { batchSize: 1, maxAttempts: 1 };
+    const failing = { maxBatchSize: 1, maxRetries: 0 };
     await addTarget(queue, 'first', failing, { failures: count });
     await addTarget(queue, 'second', failing, { failures: count });
     await addTarget(queue, 'healthy');
@@ -420,9 +433,142 @@ describe('fifo queue', () => {
     ]);
   });
 
+  it('holds back only the key of a retried message', async () => {
+    const queue = await createQueue();
+    await stores.getByName(queue).behave('orders', { retryOnce: [1] });
+    await expectOk(
+      await admin(`/queues/${queue}/targets/orders`, 'PUT', {
+        destination: { type: 'rpc', binding: 'RPC_SINK' },
+        retryDelaySeconds: 1,
+      })
+    );
+
+    // `a` and `b` share the batch. The consumer retries a:1, so a:2 waits
+    // behind it while both of b's messages are done at once.
+    await produce(queue, [
+      { key: 'a', body: 1 },
+      { key: 'a', body: 2 },
+      { key: 'b', body: 3 },
+      { key: 'b', body: 4 },
+    ]);
+    const deliveries = await received(queue, 'orders', 4);
+    expect(
+      deliveries.map((entry) => [entry.keys, entry.bodies, entry.attempts])
+    ).toEqual([
+      [
+        ['b', 'b'],
+        [3, 4],
+        [1, 1],
+      ],
+      // The first delivery of a:2 did not count against it.
+      [
+        ['a', 'a'],
+        [1, 2],
+        [2, 1],
+      ],
+    ]);
+    expect(
+      (await overview(queue)).partitions[0]?.targets['orders']
+    ).toMatchObject({ retries: 1, deadLettered: 0 });
+  });
+
+  it('lets a POSTed target retry single messages in its answer', async () => {
+    const queue = await createQueue();
+    await addTarget(queue, 'hook', {}, { retryOnce: [2] });
+
+    await produce(queue, [
+      { key: 'a', body: 1 },
+      { key: 'b', body: 2 },
+      { key: 'c', body: 3 },
+    ]);
+    const deliveries = await received(queue, 'hook', 3);
+    expect(deliveries.map((entry) => [entry.bodies, entry.attempts])).toEqual([
+      [
+        [1, 3],
+        [1, 1],
+      ],
+      [[2], [2]],
+    ]);
+  });
+
+  it('settles a batch the way Cloudflare Queues does', async () => {
+    const delivery = (bodies: string[]) => ({
+      queue: 'q',
+      target: 't',
+      partition: 'q/1/0',
+      messages: bodies.map((body, index) => ({
+        id: `m${index}`,
+        key: 'k',
+        offset: index,
+        body,
+        sentAt: 0,
+        attempts: 1,
+      })),
+    });
+    const settle = (bodies: string[]) =>
+      scripted.deliverQueueBatch(delivery(bodies));
+
+    // The first call on a message wins; returning acknowledges the rest.
+    expect(
+      await settle(['ack then retry', 'retry then ack', 'left alone'])
+    ).toEqual({
+      acked: ['m0', 'm2'],
+      retried: [{ id: 'm1', delaySeconds: 5 }],
+    });
+    // A call on a message beats a call on the batch, and the first call on the batch wins.
+    expect(await settle(['ack then retry', 'retry all', 'left alone'])).toEqual(
+      {
+        acked: ['m0'],
+        retried: [
+          { id: 'm1', delaySeconds: 9 },
+          { id: 'm2', delaySeconds: 9 },
+        ],
+      }
+    );
+    // Throwing retries what was not acknowledged.
+    expect(await settle(['ack then retry', 'throw'])).toEqual({
+      acked: ['m0'],
+      retried: [{ id: 'm1' }],
+    });
+    expect(await settle(['ack all', 'throw'])).toEqual({
+      acked: ['m0', 'm1'],
+      retried: [],
+    });
+  });
+
+  it('configures queues over the admin binding', async () => {
+    const queue = `q-${crypto.randomUUID()}`;
+    await queueAdmin.create(queue, { partitions: { min: 2 } });
+    await queueAdmin.putTarget(queue, 'orders', {
+      destination: { type: 'rpc', binding: 'RPC_SINK' },
+    });
+    await queueAdmin.updateSettings(queue, { maxBacklog: 7 });
+
+    const state = await queueAdmin.overview(queue);
+    expect(state.settings).toMatchObject({
+      partitions: { min: 2, max: 16 },
+      maxBacklog: 7,
+    });
+    expect(state.targets['orders']).toMatchObject({
+      maxBatchSize: 10,
+      maxRetries: 3,
+    });
+    expect((await queueAdmin.list()).map((entry) => entry.name)).toContain(
+      queue
+    );
+
+    await queueBinding.send(queue, [{ key: 'k', body: 1 }]);
+    expect(bodiesByKey(await received(queue, 'orders', 1))).toEqual({ k: [1] });
+
+    await queueAdmin.delete(queue);
+    expect((await queueAdmin.list()).map((entry) => entry.name)).not.toContain(
+      queue
+    );
+  });
+
   it('keeps every key in order across a resize', async () => {
     const queue = await createQueue({ partitions: { min: 2, max: 8 } });
-    await addTarget(queue, 'slow', { batchSize: 2 }, { delayMs: 20 });
+    await addTarget(queue, 'slow', { maxBatchSize: 2 }, { delayMs: 20 });
     const keys = Array.from({ length: 12 }, (_, index) => `key-${index}`);
     const send = (from: number, to: number) =>
       Promise.all(
@@ -463,7 +609,7 @@ describe('fifo queue', () => {
       partitions: { min: 8, max: 8 },
       maxConcurrency: 2,
     });
-    await addTarget(queue, 'limited', { batchSize: 1 }, { delayMs: 30 });
+    await addTarget(queue, 'limited', { maxBatchSize: 1 }, { delayMs: 30 });
 
     const keys = Array.from({ length: 24 }, (_, index) => `key-${index}`);
     await produce(
@@ -485,7 +631,13 @@ describe('fifo queue', () => {
 
   it('rejects sends once a target is too far behind', async () => {
     const queue = await createQueue({ maxBacklog: 3 });
-    await addTarget(queue, 'stuck', { maxAttempts: 100 }, { failures: 1_000 });
+    // The first failure parks the message for a minute, and its key with it.
+    await addTarget(
+      queue,
+      'stuck',
+      { retryDelaySeconds: 60 },
+      { failures: 1_000 }
+    );
 
     const first = await produce(queue, [
       { key: 'k', body: 1 },

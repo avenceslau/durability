@@ -7,6 +7,7 @@ import {
   LogTruncatedError,
   type EnqueueResult,
   type LogLease,
+  type LogRecord,
 } from 'durability';
 import {
   DurabilityOutbox,
@@ -28,7 +29,17 @@ import {
   type PartitionTarget,
 } from './model';
 import { orchestrators } from './namespaces';
-import { batchKey, deliver, type Delivery } from './targets';
+import {
+  batchKey,
+  deliver,
+  retryAll,
+  store,
+  storesBatches,
+  type ConsumerDestination,
+  type Delivery,
+  type Settlement,
+  type StorageDestination,
+} from './targets';
 
 export type AppendInput = {
   identity: PartitionIdentity;
@@ -70,6 +81,8 @@ const sampleIntervalMs = 1_000;
 const deadLetterRetryMs = 30_000;
 const shortWaitMs = 500;
 const deadLetterBatchSize = 100;
+/** How long after its timeout an unsettled batch is taken to be lost and delivered again. */
+const inFlightGraceMs = 5_000;
 const defaultPullRetentionMs = 7 * 24 * 60 * 60 * 1_000;
 const pullLogSweepSize = 500;
 
@@ -81,15 +94,34 @@ const deliveryOf = (
   queue: identity.queue,
   target,
   partition: partitionName(identity),
-  attempt: lease.attempt,
   messages: lease.records.map((record) => ({
     id: record.body.id,
     key: record.body.key,
     offset: record.offset,
     body: record.body.body,
     sentAt: record.body.sentAt,
+    attempts: lease.attempt,
   })),
 });
+
+/** A message a target was handed and has not settled, or one held behind such a message of its key. */
+type PendingRow = {
+  target: string;
+  message_offset: number;
+  key: string;
+  /** Deliveries so far; 0 for a message that is only held. */
+  attempts: number;
+  /** When it may be delivered: a retry's delay, or the end of the delivery it is in. */
+  retry_at: number;
+};
+
+/** In a query over `pending AS first`: no earlier message of the same key is waiting for the same target. */
+const firstOfItsKey = `NOT EXISTS (
+  SELECT 1 FROM pending AS earlier
+  WHERE earlier.target = first.target
+    AND earlier.key = first.key
+    AND earlier.message_offset < first.message_offset
+)`;
 
 /**
  * One partition of one queue: an ordered log that accepts messages and hands
@@ -97,6 +129,7 @@ const deliveryOf = (
  * slow or failing target only holds back itself.
  */
 export class Partition extends DurableObject<Cloudflare.Env> {
+  private readonly sql = this.ctx.storage.sql;
   private readonly scheduler = new DurabilityScheduler({
     context: this.ctx,
     alarmMinDelayMs: 1_000,
@@ -175,6 +208,36 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   private requestedWhileDelivering = false;
   private deliveryScheduledFor: number | undefined;
   private sampledAt = 0;
+
+  constructor(ctx: DurableObjectState, bindings: Cloudflare.Env) {
+    super(ctx, bindings);
+    this.sql.exec(
+      `CREATE TABLE IF NOT EXISTS pending (
+         target TEXT NOT NULL,
+         message_offset INTEGER NOT NULL,
+         key TEXT NOT NULL,
+         attempts INTEGER NOT NULL,
+         retry_at INTEGER NOT NULL,
+         PRIMARY KEY (target, message_offset)
+       )`
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS pending_by_key
+       ON pending (target, key, message_offset)`
+    );
+  }
+
+  /** Messages each target has been handed or is holding, and has not settled. */
+  private unsettled(): Map<string, number> {
+    return new Map(
+      this.sql
+        .exec<{ target: string; count: number }>(
+          'SELECT target, COUNT(*) AS count FROM pending GROUP BY target'
+        )
+        .toArray()
+        .map((row) => [row.target, row.count])
+    );
+  }
 
   private get identity(): PartitionIdentity | undefined {
     return this.ctx.storage.kv.get<PartitionIdentity>('identity');
@@ -356,10 +419,12 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     }
     const { nextOffset } = await this.log.bounds();
     const positions = await this.log.cursors();
+    const unsettled = this.unsettled();
     return Object.entries(config.targets).some(
       ([name, target]) =>
         !target.paused &&
-        nextOffset - (positions[name] ?? 0) >= config.maxBacklog
+        nextOffset - (positions[name] ?? 0) + (unsettled.get(name) ?? 0) >=
+          config.maxBacklog
     );
   }
 
@@ -560,10 +625,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       return 'more';
     }
 
-    const { nextOffset } = await this.log.bounds();
-    if (((await this.log.cursor(name)) ?? 0) >= nextOffset) {
+    const waiting = await this.nothingDueUntil(name, target, now);
+    if (waiting !== 'now') {
       await this.returnPermit(name);
-      return undefined;
+      return waiting === 'never' ? undefined : waiting;
     }
 
     const limiter = limiterFor(partitionName(identity), config.limiters);
@@ -574,32 +639,441 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       return undefined;
     }
 
+    const { destination } = target;
+    const wait = storesBatches(destination)
+      ? await this.storeNextBatch(identity, name, target, destination)
+      : await this.deliverNextBatch(identity, name, target, destination);
+    return wait ?? 'more';
+  }
+
+  /**
+   * When the target next has something to do: `now`, the time its earliest
+   * retry becomes due, or `never` while nothing is waiting for it.
+   */
+  private async nothingDueUntil(
+    name: string,
+    target: PartitionTarget,
+    now: number
+  ): Promise<'now' | 'never' | number> {
+    const { nextOffset } = await this.log.bounds();
+    if (((await this.log.cursor(name)) ?? 0) < nextOffset) {
+      return 'now';
+    }
+    if (storesBatches(target.destination)) {
+      return 'never';
+    }
+    const earliest = this.sql
+      .exec<{ at: number | null }>(
+        `SELECT MIN(first.retry_at) AS at FROM pending AS first
+         WHERE first.target = ? AND ${firstOfItsKey}`,
+        name
+      )
+      .one().at;
+    if (earliest === null) {
+      return 'never';
+    }
+    return earliest <= now ? 'now' : earliest;
+  }
+
+  /**
+   * For a target that answers per message. Messages after the target's
+   * position are either delivered or, when an earlier message of their key is
+   * still waiting to be retried, held behind it; either way they get a row in
+   * `pending` and the position moves on. A key's messages therefore stay in
+   * order while a retry holds nothing else back.
+   */
+  private async deliverNextBatch(
+    identity: PartitionIdentity,
+    name: string,
+    target: PartitionTarget,
+    destination: ConsumerDestination
+  ): Promise<void> {
+    const claimed = await this.claim(name, target);
+    const delivery = (messages: Delivery['messages']): Delivery => ({
+      queue: identity.queue,
+      target: name,
+      partition: partitionName(identity),
+      messages,
+    });
+    if (claimed.exhausted.length > 0) {
+      await this.deadLetterMessages(
+        name,
+        delivery(claimed.exhausted),
+        'Retries exhausted'
+      );
+    }
+    if (claimed.messages.length === 0) {
+      return;
+    }
+
+    const batch = delivery(claimed.messages);
+    this.inFlight.set(name, batch.messages.length);
+    // Sampled here rather than after the batch, so the sample shows it in flight.
+    await this.stageSample();
+    const finish = this.routing.begin('outbound');
+    let failure: string | undefined;
+    const settlement = await deliver(
+      destination,
+      batch,
+      target.attemptTimeoutMs
+    )
+      .catch((error: unknown) => {
+        // Nothing is known about a call that failed: every message is retried.
+        failure = error instanceof Error ? error.message : String(error);
+        return retryAll(batch);
+      })
+      .finally(() => {
+        finish();
+        this.inFlight.delete(name);
+      });
+
+    await this.settle(name, target, batch, settlement, failure);
+    if (target.maxPerSecond !== undefined) {
+      const spacing = (batch.messages.length * 1_000) / target.maxPerSecond;
+      this.rateLimitedUntil.set(name, Date.now() + spacing);
+    }
+  }
+
+  /**
+   * Chooses the target's next batch and records it as in flight, so that a
+   * crash before it is settled delivers it again.
+   *
+   * Retries that are due come first, each followed by the held messages of
+   * its key. New messages fill what is left; one whose key still has a
+   * message waiting outside this batch is held instead.
+   */
+  private async claim(
+    name: string,
+    target: PartitionTarget
+  ): Promise<{
+    messages: Delivery['messages'];
+    exhausted: Delivery['messages'];
+  }> {
+    const now = Date.now();
+    const limit = target.maxBatchSize;
+    const waiting: PendingRow[] = [];
+    const exhausted: PendingRow[] = [];
+    const due = this.sql
+      .exec<PendingRow>(
+        `SELECT * FROM pending AS first
+         WHERE first.target = ? AND first.retry_at <= ? AND ${firstOfItsKey}
+         ORDER BY first.message_offset LIMIT ?`,
+        name,
+        now,
+        limit
+      )
+      .toArray();
+    for (const first of due) {
+      if (first.attempts > target.maxRetries) {
+        exhausted.push(first);
+        continue;
+      }
+      if (waiting.length < limit) {
+        waiting.push(
+          ...this.sql
+            .exec<PendingRow>(
+              `SELECT * FROM pending WHERE target = ? AND key = ?
+               ORDER BY message_offset LIMIT ?`,
+              name,
+              first.key,
+              limit - waiting.length
+            )
+            .toArray()
+        );
+      }
+    }
+
+    const position = (await this.log.cursor(name)) ?? 0;
+    const records = new Map<number, LogRecord<Message>>();
+    const joining: PendingRow[] = [];
+    const held: PendingRow[] = [];
+    const closedKeys = new Set<string>();
+    let scanned = position;
+    for (const record of await this.recordsFrom(position, limit)) {
+      const { key, only } = record.body;
+      const row = {
+        target: name,
+        message_offset: record.offset,
+        key,
+        attempts: 0,
+        retry_at: 0,
+      };
+      // A redriven message is for one target, and a crash after the rows were
+      // written but before the position moved shows a message twice.
+      const skipped =
+        (only !== undefined && !only.includes(name)) ||
+        this.sql
+          .exec(
+            'SELECT 1 FROM pending WHERE target = ? AND message_offset = ?',
+            name,
+            record.offset
+          )
+          .toArray().length > 0;
+      if (skipped) {
+        scanned = record.offset + 1;
+        continue;
+      }
+
+      const waitingOutside =
+        this.sql
+          .exec<{ count: number }>(
+            'SELECT COUNT(*) AS count FROM pending WHERE target = ? AND key = ?',
+            name,
+            key
+          )
+          .one().count > waiting.filter((other) => other.key === key).length;
+      if (waitingOutside || closedKeys.has(key)) {
+        held.push(row);
+        closedKeys.add(key);
+        scanned = record.offset + 1;
+        continue;
+      }
+      if (waiting.length + joining.length >= limit) {
+        break;
+      }
+      joining.push(row);
+      records.set(record.offset, record);
+      scanned = record.offset + 1;
+    }
+
+    // Until then the batch is in flight; after it, nobody settled it.
+    const visibleAgainAt = now + target.attemptTimeoutMs + inFlightGraceMs;
+    this.ctx.storage.transactionSync(() => {
+      for (const row of [...held, ...joining]) {
+        this.sql.exec(
+          `INSERT OR IGNORE INTO pending
+             (target, message_offset, key, attempts, retry_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          row.target,
+          row.message_offset,
+          row.key,
+          row.attempts,
+          row.retry_at
+        );
+      }
+      for (const row of [...waiting, ...joining]) {
+        this.sql.exec(
+          `UPDATE pending SET attempts = attempts + 1, retry_at = ?
+           WHERE target = ? AND message_offset = ?`,
+          visibleAgainAt,
+          name,
+          row.message_offset
+        );
+      }
+    });
+    if (scanned > position) {
+      await this.log.commit(name, scanned);
+    }
+
+    const messagesOf = async (
+      rows: PendingRow[],
+      delivered: number
+    ): Promise<Delivery['messages']> => {
+      const messages: Delivery['messages'] = [];
+      for (const row of rows) {
+        const record =
+          records.get(row.message_offset) ??
+          // eslint-disable-next-line no-await-in-loop
+          (await this.recordAt(row.message_offset));
+        if (!record) {
+          // Retention removed the message while it waited.
+          this.forget(name, row.message_offset);
+          this.count(name, { lastError: 'A message expired before delivery' });
+          continue;
+        }
+        messages.push({
+          id: record.body.id,
+          key: record.body.key,
+          offset: record.offset,
+          body: record.body.body,
+          sentAt: record.body.sentAt,
+          attempts: row.attempts + delivered,
+        });
+      }
+      return messages;
+    };
+    return {
+      messages: await messagesOf(
+        [...waiting, ...joining].sort(
+          (a, b) => a.message_offset - b.message_offset
+        ),
+        1
+      ),
+      exhausted: await messagesOf(exhausted, 0),
+    };
+  }
+
+  /**
+   * Applies what the consumer answered. Once a message of a key is retried,
+   * the later messages of that key in the batch are held behind it whatever
+   * was answered for them, and this delivery does not count against them.
+   */
+  private async settle(
+    name: string,
+    target: PartitionTarget,
+    delivery: Delivery,
+    settlement: Settlement,
+    failure: string | undefined
+  ): Promise<void> {
+    const retried = new Map(
+      settlement.retried.map((entry) => [entry.id, entry])
+    );
+    const failedKeys = new Set<string>();
+    const exhausted: Delivery['messages'] = [];
+    const now = Date.now();
+    let retries = 0;
+
+    this.ctx.storage.transactionSync(() => {
+      for (const message of delivery.messages) {
+        if (failedKeys.has(message.key)) {
+          this.sql.exec(
+            `UPDATE pending SET attempts = attempts - 1, retry_at = 0
+             WHERE target = ? AND message_offset = ?`,
+            name,
+            message.offset
+          );
+          continue;
+        }
+        const retry = retried.get(message.id);
+        if (!retry) {
+          this.forget(name, message.offset);
+          continue;
+        }
+
+        failedKeys.add(message.key);
+        retries += 1;
+        if (message.attempts > target.maxRetries) {
+          exhausted.push(message);
+          continue;
+        }
+        const delaySeconds = retry.delaySeconds ?? target.retryDelaySeconds;
+        this.sql.exec(
+          `UPDATE pending SET retry_at = ?
+           WHERE target = ? AND message_offset = ?`,
+          Math.ceil(now + delaySeconds * 1_000),
+          name,
+          message.offset
+        );
+      }
+    });
+
+    if (retries > 0) {
+      this.count(name, {
+        retries,
+        lastError:
+          failure ??
+          `The consumer retried ${retries} of ${delivery.messages.length} messages`,
+      });
+    }
+    if (exhausted.length > 0) {
+      await this.deadLetterMessages(
+        name,
+        { ...delivery, messages: exhausted },
+        failure ?? 'Retries exhausted'
+      );
+    }
+  }
+
+  /**
+   * Writes each message a consumer gave up on to the dead letters, one entry
+   * per message, then stops tracking it. That frees the messages of its key
+   * held behind it; order no longer covers the dead-lettered one.
+   */
+  private async deadLetterMessages(
+    name: string,
+    delivery: Delivery,
+    error: string
+  ): Promise<void> {
+    for (const message of delivery.messages) {
+      const entry = { ...delivery, messages: [message] };
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await env.STORAGE.put(
+          `dead-letters/${delivery.queue}/${name}/${batchKey(entry)}`,
+          JSON.stringify({ ...entry, error, failedAt: Date.now() }),
+          // A repeated write must not replace the entry a redrive may be reading.
+          { onlyIf: { etagDoesNotMatch: '*' } }
+        );
+      } catch (failure) {
+        console.error({
+          event: 'fifo_queue.dead_letter.failed',
+          target: name,
+          error: failure,
+        });
+        // The message stays out of retries; the write is tried again later.
+        this.sql.exec(
+          `UPDATE pending SET retry_at = ?
+           WHERE target = ? AND message_offset = ?`,
+          Date.now() + deadLetterRetryMs,
+          name,
+          message.offset
+        );
+        continue;
+      }
+      this.forget(name, message.offset);
+      this.count(name, { deadLettered: 1, lastError: error });
+    }
+  }
+
+  private forget(name: string, offset: number): void {
+    this.sql.exec(
+      'DELETE FROM pending WHERE target = ? AND message_offset = ?',
+      name,
+      offset
+    );
+  }
+
+  /** Up to `limit` messages from `from` on; from the oldest kept when retention already removed `from`. */
+  private async recordsFrom(
+    from: number,
+    limit: number
+  ): Promise<LogRecord<Message>[]> {
+    const { oldestOffset } = await this.log.bounds();
+    const page = await this.log.read({
+      from: Math.max(from, oldestOffset),
+      limit,
+    });
+    return page.records;
+  }
+
+  private async recordAt(
+    offset: number
+  ): Promise<LogRecord<Message> | undefined> {
+    const { oldestOffset } = await this.log.bounds();
+    if (offset < oldestOffset) {
+      return undefined;
+    }
+    const { records } = await this.log.read({ from: offset, limit: 1 });
+    return records[0]?.offset === offset ? records[0] : undefined;
+  }
+
+  /**
+   * For a target that keeps whole batches. A batch is written or it is not,
+   * and the next one waits for it, so batches land in offset order: pull
+   * consumers read them in that order.
+   */
+  private async storeNextBatch(
+    identity: PartitionIdentity,
+    name: string,
+    target: PartitionTarget,
+    destination: StorageDestination
+  ): Promise<number | undefined> {
     let lease: LogLease<Message> | undefined;
     try {
-      lease = await this.log.lease(name, target.batchSize);
+      lease = await this.log.lease(name, target.maxBatchSize);
     } catch (error) {
       if (!(error instanceof LogTruncatedError)) {
         throw error;
       }
       // Retention removed messages this target never received.
       this.count(name, { lastError: error.message });
-      return 'more';
+      return undefined;
     }
     if (!lease) {
       // A range leased before a restart is still held until it expires.
-      return now + 1_000;
+      return Date.now() + 1_000;
     }
 
-    await this.deliverLease(identity, name, target, lease);
-    return 'more';
-  }
-
-  private async deliverLease(
-    identity: PartitionIdentity,
-    name: string,
-    target: PartitionTarget,
-    lease: LogLease<Message>
-  ): Promise<void> {
     const delivery = deliveryOf(identity, name, {
       ...lease,
       records: lease.records.filter(
@@ -608,37 +1082,33 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     });
     if (delivery.messages.length === 0) {
       await this.log.ack(name, lease.batchId);
-      return;
+      return undefined;
     }
     // A failed dead-letter write leaves the range past its last attempt.
-    if (lease.attempt > target.maxAttempts) {
-      await this.deadLetter(name, lease, delivery, 'Attempts exhausted');
-      return;
+    if (lease.attempt > target.maxRetries + 1) {
+      await this.deadLetterBatch(name, lease, delivery, 'Retries exhausted');
+      return undefined;
     }
 
     this.inFlight.set(name, delivery.messages.length);
-    // Sampled here rather than after the batch, so the sample shows it in flight.
     await this.stageSample();
     const finish = this.routing.begin('outbound');
-    const outcome = await deliver(
-      target.destination,
-      delivery,
-      target.attemptTimeoutMs
-    )
-      .catch((error: unknown) => ({
-        ok: false as const,
-        error: error instanceof Error ? error.message : String(error),
-      }))
+    const failure = await store(destination, delivery)
+      .then(
+        () => undefined,
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error)
+      )
       .finally(() => {
         finish();
         this.inFlight.delete(name);
       });
 
-    if (outcome.ok) {
+    if (failure === undefined) {
       await this.log.ack(name, lease.batchId);
       this.ctx.storage.kv.delete(`retry:${name}`);
       if (
-        target.destination.type === 'pull' &&
+        destination.type === 'pull' &&
         this.ctx.storage.kv.get<number>('pullLogExpiresAt') === undefined
       ) {
         // The first batch in the pull bucket is the first that can expire.
@@ -647,25 +1117,20 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         this.ctx.storage.kv.put('pullLogExpiresAt', expiresAt);
         await this.sweepBy(expiresAt);
       }
-      if (target.maxPerSecond !== undefined) {
-        const spacing =
-          (delivery.messages.length * 1_000) / target.maxPerSecond;
-        this.rateLimitedUntil.set(name, Date.now() + spacing);
-      }
-      return;
+      return undefined;
     }
 
-    if (lease.attempt >= target.maxAttempts) {
-      await this.deadLetter(name, lease, delivery, outcome.error);
-      return;
+    if (lease.attempt > target.maxRetries) {
+      await this.deadLetterBatch(name, lease, delivery, failure);
+      return undefined;
     }
-    this.count(name, { retries: 1, lastError: outcome.error });
+    this.count(name, { retries: 1, lastError: failure });
     await this.log.nack(name, lease.batchId);
-    const delay =
-      'retryAfterMs' in outcome && outcome.retryAfterMs !== undefined
-        ? outcome.retryAfterMs
-        : jitter(exponential(lease.attempt));
-    this.ctx.storage.kv.put(`retry:${name}`, Date.now() + delay);
+    this.ctx.storage.kv.put(
+      `retry:${name}`,
+      Date.now() + jitter(exponential(lease.attempt))
+    );
+    return undefined;
   }
 
   /**
@@ -699,7 +1164,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       // Either nothing is left, or a range leased before a restart is still held.
       return position >= nextOffset ? undefined : now + 1_000;
     }
-    await this.deadLetter(
+    await this.deadLetterBatch(
       noTargetName,
       lease,
       deliveryOf(identity, noTargetName, lease),
@@ -708,7 +1173,8 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     return 'more';
   }
 
-  private async deadLetter(
+  /** Writes a whole batch to the dead letters, then moves past it. */
+  private async deadLetterBatch(
     name: string,
     lease: LogLease<Message>,
     delivery: Delivery,
@@ -810,6 +1276,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     const { nextOffset } = await this.log.bounds();
     const positions = await this.log.cursors();
     const counters = this.counters;
+    const unsettled = this.unsettled();
     const sequence =
       (this.ctx.storage.kv.get<number>('sampleSequence') ?? 0) + 1;
     this.ctx.storage.kv.put('sampleSequence', sequence);
@@ -825,7 +1292,8 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         Object.keys(this.config?.targets ?? {}).map((name) => [
           name,
           {
-            settled: positions[name] ?? 0,
+            // The position is past messages that are still waiting to be retried.
+            settled: (positions[name] ?? 0) - (unsettled.get(name) ?? 0),
             inFlight: this.inFlight.get(name) ?? 0,
             retries: 0,
             deadLettered: 0,
