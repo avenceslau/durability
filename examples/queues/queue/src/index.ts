@@ -1,6 +1,6 @@
-// Included for Workers that import this module's types: the queue's code is
-// typed against its own bindings.
-/// <reference path="./env.d.ts" />
+// Declares the queue's bindings. Imported here so that a Worker importing this
+// module's types gets them too: the queue's code is typed against them.
+import './env';
 import { WorkerEntrypoint, env } from 'cloudflare:workers';
 import * as v from 'valibot';
 import * as admin from './admin';

@@ -354,18 +354,20 @@ describe('fifo queue', () => {
     const stored = () => env.PULL.list({ prefix: `${queue}/` });
     await waitFor(stored, (page) => page.objects.length > 0);
 
-    // Retention is counted in days, so the test moves the partition's clock
-    // instead: its batches are made due, with a retention that has passed.
+    // Retention is counted in days, so the test shortens it to a millisecond
+    // in the partition's stored config and runs the sweep itself.
     const { epochs } = await overview(queue);
     const partition = partitions.getByName(`${queue}/${epochs[0]!.epoch}/0`);
     await runInDurableObject(partition, async (instance, state) => {
       const config = state.storage.kv.get<PartitionConfig>('config')!;
       state.storage.kv.put('config', { ...config, pullRetentionMs: 1 });
-      state.storage.kv.put('pullLogExpiresAt', 1);
+      await scheduler.wait(5);
       await (
         instance as unknown as { enforceRetention(): Promise<void> }
       ).enforceRetention();
-      expect(state.storage.kv.get('pullLogExpiresAt')).toBeUndefined();
+      expect(
+        state.storage.sql.exec('SELECT object_key FROM pull_batches').toArray()
+      ).toEqual([]);
     });
     expect((await stored()).objects).toEqual([]);
   });

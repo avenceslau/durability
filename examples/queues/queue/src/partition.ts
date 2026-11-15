@@ -225,6 +225,16 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       `CREATE INDEX IF NOT EXISTS pending_by_key
        ON pending (target, key, message_offset)`
     );
+    this.sql.exec(
+      `CREATE TABLE IF NOT EXISTS pull_batches (
+         object_key TEXT PRIMARY KEY,
+         written_at INTEGER NOT NULL
+       )`
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS pull_batches_by_time
+       ON pull_batches (written_at)`
+    );
   }
 
   /** Messages each target has been handed or is holding, and has not settled. */
@@ -368,44 +378,35 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Deletes this partition's batches whose time in the pull bucket is over.
-   * Resolves to when the oldest remaining one ends, so the bucket is listed
-   * only when something can have expired.
+   * Deletes this partition's batches whose time in the pull bucket is over,
+   * and resolves to when the next one ends. The partition keeps the time it
+   * wrote each batch, so retention runs on its own clock and needs no listing.
    */
   private async expirePullLog(): Promise<number | undefined> {
-    const identity = this.identity;
-    const expiresAt = this.ctx.storage.kv.get<number>('pullLogExpiresAt');
-    const now = Date.now();
-    if (!identity || expiresAt === undefined || expiresAt > now) {
-      return expiresAt;
-    }
-
     const keepMs = this.config?.pullRetentionMs ?? defaultPullRetentionMs;
-    const page = await env.PULL.list({
-      prefix: `${partitionName(identity)}/`,
-      limit: pullLogSweepSize,
-    });
-    // Keys sort by offset, so the listing is oldest first.
-    const kept = page.objects.findIndex(
-      (object) => object.uploaded.getTime() + keepMs > now
-    );
-    const expired = kept === -1 ? page.objects : page.objects.slice(0, kept);
+    const expired = this.sql
+      .exec<{ object_key: string }>(
+        `SELECT object_key FROM pull_batches
+         WHERE written_at <= ? ORDER BY written_at LIMIT ?`,
+        Date.now() - keepMs,
+        pullLogSweepSize
+      )
+      .toArray()
+      .map((row) => row.object_key);
     if (expired.length > 0) {
-      await env.PULL.delete(expired.map((object) => object.key));
+      await env.PULL.delete(expired);
+      for (const key of expired) {
+        this.sql.exec('DELETE FROM pull_batches WHERE object_key = ?', key);
+      }
     }
 
-    const oldest = page.objects[expired.length];
-    if (oldest) {
-      const next = oldest.uploaded.getTime() + keepMs;
-      this.ctx.storage.kv.put('pullLogExpiresAt', next);
-      return next;
-    }
-    if (page.truncated) {
-      // The whole page had expired and more follows.
-      return now;
-    }
-    this.ctx.storage.kv.delete('pullLogExpiresAt');
-    return undefined;
+    const oldest = this.sql
+      .exec<{ at: number | null }>(
+        'SELECT MIN(written_at) AS at FROM pull_batches'
+      )
+      .one().at;
+    // A batch that is already due means the page was full and more follows.
+    return oldest === null ? undefined : Math.max(oldest + keepMs, Date.now());
   }
 
   /**
@@ -1093,32 +1094,37 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     this.inFlight.set(name, delivery.messages.length);
     await this.stageSample();
     const finish = this.routing.begin('outbound');
-    const failure = await store(destination, delivery)
+    const stored = await store(destination, delivery)
       .then(
-        () => undefined,
-        (error: unknown) =>
-          error instanceof Error ? error.message : String(error)
+        (key) => ({ key }),
+        (error: unknown) => ({
+          failure: error instanceof Error ? error.message : String(error),
+        })
       )
       .finally(() => {
         finish();
         this.inFlight.delete(name);
       });
 
-    if (failure === undefined) {
+    if ('key' in stored) {
+      if (destination.type === 'pull') {
+        // Recorded with its time, so the sweep knows when to delete it.
+        const writtenAt = Date.now();
+        this.sql.exec(
+          `INSERT OR IGNORE INTO pull_batches (object_key, written_at)
+           VALUES (?, ?)`,
+          stored.key,
+          writtenAt
+        );
+        await this.sweepBy(
+          writtenAt + (this.config?.pullRetentionMs ?? defaultPullRetentionMs)
+        );
+      }
       await this.log.ack(name, lease.batchId);
       this.ctx.storage.kv.delete(`retry:${name}`);
-      if (
-        destination.type === 'pull' &&
-        this.ctx.storage.kv.get<number>('pullLogExpiresAt') === undefined
-      ) {
-        // The first batch in the pull bucket is the first that can expire.
-        const expiresAt =
-          Date.now() + (this.config?.pullRetentionMs ?? defaultPullRetentionMs);
-        this.ctx.storage.kv.put('pullLogExpiresAt', expiresAt);
-        await this.sweepBy(expiresAt);
-      }
       return undefined;
     }
+    const { failure } = stored;
 
     if (lease.attempt > target.maxRetries) {
       await this.deadLetterBatch(name, lease, delivery, failure);

@@ -241,11 +241,14 @@ export const deliver = (
   );
 };
 
-/** Writes one batch as one object. A thrown error means it was not written. */
+/**
+ * Writes one batch as one object and resolves to its key. A thrown error
+ * means it was not written.
+ */
 export const store = async (
   destination: StorageDestination,
   delivery: Delivery
-): Promise<void> => {
+): Promise<string> => {
   const first = delivery.messages[0]!.offset;
   const last = delivery.messages[delivery.messages.length - 1]!.offset;
   const [bucket, key] =
@@ -261,4 +264,5 @@ export const store = async (
     // A redelivered batch must not replace the copy already written.
     { onlyIf: { etagDoesNotMatch: '*' } }
   );
+  return key;
 };

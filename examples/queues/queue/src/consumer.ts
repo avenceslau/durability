@@ -65,14 +65,23 @@ type Decision = 'ack' | { retry: QueueRetryOptions };
 declare const consumesQueue: unique symbol;
 
 /**
- * `WorkerEntrypoint` already declares `queue`, as the handler Cloudflare Queues
- * calls with its own batch type. A consumer of this queue is never registered
- * for that, so the name is taken back for the batch type above.
+ * `WorkerEntrypoint` as a consumer sees it, without `queue`. The runtime
+ * declares that name as the handler Cloudflare Queues calls, with its own
+ * batch type. A consumer of this queue is never registered for that, so the
+ * name is taken back for the batch type above.
  */
-const Entrypoint = WorkerEntrypoint as unknown as abstract new <Env>(
-  ctx: ExecutionContext,
-  env: Env
-) => Omit<WorkerEntrypoint<Env>, 'queue'>;
+declare abstract class EntrypointWithoutQueue<Env>
+  implements Rpc.WorkerEntrypointBranded
+{
+  // eslint-disable-next-line no-undef, no-underscore-dangle
+  [Rpc.__WORKER_ENTRYPOINT_BRAND]: never;
+  protected ctx: ExecutionContext;
+  protected env: Env;
+  constructor(ctx: ExecutionContext, env: Env);
+  fetch?(request: Request): Response | Promise<Response>;
+}
+
+const Entrypoint = WorkerEntrypoint as unknown as typeof EntrypointWithoutQueue;
 
 /**
  * Extend this in a Worker to receive a queue's messages, then add the class

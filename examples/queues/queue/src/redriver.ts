@@ -143,14 +143,10 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
     });
 
     for (const object of page.objects) {
-      // A batch that fails again during the run is a new dead letter.
-      // Replaying those too could go round forever.
-      if (object.uploaded.getTime() < job.startedAt) {
-        // eslint-disable-next-line no-await-in-loop
-        const messages = await this.replayEntry(job.queue, target, object.key);
-        job.redriven += messages.redriven;
-        job.left += messages.left;
-      }
+      // eslint-disable-next-line no-await-in-loop
+      const messages = await this.replayEntry(job, target, object.key);
+      job.redriven += messages.redriven;
+      job.left += messages.left;
       // Stored per entry: after a crash at most one entry is sent twice.
       job.after = object.key;
       this.ctx.storage.kv.put('job', job);
@@ -171,7 +167,7 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
    * between can deliver a message twice but never loses one.
    */
   private async replayEntry(
-    queue: string,
+    job: Job,
     target: string,
     key: string
   ): Promise<{ redriven: number; left: number }> {
@@ -179,9 +175,15 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
     if (!stored) {
       return { redriven: 0, left: 0 };
     }
-    const entry = await stored.json<Delivery>();
+    const entry = await stored.json<Delivery & { failedAt: number }>();
+    // A message that fails again during the run is a new dead letter.
+    // Replaying those too could go round forever. The partition stamped the
+    // entry, so this compares the queue's own clocks, not R2's.
+    if (entry.failedAt >= job.startedAt) {
+      return { redriven: 0, left: 0 };
+    }
     const outcome = await send(
-      queue,
+      job.queue,
       entry.messages.map((message) => ({
         key: message.key,
         body: message.body,
