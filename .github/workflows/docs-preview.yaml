@@ -43,8 +43,7 @@ jobs:
     concurrency:
       group: docs-preview-${{ github.event.workflow_run.pull_requests[0].number }}
     env:
-      # The preview is served at <name>.shirei.dev.
-      PREVIEW_NAME: durability-${{ github.event.workflow_run.pull_requests[0].number }}
+      PREVIEW_NAME: pr-${{ github.event.workflow_run.pull_requests[0].number }}
       PULL_REQUEST: ${{ github.event.workflow_run.pull_requests[0].number }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
@@ -108,7 +107,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! url="$(jq --exit-status --raw-output '.preview.urls[0]' preview.json)"; then
-            echo "::error::The preview has no URL. The route with previews_enabled in docs/wrangler.jsonc takes effect once the site has been deployed with it."
+            echo "::error::The preview has no URL. Turn on Preview URLs for the durability-docs Worker in the Cloudflare dashboard, under Settings, Domains & Routes."
             exit 1
           fi
           gh pr comment "$PULL_REQUEST" \
@@ -128,10 +127,10 @@ jobs:
     permissions:
       contents: read
     env:
-      PREVIEW_NAME: durability-${{ github.event.pull_request.number }}
-      # Previews made before they were renamed. Remove once the pull requests
-      # that were open at the time have closed.
-      OLD_PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+      PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+      # Previews made while they were briefly named this. Remove once the pull
+      # requests that were open at the time have closed.
+      OLD_PREVIEW_NAME: durability-${{ github.event.pull_request.number }}
     steps:
       # pull_request_target checks out the base branch, not the pull request.
       - name: Checkout the default branch
