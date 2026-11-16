@@ -43,7 +43,8 @@ jobs:
     concurrency:
       group: docs-preview-${{ github.event.workflow_run.pull_requests[0].number }}
     env:
-      PREVIEW_NAME: pr-${{ github.event.workflow_run.pull_requests[0].number }}
+      # The preview is served at <name>.shirei.dev.
+      PREVIEW_NAME: durability-${{ github.event.workflow_run.pull_requests[0].number }}
       PULL_REQUEST: ${{ github.event.workflow_run.pull_requests[0].number }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
@@ -106,7 +107,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          url="$(jq --exit-status --raw-output '.preview.urls[0]' preview.json)"
+          if ! url="$(jq --exit-status --raw-output '.preview.urls[0]' preview.json)"; then
+            echo "::error::The preview has no URL. The route with previews_enabled in docs/wrangler.jsonc takes effect once the site has been deployed with it."
+            exit 1
+          fi
           gh pr comment "$PULL_REQUEST" \
             --repo "$GITHUB_REPOSITORY" \
             --edit-last \
@@ -124,7 +128,10 @@ jobs:
     permissions:
       contents: read
     env:
-      PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+      PREVIEW_NAME: durability-${{ github.event.pull_request.number }}
+      # Previews made before they were renamed. Remove once the pull requests
+      # that were open at the time have closed.
+      OLD_PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
     steps:
       # pull_request_target checks out the base branch, not the pull request.
       - name: Checkout the default branch
@@ -149,6 +156,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if ! pnpm exec wrangler preview delete --name "$PREVIEW_NAME" --skip-confirmation; then
-            echo "::warning::Could not delete preview $PREVIEW_NAME. It may never have been created."
-          fi
+          for name in "$PREVIEW_NAME" "$OLD_PREVIEW_NAME"; do
+            if ! pnpm exec wrangler preview delete --name "$name" --skip-confirmation; then
+              echo "::warning::Could not delete preview $name. It may never have been created."
+            fi
+          done

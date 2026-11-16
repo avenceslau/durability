@@ -6,7 +6,14 @@
   "workers_dev": false,
   "routes": [
     { "pattern": "durability.shirei.dev", "custom_domain": true },
-    { "pattern": "shirei.dev", "custom_domain": true },
+    // A pull request's preview is served at <preview name>.shirei.dev, which
+    // the preview workflow names durability-<number>. Without a host enabled
+    // for previews, a preview has no URL.
+    {
+      "pattern": "shirei.dev",
+      "custom_domain": true,
+      "previews_enabled": true,
+    },
   ],
   "assets": {
     "directory": "./dist",
