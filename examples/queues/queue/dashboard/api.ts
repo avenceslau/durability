@@ -9,13 +9,6 @@ export class ApiError extends Error {
   }
 }
 
-let signInRequired: () => void = () => undefined;
-
-/** Called whenever an admin call answers 401: the session cookie is missing or stale. */
-export const onSignInRequired = (handler: () => void): void => {
-  signInRequired = handler;
-};
-
 /** Calls the admin API and returns the parsed JSON body, or `null` for an empty one. */
 export const api = async (
   method: string,
@@ -41,9 +34,6 @@ export const api = async (
     return parsed;
   }
 
-  if (response.status === 401 && path !== '/api/session') {
-    signInRequired();
-  }
   const message =
     typeof parsed === 'object' &&
     parsed !== null &&

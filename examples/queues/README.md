@@ -32,7 +32,7 @@ pnpm --filter @queues-example/queue deploy
 
 `push-consumer` binds to `fifo-queue` in turn. If Cloudflare refuses the first deploy of either Worker because the other does not exist yet, deploy the queue once with its `services` entry removed, then the consumer, then the queue with the entry restored.
 
-The queue also needs its three secrets (`wrangler secret put ADMIN_TOKEN`, `PRODUCER_TOKEN`, `CONSUMER_TOKEN`), the KV namespace `TOPOLOGY`, and the R2 buckets `fifo-queue` and `fifo-queue-pull` declared in its `wrangler.jsonc`.
+The queue also needs its two secrets (`wrangler secret put PRODUCER_TOKEN`, `CONSUMER_TOKEN`), Cloudflare Access in front of it (its dashboard and admin API have no sign-in of their own), the KV namespace `TOPOLOGY`, and the R2 buckets `fifo-queue` and `fifo-queue-pull` declared in its `wrangler.jsonc`.
 
 ## Develop locally
 

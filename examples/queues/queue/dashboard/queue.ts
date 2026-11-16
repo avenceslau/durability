@@ -386,7 +386,7 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
     }
   };
 
-  // A failing reconnect can mean a lost session or a deleted queue; HTTP tells which.
+  // A failing reconnect can mean a deleted queue; HTTP tells.
   const onStatus = (next: SocketStatus): void => {
     status = next;
     renderHeader();
@@ -401,7 +401,7 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
   let closed = false;
   const ticker = setInterval(renderLive, 5_000);
 
-  // HTTP first: a missing session or queue is reported, not retried forever by the socket.
+  // HTTP first: a missing queue is reported, not retried forever by the socket.
   const start = async (): Promise<void> => {
     const initial = (await api('GET', queuePath(queue))) as Overview;
     if (closed) {

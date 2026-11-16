@@ -1,12 +1,5 @@
-import { api, ApiError, onSignInRequired } from './api';
-import {
-  dateTime,
-  element,
-  errorMessage,
-  numberField,
-  showNotice,
-  textField,
-} from './dom';
+import { api } from './api';
+import { dateTime, element, errorMessage, numberField, textField } from './dom';
 import {
   field,
   handleSubmit,
@@ -18,42 +11,6 @@ import { showQueue } from './queue';
 
 const root = document.querySelector<HTMLElement>('#app') ?? document.body;
 let leavePage: (() => void) | undefined;
-
-const showSignIn = (): void => {
-  const notice = element('p', { class: 'notice' });
-  const form = element(
-    'form',
-    { class: 'card sign-in' },
-    element('h1', {}, 'FIFO queue admin'),
-    element(
-      'label',
-      { class: 'field' },
-      element('span', {}, 'Admin token'),
-      element('input', {
-        type: 'password',
-        name: 'token',
-        required: true,
-        autocomplete: 'current-password',
-        autofocus: true,
-      })
-    ),
-    element(
-      'div',
-      { class: 'actions' },
-      element('button', { type: 'submit' }, 'Sign in')
-    ),
-    notice
-  );
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    api('POST', '/api/session', { token: textField(form, 'token') })
-      .then(route)
-      .catch((error: unknown) =>
-        showNotice(notice, errorMessage(error), 'error')
-      );
-  });
-  root.replaceChildren(form);
-};
 
 const createQueueForm = (): HTMLFormElement => {
   const notice = element('p', { class: 'notice' });
@@ -191,19 +148,11 @@ function route(): void {
     return;
   }
   showQueueList().catch((error: unknown) => {
-    if (error instanceof ApiError && error.status === 401) {
-      return;
-    }
     root.appendChild(
       element('p', { class: 'notice error' }, errorMessage(error))
     );
   });
 }
 
-onSignInRequired(() => {
-  leavePage?.();
-  leavePage = undefined;
-  showSignIn();
-});
 window.addEventListener('hashchange', route);
 route();

@@ -47,7 +47,6 @@
     },
   ],
   "vars": {
-    "ADMIN_TOKEN": "admin",
     "PRODUCER_TOKEN": "producer",
     "CONSUMER_TOKEN": "consumer",
   },

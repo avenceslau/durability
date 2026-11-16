@@ -136,8 +136,6 @@ class HttpError extends Error {
   }
 }
 
-const sessionCookie = 'fifo_queue_session';
-
 const digest = async (text: string): Promise<ArrayBuffer> =>
   crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
 
@@ -152,47 +150,20 @@ const matches = async (given: string, expected: string): Promise<boolean> => {
   return difference === 0;
 };
 
-const sessionValue = async (): Promise<string> =>
-  [...new Uint8Array(await digest(`session:${env.ADMIN_TOKEN}`))]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-
 const bearer = (request: Request): string | undefined =>
   request.headers.get('Authorization')?.match(/^Bearer (.+)$/)?.[1];
 
-const cookie = (request: Request, name: string): string | undefined =>
-  request.headers
-    .get('Cookie')
-    ?.split(';')
-    .map((part) => part.trim().split('='))
-    .find(([key]) => key === name)?.[1];
-
 /**
- * The dashboard signs in once and then carries a cookie, which a WebSocket
- * sends too. A browser attaches that cookie to requests from other pages of
- * the same site, so a cookie only counts when the request comes from this
- * origin: every browser states the origin on a WebSocket and on anything but
- * a plain read.
+ * The admin API has no sign-in of its own: whatever stands in front of the
+ * Worker decides who reaches it, which the README says must be Cloudflare
+ * Access. A browser signed in there sends its Access cookie with requests
+ * made by any page, so a request that states an origin has to state this
+ * one. Every browser states it on a WebSocket and on anything but a plain
+ * read; a script or `curl` states none.
  */
-const isAdmin = async (request: Request): Promise<boolean> => {
-  const token = bearer(request);
-  if (token !== undefined) {
-    return matches(token, env.ADMIN_TOKEN);
-  }
-
-  const session = cookie(request, sessionCookie);
-  if (
-    session === undefined ||
-    !(await matches(session, await sessionValue()))
-  ) {
-    return false;
-  }
-  const plainRead =
-    (request.method === 'GET' || request.method === 'HEAD') &&
-    request.headers.get('Upgrade') === null;
-  return (
-    plainRead || request.headers.get('Origin') === new URL(request.url).origin
-  );
+const fromAnotherSite = (request: Request): boolean => {
+  const origin = request.headers.get('Origin');
+  return origin !== null && origin !== new URL(request.url).origin;
 };
 
 const parse = async <Schema extends v.GenericSchema>(
@@ -267,19 +238,6 @@ const consume = async (
     action === 'ack' ? await stub.ack(lease) : await stub.nack(lease);
   // A lease that ran out was handed to someone else under a new name.
   return Response.json({ settled }, { status: settled ? 200 : 409 });
-};
-
-const signIn = async (request: Request): Promise<Response> => {
-  const { token } = await parse(v.object({ token: v.string() }), request);
-  if (!(await matches(token, env.ADMIN_TOKEN))) {
-    throw new HttpError(401, 'Wrong token');
-  }
-  return new Response(null, {
-    status: 204,
-    headers: {
-      'Set-Cookie': `${sessionCookie}=${await sessionValue()}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`,
-    },
-  });
 };
 
 const queues = async (request: Request): Promise<Response> => {
@@ -412,11 +370,8 @@ const route = async (request: Request): Promise<Response> => {
     throw new HttpError(404, 'Not found');
   }
   const [resource, queueSegment, ...rest] = segments;
-  if (resource === 'session' && request.method === 'POST') {
-    return signIn(request);
-  }
-  if (!(await isAdmin(request))) {
-    throw new HttpError(401, 'An admin token is required');
+  if (fromAnotherSite(request)) {
+    throw new HttpError(403, 'Requests from other sites are refused');
   }
   if (resource !== 'queues') {
     throw new HttpError(404, 'Not found');

@@ -228,25 +228,29 @@ Queue settings: `partitions` (`min` 1, `max` 16, `targetRate` 200 accepted messa
 
 ### HTTP
 
-The dashboard and clients that are not Workers use HTTP with bearer tokens, set as secrets: `PRODUCER_TOKEN`, `CONSUMER_TOKEN`, and `ADMIN_TOKEN`. The dashboard signs in with `ADMIN_TOKEN` once and then carries a cookie.
+Clients that are not Workers send and pull over HTTP with bearer tokens, set as secrets: `PRODUCER_TOKEN` and `CONSUMER_TOKEN`.
+
+The dashboard and the admin API under `/api` have **no sign-in of their own**. Anyone who can reach the Worker can create, reconfigure, and delete queues, so put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of it before you deploy; Access then decides who gets in, and the dashboard needs nothing more. The only check the Worker makes is that a request naming an origin names its own, so another site cannot act through a signed-in browser.
 
 | Route                                              | Token    | Does                                                                                     |
 | -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------- |
 | `POST /queues/<queue>/messages`                    | producer | `send`. `202` when all were accepted, `429` on backpressure, `503` for other rejections. |
 | `POST /queues/<queue>/consumers/<consumer>/pull`   | consumer | `pull`, with `{ batches?, visibilityMs? }`. `null` when caught up.                       |
 | `POST /queues/<queue>/consumers/<consumer>/ack`    | consumer | `ack` with `{ lease }`. `409` when the lease is no longer current. `nack` is the same.   |
-| `GET`, `POST /api/queues`                          | admin    | `list`; `create` with `{ name, settings? }`.                                             |
-| `GET`, `PATCH`, `DELETE /api/queues/<queue>`       | admin    | `overview`, `updateSettings`, `delete`.                                                  |
-| `PUT`, `DELETE /api/queues/<queue>/targets/<name>` | admin    | `putTarget`, `removeTarget`.                                                             |
-| `POST /api/queues/<queue>/targets/<name>/pause`    | admin    | `pauseTarget` with `{ paused }`.                                                         |
-| `POST /api/queues/<queue>/resize`                  | admin    | `resize` with `{ partitions }`.                                                          |
-| `POST`, `GET /api/queues/<queue>/redrive`          | admin    | `redrive` of the queue, `redriveStatus`. `POST …/targets/<name>/redrive` for one target. |
+| `GET`, `POST /api/queues`                          | none     | `list`; `create` with `{ name, settings? }`.                                             |
+| `GET`, `PATCH`, `DELETE /api/queues/<queue>`       | none     | `overview`, `updateSettings`, `delete`.                                                  |
+| `PUT`, `DELETE /api/queues/<queue>/targets/<name>` | none     | `putTarget`, `removeTarget`.                                                             |
+| `POST /api/queues/<queue>/targets/<name>/pause`    | none     | `pauseTarget` with `{ paused }`.                                                         |
+| `POST /api/queues/<queue>/resize`                  | none     | `resize` with `{ partitions }`.                                                          |
+| `POST`, `GET /api/queues/<queue>/redrive`          | none     | `redrive` of the queue, `redriveStatus`. `POST …/targets/<name>/redrive` for one target. |
 
 `scripts/load.mjs` sends a steady stream over HTTP, which is the quickest way to watch the dashboard and the autoscaler:
 
 ```sh
 PRODUCER_TOKEN=... node scripts/load.mjs https://fifo-queue.<subdomain>.workers.dev orders --rate 200 --keys 50 --seconds 120
 ```
+
+With Cloudflare Access in front of the Worker, also set `CF_ACCESS_TOKEN="$(cloudflared access token -app=https://fifo-queue.<subdomain>.workers.dev)"`.
 
 ## How it works
 
@@ -305,7 +309,7 @@ A target's own `maxConcurrency` is split between limiters in the same proportion
 - A removed target's position is kept: a target created again under the same name continues where the old one stopped. Its messages that were waiting for a retry are given up when it is removed.
 - A target cannot change between an archive and a consumer; remove it and add it again.
 - Deleting a queue stops its partitions; their stored messages expire with retention.
-- The dashboard is protected by one shared token, kept in a cookie that is honoured only for requests from the Worker's own origin. Put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of it for real use.
+- The dashboard and admin API rely entirely on what stands in front of the Worker. The Worker does not verify the Access token itself, so a route to it that Access does not cover is an open admin API.
 - Webhook targets call any URL an admin enters, and the dashboard shows their signing secrets to every admin.
 
 ## Develop

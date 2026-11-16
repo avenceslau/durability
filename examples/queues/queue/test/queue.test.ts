@@ -36,10 +36,7 @@ const {
 const admin = (path: string, method = 'GET', body?: unknown) =>
   SELF.fetch(`https://queue.test/api${path}`, {
     method,
-    headers: {
-      Authorization: 'Bearer admin',
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
@@ -828,23 +825,23 @@ describe('fifo queue', () => {
     expect(names.map((entry) => entry.name)).not.toContain(queue);
   });
 
-  it('requires the right token for each API', async () => {
+  it('requires a token to send and to pull, and refuses admin requests from other sites', async () => {
     const queue = await createQueue();
-    const withoutToken = await SELF.fetch(`https://queue.test/api/queues`);
-    expect(withoutToken.status).toBe(401);
-    const producerOnAdmin = await SELF.fetch(`https://queue.test/api/queues`, {
-      headers: { Authorization: 'Bearer producer' },
-    });
-    expect(producerOnAdmin.status).toBe(401);
-    const adminOnProduce = await SELF.fetch(
-      `https://queue.test/queues/${queue}/messages`,
-      {
+    const send = (token?: string) =>
+      SELF.fetch(`https://queue.test/queues/${queue}/messages`, {
         method: 'POST',
-        headers: { Authorization: 'Bearer admin' },
+        headers:
+          token === undefined ? {} : { Authorization: `Bearer ${token}` },
         body: JSON.stringify([{ key: 'k', body: 1 }]),
-      }
+      });
+    expect((await send()).status).toBe(401);
+    expect((await send('consumer')).status).toBe(401);
+    expect((await send('producer')).status).toBe(202);
+    const pullWithProducerToken = await SELF.fetch(
+      `https://queue.test/queues/${queue}/consumers/reports/pull`,
+      { method: 'POST', headers: { Authorization: 'Bearer producer' } }
     );
-    expect(adminOnProduce.status).toBe(401);
+    expect(pullWithProducerToken.status).toBe(401);
 
     const fractional = await admin(`/queues/${queue}/resize`, 'POST', {
       partitions: 1.5,
@@ -856,27 +853,18 @@ describe('fifo queue', () => {
     );
     expect(unknownTarget.status).toBe(404);
 
-    const signIn = await SELF.fetch('https://queue.test/api/session', {
-      method: 'POST',
-      body: JSON.stringify({ token: 'admin' }),
-    });
-    const session = signIn.headers.get('Set-Cookie')!.split(';')[0]!;
-    const resizeWithCookie = (origin?: string) =>
+    // The admin API leaves who may call it to what stands in front of the
+    // Worker. A browser sends that sign-in with requests from any page, so
+    // one that names another origin is refused.
+    const resizeFrom = (origin?: string) =>
       SELF.fetch(`https://queue.test/api/queues/${queue}/resize`, {
         method: 'POST',
-        headers: {
-          Cookie: session,
-          ...(origin === undefined ? {} : { Origin: origin }),
-        },
+        headers: origin === undefined ? {} : { Origin: origin },
         body: JSON.stringify({ partitions: 1 }),
       });
-    expect((await resizeWithCookie()).status).toBe(401);
-    expect((await resizeWithCookie('https://other.test')).status).toBe(401);
-    expect((await resizeWithCookie('https://queue.test')).status).toBe(204);
-    const read = await SELF.fetch(`https://queue.test/api/queues/${queue}`, {
-      headers: { Cookie: session },
-    });
-    expect(read.status).toBe(200);
+    expect((await resizeFrom('https://other.test')).status).toBe(403);
+    expect((await resizeFrom('https://queue.test')).status).toBe(204);
+    expect((await resizeFrom()).status).toBe(204);
 
     const duplicate = await admin('/queues', 'POST', { name: queue });
     expect(duplicate.status).toBe(409);

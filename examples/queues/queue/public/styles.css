@@ -96,13 +96,6 @@ code {
   min-width: 0;
 }
 
-.sign-in {
-  max-width: 360px;
-  margin: 10vh auto 0;
-  display: grid;
-  gap: 12px;
-}
-
 .page-header {
   display: flex;
   flex-wrap: wrap;
