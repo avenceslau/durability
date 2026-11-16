@@ -8,7 +8,7 @@ A queue service on Durable Objects, built from the [`durability`](https://github
 - **Autoscaling.** Partitions are added and removed with the accept rate and the backlog, without breaking order. Queues, targets, and limits are created at runtime: nothing is redeployed.
 - **Push or pull.** Targets are called with each batch. Turn pull consumers on and every message is also kept in R2, for up to 50 days, for consumers that ask for messages instead.
 - **Limits.** Messages per batch and per second per partition, and batches in flight across the whole queue.
-- **Dashboard.** Accepted and delivered messages per second, backlog, in-flight work, retries, dead letters, partitions, and scaling events, live over a WebSocket.
+- **Dashboard.** Accepted and delivered messages per second over the last 30 minutes, backlog, in-flight work, retries, dead letters, partitions, and scaling events, live over a WebSocket. With the [load generator](../loadgen) deployed, it also starts and watches load tests.
 
 Other Workers use the queue through two service binding entrypoints. `QueueBinding` sends, pulls, and redrives. `QueueAdmin` creates and configures queues; it is separate so that a Worker bound only to produce cannot reconfigure a queue. An HTTP API serves the dashboard and clients that are not Workers.
 

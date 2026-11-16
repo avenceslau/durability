@@ -13,9 +13,11 @@ underneath, which have their own pages.
 
 The complete application is the
 [`queues` example](https://github.com/avenceslau/durability/tree/main/examples/queues):
-two Workers in their own workspace. `queue` is the service, with its own tests and a
+three Workers in their own workspace. `queue` is the service, with its own tests and a
 [README](https://github.com/avenceslau/durability/blob/main/examples/queues/queue/README.md)
 that covers the API. `push_consumer` sends orders to it and consumes them over RPC.
+`loadgen` is optional: it loads many queues at once from inside Cloudflare, started from
+the dashboard.
 
 ## What it promises
 

@@ -1,9 +1,10 @@
 {
   "name": "queues-example",
   "private": true,
-  "description": "A queue service and a consumer for it, as two Workers",
+  "description": "A queue service, a consumer for it, and a load generator, as three Workers",
   "workspaces": [
     "queue",
-    "push_consumer"
+    "push_consumer",
+    "loadgen"
   ]
 }

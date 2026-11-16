@@ -4,6 +4,7 @@ import './env';
 import { WorkerEntrypoint, env } from 'cloudflare:workers';
 import * as v from 'valibot';
 import * as admin from './admin';
+import { loadOptionsSchema, type LoadControl } from './load';
 import {
   queueNameSchema,
   sendSchema,
@@ -240,6 +241,38 @@ const consume = async (
   return Response.json({ settled }, { status: settled ? 200 : 409 });
 };
 
+/**
+ * The dashboard's load test. The load itself comes from another Worker, bound
+ * as `LOADGEN`; without that binding the dashboard is told there is none.
+ */
+const load = async (request: Request, action?: string): Promise<Response> => {
+  const control = (env as unknown as { LOADGEN?: LoadControl }).LOADGEN;
+  if (!control) {
+    if (request.method === 'GET' && action === undefined) {
+      return Response.json({ available: false });
+    }
+    throw new HttpError(404, 'This queue has no load generator bound');
+  }
+
+  if (action === 'queues' && request.method === 'DELETE') {
+    return Response.json({ deleted: await control.deleteQueues() });
+  }
+  if (action !== undefined) {
+    throw new HttpError(404, 'Not found');
+  }
+  if (request.method === 'GET') {
+    return Response.json({ available: true, ...(await control.status()) });
+  }
+  if (request.method === 'POST') {
+    const options = await parse(loadOptionsSchema, request);
+    return Response.json(await control.start(options), { status: 202 });
+  }
+  if (request.method === 'DELETE') {
+    return Response.json(await control.stop());
+  }
+  throw new HttpError(405, 'Method not allowed');
+};
+
 const queues = async (request: Request): Promise<Response> => {
   if (request.method === 'GET') {
     return Response.json(await admin.listQueues());
@@ -372,6 +405,9 @@ const route = async (request: Request): Promise<Response> => {
   const [resource, queueSegment, ...rest] = segments;
   if (fromAnotherSite(request)) {
     throw new HttpError(403, 'Requests from other sites are refused');
+  }
+  if (resource === 'load') {
+    return load(request, queueSegment);
   }
   if (resource !== 'queues') {
     throw new HttpError(404, 'Not found');

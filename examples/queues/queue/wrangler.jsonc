@@ -29,6 +29,10 @@
   // `ORDERS` is the consumer in ../push_consumer, which must be deployed first.
   "services": [
     { "binding": "ORDERS", "service": "push-consumer", "entrypoint": "Orders" },
+    // The dashboard's load test, from ../loadgen. Deploy that Worker, then
+    // uncomment these and deploy this one again.
+    // { "binding": "LOADGEN", "service": "queue-loadgen", "entrypoint": "LoadControl" },
+    // { "binding": "LOAD_SINK", "service": "queue-loadgen", "entrypoint": "Sink" },
   ],
   "r2_buckets": [
     { "binding": "STORAGE", "bucket_name": "fifo-queue" },

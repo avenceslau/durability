@@ -7,6 +7,7 @@ import {
   namePattern,
   numberInput,
 } from './forms';
+import { loadTestSection } from './load';
 import { showQueue } from './queue';
 
 const root = document.querySelector<HTMLElement>('#app') ?? document.body;
@@ -89,10 +90,20 @@ const showQueueList = async (): Promise<void> => {
     )
   );
 
-  const queues = (await api('GET', '/api/queues')) as {
-    name: string;
-    createdAt: number;
-  }[];
+  const [loadTest, queues] = await Promise.all([
+    loadTestSection(),
+    api('GET', '/api/queues') as Promise<{ name: string; createdAt: number }[]>,
+  ]);
+  // The page may have been left while those were on their way.
+  if (location.hash.startsWith('#/queues/')) {
+    loadTest?.stop();
+    return;
+  }
+  if (loadTest) {
+    root.appendChild(loadTest.element);
+    leavePage = loadTest.stop;
+  }
+
   if (queues.length === 0) {
     list.replaceChildren(element('p', { class: 'hint' }, 'No queues yet.'));
     return;

@@ -134,6 +134,25 @@ importers:
         specifier: ^8.0.0
         version: 8.1.5(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)
 
+  examples/queues/loadgen:
+    dependencies:
+      '@queues-example/queue':
+        specifier: workspace:*
+        version: link:../queue
+      durability:
+        specifier: workspace:^
+        version: link:../../../packages/durability
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20260702.1
+        version: 4.20260702.1
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      wrangler:
+        specifier: ^4.156.0
+        version: 4.156.0(@cloudflare/workers-types@4.20260702.1)(@types/node@24.13.3)
+
   examples/queues/push_consumer:
     dependencies:
       '@queues-example/queue':

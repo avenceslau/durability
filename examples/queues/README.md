@@ -1,11 +1,12 @@
 # Queues
 
-A queue service and a consumer for it, as two Workers in their own small workspace.
+A queue service, a consumer for it, and a load generator, as three Workers in their own small workspace.
 
-| Worker                             | Name            | What it is                                                                                                                                  |
-| ---------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`queue`](./queue)                 | `fifo-queue`    | A partitioned FIFO queue on Durable Objects: ordered per key, autoscaling, push and pull consumers, dead letters, redrive, and a dashboard. |
-| [`push_consumer`](./push_consumer) | `push-consumer` | A Worker that sends orders to the queue and consumes them over RPC, by extending `QueueEntrypoint`.                                         |
+| Worker                             | Name            | What it is                                                                                                                                      |
+| ---------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`queue`](./queue)                 | `fifo-queue`    | A partitioned FIFO queue on Durable Objects: ordered per key, autoscaling, push and pull consumers, dead letters, redrive, and a dashboard.     |
+| [`push_consumer`](./push_consumer) | `push-consumer` | A Worker that sends orders to the queue and consumes them over RPC, by extending `QueueEntrypoint`.                                             |
+| [`loadgen`](./loadgen)             | `queue-loadgen` | Optional. Sends a steady load to many queues from inside Cloudflare, started from the queue's dashboard. See [its README](./loadgen/README.md). |
 
 The [queue's README](./queue/README.md) documents its API, and the [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/) explains how it works.
 
