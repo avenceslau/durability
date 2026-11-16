@@ -179,6 +179,11 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     clientId: this.ctx.id.toString(),
     server: limiterClient.with(timeout, 5_000),
     admit: async (items) => {
+      // Requested first: a failure here is retried with the items still
+      // admitted. After a permit nobody waits for is given back below, its
+      // item is gone and nothing would call this again, and the target, which
+      // may be waiting for that very permit, would never run.
+      await this.requestDelivery();
       for (const item of items) {
         if (
           this.ctx.storage.kv.get<string>(`permit:${item.group}`) === item.id
@@ -190,7 +195,6 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         // eslint-disable-next-line no-await-in-loop
         await this.permits.release(item.id);
       }
-      await this.requestDelivery();
     },
     // After a restart nothing in memory holds a permit admitted before it.
     finished: (items) => items.filter((item) => !this.heldSince.has(item)),
