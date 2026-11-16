@@ -204,6 +204,9 @@ export class LoadController extends DurableObject<Env> {
         // The queue's service binding to this Worker's `Sink`.
         destination: { type: 'rpc', binding: 'LOAD_SINK' },
         maxBatchSize: 100,
+        ...(options.deliverPerSecond === null
+          ? {}
+          : { maxPerSecond: options.deliverPerSecond }),
       });
     });
   }
@@ -213,19 +216,16 @@ export class LoadController extends DurableObject<Env> {
     this.ctx.storage.kv.put('run', run);
   }
 
-  /** Hands the run to every generator. One that cannot be reached is woken by the next check. */
+  /**
+   * Hands the run to generator 0, which passes it on. If that fails, the next
+   * check tries again.
+   */
   private async wake(run: Run): Promise<void> {
-    const indexes = Array.from(
-      { length: generatorCount(run.options) },
-      (_, index) => index
-    );
-    await inGroups(indexes, 100, (index) =>
-      generator(index)
-        .start(run)
-        .catch((error: unknown) =>
-          console.error({ event: 'loadgen.wake.failed', index, error })
-        )
-    );
+    await generator(0)
+      .start(run)
+      .catch((error: unknown) =>
+        console.error({ event: 'loadgen.wake.failed', error })
+      );
   }
 
   private async watch(): Promise<void> {

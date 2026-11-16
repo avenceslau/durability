@@ -4,7 +4,10 @@ import { exponential } from 'durability/utils';
 import {
   active,
   assignment,
+  childrenOf,
   controller,
+  generator,
+  generatorCount,
   inBurst,
   type Env,
   type Report,
@@ -18,6 +21,8 @@ const tickMs = 10_000;
 // one burst per tick.
 const sliceMs = 100;
 const slicesPerTick = tickMs / sliceMs;
+// Children are woken again this often, which revives any whose loop died.
+const wakeAgainMs = 30_000;
 // A gap longer than a tick follows a restart; the cap stops it becoming a spike.
 const maxCatchUpMs = tickMs + 5_000;
 
@@ -48,6 +53,7 @@ export class LoadGenerator extends DurableObject<Env> {
     this.ctx.id.name?.replace('generator-', '') ?? 0
   );
   private lastTickAt: number | undefined;
+  private wokeChildrenAt = 0;
   /** The part of a request the rate left over from the previous tick. */
   private owed = 0;
   private sequence = 0;
@@ -79,8 +85,23 @@ export class LoadGenerator extends DurableObject<Env> {
     if (!this.run || run.revision > this.run.revision) {
       this.run = run;
       this.ctx.storage.kv.put('run', run);
+      // Passed on at once, so a start or a stop reaches everyone in a few hops.
+      this.wakeChildren(run);
     }
     await this.alarms.tick(Date.now());
+  }
+
+  private wakeChildren(run: Run): void {
+    this.wokeChildrenAt = Date.now();
+    for (const child of childrenOf(this.index, generatorCount(run.options))) {
+      this.ctx.waitUntil(
+        generator(child)
+          .start(run)
+          .catch((error: unknown) =>
+            console.error({ event: 'loadgen.wake.failed', child, error })
+          )
+      );
+    }
   }
 
   private async tick(): Promise<void> {
@@ -93,6 +114,9 @@ export class LoadGenerator extends DurableObject<Env> {
 
     // Scheduled first so that a tick that fails cannot end the loop.
     await this.alarms.tick(now + tickMs);
+    if (now - this.wokeChildrenAt >= wakeAgainMs) {
+      this.wakeChildren(run);
+    }
     const elapsedMs = Math.min(
       maxCatchUpMs,
       now - (this.lastTickAt ?? now - tickMs)

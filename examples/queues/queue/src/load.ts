@@ -14,7 +14,7 @@ export const loadOptionsSchema = v.pipe(
     /** Queues to load, named `load-0`, `load-1`, and so on. */
     tenants: whole(1, 200),
     /** Send requests per second to each tenant's queue. */
-    requestsPerSecond: whole(1, 1_000),
+    requestsPerSecond: whole(1, 100_000),
     /** Each request carries between this many messages... */
     minMessages: whole(1, 1_000),
     /** ...and this many. */
@@ -30,6 +30,12 @@ export const loadOptionsSchema = v.pipe(
      */
     burstSeconds: v.optional(whole(1, 3_600), 30),
     quietSeconds: v.optional(whole(0, 3_600), 0),
+    /**
+     * Messages per second one partition hands the run's target, or `null` to
+     * deliver as fast as it can. A low value makes a backlog build while the
+     * run sends and drain slowly after it.
+     */
+    deliverPerSecond: v.optional(v.nullable(whole(1, 1_000_000)), null),
     /** Applied to every tenant's queue. */
     partitions: v.object({ min: whole(1, 256), max: whole(1, 256) }),
   }),

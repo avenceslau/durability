@@ -113,7 +113,7 @@ export const loadTestSection = async (): Promise<
         'Requests per second, per tenant',
         numberInput('requestsPerSecond', {
           min: 1,
-          max: 1_000,
+          max: 100_000,
           value: 100,
           required: true,
         })
@@ -178,6 +178,15 @@ export const loadTestSection = async (): Promise<
         '0 for a steady load. Otherwise: a burst, this long with nothing, and again'
       ),
       field(
+        'Deliver at most',
+        numberInput('deliverPerSecond', {
+          min: 1,
+          max: 1_000_000,
+          placeholder: 'no limit',
+        }),
+        'Messages per second, per partition. A low value lets a backlog build'
+      ),
+      field(
         'Partitions per tenant, from',
         numberInput('partitionsMin', {
           min: 1,
@@ -236,6 +245,7 @@ export const loadTestSection = async (): Promise<
       seconds: number('seconds'),
       burstSeconds: number('burstSeconds'),
       quietSeconds: numberField(form, 'quietSeconds') ?? 0,
+      deliverPerSecond: numberField(form, 'deliverPerSecond') ?? null,
       partitions: {
         min: number('partitionsMin'),
         max: number('partitionsMax'),
