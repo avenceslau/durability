@@ -5,6 +5,7 @@ import {
   active,
   assignment,
   controller,
+  inBurst,
   type Env,
   type Report,
   type Run,
@@ -99,10 +100,7 @@ export class LoadGenerator extends DurableObject<Env> {
     this.lastTickAt = now;
 
     const { queue, rate } = assignment(run.options, this.index);
-    this.owed += (rate * elapsedMs) / 1_000;
-    const requests = Math.floor(this.owed);
-    this.owed -= requests;
-    const sent = await this.send(run, queue, requests);
+    const sent = await this.send(run, queue, (rate * elapsedMs) / 1_000);
     this.report(sent, elapsedMs / 1_000);
   }
 
@@ -132,27 +130,30 @@ export class LoadGenerator extends DurableObject<Env> {
   }
 
   /**
-   * Starts `count` requests paced across the tick, without awaiting their
-   * answers, and resolves to how many it started: fewer when the run ends or
-   * is stopped part of the way through.
+   * Paces a tick's requests across its slices without awaiting their answers,
+   * and resolves to how many it started. A slice outside a burst sends
+   * nothing and owes nothing later; the run ending or being stopped ends the
+   * tick early.
    */
-  private async send(run: Run, queue: string, count: number): Promise<number> {
+  private async send(run: Run, queue: string, inTick: number): Promise<number> {
     let sent = 0;
     for (let slice = 0; slice < slicesPerTick; slice += 1) {
       if (!active(this.run, Date.now())) {
         break;
       }
-      const inSlice =
-        Math.floor((count * (slice + 1)) / slicesPerTick) -
-        Math.floor((count * slice) / slicesPerTick);
-      sent += inSlice;
-      for (let index = 0; index < inSlice; index += 1) {
-        this.inFlight += 1;
-        this.ctx.waitUntil(
-          this.sendOne(run, queue).finally(() => {
-            this.inFlight -= 1;
-          })
-        );
+      if (inBurst(run, Date.now())) {
+        this.owed += inTick / slicesPerTick;
+        const inSlice = Math.floor(this.owed);
+        this.owed -= inSlice;
+        sent += inSlice;
+        for (let index = 0; index < inSlice; index += 1) {
+          this.inFlight += 1;
+          this.ctx.waitUntil(
+            this.sendOne(run, queue).finally(() => {
+              this.inFlight -= 1;
+            })
+          );
+        }
       }
       if (slice < slicesPerTick - 1) {
         // eslint-disable-next-line no-await-in-loop

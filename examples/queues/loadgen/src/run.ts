@@ -59,6 +59,19 @@ export const assignment = (
   };
 };
 
+/**
+ * Whether a bursty run is sending at `now`. It depends only on the run, so
+ * every generator starts and stops its bursts together.
+ */
+export const inBurst = (run: Run, now: number): boolean => {
+  const { burstSeconds, quietSeconds } = run.options;
+  if (!quietSeconds) {
+    return true;
+  }
+  const cycleMs = (burstSeconds + quietSeconds) * 1_000;
+  return (now - run.startedAt) % cycleMs < burstSeconds * 1_000;
+};
+
 export const active = (run: Run | undefined, now: number): run is Run =>
   run !== undefined && !run.stopped && now < run.endsAt;
 

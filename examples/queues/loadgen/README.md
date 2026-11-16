@@ -28,6 +28,8 @@ The generator has no URL of its own. The dashboard shows a **Load test** card on
 
 On the dashboard, set the tenants, the requests per second for each, the messages per request, the keys per tenant, how long to run, and the partition range of the tenants' queues, then **Start**. The card shows requests and messages per second, what the queue rejected, requests that failed, and send latency; each tenant's queue has its own page with the usual charts.
 
+Set **Quiet, seconds** above 0 for a load that comes in bursts: every generator sends for the burst, stops for the quiet time, and repeats, all at the same moments. The requests per second are the rate during a burst. That is the way to watch a backlog build and drain on the dashboard's first page.
+
 A run always ends by itself after the seconds given, at most an hour. **Stop** ends it at once. **Delete the load queues** removes every `load-<n>` queue and what it holds.
 
 The same over HTTP, for scripts:
@@ -35,7 +37,8 @@ The same over HTTP, for scripts:
 ```sh
 curl -X POST https://<queue>/api/load -H 'Content-Type: application/json' -d '{
   "tenants": 50, "requestsPerSecond": 100, "minMessages": 100, "maxMessages": 300,
-  "keys": 1000, "seconds": 300, "partitions": { "min": 8, "max": 32 } }'
+  "keys": 1000, "seconds": 300, "burstSeconds": 30, "quietSeconds": 60,
+  "partitions": { "min": 8, "max": 32 } }'
 curl https://<queue>/api/load            # status; `url` opens the run in the dashboard
 curl -X DELETE https://<queue>/api/load  # stop
 ```

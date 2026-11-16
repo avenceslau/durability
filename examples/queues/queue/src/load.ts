@@ -23,6 +23,13 @@ export const loadOptionsSchema = v.pipe(
     keys: whole(1, 1_000_000),
     /** The run stops by itself after this long. */
     seconds: whole(1, 3_600),
+    /**
+     * With `quietSeconds` above 0 the load comes in bursts: every generator
+     * sends for `burstSeconds`, then nothing for `quietSeconds`, and again,
+     * all at the same moments. That shows a backlog build and drain.
+     */
+    burstSeconds: v.optional(whole(1, 3_600), 30),
+    quietSeconds: v.optional(whole(0, 3_600), 0),
     /** Applied to every tenant's queue. */
     partitions: v.object({ min: whole(1, 256), max: whole(1, 256) }),
   }),

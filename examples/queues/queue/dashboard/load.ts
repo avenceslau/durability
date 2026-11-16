@@ -57,9 +57,13 @@ const describe = (status: LoadStatus): string => {
   }
   const { tenants, requestsPerSecond, minMessages, maxMessages } =
     status.options;
+  const { burstSeconds, quietSeconds } = status.options;
   const shape =
     `${tenants} tenants at ${requestsPerSecond} requests/s each, ` +
-    `${minMessages} to ${maxMessages} messages per request`;
+    `${minMessages} to ${maxMessages} messages per request` +
+    (quietSeconds > 0
+      ? `, in bursts of ${burstSeconds} s with ${quietSeconds} s between`
+      : '');
   if (status.phase === 'running') {
     return `Running: ${shape}. Stops by itself at ${dateTime(status.endsAt ?? 0)}.`;
   }
@@ -155,6 +159,25 @@ export const loadTestSection = async (): Promise<
         })
       ),
       field(
+        'Burst, seconds',
+        numberInput('burstSeconds', {
+          min: 1,
+          max: 3_600,
+          value: 30,
+          required: true,
+        })
+      ),
+      field(
+        'Quiet, seconds',
+        numberInput('quietSeconds', {
+          min: 0,
+          max: 3_600,
+          value: 0,
+          required: true,
+        }),
+        '0 for a steady load. Otherwise: a burst, this long with nothing, and again'
+      ),
+      field(
         'Partitions per tenant, from',
         numberInput('partitionsMin', {
           min: 1,
@@ -211,6 +234,8 @@ export const loadTestSection = async (): Promise<
       maxMessages: number('maxMessages'),
       keys: number('keys'),
       seconds: number('seconds'),
+      burstSeconds: number('burstSeconds'),
+      quietSeconds: numberField(form, 'quietSeconds') ?? 0,
       partitions: {
         min: number('partitionsMin'),
         max: number('partitionsMax'),
