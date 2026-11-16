@@ -13,6 +13,7 @@ import {
 } from './layout';
 import {
   atCapacityMessage,
+  secondsUntilRetry,
   type Layout,
   type Message,
   type PartitionIdentity,
@@ -24,7 +25,12 @@ export type PartitionMeta = { epoch: number; index: number };
 
 export type SendOutcome =
   | { accepted: true; ids: string[] }
-  | { accepted: false; error: { name: string; message: string } };
+  | {
+      accepted: false;
+      error: { name: string; message: string };
+      /** With `Backpressure`: wait this long before sending again. */
+      retryAfterSeconds?: number;
+    };
 
 export class UnknownQueueError extends Error {
   constructor(queue: string) {
@@ -312,7 +318,13 @@ export const send = async (
     }
     const { name, message, next } = result.error;
     if (!next) {
-      return { accepted: false, error: { name, message } };
+      return {
+        accepted: false,
+        error: { name, message },
+        ...(name === 'Backpressure'
+          ? { retryAfterSeconds: secondsUntilRetry() }
+          : {}),
+      };
     }
     const known = redirects.get(queue) ?? {
       publishedEpoch: published.epoch,

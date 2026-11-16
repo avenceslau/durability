@@ -46,7 +46,8 @@ const createQueueForm = (): HTMLFormElement => {
       ),
       field(
         'Max partitions',
-        numberInput('max', { min: 1, max: maxPartitions, value: 16 })
+        numberInput('max', { min: 1, max: maxPartitions, placeholder: 'none' }),
+        'Empty means no limit'
       ),
       field(
         'Max concurrency',
@@ -70,7 +71,7 @@ const createQueueForm = (): HTMLFormElement => {
       settings: {
         partitions: {
           min: numberField(form, 'min') ?? 1,
-          max: numberField(form, 'max') ?? 16,
+          max: numberField(form, 'max') ?? null,
         },
         maxConcurrency: numberField(form, 'maxConcurrency') ?? null,
         limitMode: textField(form, 'limitMode') === 'fast' ? 'fast' : 'strict',

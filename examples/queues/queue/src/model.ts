@@ -124,16 +124,22 @@ export const targetInputSchema = v.object({
 });
 export type TargetSettings = v.InferOutput<typeof targetInputSchema>;
 
-/**
- * About how long a queue that refuses sends takes to have more partitions
- * accepting. Told to producers with the refusal.
- */
-export const growthSeconds = 30;
-export const atCapacityMessage = `The queue is at capacity and adds partitions as demand grows; retry in about ${growthSeconds} seconds`;
+export const atCapacityMessage =
+  'The queue is at capacity and adds partitions as demand grows; retry later';
 
 /**
- * The most partitions one queue may have: one orchestrator hears from all of
- * them. Tried with 4,000.
+ * How long a refused send should wait before it is sent again. A queue that
+ * refuses needs about half a minute to have more partitions accepting. The
+ * wait differs from one refusal to the next: producers that were refused
+ * together would otherwise all come back at the same moment.
+ */
+export const secondsUntilRetry = (): number =>
+  20 + Math.floor(Math.random() * 21);
+
+/**
+ * What one orchestrator can hold, not a limit of the queue's own: it hears
+ * from every partition and keeps the list of them. A queue without a `max`
+ * grows to this. Tried with 10,000.
  */
 export const maxPartitions = 10_000;
 
@@ -141,7 +147,11 @@ export const settingsInputSchema = v.object({
   partitions: v.optional(
     v.object({
       min: v.optional(v.pipe(positive, v.maxValue(maxPartitions)), 1),
-      max: v.optional(v.pipe(positive, v.maxValue(maxPartitions)), 16),
+      /** Where the autoscaler stops; omit for no limit. */
+      max: v.optional(
+        v.nullable(v.pipe(positive, v.maxValue(maxPartitions))),
+        null
+      ),
       /** Accepted messages per second one partition should carry. */
       targetRate: v.optional(positive, 200),
     }),

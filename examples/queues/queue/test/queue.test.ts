@@ -919,6 +919,23 @@ describe('fifo queue', () => {
     });
   });
 
+  it('has no partition limit of its own unless one is set', async () => {
+    const queue = await createQueue();
+    const resizeTo = (count: number) =>
+      admin(`/queues/${queue}/resize`, 'POST', { partitions: count });
+    const count = async () => (await overview(queue)).epochs.at(-1)?.count;
+
+    await expectOk(await resizeTo(20));
+    expect(await count()).toBe(20);
+
+    // Setting a limit brings the queue back inside it.
+    await expectOk(
+      await admin(`/queues/${queue}`, 'PATCH', { partitions: { max: 4 } })
+    );
+    expect(await count()).toBe(4);
+    expect((await resizeTo(5)).status).toBe(409);
+  });
+
   it('configures queues over the admin binding', async () => {
     const queue = `q-${crypto.randomUUID()}`;
     await queueAdmin.create(queue, { partitions: { min: 2 } });
@@ -929,7 +946,8 @@ describe('fifo queue', () => {
 
     const state = await queueAdmin.overview(queue);
     expect(state.settings).toMatchObject({
-      partitions: { min: 2, max: 16 },
+      // No `max`: the queue grows as far as it needs to.
+      partitions: { min: 2, max: null },
       maxBacklog: 7,
     });
     expect(state.targets['orders']).toMatchObject({
@@ -1135,6 +1153,15 @@ describe('fifo queue', () => {
       messages: [{ body: 4 }],
     });
     expect(second.status).toBe(429);
+    // How long to wait differs from one refusal to the next.
+    const wait = Number(second.headers.get('Retry-After'));
+    expect(wait).toBeGreaterThanOrEqual(20);
+    expect(wait).toBeLessThanOrEqual(40);
+    expect(await second.json()).toMatchObject({
+      accepted: false,
+      error: { name: 'Backpressure' },
+      retryAfterSeconds: wait,
+    });
   });
 
   it('forwards to another queue as a target', async () => {
@@ -1218,6 +1245,8 @@ describe('fifo queue', () => {
     await received(queue, 'kept', 1);
     expect(await stores.getByName(queue).deliveries('dropped')).toEqual([]);
 
+    await expectOk(await admin(`/queues/${queue}`, 'DELETE'));
+    // A deletion can be repeated, as after one that failed halfway.
     await expectOk(await admin(`/queues/${queue}`, 'DELETE'));
     expect((await admin(`/queues/${queue}`)).status).toBe(409);
     const names = await (await admin('/queues')).json<{ name: string }[]>();

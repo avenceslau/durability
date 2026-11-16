@@ -200,9 +200,9 @@ export const loadTestSection = async (): Promise<
         numberInput('partitionsMax', {
           min: 1,
           max: maxPartitions,
-          value: 32,
-          required: true,
-        })
+          placeholder: 'none',
+        }),
+        'Empty means no limit'
       )
     ),
     element('div', { class: 'actions' }, startButton, stopButton, deleteButton),
@@ -248,7 +248,7 @@ export const loadTestSection = async (): Promise<
       deliverPerSecond: numberField(form, 'deliverPerSecond') ?? null,
       partitions: {
         min: number('partitionsMin'),
-        max: number('partitionsMax'),
+        max: numberField(form, 'partitionsMax') ?? null,
       },
     };
     const total = options.tenants * options.requestsPerSecond;

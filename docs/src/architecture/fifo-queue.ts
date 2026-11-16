@@ -36,7 +36,7 @@ const accept = sourceExcerpt(
   'accept',
   'Answer a producer',
   'const accept = async (queue: string, request: Request): Promise<Response> => {',
-  "    headers: { 'Retry-After': String(growthSeconds) },\n  });\n};"
+  "    headers: { 'Retry-After': String(outcome.retryAfterSeconds) },\n  });\n};"
 );
 const layoutOf = sourceExcerpt(
   sendSource,
@@ -815,7 +815,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:producer'],
           source: sourceFocus(
             accept,
-            "headers: { 'Retry-After': String(growthSeconds) },"
+            "headers: { 'Retry-After': String(outcome.retryAfterSeconds) },"
           ),
           durable: 'Whatever the partition stored.',
           volatile: 'The outcome, known only to this request.',

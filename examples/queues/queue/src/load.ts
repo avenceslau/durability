@@ -40,7 +40,8 @@ export const loadOptionsSchema = v.pipe(
     /** Applied to every tenant's queue. */
     partitions: v.object({
       min: whole(1, maxPartitions),
-      max: whole(1, maxPartitions),
+      /** Omit for no limit. */
+      max: v.optional(v.nullable(whole(1, maxPartitions)), null),
     }),
   }),
   v.check(
@@ -48,7 +49,9 @@ export const loadOptionsSchema = v.pipe(
     'minMessages must not exceed maxMessages'
   ),
   v.check(
-    (options) => options.partitions.min <= options.partitions.max,
+    (options) =>
+      options.partitions.max === null ||
+      options.partitions.min <= options.partitions.max,
     'partitions.min must not exceed partitions.max'
   )
 );

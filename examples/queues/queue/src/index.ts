@@ -6,7 +6,6 @@ import * as v from 'valibot';
 import * as admin from './admin';
 import { loadOptionsSchema, type LoadControl } from './load';
 import {
-  growthSeconds,
   queueNameSchema,
   sendSchema,
   targetNameSchema,
@@ -207,12 +206,12 @@ const accept = async (queue: string, request: Request): Promise<Response> => {
   if (outcome.accepted) {
     return Response.json(outcome, { status: 202 });
   }
-  if (outcome.error.name !== 'Backpressure') {
+  if (outcome.retryAfterSeconds === undefined) {
     return Response.json(outcome, { status: 503 });
   }
   return Response.json(outcome, {
     status: 429,
-    headers: { 'Retry-After': String(growthSeconds) },
+    headers: { 'Retry-After': String(outcome.retryAfterSeconds) },
   });
 };
 

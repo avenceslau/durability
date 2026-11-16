@@ -108,7 +108,8 @@ export const settingsForm = (
       ),
       field(
         'Max partitions',
-        numberInput('max', { min: 1, max: maxPartitions, required: true })
+        numberInput('max', { min: 1, max: maxPartitions, placeholder: 'none' }),
+        'Empty means no limit'
       ),
       field(
         'Target rate per partition',
@@ -165,7 +166,7 @@ export const settingsForm = (
     await save({
       partitions: {
         min: numberField(form, 'min') ?? 1,
-        max: numberField(form, 'max') ?? 16,
+        max: numberField(form, 'max') ?? null,
         targetRate: numberField(form, 'targetRate') ?? 200,
       },
       maxConcurrency: numberField(form, 'maxConcurrency') ?? null,

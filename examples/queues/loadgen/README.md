@@ -26,7 +26,7 @@ The generator has no URL of its own. The dashboard shows a **Load test** card on
 
 ## Run
 
-On the dashboard, set the tenants, the requests per second for each, the messages per request, the keys per tenant, how long to run, and the partition range of the tenants' queues (up to 10,000), then **Start**. The card shows requests and messages per second, what the queue rejected, requests that failed, and send latency; each tenant's queue has its own page with the usual charts.
+On the dashboard, set the tenants, the requests per second for each, the messages per request, the keys per tenant, how long to run, and the partition range of the tenants' queues (leave the upper end empty for no limit), then **Start**. The card shows requests and messages per second, what the queue rejected, requests that failed, and send latency; each tenant's queue has its own page with the usual charts.
 
 A run creates the tenants' queues if they do not exist, and a new queue takes up to a minute to be known in every region. During that minute the generators far from it fail their sends. For a clean measurement, start a second run with the same tenants: it uses the queues the first one made.
 

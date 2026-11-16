@@ -395,7 +395,9 @@ a call more than two seconds after the Worker made it refuses the call without t
 storage, which keeps an overloaded partition able to answer the orchestrator, and the
 Worker reports what it refused itself with its next call, including calls the runtime
 turned away from an overloaded partition. Both are in the partition's
-report, so a queue too small for its traffic grows within seconds, up to 10,000 partitions.
+report, so a queue too small for its traffic grows within seconds. A queue has no limit of
+its own unless `partitions.max` is set; what stops it is what one orchestrator can hold,
+10,000 partitions.
 Partitions are given regions by their index, because objects that start near the
 orchestrator share machines and hold each other up.
 A resize does not wait for earlier ones to drain.
