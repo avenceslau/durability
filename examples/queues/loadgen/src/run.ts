@@ -102,5 +102,30 @@ const namespace = <T extends Rpc.DurableObjectBranded>(
 
 export const controller = () =>
   namespace<LoadController>('LoadController').getByName('controller');
-export const generator = (index: number) =>
-  namespace<LoadGenerator>('LoadGenerator').getByName(`generator-${index}`);
+/**
+ * Generators are spread over these regions. Each one runs the queue's Worker
+ * next to itself, so thousands in one place would have a few machines do all
+ * the work of accepting, and the test would measure those machines.
+ */
+const regions: DurableObjectLocationHint[] = [
+  'wnam',
+  'enam',
+  'sam',
+  'weur',
+  'eeur',
+  'apac',
+  'afr',
+  'me',
+];
+
+/** The hint only places an object the first time, so it is part of the name. */
+export const generator = (index: number) => {
+  const region = regions[index % regions.length]!;
+  return namespace<LoadGenerator>('LoadGenerator').getByName(
+    `generator-${index}-${region}`,
+    { locationHint: region }
+  );
+};
+
+export const generatorIndex = (name: string | undefined): number =>
+  Number(name?.split('-')[1] ?? 0);

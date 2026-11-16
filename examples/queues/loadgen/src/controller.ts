@@ -195,19 +195,23 @@ export class LoadController extends DurableObject<Env> {
     const tenants = Array.from({ length: options.tenants }, (_, tenant) =>
       queueOf(tenant)
     );
+    const settings = { partitions: options.partitions };
+    const sink = {
+      // The queue's service binding to this Worker's `Sink`.
+      destination: { type: 'rpc' as const, binding: 'LOAD_SINK' },
+      maxBatchSize: 100,
+      ...(options.deliverPerSecond === null
+        ? {}
+        : { maxPerSecond: options.deliverPerSecond }),
+    };
     await inGroups(tenants, atOnce, async (queue) => {
-      const settings = { partitions: options.partitions };
-      await (existing.has(queue)
-        ? this.env.QUEUE_ADMIN.updateSettings(queue, settings)
-        : this.env.QUEUE_ADMIN.create(queue, settings));
-      await this.env.QUEUE_ADMIN.putTarget(queue, 'sink', {
-        // The queue's service binding to this Worker's `Sink`.
-        destination: { type: 'rpc', binding: 'LOAD_SINK' },
-        maxBatchSize: 100,
-        ...(options.deliverPerSecond === null
-          ? {}
-          : { maxPerSecond: options.deliverPerSecond }),
-      });
+      if (!existing.has(queue)) {
+        // With its target from the start: sends follow at once.
+        await this.env.QUEUE_ADMIN.create(queue, settings, { sink });
+        return;
+      }
+      await this.env.QUEUE_ADMIN.updateSettings(queue, settings);
+      await this.env.QUEUE_ADMIN.putTarget(queue, 'sink', sink);
     });
   }
 

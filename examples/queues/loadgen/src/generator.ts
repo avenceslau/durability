@@ -8,6 +8,7 @@ import {
   controller,
   generator,
   generatorCount,
+  generatorIndex,
   inBurst,
   type Env,
   type Report,
@@ -49,9 +50,7 @@ const nothing = (): Omit<Report, 'seconds' | 'requests'> => ({
  */
 export class LoadGenerator extends DurableObject<Env> {
   private run = this.ctx.storage.kv.get<Run>('run');
-  private readonly index = Number(
-    this.ctx.id.name?.replace('generator-', '') ?? 0
-  );
+  private readonly index = generatorIndex(this.ctx.id.name);
   private lastTickAt: number | undefined;
   private wokeChildrenAt = 0;
   /** The part of a request the rate left over from the previous tick. */
