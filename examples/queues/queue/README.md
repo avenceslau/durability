@@ -1,6 +1,6 @@
 # Partitioned FIFO queue
 
-A queue service on Durable Objects, built from the [`durability`](https://github.com/avenceslau/durability) primitives. It is one of the two Workers of the [`queues` example](../README.md); the other, [`push_consumer`](../push_consumer), uses it.
+A queue service on Durable Objects, built from the [`durability`](https://github.com/avenceslau/durability) primitives. It is one of the three Workers of the [`queues` example](../README.md): [`push_consumer`](../push_consumer) uses it, and [`loadgen`](../loadgen) loads it.
 
 - **Ordered per key.** Messages that share a key reach each target in the order they were accepted. A retried message holds back only the later messages of its key.
 - **Consumers like Cloudflare Queues.** A Worker extends `QueueEntrypoint`, implements `queue(batch)`, and acknowledges or retries each message.
