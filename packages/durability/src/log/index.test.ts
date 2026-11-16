@@ -327,6 +327,41 @@ describe('log', () => {
     await expect(log.read({ from: 0 })).rejects.toThrow(LogTruncatedError);
   });
 
+  it('discards records below an offset without flushing them', async () => {
+    const cold = coldStore();
+    const { log } = fixture({ retention: { maxRecords: 100 }, cold });
+    await offsetsOf(log, ['a', 'b', 'c', 'd']);
+
+    // At most `limit` leave in one call, oldest first.
+    expect(await log.discardBefore(3, 2)).toBe(2);
+    expect(await log.discardBefore(3)).toBe(1);
+    expect(await log.discardBefore(3)).toBe(0);
+    expect(cold.segments.size).toBe(0);
+    expect(await log.bounds()).toEqual({
+      oldestOffset: 3,
+      hotOffset: 3,
+      nextOffset: 4,
+    });
+    await expect(log.read({ from: 0 })).rejects.toThrow(LogTruncatedError);
+    expect(
+      (await log.read({ from: 3 })).records.map(({ body }) => body)
+    ).toEqual(['d']);
+
+    // An offset past the end discards what is held and nothing more.
+    expect(await log.discardBefore(10)).toBe(1);
+    expect(await offsetsOf(log, ['e'])).toEqual([4]);
+  });
+
+  it('accepts a deduplication key again once its record was discarded', async () => {
+    const { log } = fixture();
+    const send = () => log.append({ body: 'a', deduplicationKey: 'once' });
+    await send();
+    expect(await send()).toMatchObject({ success: true, value: [0] });
+
+    await log.discardBefore(1);
+    expect(await send()).toMatchObject({ success: true, value: [1] });
+  });
+
   it('truncates when cold storage lost a segment it indexed', async () => {
     const cold = coldStore();
     const { log } = fixture({ retention: { maxRecords: 1 }, cold });
