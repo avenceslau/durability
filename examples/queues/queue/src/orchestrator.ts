@@ -71,6 +71,13 @@ export class QueueError extends Error {
 }
 
 const tickMs = 2_000;
+/**
+ * How long one attempt at a resize keeps asking the old partitions to stop,
+ * and how soon it asks one again that did not answer. The next tick resumes
+ * an attempt that ran out of time; a partition that has stopped answers at once.
+ */
+const stopWithinMs = 20_000;
+const stopRetryMs = 500;
 /** Ticks stop this long after the last partition reported. */
 const idleAfterMs = 30_000;
 /** Short, so that a queue that is refusing sends grows within seconds. */
@@ -620,11 +627,13 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       (layout) => layout.epoch === next.epoch - 1
     )!;
 
+    // Each partition is asked on its own until it answers. A partition under
+    // load turns calls away, and asking them all again in rounds would make
+    // every round wait for the slowest of them.
+    const until = Date.now() + stopWithinMs;
     const samples = await Promise.all(
       partitionsOf(queue, active).map((identity) =>
-        partitions()
-          .getByName(partitionName(identity))
-          .stopAccepting(identity, next)
+        this.stop(identity, next, until)
       )
     );
     this.store(samples);
@@ -652,6 +661,26 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       `${active.count} to ${next.count} partitions (epoch ${next.epoch})`
     );
     await this.advanceEpochs();
+  }
+
+  private async stop(
+    identity: PartitionIdentity,
+    next: Layout,
+    until: number
+  ): Promise<PartitionSample> {
+    try {
+      return await partitions()
+        .getByName(partitionName(identity))
+        .stopAccepting(identity, next);
+    } catch (error) {
+      if (Date.now() >= until) {
+        throw error;
+      }
+    }
+    // An overloaded object should normally be left alone. This one call is
+    // what takes the load off it, among the hundreds of sends it is offered.
+    await scheduler.wait(stopRetryMs);
+    return this.stop(identity, next, until);
   }
 
   /** True once every partition of the epoch has handed the target all it holds. */

@@ -371,12 +371,18 @@ already refuses, such a Worker is redirected rather than accepted: nothing can b
 in the old epoch after a message of the same key went to the new one. Step 4 then makes
 sure the old epoch's messages are delivered first.
 
+The old partitions do not stop at the same moment, least of all under load, when a busy
+partition turns the orchestrator's call away and is asked again. So a redirect moves only
+the keys of the partition that gave it. A Worker that sent every key to the new epoch
+after its first redirect would store a key there while that key's own partition still
+accepts from other Workers, and the old epoch is delivered first.
+
 The cost is that accepting scales immediately while delivery of new messages waits for
 the old backlog. The autoscaler accounts for that by at least doubling when it grows, and
 by not shrinking while a target is behind.
 
 Demand is what is sent to the queue, not only what it accepted. A partition that gets to
-a call more than five seconds after the Worker made it refuses the call without touching
+a call more than two seconds after the Worker made it refuses the call without touching
 storage, which keeps an overloaded partition able to answer the orchestrator, and the
 Worker reports what it refused itself with its next call. Both are in the partition's
 report, so a queue too small for its traffic grows within seconds, up to 1,000 partitions.

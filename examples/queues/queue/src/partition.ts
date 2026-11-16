@@ -97,12 +97,13 @@ const permitHoldMs = 10_000;
 const sampleIntervalMs = 1_000;
 /**
  * A call that waited longer than this before the partition got to it is
- * refused without touching storage. Long enough that a brief stall refuses
- * nothing. An overloaded partition works through
+ * refused without touching storage. An overloaded partition works through
  * what is queued for it quickly that way, and stays able to answer the
- * orchestrator, report, and deliver.
+ * orchestrator, report, and deliver. The runtime turns calls away on its own
+ * when an object is overloaded, and those never get here: under a load of
+ * large sends this check saw few late calls while the runtime failed many.
  */
-const maxAppendLatenessMs = 5_000;
+const maxAppendLatenessMs = 2_000;
 const deadLetterRetryMs = 30_000;
 const shortWaitMs = 500;
 const deadLetterBatchSize = 100;

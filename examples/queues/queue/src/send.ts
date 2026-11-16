@@ -6,7 +6,7 @@ import {
 import { DurabilityRouting } from 'durability/routing';
 import { coalescer } from './coalesce';
 import { partitionFor, partitionName, topologyKey } from './layout';
-import type { Layout, Message } from './model';
+import type { Layout, Message, PartitionIdentity } from './model';
 import { Partition, type AppendCall, type AppendInput } from './partition';
 
 export type PartitionMeta = { epoch: number; index: number };
@@ -31,10 +31,19 @@ const topology = DurabilityTopology.client<PartitionMeta>({
 });
 
 /**
- * Layouts a replaced partition told this isolate about. KV is eventually
- * consistent, so the redirect is usually ahead of the published snapshot.
+ * Partitions that told this isolate they were replaced, and by what layout,
+ * per queue. KV is eventually consistent, so a redirect is usually ahead of
+ * the published list.
+ *
+ * A redirect moves only the keys of the partition that gave it. A resize
+ * stops the old partitions one after another, and until a key's own
+ * partition has stopped, another isolate can still store that key there. A
+ * message already in the next epoch would then be delivered after it.
  */
-const redirected = new Map<string, Layout>();
+const redirects = new Map<
+  string,
+  { publishedEpoch: number; byPartition: Map<string, Layout> }
+>();
 
 const layoutOf = async (queue: string): Promise<Layout> => {
   let members;
@@ -55,12 +64,22 @@ const layoutOf = async (queue: string): Promise<Layout> => {
     epoch: active[0]?.meta.epoch ?? 0,
     count: active.length,
   };
-  const learned = redirected.get(queue);
-  if (learned && learned.epoch > published.epoch) {
-    return learned;
+  // The list has moved on. What is still ahead of it is learned again.
+  if (redirects.get(queue)?.publishedEpoch !== published.epoch) {
+    redirects.delete(queue);
   }
-  redirected.delete(queue);
   return published;
+};
+
+/** Where a key goes, following the redirects this isolate was given. */
+const partitionOf = (
+  queue: string,
+  layout: Layout,
+  key: string
+): PartitionIdentity => {
+  const identity = partitionFor(queue, layout, key);
+  const next = redirects.get(queue)?.byPartition.get(partitionName(identity));
+  return next ? partitionOf(queue, next, key) : identity;
 };
 
 type Share =
@@ -188,11 +207,11 @@ export const send = async (
     ...(only === undefined ? {} : { only }),
     ...(message.dedupeId === undefined ? {} : { dedupeId: message.dedupeId }),
   }));
-  let layout = await layoutOf(queue);
+  const published = await layoutOf(queue);
   append ??= createAppend();
 
+  let identity = partitionOf(queue, published, input.key);
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
-    const identity = partitionFor(queue, layout, input.key);
     // eslint-disable-next-line no-await-in-loop
     const result = await append(partitionName(identity), {
       identity,
@@ -205,8 +224,13 @@ export const send = async (
     if (!next) {
       return { accepted: false, error: { name, message } };
     }
-    redirected.set(queue, next);
-    layout = next;
+    const known = redirects.get(queue) ?? {
+      publishedEpoch: published.epoch,
+      byPartition: new Map<string, Layout>(),
+    };
+    known.byPartition.set(partitionName(identity), next);
+    redirects.set(queue, known);
+    identity = partitionOf(queue, next, input.key);
   }
 
   return {

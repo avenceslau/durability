@@ -39,7 +39,7 @@ const outcome = await env.QUEUE.send('orders', {
 The outcome is either accepted, with the ids in order, or rejected, with the reason:
 
 - **Accepted** means stored. Delivery happens afterwards.
-- **`Backpressure`**: the partition cannot keep up (too much is waiting for it in the Worker, or a call waited over five seconds before the partition got to it), or the queue sets `maxBacklog` and a running target is that far behind. Retry later. What is refused counts as demand, so the queue adds partitions.
+- **`Backpressure`**: the partition cannot keep up (too much is waiting for it in the Worker, or a call waited over two seconds before the partition got to it), or the queue sets `maxBacklog` and a running target is that far behind. Retry later. What is refused counts as demand, so the queue adds partitions.
 - **`PartitionReplaced`** after three redirects: the queue is resizing. Retry shortly.
 - **A thrown call** is uncertain: the messages may or may not be stored. Retry **with the same `id`s**. A partition accepts an id once while it keeps the message, so only a retry that lands after a resize can store a message twice.
 
@@ -284,7 +284,7 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 
 **A backlog can outgrow its partition.** The partition's log (`DurabilityLog`) is given R2 as cold storage. Once the partition holds more than 512 MB, or a message turns 4 days old, the log hands over its oldest messages: those every target has received, and those too old, are dropped; the rest are written to R2 as one object per run of up to 1,000. Delivery reads through both without knowing the difference. A sweep deletes the objects every target has passed.
 
-**A partition under too much load refuses instead of falling behind.** The Worker stamps each call with the time it made it. A partition that gets to a call more than five seconds later refuses it without touching storage, so it works through what is queued for it quickly and stays able to answer the orchestrator, report, and deliver. The Worker then leaves that partition alone for a quarter of a second, refusing its share of sends itself, and tells the partition with its next call how much it refused. Those refusals are in the partition's report, and the autoscaler counts them as demand: a queue too small for its traffic grows within seconds instead of looking quiet.
+**A partition under too much load refuses instead of falling behind.** The Worker stamps each call with the time it made it. A partition that gets to a call more than two seconds later refuses it without touching storage, so it works through what is queued for it quickly and stays able to answer the orchestrator, report, and deliver. The Worker then leaves that partition alone for a quarter of a second, refusing its share of sends itself, and tells the partition with its next call how much it refused. Those refusals are in the partition's report, and the autoscaler counts them as demand: a queue too small for its traffic grows within seconds instead of looking quiet.
 
 **Sends are merged per partition.** A send goes to the one partition of its key, and a busy partition would be called once per send. The Worker makes one call to a partition at a time (`src/coalesce.ts`): a send that arrives while one is on its way waits, and goes together with the others that waited. The partition stores a call in one transaction, all of it or none. Nothing is held back to fill a batch, and there is no timeout: a slow partition shows as latency. What may wait is bounded instead, at 5,000 messages per partition and 100,000 per Worker isolate. Past that a send is rejected at once as backpressure (`429` over HTTP), because an isolate that kept everything a slow partition could not take would run out of memory and fail the sends that had been stored.
 
@@ -292,7 +292,7 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 
 **Resizing without losing order.** A new partition count re-maps keys, so a resize starts a new _epoch_:
 
-1. The orchestrator tells the current partitions to stop accepting. From then on they refuse sends and answer with the new layout, so a Worker isolate holding an old partition list is redirected instead of accepted out of order.
+1. The orchestrator tells the current partitions to stop accepting, each on its own and again until it answers, because a partition under load turns calls away. A stopped partition refuses sends and answers with the new layout, so a Worker isolate holding an old partition list is redirected instead of accepted out of order. A redirect moves only the keys of the partition that gave it: until a key's own partition has stopped, another isolate can still store that key there.
 2. It publishes the new partitions. They accept at once.
 3. A target is delivered from the new partitions only once the old ones have nothing left for it: every message acknowledged or dead-lettered.
 4. Old partitions with nothing left for any target leave the queue.

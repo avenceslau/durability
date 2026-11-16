@@ -728,7 +728,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:worker'],
           source: sourceFocus(
             send,
-            'const identity = partitionFor(queue, layout, input.key);'
+            'let identity = partitionOf(queue, published, input.key);'
           ),
           durable: 'Nothing is written while hashing.',
           volatile: 'The messages, in this request.',
@@ -753,7 +753,7 @@ export const walkthrough = validateWalkthrough({
           id: 'late',
           title: 'Refuse what waited too long',
           description:
-            'The Worker stamps each call with the time it made it. A partition that gets to a call more than five seconds later refuses it without touching storage. An overloaded partition works through what is queued for it quickly that way, and stays able to answer the Orchestrator, report, and deliver. The Worker then leaves that partition alone for a moment and tells it, with its next call, how much it refused meanwhile.',
+            'The Worker stamps each call with the time it made it. A partition that gets to a call more than two seconds later refuses it without touching storage. An overloaded partition works through what is queued for it quickly that way, and stays able to answer the Orchestrator, report, and deliver. The Worker then leaves that partition alone for a moment and tells it, with its next call, how much it refused meanwhile.',
           stage: ['focus:partition'],
           source: sourceFocus(
             append,
@@ -1374,7 +1374,7 @@ export const walkthrough = validateWalkthrough({
           id: 'stop',
           title: 'Old partitions stop accepting',
           description:
-            'The Orchestrator calls every partition of the current epoch and waits for all of them. From then on each refuses sends and answers with the new layout. Nothing is published before this completes.',
+            'The Orchestrator calls every partition of the current epoch and waits for all of them, asking each again until it answers: a partition under load turns calls away. A stopped partition refuses sends and answers with the new layout. Nothing is published before all have stopped.',
           stage: ['focus:partition'],
           source: sourceFocus(
             stopAccepting,
@@ -1403,15 +1403,15 @@ export const walkthrough = validateWalkthrough({
           id: 'redirect',
           title: 'A Worker with the old list is redirected',
           description:
-            'KV is eventually consistent and isolates cache, so some Workers still hash with the old count. Their partition refuses and names the new layout; the Worker hashes again and sends there. A message is therefore never accepted into the old epoch after one of its key went to the new.',
+            'KV is eventually consistent and isolates cache, so some Workers still hash with the old count. Their partition refuses and names the new layout; the Worker hashes again and sends there. The redirect moves only the keys of the partition that gave it, because another old partition may not have stopped yet. A message is therefore never accepted into the old epoch after one of its key went to the new.',
           stage: ['focus:worker'],
           source: sourceFocus(
             send,
             'const { name, message, next } = result.error;',
-            'layout = next;'
+            'identity = partitionOf(queue, next, input.key);'
           ),
           durable: 'Nothing: the refusal stored nothing.',
-          volatile: 'The layout this isolate learned from the refusal.',
+          volatile: 'The redirects this isolate was given, per partition.',
           status: 'recovery',
         },
         {

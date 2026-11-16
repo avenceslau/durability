@@ -2,6 +2,7 @@ import { runInDurableObject, SELF } from 'cloudflare:test';
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import type { QueueAdmin, QueueBinding } from '../src/index';
+import { partitionFor, partitionName } from '../src/layout';
 import type {
   Overview,
   PartitionConfig,
@@ -76,6 +77,25 @@ const sendOverHttp = (queue: string, body: unknown) =>
   });
 
 /**
+ * Sends as a producer would: a partition that is behind answers 429, which
+ * stored nothing, and the send is made again.
+ */
+const sendKey = async (
+  queue: string,
+  key: string,
+  messages: { body: number; id?: string }[],
+  remaining = 40
+): Promise<Response> => {
+  const response = await sendOverHttp(queue, { key, messages });
+  if (response.status !== 429 || remaining === 0) {
+    return response;
+  }
+  await response.body?.cancel();
+  await scheduler.wait(250);
+  return sendKey(queue, key, messages, remaining - 1);
+};
+
+/**
  * A send has one key, and the tests list messages of several keys together:
  * this makes one send per key, in the order the keys first appear. Resolves
  * to the first answer that is not a 202, or to the last one.
@@ -90,12 +110,13 @@ const produce = async (
     // eslint-disable-next-line no-await-in-loop
     await response?.body?.cancel();
     // eslint-disable-next-line no-await-in-loop
-    response = await sendOverHttp(queue, {
+    response = await sendKey(
+      queue,
       key,
-      messages: messages
+      messages
         .filter((message) => message.key === key)
-        .map(({ body, id }) => ({ body, ...(id === undefined ? {} : { id }) })),
-    });
+        .map(({ body, id }) => ({ body, ...(id === undefined ? {} : { id }) }))
+    );
     if (response.status !== 202) {
       break;
     }
@@ -109,27 +130,6 @@ const resume = async (queue: string, target: string) =>
       paused: false,
     })
   );
-
-/**
- * Sends as a producer would: a partition that is behind answers 429, and the
- * same messages are sent again.
- */
-const produceUntilAccepted = async (
-  queue: string,
-  messages: { key: string; body: number; id?: string }[],
-  remaining = 40
-): Promise<void> => {
-  const response = await produce(queue, messages);
-  await response.body?.cancel();
-  if (response.status === 202) {
-    return;
-  }
-  if (response.status !== 429 || remaining === 0) {
-    throw new Error(`Send answered ${response.status}`);
-  }
-  await scheduler.wait(250);
-  return produceUntilAccepted(queue, messages, remaining - 1);
-};
 
 const overview = async (queue: string): Promise<Overview> =>
   (await expectOk(await admin(`/queues/${queue}`))).json();
@@ -958,11 +958,9 @@ describe('fifo queue', () => {
       Promise.all(
         keys.map(async (key) => {
           for (let body = from; body < to; body += 1) {
-            // The id makes a send repeated after a 429 the same message.
             // eslint-disable-next-line no-await-in-loop
-            await produceUntilAccepted(queue, [
-              { key, body, id: `${key}/${body}` },
-            ]);
+            const response = await produce(queue, [{ key, body }]);
+            expect(response.status).toBe(202);
           }
         })
       );
@@ -990,6 +988,42 @@ describe('fifo queue', () => {
     );
   });
 
+  it('moves a key to the next epoch only once its own partition has stopped', async () => {
+    const queue = await createQueue({ partitions: { min: 2, max: 2 } });
+    await addTarget(queue, 'orders', { paused: true });
+    const layout = (await overview(queue)).epochs[0]!;
+    const next = { epoch: layout.epoch + 1, count: 2 };
+    const old = (index: number) => {
+      const identity = { queue, epoch: layout.epoch, index };
+      return {
+        identity,
+        stub: partitions.getByName(partitionName(identity)),
+        key: Array.from({ length: 100 }, (_, number) => `key-${number}`).find(
+          (key) => partitionFor(queue, layout, key).index === index
+        )!,
+      };
+    };
+    const [first, second] = [old(0), old(1)];
+
+    // A resize stops the old partitions one after another. Here the second
+    // has stopped and the first has not.
+    await second.stub.stopAccepting(second.identity, next);
+
+    // The second partition redirects its key, so this isolate now knows the
+    // next layout.
+    const redirected = await produce(queue, [{ key: second.key, body: 1 }]);
+    expect(redirected.status).toBe(202);
+
+    // The first partition still accepts, from any isolate that has not been
+    // redirected. Its key has to stay with it: in the next epoch, a message
+    // could be stored before one that the old partition accepts afterwards,
+    // and the old epoch is delivered first.
+    const kept = await produce(queue, [{ key: first.key, body: 1 }]);
+    expect(kept.status).toBe(202);
+    const sample = await first.stub.stopAccepting(first.identity, next);
+    expect(sample.accepted).toBe(1);
+  });
+
   it('resizes again while an earlier resize still drains, and keeps order', async () => {
     const queue = await createQueue({ partitions: { min: 1, max: 8 } });
     // Nothing drains while the target is paused, so every resize stays live.
@@ -998,10 +1032,11 @@ describe('fifo queue', () => {
     const send = async (from: number, to: number) => {
       for (let body = from; body < to; body += 1) {
         // eslint-disable-next-line no-await-in-loop
-        await produceUntilAccepted(
+        const response = await produce(
           queue,
-          keys.map((key) => ({ key, body, id: `${key}/${body}` }))
+          keys.map((key) => ({ key, body }))
         );
+        expect(response.status).toBe(202);
       }
     };
     const resizeTo = async (count: number) =>
@@ -1077,7 +1112,10 @@ describe('fifo queue', () => {
       { key: 'k', body: 3 },
     ]);
     expect(first.status).toBe(202);
-    const second = await produce(queue, [{ key: 'k', body: 4 }]);
+    const second = await sendOverHttp(queue, {
+      key: 'k',
+      messages: [{ body: 4 }],
+    });
     expect(second.status).toBe(429);
   });
 
