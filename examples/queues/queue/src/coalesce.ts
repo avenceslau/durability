@@ -8,6 +8,11 @@
  *
  * Each batch is made by one of the calls waiting for it, never by a loop that
  * outlives them: a Worker may only do I/O for a request that is still running.
+ *
+ * What may wait is bounded. A destination that stays slower than calls arrive
+ * would otherwise collect them without limit, and the memory they take would
+ * end every call in the isolate, including those the destination served.
+ * Past the bounds a call is refused at once.
  */
 type Outcome<Output> = { value: Output } | { error: unknown };
 
@@ -41,10 +46,17 @@ export const coalescer = <Input, Output>(options: {
   weigh: (input: Input) => number;
   /** A batch takes inputs until this is reached; always at least one. */
   maxWeight: number;
+  /** How much may wait for one destination, and be held for all of them. */
+  maxWaitingWeight: number;
+  maxHeldWeight: number;
+  /** The output of a call that is refused because too much is waiting. */
+  refuse: (key: string, input: Input) => Output;
   /** Keeps a request alive until the batch it makes has been handed out. */
   keepAlive?: (work: Promise<unknown>) => void;
 }): ((key: string, input: Input) => Promise<Output>) => {
   const lanes = new Map<string, Lane<Input, Output>>();
+  /** The weight of every call that has not been answered yet. */
+  let held = 0;
 
   /** Never rejects: what the call did is recorded on each waiter. */
   const makeBatch = async (
@@ -86,12 +98,26 @@ export const coalescer = <Input, Output>(options: {
     if (lane?.inFlight && Date.now() - lane.since > abandonAfterMs) {
       lane = undefined;
     }
+    const weight = options.weigh(input);
+    const waiting =
+      lane?.waiting.reduce(
+        (all, other) => all + options.weigh(other.input),
+        0
+      ) ?? 0;
+    // A destination with nothing waiting always takes a call, whatever its size.
+    if (
+      (waiting > 0 && waiting + weight > options.maxWaitingWeight) ||
+      (held > 0 && held + weight > options.maxHeldWeight)
+    ) {
+      return options.refuse(key, input);
+    }
     if (!lane) {
       lane = { waiting: [], since: 0 };
       lanes.set(key, lane);
     }
     const waiter: Waiter<Input, Output> = { input };
     lane.waiting.push(waiter);
+    held += weight;
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const lost = new Promise<'lost'>((resolve) => {
@@ -114,6 +140,7 @@ export const coalescer = <Input, Output>(options: {
       }
     } finally {
       clearTimeout(timer);
+      held -= weight;
     }
     if ('error' in waiter.outcome) {
       throw waiter.outcome.error;

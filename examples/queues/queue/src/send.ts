@@ -73,6 +73,14 @@ type Share =
 
 /** As many messages as a partition stores in one transaction. */
 const maxMessagesPerAppend = 1_000;
+/**
+ * How many messages may wait in this isolate for one partition, and be on
+ * their way or waiting for all of them. Past either, a send's share is
+ * rejected at once: an isolate that kept everything a slow partition could
+ * not take would run out of memory and fail the sends that had been stored.
+ */
+const maxMessagesWaitingPerPartition = 5 * maxMessagesPerAppend;
+const maxMessagesHeld = 100_000;
 
 const createAppend = () => {
   const router = DurabilityRouting.client({
@@ -97,6 +105,15 @@ const createAppend = () => {
     },
     weigh: (input) => input.messages.length,
     maxWeight: maxMessagesPerAppend,
+    maxWaitingWeight: maxMessagesWaitingPerPartition,
+    maxHeldWeight: maxMessagesHeld,
+    refuse: () => ({
+      success: false,
+      error: {
+        name: 'Backpressure',
+        message: 'The partition is not keeping up; retry later',
+      },
+    }),
     keepAlive: waitUntil,
   });
 };

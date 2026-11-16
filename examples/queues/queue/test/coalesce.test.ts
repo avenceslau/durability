@@ -20,6 +20,9 @@ const destination = () => {
       }),
     weigh: () => 1,
     maxWeight: 3,
+    maxWaitingWeight: 5,
+    maxHeldWeight: 8,
+    refuse: (_key, input) => `refused ${input}`,
   });
   return { calls, call };
 };
@@ -66,6 +69,61 @@ describe('coalescer', () => {
     expect(await Promise.all(all)).toEqual(
       [1, 2, 3, 4, 5, 6].map((input) => `done ${input}`)
     );
+  });
+
+  it('refuses at once what would wait past the bound for one destination', async () => {
+    const { calls, call } = destination();
+    const first = call('a', 1);
+    const waiting = [2, 3, 4, 5, 6].map((input) => call('a', input));
+    expect(await call('a', 7)).toBe('refused 7');
+    // Another destination is not held up by this one.
+    const other = call('b', 8);
+
+    await settle();
+    expect(calls.map((entry) => entry.inputs)).toEqual([[1], [8]]);
+    calls[0]!.finish();
+    calls[1]!.finish();
+    await settle();
+    calls[2]!.finish();
+    await settle();
+    calls[3]!.finish();
+    expect(calls.map((entry) => entry.inputs)).toEqual([
+      [1],
+      [8],
+      [2, 3, 4],
+      [5, 6],
+    ]);
+    expect(await Promise.all([first, ...waiting, other])).toEqual([
+      'done 1',
+      'done 2',
+      'done 3',
+      'done 4',
+      'done 5',
+      'done 6',
+      'done 8',
+    ]);
+    // Once the line is gone, the destination takes calls again.
+    const after = call('a', 9);
+    await settle();
+    calls.at(-1)?.finish();
+    expect(await after).toBe('done 9');
+  });
+
+  it('refuses what would be held past the bound for all destinations', async () => {
+    const { calls, call } = destination();
+    const held = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((key, index) =>
+      call(key, index)
+    );
+    expect(await call('i', 99)).toBe('refused 99');
+    await settle();
+    for (const entry of calls) {
+      entry.finish();
+    }
+    expect(await Promise.all(held)).toHaveLength(8);
+    const after = call('i', 100);
+    await settle();
+    calls.at(-1)?.finish();
+    expect(await after).toBe('done 100');
   });
 
   it('fails every call of a batch that fails, and carries on with the next', async () => {
