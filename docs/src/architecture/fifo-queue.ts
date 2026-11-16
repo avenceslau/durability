@@ -761,9 +761,9 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'refuse',
-          title: 'Refuse rather than drop',
+          title: 'Refuse only if the queue asks for it',
           description:
-            'Retention removes old messages whether or not a target has received them. So a partition refuses new messages once a running target is maxBacklog behind, and the producer sees 429 instead of a later silent loss.',
+            'A queue may set maxBacklog: a partition then refuses new messages once a running target is that far behind, and the producer sees 429. By default there is no limit. A backlog that outgrows what the partition holds itself moves to R2, oldest first, and is read back as delivery reaches it.',
           stage: ['focus:partition'],
           source: sourceFocus(
             append,

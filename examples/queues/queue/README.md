@@ -34,7 +34,7 @@ const outcome = await env.QUEUE.send('orders', [
 `send` takes up to 1000 messages: `{ key: string, body: unknown, id?: string }`. A message without an `id` gets a random one. The outcome lists the accepted ids and, per rejected group, the ids and the reason:
 
 - **Accepted** means stored. Delivery happens afterwards.
-- **`Backpressure`**: a running target is `maxBacklog` messages behind. Retry later.
+- **`Backpressure`**: too much is waiting for a partition in the Worker, or the queue sets `maxBacklog` and a running target is that far behind. Retry later.
 - **`PartitionReplaced`** after three redirects: the queue is resizing. Retry shortly.
 - **A thrown call** is uncertain: the messages may or may not be stored. Retry **with the same `id`s**. A partition accepts an id once while it keeps the message, so only a retry that lands after a resize can store a message twice.
 
@@ -224,7 +224,7 @@ const overview = await env.QUEUE_ADMIN.overview('orders');
 | `overview(queue)`                    | Settings, targets, epochs, the latest sample of each partition, limiters, and points.  |
 | `delete(queue)`                      | Deletes the queue.                                                                     |
 
-Queue settings: `partitions` (`min` 1, `max` 16, `targetRate` 200 accepted messages per second per partition), `maxConcurrency` (batches in flight across the queue, `null` for no limit), `limitMode` (`strict` or `fast`), `limiterTargetRate` (200 permit requests per second per limiter), `maxBacklog` (100000 undelivered messages per partition), `pullConsumers`, and `pullRetentionDays`.
+Queue settings: `partitions` (`min` 1, `max` 16, `targetRate` 200 accepted messages per second per partition), `maxConcurrency` (batches in flight across the queue, `null` for no limit), `limitMode` (`strict` or `fast`), `limiterTargetRate` (200 permit requests per second per limiter), `maxBacklog` (undelivered messages per partition before sends are refused; `null`, the default, for no limit), `pullConsumers`, and `pullRetentionDays`.
 
 ### HTTP
 
@@ -277,6 +277,8 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 
 **The partition list in KV has no expiry** and is written only by the orchestrator, when the partitions change.
 
+**A backlog can outgrow its partition.** The partition's log (`DurabilityLog`) is given R2 as cold storage. Once the partition holds more than 512 MB, or a message turns 4 days old, the log hands over its oldest messages: those every target has received, and those too old, are dropped; the rest are written to R2 as one object per run of up to 1,000. Delivery reads through both without knowing the difference. A sweep deletes the objects every target has passed.
+
 **Sends are merged per partition.** A send with many keys touches most partitions of its queue, so a partition would be called once per send however many partitions there are. The Worker makes one call to a partition at a time (`src/coalesce.ts`): a send that arrives while one is on its way waits, and goes together with the others that waited. The partition stores a call in one transaction, all of it or none. Nothing is held back to fill a batch, and there is no timeout: a slow partition shows as latency. What may wait is bounded instead, at 5,000 messages per partition and 100,000 per Worker isolate. Past that a send's share is rejected at once as backpressure (`429` over HTTP), because an isolate that kept everything a slow partition could not take would run out of memory and fail the sends that had been stored.
 
 **Two kinds of target.** For `rpc`, `webhook`, `service`, and `queue` targets, a partition records every message it hands out in a `pending` table. An acknowledged message is deleted from it; a retried one stays, with the time it is due again, and later messages of its key are held behind it. A message handed out and not settled within the timeout plus five seconds, for example because the partition was evicted mid-call, is delivered again. The `pull` and `archive` targets store whole batches instead: one range of offsets at a time, retried with backoff before the next, so the bucket holds each partition's messages in order. A whole batch is dead-lettered after `maxRetries`; the `pull` target allows 100.
@@ -303,7 +305,7 @@ A target's own `maxConcurrency` is split between limiters in the same proportion
 
 ## Limits
 
-- A partition keeps messages for 4 days or 512 MB, whichever comes first; `pullRetentionDays` applies to the pull bucket only. A target that stays behind longer loses messages; `maxBacklog` rejects sends before that happens for running targets, not for paused ones.
+- A message lives 4 days, delivered or not; `pullRetentionDays` applies to the pull bucket only. A partition holds up to 512 MB itself. When a target is further behind than that, the partition's oldest messages move to R2 under `backlog/` in the `STORAGE` bucket and are read back as delivery reaches them, so a slow or paused target costs storage and latency instead of refused sends. Set `maxBacklog` to refuse sends instead.
 - One orchestrator receives every partition's samples, so the dashboard, not the queue, is what stops scaling first. Lengthen `sampleIntervalMs` in `src/partition.ts` for queues with many hundreds of busy partitions.
 - The autoscaler's thresholds (`src/scaling.ts`) and `limiterTargetRate` are starting points, not measurements of your workload.
 - A message waiting for a retry is still subject to the 4 days: retries and delays that add up to more lose it without a dead letter. The partition reports it as the target's last error.

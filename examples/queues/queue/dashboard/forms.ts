@@ -111,8 +111,8 @@ export const settingsForm = (
       ),
       field(
         'Max backlog',
-        numberInput('maxBacklog', { min: 1, required: true }),
-        'Per partition'
+        numberInput('maxBacklog', { min: 1, placeholder: 'none' }),
+        'Per partition. Empty for no limit: the rest waits in R2'
       ),
       field(
         'Max concurrency',
@@ -165,7 +165,7 @@ export const settingsForm = (
       maxConcurrency: numberField(form, 'maxConcurrency') ?? null,
       limitMode: textField(form, 'limitMode') === 'fast' ? 'fast' : 'strict',
       limiterTargetRate: numberField(form, 'limiterTargetRate') ?? 200,
-      maxBacklog: numberField(form, 'maxBacklog') ?? 100_000,
+      maxBacklog: numberField(form, 'maxBacklog') ?? null,
       pullConsumers: new FormData(form).has('pullConsumers'),
       pullRetentionDays: numberField(form, 'pullRetentionDays') ?? 7,
     });

@@ -70,7 +70,14 @@ type Counters = {
 };
 
 const retentionMs = 4 * 24 * 60 * 60 * 1_000;
+/**
+ * What a partition keeps in its own storage. Past it, the oldest messages
+ * move to R2: those every target has received are dropped on the way, the
+ * rest are read back when delivery reaches them.
+ */
 const retentionBytes = 512 * 1024 * 1024;
+/** Returned for a run of messages nobody needs, so nothing is written for it. */
+const droppedSegment = 'dropped';
 const retentionSweepMs = 60_000;
 /** Must outlast the longest target timeout, or a batch is redelivered while it runs. */
 const leaseMs = 60_000;
@@ -143,6 +150,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     retention: {
       maxAgeMs: retentionMs,
       maxBytes: retentionBytes,
+    },
+    cold: {
+      write: (segment) => this.moveToBacklogBucket(segment.records),
+      read: (locator) => this.readFromBacklogBucket(locator),
     },
     // One range per target at a time is what keeps delivery in order.
     leases: {
@@ -240,6 +251,163 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       `CREATE INDEX IF NOT EXISTS pull_batches_by_time
        ON pull_batches (written_at)`
     );
+    this.sql.exec(
+      `CREATE TABLE IF NOT EXISTS backlog_segments (
+         first_offset INTEGER PRIMARY KEY,
+         last_offset INTEGER NOT NULL,
+         object_key TEXT NOT NULL,
+         newest_at INTEGER NOT NULL
+       )`
+    );
+  }
+
+  /**
+   * The lowest offset a target of the queue may still need: below it every
+   * target has received the message, or given up on it.
+   */
+  private async neededFrom(): Promise<number> {
+    const config = this.config;
+    if (!config) {
+      return 0;
+    }
+    const names = Object.keys(config.targets);
+    const targets = names.length > 0 ? names : [noTargetName];
+    const positions = await this.log.cursors();
+    // A target's position is past messages it is still retrying or holding.
+    const firstWaiting = (name: string): number =>
+      this.sql
+        .exec<{ first: number | null }>(
+          'SELECT MIN(message_offset) AS first FROM pending WHERE target = ?',
+          name
+        )
+        .one().first ?? Infinity;
+    return Math.min(
+      ...targets.map((name) =>
+        Math.min(positions[name] ?? 0, firstWaiting(name))
+      )
+    );
+  }
+
+  /**
+   * Called by the log for its oldest messages once the partition holds more
+   * than it should, or they are older than a message may get. What some
+   * target still needs is written to R2; the rest is dropped here.
+   */
+  private async moveToBacklogBucket(
+    records: LogRecord<Message>[]
+  ): Promise<string> {
+    const identity = this.identity;
+    if (!identity) {
+      throw new Error('A partition that has stored messages knows its name');
+    }
+    const neededFrom = await this.neededFrom();
+    const cutoff = Date.now() - retentionMs;
+    const kept = records.filter(
+      (record) => record.offset >= neededFrom && record.appendedAt >= cutoff
+    );
+    const newest = kept[kept.length - 1];
+    if (!newest) {
+      return droppedSegment;
+    }
+
+    // Named after the whole run, so the same run handed over again after a
+    // crash finds the copy already written and leaves it.
+    const first = records[0]!.offset;
+    const last = records[records.length - 1]!.offset;
+    const key = `backlog/${partitionName(identity)}/${first}-${last}`;
+    await env.STORAGE.put(key, JSON.stringify(kept), {
+      onlyIf: { etagDoesNotMatch: '*' },
+    });
+    this.sql.exec(
+      `INSERT OR REPLACE INTO backlog_segments
+         (first_offset, last_offset, object_key, newest_at)
+       VALUES (?, ?, ?, ?)`,
+      first,
+      last,
+      key,
+      newest.appendedAt
+    );
+    return key;
+  }
+
+  /** The segment delivery read last: a batch is a small part of one. */
+  private lastSegment:
+    | { key: string; records: LogRecord<Message>[] }
+    | undefined;
+
+  private async readFromBacklogBucket(
+    key: string
+  ): Promise<LogRecord<Message>[] | undefined> {
+    if (key === droppedSegment) {
+      return undefined;
+    }
+    if (this.lastSegment?.key === key) {
+      return this.lastSegment.records;
+    }
+    const stored = await env.STORAGE.get(key);
+    if (!stored) {
+      return undefined;
+    }
+    const records = await stored.json<LogRecord<Message>[]>();
+    this.lastSegment = { key, records };
+    return records;
+  }
+
+  /**
+   * Deletes the segments every target is past and those too old to keep,
+   * then tells the log where what it can still read begins. Resolves to when
+   * the next segment becomes too old.
+   */
+  private async dropBacklogSegments(): Promise<number | undefined> {
+    const neededFrom = await this.neededFrom();
+    const done = this.sql
+      .exec<{ first_offset: number; object_key: string }>(
+        `SELECT first_offset, object_key FROM backlog_segments
+         WHERE last_offset < ? OR newest_at < ?
+         ORDER BY first_offset LIMIT 1000`,
+        neededFrom,
+        Date.now() - retentionMs
+      )
+      .toArray();
+    if (done.length > 0) {
+      await env.STORAGE.delete(done.map((segment) => segment.object_key));
+      for (const segment of done) {
+        this.sql.exec(
+          'DELETE FROM backlog_segments WHERE first_offset = ?',
+          segment.first_offset
+        );
+      }
+    }
+
+    const oldest = this.sql
+      .exec<{ first_offset: number; newest_at: number }>(
+        `SELECT first_offset, newest_at FROM backlog_segments
+         ORDER BY first_offset LIMIT 1`
+      )
+      .toArray()[0];
+    // What was dropped is always older than what was kept, so everything
+    // before the oldest kept segment is gone.
+    const { hotOffset } = await this.log.bounds();
+    await this.log.forgetColdBefore(oldest?.first_offset ?? hotOffset);
+    return oldest === undefined
+      ? undefined
+      : oldest.newest_at + retentionMs + 1;
+  }
+
+  /**
+   * Where reading can resume after `offset` turned out to be gone: the next
+   * segment in R2, or what the partition still holds itself.
+   */
+  private async readableFrom(offset: number): Promise<number> {
+    const next = this.sql
+      .exec<{ first_offset: number }>(
+        `SELECT first_offset FROM backlog_segments
+         WHERE first_offset > ? ORDER BY first_offset LIMIT 1`,
+        offset
+      )
+      .toArray()[0];
+    const { hotOffset } = await this.log.bounds();
+    return Math.max(offset + 1, next?.first_offset ?? hotOffset);
   }
 
   /**
@@ -389,6 +557,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   private async enforceRetention(): Promise<void> {
     this.ctx.storage.kv.delete('sweepAt');
     await this.log.trim();
+    const segmentsDue = await this.dropBacklogSegments();
     // A sweep that throws is retried a few times and then dropped, which
     // would leave the pull bucket unswept; try again with the next sweep.
     const pullLogDue = await this.expirePullLog().catch((error: unknown) => {
@@ -405,7 +574,11 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         ? undefined
         : Math.max(oldest.appendedAt + retentionMs, Date.now()) + 1;
 
-    const next = Math.min(logDue ?? Infinity, pullLogDue ?? Infinity);
+    const next = Math.min(
+      logDue ?? Infinity,
+      pullLogDue ?? Infinity,
+      segmentsDue ?? Infinity
+    );
     if (Number.isFinite(next)) {
       await this.sweepBy(next);
     }
@@ -449,7 +622,8 @@ export class Partition extends DurableObject<Cloudflare.Env> {
    */
   private async overBacklog(): Promise<boolean> {
     const config = this.config;
-    if (!config) {
+    const limit = config?.maxBacklog ?? null;
+    if (!config || limit === null) {
       return false;
     }
     const { nextOffset } = await this.log.bounds();
@@ -459,7 +633,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       ([name, target]) =>
         !target.paused &&
         nextOffset - (positions[name] ?? 0) + (unsettled.get(name) ?? 0) >=
-          config.maxBacklog
+          limit
     );
   }
 
@@ -605,6 +779,13 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     }
     if (resumeAt !== undefined) {
       await this.requestDelivery(resumeAt);
+    }
+    const segments = this.sql
+      .exec<{ count: number }>('SELECT COUNT(*) AS count FROM backlog_segments')
+      .one().count;
+    if (segments > 0) {
+      // Delivery may have passed some of them; the sweep deletes those.
+      await this.sweepBy(Date.now() + retentionSweepMs);
     }
     await this.stageSample(true);
   }
@@ -852,7 +1033,19 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         lastError: 'Retention removed messages before they were delivered',
       });
     }
-    const page = await this.log.read({ from: scanned, limit });
+    const page = await this.log
+      .read({ from: scanned, limit })
+      .catch(async (error: unknown) => {
+        if (!(error instanceof LogTruncatedError)) {
+          throw error;
+        }
+        // A segment in R2 is gone. The position moves to what can be read.
+        scanned = await this.readableFrom(scanned);
+        this.count(name, {
+          lastError: 'Retention removed messages before they were delivered',
+        });
+        return { records: [] };
+      });
     for (const record of page.records) {
       const { key, only } = record.body;
       const row = {
@@ -1099,7 +1292,14 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     if (offset < oldestOffset) {
       return undefined;
     }
-    const { records } = await this.log.read({ from: offset, limit: 1 });
+    const { records } = await this.log
+      .read({ from: offset, limit: 1 })
+      .catch((error: unknown) => {
+        if (!(error instanceof LogTruncatedError)) {
+          throw error;
+        }
+        return { records: [] };
+      });
     return records[0]?.offset === offset ? records[0] : undefined;
   }
 
@@ -1121,9 +1321,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       if (!(error instanceof LogTruncatedError)) {
         throw error;
       }
-      // Retention removed messages this target never received.
+      // Retention removed messages this target never received. Trying again
+      // at once would spin until the log has moved the target past them.
       this.count(name, { lastError: error.message });
-      return undefined;
+      return Date.now() + 1_000;
     }
     if (!lease) {
       // A range leased before a restart is still held until it expires.

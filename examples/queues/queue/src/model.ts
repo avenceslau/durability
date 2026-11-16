@@ -139,8 +139,12 @@ export const settingsInputSchema = v.object({
   limitMode: v.optional(v.picklist(['strict', 'fast']), 'strict'),
   /** Permit requests per second one limiter should carry. */
   limiterTargetRate: v.optional(positive, 200),
-  /** Undelivered messages one partition holds before it rejects sends. */
-  maxBacklog: v.optional(positive, 100_000),
+  /**
+   * Undelivered messages one partition holds before it rejects sends, or
+   * `null` for no limit: a backlog that outgrows a partition moves to R2 and
+   * is read back as delivery reaches it.
+   */
+  maxBacklog: v.optional(v.nullable(positive), null),
   /** Also writes every message to the pull bucket, for consumers that ask for messages. */
   pullConsumers: v.optional(v.boolean(), false),
   /** Days a message stays in the pull bucket. */
@@ -168,7 +172,7 @@ export type PartitionConfig = {
   targets: Record<string, PartitionTarget>;
   /** Limiter object names; empty when the queue has no concurrency limit. */
   limiters: string[];
-  maxBacklog: number;
+  maxBacklog: number | null;
   /** How long a batch stays in the pull bucket. */
   pullRetentionMs: number;
 };

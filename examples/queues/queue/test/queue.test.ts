@@ -570,6 +570,98 @@ describe('fifo queue', () => {
     expect(await stores.getByName(queue).deliveries('held')).toEqual([]);
   });
 
+  const gigabyte = 1024 ** 3;
+
+  /**
+   * A partition moves its oldest messages out once it holds more bytes than
+   * it should. A few test messages are far from that, so this tells the log
+   * it holds a gigabyte more for the length of one sweep.
+   */
+  const sweepAsIfFull = (partition: DurableObjectStub<Partition>) =>
+    runInDurableObject(partition, async (instance, state) => {
+      state.storage.sql.exec(
+        'UPDATE durability_log_seq SET total_bytes = total_bytes + ?',
+        gigabyte
+      );
+      await (
+        instance as unknown as { enforceRetention(): Promise<void> }
+      ).enforceRetention();
+      state.storage.sql.exec(
+        'UPDATE durability_log_seq SET total_bytes = MAX(0, total_bytes - ?)',
+        gigabyte
+      );
+      return state.storage.sql
+        .exec<{ count: number }>(
+          'SELECT COUNT(*) AS count FROM durability_log_records'
+        )
+        .one().count;
+    });
+
+  const backlogInBucket = async (queue: string) =>
+    (await env.STORAGE.list({ prefix: `backlog/${queue}/` })).objects.length;
+
+  it('keeps a backlog that outgrows its partition in R2 and delivers it in order', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'held', { paused: true });
+    await addTarget(queue, 'running');
+    const bodies = Array.from({ length: 30 }, (_, body) => body);
+    await produce(
+      queue,
+      bodies.map((body) => ({ key: `k${body % 3}`, body }))
+    );
+    await received(queue, 'running', 30);
+
+    // `held` has received none of them, so they are kept, in R2.
+    const partition = await partitionWith(queue, 30);
+    expect(await sweepAsIfFull(partition)).toBe(0);
+    expect(await backlogInBucket(queue)).toBe(1);
+
+    await expectOk(
+      await admin(`/queues/${queue}/targets/held/pause`, 'POST', {
+        paused: false,
+      })
+    );
+    const byKey = bodiesByKey(await received(queue, 'held', 30));
+    for (const key of ['k0', 'k1', 'k2']) {
+      expect(byKey[key]).toEqual(
+        bodies.filter((body) => `k${body % 3}` === key)
+      );
+    }
+
+    // Every target has them now, so a sweep deletes them from R2.
+    await waitFor(
+      async () => {
+        await sweepAsIfFull(partition);
+        return backlogInBucket(queue);
+      },
+      (segments) => segments === 0
+    );
+  });
+
+  it('drops what every target has received instead of keeping it', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'running');
+    await produce(
+      queue,
+      Array.from({ length: 10 }, (_, body) => ({ key: 'k', body }))
+    );
+    await received(queue, 'running', 10);
+    const partition = await partitionWith(queue, 10);
+    await waitFor(
+      async () =>
+        (await overview(queue)).partitions[0]?.targets['running']?.settled,
+      (settled) => settled === 10
+    );
+
+    expect(await sweepAsIfFull(partition)).toBe(0);
+    expect(await backlogInBucket(queue)).toBe(0);
+    // The queue goes on as before.
+    await produce(queue, [{ key: 'k', body: 10 }]);
+    expect(bodiesByKey(await received(queue, 'running', 11))['k']).toHaveLength(
+      11
+    );
+  });
+
   it('refuses to turn a consumer target into an archive', async () => {
     const queue = await createQueue();
     await addTarget(queue, 'orders');
