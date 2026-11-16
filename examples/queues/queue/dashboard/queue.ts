@@ -225,7 +225,11 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
     );
     if (overview.epochs.length > 1) {
       badges.appendChild(
-        element('span', { class: 'badge warning' }, 'resizing')
+        element(
+          'span',
+          { class: 'badge warning' },
+          `${overview.epochs.length - 1} earlier resize${overview.epochs.length === 2 ? '' : 's'} draining`
+        )
       );
     }
   };

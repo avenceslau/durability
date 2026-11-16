@@ -112,7 +112,7 @@ const allQueues = (summaries: QueueSummary[]): HTMLElement[] => {
       tile(
         'Partitions',
         compact(total((summary) => summary.partitions)),
-        resizing === 0 ? undefined : `${resizing} queues resizing`
+        resizing === 0 ? undefined : `${resizing} queues draining older ones`
       ),
       tile(
         'Accepted',
@@ -172,7 +172,7 @@ const allQueues = (summaries: QueueSummary[]): HTMLElement[] => {
               ),
               number(
                 summary.epochs > 1
-                  ? `${summary.partitions} (resizing)`
+                  ? `${summary.partitions} (${summary.epochs - 1} draining)`
                   : String(summary.partitions)
               ),
               number(perSecond(summary.acceptedPerSecond)),

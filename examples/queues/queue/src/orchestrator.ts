@@ -75,6 +75,12 @@ const tickMs = 2_000;
 const idleAfterMs = 30_000;
 const rateWindowMs = 30_000;
 const summaryStaleMs = 15_000;
+/**
+ * A resize does not wait for the one before it: accepting has to be able to
+ * grow while a slow target still works through older partitions. Every
+ * resize that has not drained keeps its partitions, so their number is bounded.
+ */
+const maxLiveEpochs = 8;
 /** How far back the dashboard's charts go. */
 const pointsKeptMs = 30 * 60_000;
 const eventsKept = 100;
@@ -525,8 +531,9 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
       const epochs = this.epochs;
       const { min, max } = settings.partitions;
-      const count = Math.min(max, Math.max(min, epochs[0]!.count));
-      if (epochs.length === 1 && count !== epochs[0]!.count) {
+      const active = epochs[epochs.length - 1]!.count;
+      const count = Math.min(max, Math.max(min, active));
+      if (count !== active && epochs.length < maxLiveEpochs) {
         await this.startResize(count);
       }
     });
@@ -546,8 +553,13 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   private async startResize(count: number): Promise<void> {
     const epochs = this.epochs;
     const active = epochs[epochs.length - 1]!;
-    if (epochs.length > 1 || this.kv.get<Layout>('resize')) {
-      throw new QueueError('The previous resize is still draining');
+    if (this.kv.get<Layout>('resize')) {
+      throw new QueueError('A resize is already in progress');
+    }
+    if (epochs.length >= maxLiveEpochs) {
+      throw new QueueError(
+        `${epochs.length - 1} earlier resizes are still draining; wait for one to finish`
+      );
     }
     if (count === active.count) {
       return;
@@ -878,7 +890,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
   private async autoscale(point: Point): Promise<void> {
     const epochs = this.epochs;
-    if (epochs.length > 1) {
+    if (epochs.length >= maxLiveEpochs || this.kv.get<Layout>('resize')) {
       return;
     }
     const earlier = this.sql
@@ -921,7 +933,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
     const { partitions: range } = this.settings;
     const count = planPartitions({
-      current: epochs[0]!.count,
+      current: epochs[epochs.length - 1]!.count,
       min: range.min,
       max: range.max,
       targetRate: range.targetRate,

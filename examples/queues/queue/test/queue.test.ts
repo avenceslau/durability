@@ -785,6 +785,53 @@ describe('fifo queue', () => {
     );
   });
 
+  it('resizes again while an earlier resize still drains, and keeps order', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 8 } });
+    // Nothing drains while the target is paused, so every resize stays live.
+    await addTarget(queue, 'held', { paused: true });
+    const keys = Array.from({ length: 6 }, (_, index) => `key-${index}`);
+    const send = async (from: number, to: number) => {
+      for (let body = from; body < to; body += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        const response = await produce(
+          queue,
+          keys.map((key) => ({ key, body }))
+        );
+        expect(response.status).toBe(202);
+      }
+    };
+    const resizeTo = async (count: number) =>
+      expectOk(
+        await admin(`/queues/${queue}/resize`, 'POST', { partitions: count })
+      );
+
+    await send(0, 3);
+    await resizeTo(2);
+    await send(3, 6);
+    await resizeTo(5);
+    await send(6, 9);
+    await resizeTo(3);
+    await send(9, 12);
+    expect(
+      (await overview(queue)).epochs.map((layout) => layout.count)
+    ).toEqual([1, 2, 5, 3]);
+
+    await expectOk(
+      await admin(`/queues/${queue}/targets/held/pause`, 'POST', {
+        paused: false,
+      })
+    );
+    const byKey = bodiesByKey(await received(queue, 'held', keys.length * 12));
+    for (const key of keys) {
+      expect(byKey[key]).toEqual(Array.from({ length: 12 }, (_, n) => n));
+    }
+    const settled = await waitFor(
+      () => overview(queue),
+      (current) => current.epochs.length === 1
+    );
+    expect(settled.epochs[0]?.count).toBe(3);
+  });
+
   it('never runs more batches at once than the queue limit', async () => {
     const queue = await createQueue({
       partitions: { min: 8, max: 8 },

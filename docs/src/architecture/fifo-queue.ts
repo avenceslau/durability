@@ -1454,16 +1454,17 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'stuck',
-          title: 'A target that cannot finish holds the epoch',
+          title:
+            'A target that cannot finish holds its epochs, not the resizes',
           description:
-            'Only one resize runs at a time. A target that is paused, or whose messages keep being retried, keeps the old epoch alive until it has acknowledged or dead-lettered every message in it, and no further resize starts before then.',
+            'A target that is paused, slow, or whose messages keep being retried keeps an old epoch alive until it has acknowledged or dead-lettered every message in it. Resizes do not wait for that: accepting has to be able to grow while delivery is behind. Each resize that has not drained keeps its partitions, so at most eight epochs are live at once.',
           stage: ['focus:orchestrator'],
           source: sourceFocus(
             startResize,
-            "if (epochs.length > 1 || this.kv.get<Layout>('resize')) {",
-            "throw new QueueError('The previous resize is still draining');"
+            'if (epochs.length >= maxLiveEpochs) {',
+            '`${epochs.length - 1} earlier resizes are still draining; wait for one to finish`'
           ),
-          durable: 'Two live epochs.',
+          durable: 'Up to eight live epochs.',
           volatile: 'Nothing.',
           status: 'gap',
         },

@@ -440,7 +440,7 @@ ticking and can be evicted.
 | Orchestrator evicted between storing and pushing       | Every tick pushes the stored configuration and shares again.                                                              | Ticks run only while partitions report; an idle queue repairs on next use.           |
 | Limiter unreachable                                    | Its partitions cannot take permits and stop delivering; accepting is unaffected.                                          | Alerting on backlog without delivery.                                                |
 | Permit held by an evicted partition                    | Adopted when the target next has work, otherwise returned by a check a minute after it was granted.                       | Nothing.                                                                             |
-| A target that never succeeds during a resize           | It holds the old epoch, and the next resize, until its messages are dead-lettered.                                        | Pause, fix, or remove the target.                                                    |
+| A target that never succeeds during a resize           | It holds the old epoch until its messages are dead-lettered. Resizes go on, up to eight live epochs.                      | Pause, fix, or remove the target.                                                    |
 
 ## What the example leaves to you
 

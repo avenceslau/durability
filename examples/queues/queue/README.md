@@ -212,17 +212,17 @@ await env.QUEUE_ADMIN.updateSettings('orders', { maxBacklog: 50_000 });
 const overview = await env.QUEUE_ADMIN.overview('orders');
 ```
 
-| Method                               | Does                                                                                   |
-| ------------------------------------ | -------------------------------------------------------------------------------------- |
-| `list()`                             | The queues, for the dashboard.                                                         |
-| `create(queue, settings?)`           | Creates a queue.                                                                       |
-| `updateSettings(queue, changes)`     | Changes the settings given and keeps the rest, `partitions` included.                  |
-| `putTarget(queue, target, settings)` | Adds or replaces a target. Settings left out take their defaults.                      |
-| `pauseTarget(queue, target, paused)` | Pauses or resumes a target.                                                            |
-| `removeTarget(queue, target)`        | Removes a target.                                                                      |
-| `resize(queue, partitions)`          | Starts a resize, within `partitions.min` and `max`, once the previous one has drained. |
-| `overview(queue)`                    | Settings, targets, epochs, the latest sample of each partition, limiters, and points.  |
-| `delete(queue)`                      | Deletes the queue.                                                                     |
+| Method                               | Does                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `list()`                             | The queues, for the dashboard.                                                                  |
+| `create(queue, settings?)`           | Creates a queue.                                                                                |
+| `updateSettings(queue, changes)`     | Changes the settings given and keeps the rest, `partitions` included.                           |
+| `putTarget(queue, target, settings)` | Adds or replaces a target. Settings left out take their defaults.                               |
+| `pauseTarget(queue, target, paused)` | Pauses or resumes a target.                                                                     |
+| `removeTarget(queue, target)`        | Removes a target.                                                                               |
+| `resize(queue, partitions)`          | Starts a resize, within `partitions.min` and `max`. It does not wait for earlier ones to drain. |
+| `overview(queue)`                    | Settings, targets, epochs, the latest sample of each partition, limiters, and points.           |
+| `delete(queue)`                      | Deletes the queue.                                                                              |
 
 Queue settings: `partitions` (`min` 1, `max` 16, `targetRate` 200 accepted messages per second per partition), `maxConcurrency` (batches in flight across the queue, `null` for no limit), `limitMode` (`strict` or `fast`), `limiterTargetRate` (200 permit requests per second per limiter), `maxBacklog` (undelivered messages per partition before sends are refused; `null`, the default, for no limit), `pullConsumers`, and `pullRetentionDays`.
 
@@ -290,7 +290,7 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 3. A target is delivered from the new partitions only once the old ones have nothing left for it: every message acknowledged or dead-lettered.
 4. Old partitions with nothing left for any target leave the queue.
 
-Accepting scales immediately; delivery follows when the old backlog is gone. Only one resize runs at a time, and a target that is paused or keeps retrying holds the previous epoch, and so the next resize, until it has worked through that epoch's messages.
+Accepting scales immediately; delivery follows when the old backlog is gone, one epoch after another. A resize does not wait for the ones before it to drain, so a queue can keep growing to accept while a slow or paused target is still working through older partitions. Each resize that has not drained keeps its partitions alive, which is why at most eight epochs are live at once.
 
 **Concurrency.** With `maxConcurrency` set, a partition takes a permit from a limiter before it delivers and keeps it for up to ten seconds of continuous work. A queue starts with one limiter; the orchestrator adds limiters when their request rate exceeds `limiterTargetRate`, and splits the limit between them by demand. `limitMode` chooses how permits move between limiters:
 
