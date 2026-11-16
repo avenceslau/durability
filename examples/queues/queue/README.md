@@ -277,6 +277,8 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 
 **The partition list in KV has no expiry** and is written only by the orchestrator, when the partitions change.
 
+**Sends are merged per partition.** A send with many keys touches most partitions of its queue, so a partition would be called once per send however many partitions there are. The Worker makes one call to a partition at a time (`src/coalesce.ts`): a send that arrives while one is on its way waits, and goes together with the others that waited. The partition stores a call in one transaction, all of it or none. Nothing is held back to fill a batch, and a send waits for its partition as long as the partition takes: there is no timeout in the queue, so a slow partition shows as latency, and one that cannot keep up as the platform's "overloaded" error.
+
 **Two kinds of target.** For `rpc`, `webhook`, `service`, and `queue` targets, a partition records every message it hands out in a `pending` table. An acknowledged message is deleted from it; a retried one stays, with the time it is due again, and later messages of its key are held behind it. A message handed out and not settled within the timeout plus five seconds, for example because the partition was evicted mid-call, is delivered again. The `pull` and `archive` targets store whole batches instead: one range of offsets at a time, retried with backoff before the next, so the bucket holds each partition's messages in order. A whole batch is dead-lettered after `maxRetries`; the `pull` target allows 100.
 
 **Resizing without losing order.** A new partition count re-maps keys, so a resize starts a new _epoch_:

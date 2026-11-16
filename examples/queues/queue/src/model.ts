@@ -285,6 +285,21 @@ export type QueueEvent = {
   detail: string;
 };
 
+/** One queue's latest numbers, for the dashboard's page of all queues. */
+export type QueueSummary = {
+  queue: string;
+  /** Partitions accepting messages. */
+  partitions: number;
+  /** More than one while a resize waits for the previous partitions to drain. */
+  epochs: number;
+  acceptedPerSecond: number;
+  rejectedPerSecond: number;
+  /** Of the target furthest behind; adding targets up would count a message once for each. */
+  deliveredPerSecond: number;
+  backlog: number;
+  deadLettered: number;
+};
+
 export type Overview = {
   queue: string;
   settings: QueueSettings;

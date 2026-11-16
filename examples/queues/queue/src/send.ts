@@ -1,10 +1,10 @@
-import { env } from 'cloudflare:workers';
-import { timeout } from '@durability/transforms';
+import { env, waitUntil } from 'cloudflare:workers';
 import {
   DurabilityTopology,
   TopologyUnavailableError,
 } from 'durability/experimental';
 import { DurabilityRouting } from 'durability/routing';
+import { coalescer } from './coalesce';
 import { partitionFor, partitionName, topologyKey } from './layout';
 import type { Layout, Message, MessageInput } from './model';
 import { Partition, type AppendInput } from './partition';
@@ -26,7 +26,6 @@ export class UnknownQueueError extends Error {
   }
 }
 
-const sendTimeoutMs = 10_000;
 /** A send follows at most this many resizes before it gives up. */
 const maxRedirects = 3;
 
@@ -68,16 +67,42 @@ const layoutOf = async (queue: string): Promise<Layout> => {
   return published;
 };
 
-// Created on first use: this module and `partition.ts` import each other.
-let partitionRouter: ReturnType<typeof createRouter> | undefined;
+type Share =
+  | { success: true }
+  | { success: false; error: { name: string; message: string; next?: Layout } };
 
-const createRouter = () =>
-  DurabilityRouting.client({
+/** As many messages as a partition stores in one transaction. */
+const maxMessagesPerAppend = 1_000;
+
+const createAppend = () => {
+  const router = DurabilityRouting.client({
     target: Partition,
     exportName: 'Partition',
-    invoke: (stub, input: AppendInput) => stub.append(input),
-    sharding: (input) => partitionName(input.identity),
+    invoke: (stub, inputs: AppendInput[]) => stub.append(inputs),
+    sharding: (inputs) => partitionName(inputs[0]!.identity),
   });
+  /**
+   * Every send touches most partitions of its queue, so a partition would be
+   * called once per send however many partitions there are. Sends that wait
+   * for the same partition go to it in one call, which it stores in one
+   * transaction: all of them or none.
+   */
+  return coalescer<AppendInput, Share>({
+    invoke: async (_partition, inputs) => {
+      const result = await router.push(inputs);
+      const share: Share = result.success
+        ? { success: true }
+        : { success: false, error: result.error };
+      return inputs.map(() => share);
+    },
+    weigh: (input) => input.messages.length,
+    maxWeight: maxMessagesPerAppend,
+    keepAlive: waitUntil,
+  });
+};
+
+// Created on first use: this module and `partition.ts` import each other.
+let append: ReturnType<typeof createAppend> | undefined;
 
 const groupByPartition = (
   queue: string,
@@ -115,14 +140,14 @@ export const send = async (
   }));
   const outcome: SendOutcome = { accepted: [], rejected: [] };
   let layout = await layoutOf(queue);
-  partitionRouter ??= createRouter();
-  const router = partitionRouter.with(timeout, sendTimeoutMs);
+  append ??= createAppend();
+  const toPartition = append;
 
   for (let hop = 0; hop <= maxRedirects && remaining.length > 0; hop += 1) {
     const groups = groupByPartition(queue, layout, remaining);
     // eslint-disable-next-line no-await-in-loop
     const results = await Promise.all(
-      groups.map((group) => router.push(group))
+      groups.map((group) => toPartition(partitionName(group.identity), group))
     );
 
     remaining = [];

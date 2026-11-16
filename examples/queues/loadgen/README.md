@@ -54,6 +54,6 @@ A tenant at 100 requests per second has four generators; fifty such tenants have
 ## Limits
 
 - At most 2,000 generators, which is 50,000 requests per second.
-- A generator waits for the queue's answer however long it takes, so a request counts as failed only when it throws. The queue itself gives a partition ten seconds to store its share of a request and reports those messages as rejected after that.
+- A generator waits for the queue's answer however long it takes, so a request counts as failed only when it throws. The queue has no timeout of its own on a send either.
 - Counts are kept by the controller in memory between reports; a restart of the controller during a run loses the per-second numbers for one tick, not the totals.
 - This sends real traffic and stores real messages: a run at 5,000 requests per second with 200 messages each is a million messages, and several million Durable Object storage rows, every second. Mind what that costs on your account.

@@ -67,8 +67,16 @@ const append = sourceExcerpt(
   partitionFile,
   'append',
   'Accept a share of a send',
-  '  async append(input: AppendInput): Promise<AppendResult> {',
-  '    return result;\n  }'
+  '  async append(inputs: AppendInput[]): Promise<AppendResult> {',
+  '      ),\n    };\n  }'
+);
+const mergeSends = sourceExcerpt(
+  sendSource,
+  sendFile,
+  'merge-sends',
+  'Merge sends that wait for a partition',
+  'const createAppend = () => {',
+  '    keepAlive: waitUntil,\n  });\n};'
 );
 const stopAccepting = sourceExcerpt(
   partitionSource,
@@ -659,6 +667,7 @@ export const walkthrough = validateWalkthrough({
     accept,
     layoutOf,
     groupByPartition,
+    mergeSends,
     send,
     append,
     stopAccepting,
@@ -736,6 +745,21 @@ export const walkthrough = validateWalkthrough({
           status: 'normal',
         },
         {
+          id: 'merge',
+          title: 'Go together with the sends already waiting',
+          description:
+            'Every send touches most partitions of its queue, so a partition would be called once per send however many partitions the queue has. The Worker therefore makes one call to a partition at a time: a send that arrives while one is on its way waits, and goes together with the others that waited. Nothing is held back to fill a batch; batches grow only when the partition is slower than sends arrive.',
+          stage: ['focus:worker'],
+          source: sourceFocus(
+            mergeSends,
+            'return coalescer<AppendInput, Share>({',
+            'maxWeight: maxMessagesPerAppend,'
+          ),
+          durable: 'Nothing is written while waiting.',
+          volatile: 'The sends waiting for each partition, in this isolate.',
+          status: 'normal',
+        },
+        {
           id: 'refuse',
           title: 'Refuse rather than drop',
           description:
@@ -764,9 +788,9 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'append',
-          title: 'Append the group in one transaction',
+          title: 'Append the call in one transaction',
           description:
-            'The partition appends its group to the log, which gives each message the next offset. The whole group commits or none of it does. A message id already in the log returns its first offset, so a retried send is stored once.',
+            'The partition appends everything the call carries to the log, which gives each message the next offset. That is one storage transaction however many sends were merged, and all of it commits or none does. A message id already in the log returns its first offset, so a retried send is stored once.',
           stage: ['focus:log'],
           source: sourceFocus(
             append,

@@ -46,8 +46,9 @@ export type AppendInput = {
   messages: Message[];
 };
 
+/** On success, the offsets of each input's messages, in the inputs' order. */
 export type AppendResult = EnqueueResult<
-  number[],
+  number[][],
   {
     name: string;
     message: string;
@@ -241,6 +242,18 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     );
   }
 
+  /**
+   * `unsettled()` as of the last change, for the check every append makes:
+   * counting the table each time would cost most when a target is far behind,
+   * which is when appends can least afford it. Dropped whenever it may be off.
+   */
+  private unsettledCounts: Map<string, number> | undefined;
+
+  private countUnsettled(target: string, change: number): void {
+    const counts = this.unsettledCounts;
+    counts?.set(target, (counts.get(target) ?? 0) + change);
+  }
+
   /** Messages each target has been handed or is holding, and has not settled. */
   private unsettled(): Map<string, number> {
     return new Map(
@@ -277,8 +290,17 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  async append(input: AppendInput): Promise<AppendResult> {
-    this.remember(input.identity);
+  /**
+   * Stores the messages of one or more sends, which the Worker merges while
+   * they wait for this partition. They are stored in one transaction, all of
+   * them or none, so the answer is the same for every send in the call.
+   */
+  async append(inputs: AppendInput[]): Promise<AppendResult> {
+    const first = inputs[0];
+    if (!first) {
+      throw new RangeError('Nothing to append');
+    }
+    this.remember(first.identity);
 
     if (this.ctx.storage.kv.get<boolean>('queueDeleted')) {
       return {
@@ -304,10 +326,11 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       };
     }
 
+    const messages = inputs.flatMap((input) => input.messages);
     if (await this.overBacklog()) {
       this.ctx.storage.kv.put('counters', {
         ...this.counters,
-        rejected: this.counters.rejected + input.messages.length,
+        rejected: this.counters.rejected + messages.length,
       });
       await this.stageSample();
       return {
@@ -326,15 +349,22 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     await this.requestDelivery();
     await this.sweepBy(Date.now() + retentionSweepMs);
     const result = await this.log.append(
-      input.messages.map((message) => ({
+      messages.map((message) => ({
         body: message,
         deduplicationKey: message.dedupeId ?? message.id,
       }))
     );
-    if (result.success) {
-      await this.stageSample();
+    if (!result.success) {
+      return result;
     }
-    return result;
+    await this.stageSample();
+    let taken = 0;
+    return {
+      ...result,
+      value: inputs.map((input) =>
+        result.value.slice(taken, (taken += input.messages.length))
+      ),
+    };
   }
 
   /**
@@ -424,7 +454,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     }
     const { nextOffset } = await this.log.bounds();
     const positions = await this.log.cursors();
-    const unsettled = this.unsettled();
+    const unsettled = (this.unsettledCounts ??= this.unsettled());
     return Object.entries(config.targets).some(
       ([name, target]) =>
         !target.paused &&
@@ -480,6 +510,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     for (const { target } of tracked) {
       if (!(target in update.value.targets)) {
         this.sql.exec('DELETE FROM pending WHERE target = ?', target);
+        this.unsettledCounts = undefined;
       }
     }
 
@@ -593,6 +624,8 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       }
       return Date.now();
     } catch (error) {
+      // A transaction that failed part of the way was rolled back.
+      this.unsettledCounts = undefined;
       console.error({
         event: 'fifo_queue.delivery.failed',
         partition: this.identity,
@@ -871,16 +904,19 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     const visibleAgainAt = now + target.attemptTimeoutMs + inFlightGraceMs;
     this.ctx.storage.transactionSync(() => {
       for (const row of [...held, ...joining]) {
-        this.sql.exec(
+        // `rowsWritten` would count the index rows as well.
+        const inserted = this.sql.exec(
           `INSERT OR IGNORE INTO pending
              (target, message_offset, key, attempts, retry_at)
-           VALUES (?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?)
+           RETURNING message_offset`,
           row.target,
           row.message_offset,
           row.key,
           row.attempts,
           row.retry_at
         );
+        this.countUnsettled(name, inserted.toArray().length);
       }
       for (const row of [...waiting, ...joining]) {
         this.sql.exec(
@@ -1047,11 +1083,13 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   }
 
   private forget(name: string, offset: number): void {
-    this.sql.exec(
-      'DELETE FROM pending WHERE target = ? AND message_offset = ?',
+    const removed = this.sql.exec(
+      `DELETE FROM pending WHERE target = ? AND message_offset = ?
+       RETURNING message_offset`,
       name,
       offset
     );
+    this.countUnsettled(name, -removed.toArray().length);
   }
 
   private async recordAt(

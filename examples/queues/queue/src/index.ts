@@ -414,6 +414,9 @@ const route = async (request: Request): Promise<Response> => {
   if (resource === 'load') {
     return load(request, queueSegment);
   }
+  if (resource === 'summary' && request.method === 'GET') {
+    return Response.json(await admin.summaries());
+  }
   if (resource !== 'queues') {
     throw new HttpError(404, 'Not found');
   }

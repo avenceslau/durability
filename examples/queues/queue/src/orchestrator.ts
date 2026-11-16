@@ -27,6 +27,7 @@ import {
   type PartitionTarget,
   type Point,
   type QueueEvent,
+  type QueueSummary,
   type QueueSettings,
   type Shares,
   type TargetSettings,
@@ -73,6 +74,7 @@ const tickMs = 2_000;
 /** Ticks stop this long after the last partition reported. */
 const idleAfterMs = 30_000;
 const rateWindowMs = 30_000;
+const summaryStaleMs = 15_000;
 /** How far back the dashboard's charts go. */
 const pointsKeptMs = 30 * 60_000;
 const eventsKept = 100;
@@ -1121,6 +1123,65 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       throw new QueueError('Queue does not exist');
     }
     return Object.keys(this.targets);
+  }
+
+  /**
+   * Rates are taken over the last few points. A queue that has gone quiet
+   * stops recording points, so an old newest point means no traffic.
+   */
+  summary(): QueueSummary {
+    const recent = this.sql
+      .exec<{ body: string }>(
+        `SELECT body FROM points WHERE resolution = 'raw'
+         ORDER BY at DESC LIMIT 6`
+      )
+      .toArray()
+      .map((row) => JSON.parse(row.body) as Point);
+    const last = recent[0];
+    const epochs = this.epochs;
+    const summary: QueueSummary = {
+      queue: this.queue,
+      partitions: epochs[epochs.length - 1]!.count,
+      epochs: epochs.length,
+      acceptedPerSecond: 0,
+      rejectedPerSecond: 0,
+      deliveredPerSecond: 0,
+      backlog: 0,
+      deadLettered: 0,
+    };
+    if (!last) {
+      return summary;
+    }
+
+    const targets = Object.entries(last.targets);
+    const slowest = targets.reduce<[string, TargetTotals] | undefined>(
+      (behind, entry) =>
+        behind === undefined || entry[1].pending > behind[1].pending
+          ? entry
+          : behind,
+      undefined
+    );
+    summary.backlog = slowest?.[1].pending ?? 0;
+    summary.deadLettered =
+      last.withoutTarget +
+      targets.reduce((all, [, totals]) => all + totals.deadLettered, 0);
+
+    const before = recent[recent.length - 1]!;
+    const seconds = (last.at - before.at) / 1_000;
+    if (seconds <= 0 || Date.now() - last.at > summaryStaleMs) {
+      return summary;
+    }
+    const perSecond = (now: number, earlier: number): number =>
+      Math.max(0, now - earlier) / seconds;
+    summary.acceptedPerSecond = perSecond(last.accepted, before.accepted);
+    summary.rejectedPerSecond = perSecond(last.rejected, before.rejected);
+    if (slowest) {
+      summary.deliveredPerSecond = perSecond(
+        slowest[1].settled,
+        before.targets[slowest[0]]?.settled ?? slowest[1].settled
+      );
+    }
+    return summary;
   }
 
   overview(): Overview {

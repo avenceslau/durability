@@ -9,6 +9,7 @@ import {
   targetInputSchema,
   targetNameSchema,
   type Overview,
+  type QueueSummary,
 } from './model';
 import { directory, orchestrators } from './namespaces';
 
@@ -75,6 +76,20 @@ export const resize = (queue: string, partitions: number): Promise<void> =>
   orchestrator(queue).resize(
     v.parse(v.pipe(v.number(), v.safeInteger(), v.minValue(1)), partitions)
   );
+
+/** Every queue's latest numbers. One that cannot answer is left out. */
+export const summaries = async (): Promise<QueueSummary[]> => {
+  const queues = await directory().list();
+  const found = await Promise.all(
+    queues.map(({ name }) =>
+      orchestrators()
+        .getByName(name)
+        .summary()
+        .catch(() => undefined)
+    )
+  );
+  return found.filter((summary) => summary !== undefined);
+};
 
 export const overview = (queue: string): Promise<Overview> =>
   orchestrator(queue).overview();
