@@ -51,3 +51,14 @@ describe('liveTimers in workerd', () => {
     expect(await recovered.runs()).toHaveLength(2);
   });
 });
+
+describe('DurabilityScheduler.setTimeout in workerd', () => {
+  it('holds more timeouts than the runtime allows native timers', async () => {
+    const stub = env.LIVE_TIMERS_TEST.get(env.LIVE_TIMERS_TEST.newUniqueId());
+
+    // workerd rejects the global setTimeout once 10,000 timers are pending.
+    const startedAt = Date.now();
+    await expect(stub.countTimeoutsRun(12_000, 100)).resolves.toBe(12_000);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
+  });
+});

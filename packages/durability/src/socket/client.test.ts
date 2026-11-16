@@ -221,6 +221,23 @@ describe('DurabilitySocketClient', () => {
     await expect(call).resolves.toBeInstanceOf(SocketTimeoutError);
   });
 
+  it('holds one native timer for the ping and every pending call', async () => {
+    const conn = createClient().connect('a');
+    const calls = Array.from({ length: 12_000 }, () =>
+      conn.rpc.list().catch((error: unknown) => error)
+    );
+    FakeSocket.latest().open();
+
+    expect(vi.getTimerCount()).toBe(1);
+
+    conn.close();
+    expect(vi.getTimerCount()).toBe(0);
+    const outcomes = await Promise.all(calls);
+    expect(
+      outcomes.every((outcome) => outcome instanceof SocketClosedError)
+    ).toBe(true);
+  });
+
   it('subscribes when the first handler is added and tracks the last seq', () => {
     const conn = createClient().connect('a');
     const seen: Todo[] = [];

@@ -224,7 +224,7 @@ export class DurabilitySemaphoreServer {
   readonly #leases: LeasePolicy | undefined;
   readonly #emit: (event: DurabilitySemaphoreEvent) => void;
   #pending: Pending[] = [];
-  #roundTimer: ReturnType<typeof setTimeout> | undefined;
+  #roundScheduled = false;
   #round: Promise<void> | undefined;
   #lastRoundAt = -Infinity;
   // From the last round; tells clients in later syncs to return idle lease headroom.
@@ -368,13 +368,14 @@ export class DurabilitySemaphoreServer {
   // Rounds never overlap: a request arriving mid-round joins the next one,
   // which is scheduled once the current round settles.
   #scheduleRound(): void {
-    if (this.#roundTimer !== undefined || this.#round !== undefined) {
+    if (this.#roundScheduled || this.#round !== undefined) {
       return;
     }
     const earliest = this.#lastRoundAt + this.#roundPeriodMs;
     const delay = Math.max(this.#roundWaitMs, earliest - Date.now());
-    this.#roundTimer = setTimeout(() => {
-      this.#roundTimer = undefined;
+    this.#roundScheduled = true;
+    this.#engine.timer.schedule(() => {
+      this.#roundScheduled = false;
       const onError = (error: unknown) =>
         reportFailure('durability.semaphore.round_failed', {}, error);
       this.#round = this.#runRound()

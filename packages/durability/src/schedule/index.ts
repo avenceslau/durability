@@ -315,26 +315,6 @@ const assertDelay = (name: string, value: number): void => {
   }
 };
 
-const deadline = async (
-  work: Promise<unknown>,
-  timeoutMs: number,
-  onTimeout: () => Error
-): Promise<void> => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      work,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(onTimeout()), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-  }
-};
-
 /**
  * Experimental. One recurring schedule per channel of a Durable Object whose
  * ticks start individually tracked, overlapping runs and report each run's
@@ -651,19 +631,19 @@ export class DurabilitySchedule {
       return;
     }
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelTimeout: (() => void) | undefined;
     try {
       await new Promise<void>((resolve) => {
         this.#wakeSleeper = resolve;
         if (until !== undefined) {
-          const delay = Math.min(Math.max(until - Date.now(), 0), maxDelayMs);
-          timer = setTimeout(resolve, delay);
+          cancelTimeout = this.#engine.timer.schedule(
+            resolve,
+            until - Date.now()
+          );
         }
       });
     } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
+      cancelTimeout?.();
       this.#wakeSleeper = undefined;
     }
   }
@@ -897,11 +877,12 @@ export class DurabilitySchedule {
     const handler = Promise.resolve().then(() =>
       this.#run({ ...run, signal: controller.signal })
     );
-    const recorded = deadline(handler, this.#runTimeoutMs, () => {
-      const error = new ScheduledRunTimeoutError(this.#runTimeoutMs);
-      controller.abort(error);
-      return error;
-    })
+    const recorded = this.#engine.timer
+      .withTimeout(handler, this.#runTimeoutMs, () => {
+        const error = new ScheduledRunTimeoutError(this.#runTimeoutMs);
+        controller.abort(error);
+        return error;
+      })
       .then(
         (): ScheduledRunOutcome => ({ status: 'complete' }),
         (error: unknown): ScheduledRunOutcome => ({
@@ -1020,7 +1001,7 @@ export class DurabilitySchedule {
     attempt: number
   ): Promise<void> {
     try {
-      await deadline(
+      await this.#engine.timer.withTimeout(
         Promise.resolve().then(() =>
           this.#onOutcome({ ...run, attempt }, outcome)
         ),

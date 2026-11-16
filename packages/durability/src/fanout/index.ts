@@ -1135,22 +1135,11 @@ export class DurabilityFanout<Body = unknown> {
     run: () => Promise<unknown>,
     timeoutMs: number
   ): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        Promise.resolve().then(run),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new FanoutTimeoutError(timeoutMs)),
-            timeoutMs
-          );
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    }
+    await this.#engine.timer.withTimeout(
+      Promise.resolve().then(run),
+      timeoutMs,
+      () => new FanoutTimeoutError(timeoutMs)
+    );
   }
 }
 

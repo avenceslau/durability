@@ -88,4 +88,41 @@ describe('DurabilityTracker over RPC', () => {
 
     await expect(waiting).resolves.toEqual({ status: 'completed', result: 10 });
   });
+
+  it('holds more waits open than the runtime allows native timers', async () => {
+    const stub = env.TRACKER_TEST.get(env.TRACKER_TEST.newUniqueId());
+    await stub.start('job-4', 1);
+
+    // workerd rejects setTimeout once 10,000 timers are pending.
+    const startedAt = Date.now();
+    await expect(stub.waitManyTimes('job-4', 12_000, 200)).resolves.toBe(
+      12_000
+    );
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(200);
+
+    await release(stub, 'job-4');
+  });
+
+  it('keeps later waits on time while every other native timer is taken', async () => {
+    const stub = env.TRACKER_TEST.get(env.TRACKER_TEST.newUniqueId());
+    await stub.start('job-6', 1);
+
+    const { otherTimers, statuses } =
+      await stub.waitTwiceWithNoNativeTimerLeft('job-6');
+
+    expect(otherTimers).toBeGreaterThan(9_000);
+    expect(statuses).toEqual(['pending', 'pending']);
+
+    await release(stub, 'job-6');
+  });
+
+  it('settles that many waits at once before their timeouts', async () => {
+    const stub = env.TRACKER_TEST.get(env.TRACKER_TEST.newUniqueId());
+    await stub.start('job-5', 1);
+
+    const stillPending = stub.waitManyTimes('job-5', 12_000, 60_000);
+    await release(stub, 'job-5');
+
+    await expect(stillPending).resolves.toBe(0);
+  });
 });

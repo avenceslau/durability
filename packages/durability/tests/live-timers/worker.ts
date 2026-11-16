@@ -68,6 +68,20 @@ export class LiveTimersObject extends DurableObject {
       .toArray();
   }
 
+  countTimeoutsRun(count: number, delayMs: number): Promise<number> {
+    return new Promise((resolve) => {
+      let ran = 0;
+      for (let index = 0; index < count; index += 1) {
+        this.scheduler.setTimeout(() => {
+          ran += 1;
+          if (ran === count) {
+            resolve(ran);
+          }
+        }, delayMs);
+      }
+    });
+  }
+
   physicalAlarm(): Promise<number | null> {
     return this.ctx.storage.getAlarm();
   }

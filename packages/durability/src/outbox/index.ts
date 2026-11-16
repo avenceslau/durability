@@ -579,22 +579,11 @@ export class DurabilityOutbox<Value = unknown> {
   }
 
   async #deadline(run: () => unknown): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        Promise.resolve().then(run),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new OutboxTimeoutError(this.#attemptTimeoutMs)),
-            this.#attemptTimeoutMs
-          );
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    }
+    await this.#engine.timer.withTimeout(
+      Promise.resolve().then(run),
+      this.#attemptTimeoutMs,
+      () => new OutboxTimeoutError(this.#attemptTimeoutMs)
+    );
   }
 }
 

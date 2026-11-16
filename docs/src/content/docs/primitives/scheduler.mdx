@@ -11,7 +11,7 @@ The scheduler owns the parts of the Durable Object that its helpers would otherw
 
 - **The object's one alarm** (`ctx.storage.setAlarm`). Helper writes that add or reschedule pending work run in a storage transaction that also sets the alarm to the earliest pending row of every attached table. Your class's `alarm()` must delegate to `scheduler.alarm()` or to any helper's `alarm()`; each runs the due work of every helper on the object.
 - **`ctx.storage.sql`** stays with the helpers: each creates its own tables and registers its channel of them, and the scheduler only reads their pending times.
-- **The live instance** holds the merged scheduler options, the concurrency permits and their FIFO waiters, the early timer for work due before the alarm, and the attached tables and channels. Eviction discards them; the alarm and the rows bring the work back.
+- **The live instance** holds the merged scheduler options, the concurrency permits and their FIFO waiters, the early timer for work due before the alarm, the one native timer behind every in-memory timeout, and the attached tables and channels. Eviction discards them; the alarm and the rows bring the work back.
 
 <ArchitectureWalkthrough example="scheduler">
 
@@ -97,6 +97,29 @@ The fallback alarm can be up to 15 seconds away, so the scheduler also retries t
 ## Long-running alarm calls
 
 Alarm invocations have a 15-minute wall-time limit. If work is still pending after `alarmHandoffMs` (default 14 minutes), the scheduler retains its promise in memory, arms a fallback after `alarmMinDelayMs`, and returns from the current invocation. The next alarm attaches to the same promise instead of starting the handler again. If the object is evicted during a handoff, the next alarm reconstructs and executes the persisted pending work.
+
+## `setTimeout` (scheduler)
+
+`scheduler.setTimeout(callback, delayMs)` runs `callback` once after `delayMs` and returns a function that cancels it. Use it instead of the global `setTimeout` for in-memory timeouts whose number grows with the object's workload.
+
+The runtime makes the global `setTimeout` throw `QuotaExceededError` once 10,000 timers are pending in one Durable Object. The scheduler keeps every pending timeout of the object, its helpers' and yours, in a min-heap ordered by due time and sets one native timer for the earliest, so the number pending does not count against that limit.
+
+```ts
+const cancel = this.scheduler.setTimeout(() => {
+  this.sockets.get(id)?.close(4000, 'Idle');
+}, 30_000);
+
+// Later, if the socket sends something first:
+cancel();
+```
+
+It differs from the global `setTimeout` in three ways:
+
+- **It returns a cancel function**, not an id for `clearTimeout`.
+- **Callbacks due at the same time run in one task**, in the order they were scheduled, so promise reactions queued by one do not run before the next. A callback scheduled from inside another runs in a later task, even with no delay.
+- **A callback that throws is reported** as `durability.timer.callback_failed` instead of becoming an uncaught exception, and the callbacks after it still run.
+
+The timeout exists only in memory, so an eviction drops it. Schedule work that must still run after one as a [named alarm](/primitives/alarms/).
 
 ## `liveTimers` (scheduler)
 

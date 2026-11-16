@@ -118,7 +118,7 @@ const ping = sourceExcerpt(
   'ping',
   'Keep-alive pings',
   '  #startPing(): void {',
-  '    }, interval);\n  }'
+  '    this.#cancelPing = this.#timer.schedule(ping, interval);\n  }'
 );
 const autoResponse = sourceExcerpt(
   socket,
@@ -684,7 +684,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['*', 'focus:connection'],
           source: sourceFocus(
             send,
-            'timer: setTimeout(',
+            'cancelTimeout: this.#timer.schedule(',
             'reject(new SocketTimeoutError(method, this.#config.timeoutMs));'
           ),
           durable: 'Whatever the handler commits on the object stays.',
@@ -714,7 +714,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['flow:call'],
           source: sourceFocus(
             ping,
-            'this.#pingTimer = setInterval(() => {',
+            'const ping = (): void => {',
             'this.#ws?.send(pingText);'
           ),
           durable: 'Nothing.',
