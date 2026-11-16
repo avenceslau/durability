@@ -110,22 +110,23 @@ await env.QUEUE_ADMIN.putTarget('orders', 'billing', {
 ## Accepting a message
 
 ```ts
-const outcome = await env.QUEUE.send('orders', [
+const outcome = await env.QUEUE.send('orders', {
   // One customer's orders stay in order.
-  { key: 'customer-42', body: { total: 12 } },
-  { key: 'customer-42', body: { total: 7 } },
-]);
-// outcome.accepted: the ids stored; outcome.rejected: [{ ids, error }]
+  key: 'customer-42',
+  messages: [{ body: { total: 12 } }, { body: { total: 7 } }],
+});
+// { accepted: true, ids } or { accepted: false, error: { name, message } }
 ```
 
 1. A producer calls `send` on its `QueueBinding`, or POSTs to the HTTP API. The Worker
    reads the queue's partition list. The list lives in KV because every send
    needs it and no send should wait on the orchestrator; the Worker caches it in memory.
-2. It hashes each message's key to a partition of the current epoch and groups the
-   messages by partition, keeping their order. A send with many keys touches most
-   partitions, so the Worker makes one call to a partition at a time: groups that arrive
-   while one is on its way wait and go together in the next call.
-3. Each partition schedules a delivery run, then appends what the call carries to its log
+2. A send has one key, and the Worker hashes it to a partition of the current epoch, so
+   a send goes to one partition. A send spread over many partitions would call each for a
+   message or two, and a partition can answer far fewer calls than it can store messages.
+   The Worker also makes one call to a partition at a time: sends that arrive while one
+   is on its way wait and go together in the next call.
+3. The partition schedules a delivery run, then appends what the call carries to its log
    in one transaction, all of it or none. An append assigns the next offsets, and the offset is the order: everything
    after this point follows it. Scheduling comes first so that a stored message always has
    a run coming to deliver it.

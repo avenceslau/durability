@@ -6,18 +6,14 @@ import {
 import { DurabilityRouting } from 'durability/routing';
 import { coalescer } from './coalesce';
 import { partitionFor, partitionName, topologyKey } from './layout';
-import type { Layout, Message, MessageInput } from './model';
+import type { Layout, Message } from './model';
 import { Partition, type AppendCall, type AppendInput } from './partition';
 
 export type PartitionMeta = { epoch: number; index: number };
 
-export type SendOutcome = {
-  accepted: string[];
-  rejected: {
-    ids: string[];
-    error: { name: string; message: string };
-  }[];
-};
+export type SendOutcome =
+  | { accepted: true; ids: string[] }
+  | { accepted: false; error: { name: string; message: string } };
 
 export class UnknownQueueError extends Error {
   constructor(queue: string) {
@@ -118,10 +114,9 @@ const createAppend = () => {
   };
 
   /**
-   * Every send touches most partitions of its queue, so a partition would be
-   * called once per send however many partitions there are. Sends that wait
-   * for the same partition go to it in one call, which it stores in one
-   * transaction: all of them or none.
+   * A busy partition would be called once per send. Sends that wait for the
+   * same partition go to it in one call, which it stores in one transaction:
+   * all of them or none.
    */
   const merged = coalescer<AppendInput, Share>({
     invoke: async (partition, inputs) => {
@@ -164,89 +159,89 @@ const createAppend = () => {
 // Created on first use: this module and `partition.ts` import each other.
 let append: ReturnType<typeof createAppend> | undefined;
 
-const groupByPartition = (
-  queue: string,
-  layout: Layout,
-  messages: readonly Message[]
-): AppendInput[] => {
-  const groups = new Map<number, AppendInput>();
-  for (const message of messages) {
-    const identity = partitionFor(queue, layout, message.key);
-    const group = groups.get(identity.index) ?? { identity, messages: [] };
-    group.messages.push(message);
-    groups.set(identity.index, group);
-  }
-  return [...groups.values()];
-};
-
 /**
- * Accepts messages into a queue. Each partition's share commits atomically; a
- * rejected share is definite. A thrown error is not: the messages may have been
- * accepted, so retry with the same ids.
+ * Accepts one key's messages into a queue. They go to one partition, which
+ * stores all of them or none, and a rejection is definite. A thrown error is
+ * not: the messages may have been accepted, so retry with the same ids.
  */
 export const send = async (
   queue: string,
-  inputs: readonly (MessageInput & Pick<Message, 'dedupeId'>)[],
+  input: {
+    key: string;
+    messages: readonly {
+      body: unknown;
+      id?: string | undefined;
+      dedupeId?: string | undefined;
+    }[];
+  },
   only?: string[]
 ): Promise<SendOutcome> => {
   const sentAt = Date.now();
   // One random id for the send, numbered per message: as unique as one each,
   // and a send of hundreds of messages need not draw hundreds.
   const sendId = crypto.randomUUID();
-  let remaining: Message[] = inputs.map((input, index) => ({
-    id: input.id ?? `${sendId}/${index}`,
+  const messages: Message[] = input.messages.map((message, index) => ({
+    id: message.id ?? `${sendId}/${index}`,
     key: input.key,
-    body: input.body,
+    body: message.body,
     sentAt,
     ...(only === undefined ? {} : { only }),
-    ...(input.dedupeId === undefined ? {} : { dedupeId: input.dedupeId }),
+    ...(message.dedupeId === undefined ? {} : { dedupeId: message.dedupeId }),
   }));
-  const outcome: SendOutcome = { accepted: [], rejected: [] };
   let layout = await layoutOf(queue);
   append ??= createAppend();
-  const toPartition = append;
 
-  for (let hop = 0; hop <= maxRedirects && remaining.length > 0; hop += 1) {
-    const groups = groupByPartition(queue, layout, remaining);
+  for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    const identity = partitionFor(queue, layout, input.key);
     // eslint-disable-next-line no-await-in-loop
-    const results = await Promise.all(
-      groups.map((group) => toPartition(partitionName(group.identity), group))
-    );
-
-    remaining = [];
-    let next: Layout | undefined;
-    for (const [index, result] of results.entries()) {
-      const { messages } = groups[index]!;
-      const ids = messages.map((message) => message.id);
-      if (result.success) {
-        outcome.accepted.push(...ids);
-        continue;
-      }
-
-      const redirect =
-        'next' in result.error ? (result.error.next as Layout) : undefined;
-      if (redirect) {
-        next = redirect;
-        remaining.push(...messages);
-        continue;
-      }
-      outcome.rejected.push({ ids, error: result.error });
-    }
-
-    if (next) {
-      redirected.set(queue, next);
-      layout = next;
-    }
-  }
-
-  if (remaining.length > 0) {
-    outcome.rejected.push({
-      ids: remaining.map((message) => message.id),
-      error: {
-        name: 'PartitionReplaced',
-        message: 'The queue is still resizing; retry shortly',
-      },
+    const result = await append(partitionName(identity), {
+      identity,
+      messages,
     });
+    if (result.success) {
+      return { accepted: true, ids: messages.map((message) => message.id) };
+    }
+    const { name, message, next } = result.error;
+    if (!next) {
+      return { accepted: false, error: { name, message } };
+    }
+    redirected.set(queue, next);
+    layout = next;
   }
-  return outcome;
+
+  return {
+    accepted: false,
+    error: {
+      name: 'PartitionReplaced',
+      message: 'The queue is still resizing; retry shortly',
+    },
+  };
+};
+
+/**
+ * For the queue's own senders, whose batches hold many keys: one send per
+ * key. Resolves to the ids that were accepted.
+ */
+export const sendEachKey = async (
+  queue: string,
+  messages: readonly Pick<Message, 'id' | 'key' | 'body' | 'dedupeId'>[],
+  only?: string[]
+): Promise<Set<string>> => {
+  const byKey = new Map<string, (typeof messages)[number][]>();
+  for (const message of messages) {
+    const group = byKey.get(message.key);
+    if (group) {
+      group.push(message);
+    } else {
+      byKey.set(message.key, [message]);
+    }
+  }
+  const outcomes = await Promise.all(
+    [...byKey].map(([key, group]) =>
+      send(queue, { key, messages: group }, only)
+    )
+  );
+  return new Set(
+    outcomes.flatMap((outcome) => (outcome.accepted ? outcome.ids : []))
+  );
 };

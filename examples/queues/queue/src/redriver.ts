@@ -3,7 +3,7 @@ import { DurabilityAlarms } from 'durability';
 import { neverGiveUp } from './alarm-policy';
 import { noTargetName, type RedriveStatus } from './model';
 import { orchestrators } from './namespaces';
-import { send } from './send';
+import { sendEachKey } from './send';
 import type { Delivery } from './targets';
 
 type Job = {
@@ -182,7 +182,7 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
     if (entry.failedAt >= job.startedAt) {
       return { redriven: 0, left: 0 };
     }
-    const outcome = await send(
+    const accepted = await sendEachKey(
       job.queue,
       entry.messages.map((message) => ({
         key: message.key,
@@ -193,7 +193,9 @@ export class Redriver extends DurableObject<Cloudflare.Env> {
       })),
       target === noTargetName ? undefined : [target]
     );
-    if (outcome.rejected.length > 0) {
+    // A key that was accepted is not stored again when the entry is replayed:
+    // its messages have the same `dedupeId`.
+    if (accepted.size < entry.messages.length) {
       return { redriven: 0, left: entry.messages.length };
     }
 

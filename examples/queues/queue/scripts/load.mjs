@@ -40,12 +40,13 @@ let rejected = 0;
 let failed = 0;
 let firstFailure;
 
+// A send has one key, so each batch is one key's next messages.
 const sendBatch = async () => {
+  const key = `key-${Math.floor(Math.random() * keys)}`;
   const messages = Array.from({ length: batchSize }, () => {
-    const key = `key-${Math.floor(Math.random() * keys)}`;
     const sequence = (counters.get(key) ?? 0) + 1;
     counters.set(key, sequence);
-    return { key, body: { sequence, sentAt: Date.now() } };
+    return { body: { sequence, sentAt: Date.now() } };
   });
   try {
     const response = await fetch(`${origin}/queues/${queue}/messages`, {
@@ -54,7 +55,7 @@ const sendBatch = async () => {
         Authorization: `Bearer ${token}`,
         ...(accessToken ? { 'cf-access-token': accessToken } : {}),
       },
-      body: JSON.stringify(messages),
+      body: JSON.stringify({ key, messages }),
       redirect: 'manual',
     });
     if (response.status >= 300 && response.status < 400) {
@@ -63,12 +64,11 @@ const sendBatch = async () => {
       );
     }
     const outcome = await response.json();
-    accepted += outcome.accepted?.length ?? 0;
-    rejected += (outcome.rejected ?? []).reduce(
-      (all, rejection) => all + rejection.ids.length,
-      0
-    );
-    if (!outcome.accepted) {
+    if (outcome.accepted === true) {
+      accepted += messages.length;
+    } else if (outcome.accepted === false) {
+      rejected += messages.length;
+    } else {
       failed += messages.length;
     }
   } catch (error) {

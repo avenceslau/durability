@@ -59,7 +59,9 @@ pnpm exec wrangler dev -c wrangler.jsonc -c ../push_consumer/wrangler.jsonc
 ```sh
 curl -X POST http://localhost:8788/setup
 curl -X POST http://localhost:8788/orders \
-  -d '[{ "customer": "ada", "total": 12 }, { "customer": "declined", "total": 7 }]'
+  -d '{ "customer": "ada", "totals": [12, 7] }'
+curl -X POST http://localhost:8788/orders \
+  -d '{ "customer": "declined", "totals": [7] }'
 ```
 
 The code behind it, shortened:
@@ -97,10 +99,12 @@ await env.QUEUE_ADMIN.putTarget('orders', 'billing', {
   destination: { type: 'rpc', binding: 'ORDERS' },
 });
 
-// Messages with the same key reach `Orders.queue()` in the order they were sent.
-const outcome = await env.QUEUE.send('orders', [
-  { key: 'ada', body: { customer: 'ada', total: 12 } },
-]);
+// A send has one key. Messages with the same key reach `Orders.queue()` in
+// the order they were sent.
+const outcome = await env.QUEUE.send('orders', {
+  key: 'ada',
+  messages: [{ body: { customer: 'ada', total: 12 } }],
+});
 ```
 
 A message whose `charge` throws is retried, because `queue()` threw before acknowledging it. The full `Orders` class in [`push_consumer/src/index.ts`](./push_consumer/src/index.ts) retries a failed order with a delay and skips the rest of that customer's orders in the batch, which the queue would deliver again after the failed one anyway.

@@ -1,10 +1,5 @@
 import { DurabilitySocketClient, type SocketStatus } from 'durability/client';
-import type {
-  MessageInput,
-  Overview,
-  Point,
-  RedriveStatus,
-} from '../src/model';
+import type { Overview, Point, RedriveStatus } from '../src/model';
 import type { Orchestrator } from '../src/orchestrator';
 import { api, ApiError, queuePath } from './api';
 import { lineChart } from './charts';
@@ -75,41 +70,23 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
   });
   const settings = settingsForm((next) => connection.rpc.updateSettings(next));
   const resize = resizeForm((count) => connection.rpc.resize(count));
-  const send = sendMessagesForm(async (messages: MessageInput[]) => {
+  const send = sendMessagesForm(async (input) => {
     try {
-      const outcome = (await api(
-        'POST',
-        `${queuePath(queue)}/messages`,
-        messages
-      )) as {
-        accepted: string[];
-      };
-      return `Accepted ${outcome.accepted.length} messages`;
+      await api('POST', `${queuePath(queue)}/messages`, input);
+      return `Accepted ${input.messages.length} messages`;
     } catch (error) {
-      // 429 and 503 still carry the per-message outcome instead of an error field.
-      if (
-        !(error instanceof ApiError) ||
-        typeof error.body !== 'object' ||
-        error.body === null ||
-        !('rejected' in error.body)
-      ) {
+      // 429 and 503 carry the send's outcome, whose `error` is not a string.
+      const reason =
+        error instanceof ApiError &&
+        typeof error.body === 'object' &&
+        error.body !== null &&
+        'error' in error.body
+          ? (error.body.error as { message?: unknown }).message
+          : undefined;
+      if (typeof reason !== 'string') {
         throw error;
       }
-      const body = error.body as {
-        accepted: string[];
-        rejected: { ids: string[]; error: { message: string } }[];
-      };
-      const reasons = [
-        ...new Set(body.rejected.map((entry) => entry.error.message)),
-      ];
-      const rejected = body.rejected.reduce(
-        (sum, entry) => sum + entry.ids.length,
-        0
-      );
-      throw new Error(
-        `Accepted ${body.accepted.length}, rejected ${rejected}: ${reasons.join('; ')}`,
-        { cause: error }
-      );
+      throw new Error(`Rejected: ${reason}`, { cause: error });
     }
   });
 

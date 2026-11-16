@@ -23,22 +23,26 @@ export const pullTargetName = 'pull';
  */
 export const noTargetName = '_no-target';
 
-export const messageInputSchema = v.object({
-  /** Messages sharing a key are delivered in the order they were accepted. */
+export const sendSchema = v.object({
+  /**
+   * Messages sharing a key are delivered in the order they were accepted. A
+   * send has one key, so it goes to one partition, which stores all of it or
+   * none of it.
+   */
   key: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
-  body: v.unknown(),
-  /** Sending the same id again while the message is retained is a no-op. */
-  id: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
-});
-export type MessageInput = v.InferOutput<typeof messageInputSchema>;
-
-export const sendSchema = v.union([
-  v.pipe(v.array(messageInputSchema), v.minLength(1), v.maxLength(1_000)),
-  v.pipe(
-    messageInputSchema,
-    v.transform((message) => [message])
+  messages: v.pipe(
+    v.array(
+      v.object({
+        body: v.unknown(),
+        /** Sending the same id again while the message is retained is a no-op. */
+        id: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
+      })
+    ),
+    v.minLength(1),
+    v.maxLength(1_000)
   ),
-]);
+});
+export type SendInput = v.InferOutput<typeof sendSchema>;
 
 /** A message as a partition stores it. */
 export type Message = {

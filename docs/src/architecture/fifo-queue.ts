@@ -46,21 +46,13 @@ const layoutOf = sourceExcerpt(
   'const layoutOf = async (queue: string): Promise<Layout> => {',
   '  return published;\n};'
 );
-const groupByPartition = sourceExcerpt(
-  sendSource,
-  sendFile,
-  'group-by-partition',
-  'Hash keys to partitions',
-  'const groupByPartition = (',
-  '  return [...groups.values()];\n};'
-);
 const send = sourceExcerpt(
   sendSource,
   sendFile,
   'send',
   'Send, following a resize',
   'export const send = async (',
-  '  return outcome;\n};'
+  "      message: 'The queue is still resizing; retry shortly',\n    },\n  };\n};"
 );
 const append = sourceExcerpt(
   partitionSource,
@@ -580,7 +572,7 @@ export const walkthrough = validateWalkthrough({
   details: {
     producer: {
       description:
-        'Anything that sends: another Worker bound to the QueueBinding entrypoint, or an HTTP client with the producer token. Each message is reported accepted once it is stored, or rejected, for example under backpressure; a call that fails without an answer is uncertain.',
+        'Anything that sends: another Worker bound to the QueueBinding entrypoint, or an HTTP client with the producer token. Each send has one key and is reported accepted once it is stored, or rejected, for example under backpressure; a call that fails without an answer is uncertain.',
       href: '/primitives/routing/',
       source: 'accept',
     },
@@ -592,7 +584,7 @@ export const walkthrough = validateWalkthrough({
     },
     worker: {
       description:
-        'Stateless. It reads the queue’s partition list, hashes each key, and calls one Partition per group of messages. It never calls the Orchestrator.',
+        'Stateless. It reads the queue’s partition list, hashes the send’s key, and calls that key’s Partition. It never calls the Orchestrator.',
       href: '/primitives/routing/',
       source: 'send',
     },
@@ -666,7 +658,6 @@ export const walkthrough = validateWalkthrough({
   excerpts: [
     accept,
     layoutOf,
-    groupByPartition,
     mergeSends,
     send,
     append,
@@ -731,24 +722,23 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'hash',
-          title: 'Hash each key to a partition',
+          title: 'Hash the key to a partition',
           description:
-            'A key always hashes to the same partition of an epoch, which is what puts messages of one key into one ordered log. The Worker groups the messages by partition and keeps their order within each group.',
+            'A send has one key, and a key always hashes to the same partition of an epoch, which is what puts messages of one key into one ordered log. So a send goes to one partition. A send spread over many partitions would call each of them for a message or two, and a partition can answer far fewer calls than it can store messages.',
           stage: ['focus:worker'],
           source: sourceFocus(
-            groupByPartition,
-            'const identity = partitionFor(queue, layout, message.key);',
-            'groups.set(identity.index, group);'
+            send,
+            'const identity = partitionFor(queue, layout, input.key);'
           ),
-          durable: 'Nothing is written while grouping.',
-          volatile: 'The groups exist only in this request.',
+          durable: 'Nothing is written while hashing.',
+          volatile: 'The messages, in this request.',
           status: 'normal',
         },
         {
           id: 'merge',
           title: 'Go together with the sends already waiting',
           description:
-            'Every send touches most partitions of its queue, so a partition would be called once per send however many partitions the queue has. The Worker therefore makes one call to a partition at a time: a send that arrives while one is on its way waits, and goes together with the others that waited. Nothing is held back to fill a batch; batches grow only when the partition is slower than sends arrive.',
+            'A busy partition would be called once per send. The Worker therefore makes one call to a partition at a time: a send that arrives while one is on its way waits, and goes together with the others that waited. Nothing is held back to fill a batch; batches grow only when the partition is slower than sends arrive.',
           stage: ['focus:worker'],
           source: sourceFocus(
             mergeSends,
@@ -819,15 +809,15 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'answer',
-          title: 'Answer for every partition',
+          title: 'Answer the producer',
           description:
-            'Each partition accepted or rejected its group on its own, so one send can be partly accepted; the outcome lists the ids either way, and over HTTP becomes 202, 429 for backpressure, or 503. A rejection is definite. A thrown call is not: the group may have been stored, and a retry must reuse the ids.',
+            'The partition stored the whole send or none of it, so the outcome is one answer: accepted, with the ids, or rejected, with the reason. Over HTTP that is 202, 429 for backpressure, or 503. A rejection is definite. A thrown call is not: the send may have been stored, and a retry must reuse the ids.',
           stage: ['focus:producer'],
           source: sourceFocus(
             accept,
-            'const status = outcome.rejected.length === 0 ? 202 : backpressure ? 429 : 503;'
+            "const status = outcome.error.name === 'Backpressure' ? 429 : 503;"
           ),
-          durable: 'Whatever each partition stored.',
+          durable: 'Whatever the partition stored.',
           volatile: 'The outcome, known only to this request.',
           status: 'normal',
         },
@@ -1121,11 +1111,11 @@ export const walkthrough = validateWalkthrough({
           id: 'entry',
           title: 'Send through the queue, for one target',
           description:
-            'The Redriver sends the dead letter’s messages the way the Worker does: each key is hashed to a partition of the current epoch. The messages are marked for the target that gave up on them, and every other target skips them.',
+            'The Redriver sends the dead letter’s messages the way the Worker does, one send per key: each key is hashed to a partition of the current epoch. The messages are marked for the target that gave up on them, and every other target skips them.',
           stage: ['focus:partition'],
           source: sourceFocus(
             replayEntry,
-            'const outcome = await send(',
+            'const accepted = await sendEachKey(',
             '[target]'
           ),
           durable: 'The messages, appended as new ones.',
@@ -1140,7 +1130,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:storage'],
           source: sourceFocus(
             replayEntry,
-            'if (outcome.rejected.length > 0) {',
+            'if (accepted.size < entry.messages.length) {',
             'await env.STORAGE.delete(key);'
           ),
           durable: 'The dead letter is gone, or still there.',
@@ -1417,8 +1407,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:worker'],
           source: sourceFocus(
             send,
-            "'next' in result.error ? (result.error.next as Layout) : undefined;",
-            'remaining.push(...messages);'
+            'const { name, message, next } = result.error;',
+            'layout = next;'
           ),
           durable: 'Nothing: the refusal stored nothing.',
           volatile: 'The layout this isolate learned from the refusal.',

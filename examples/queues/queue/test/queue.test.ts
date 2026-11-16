@@ -68,15 +68,47 @@ const addTarget = async (
   );
 };
 
-const produce = async (
-  queue: string,
-  messages: { key: string; body: number; id?: string }[]
-) =>
+const sendOverHttp = (queue: string, body: unknown) =>
   SELF.fetch(`https://queue.test/queues/${queue}/messages`, {
     method: 'POST',
     headers: { Authorization: 'Bearer producer' },
-    body: JSON.stringify(messages),
+    body: JSON.stringify(body),
   });
+
+/**
+ * A send has one key, and the tests list messages of several keys together:
+ * this makes one send per key, in the order the keys first appear. Resolves
+ * to the first answer that is not a 202, or to the last one.
+ */
+const produce = async (
+  queue: string,
+  messages: { key: string; body: number; id?: string }[]
+): Promise<Response> => {
+  const keys = [...new Set(messages.map((message) => message.key))];
+  let response: Response | undefined;
+  for (const key of keys) {
+    // eslint-disable-next-line no-await-in-loop
+    await response?.body?.cancel();
+    // eslint-disable-next-line no-await-in-loop
+    response = await sendOverHttp(queue, {
+      key,
+      messages: messages
+        .filter((message) => message.key === key)
+        .map(({ body, id }) => ({ body, ...(id === undefined ? {} : { id }) })),
+    });
+    if (response.status !== 202) {
+      break;
+    }
+  }
+  return response!;
+};
+
+const resume = async (queue: string, target: string) =>
+  expectOk(
+    await admin(`/queues/${queue}/targets/${target}/pause`, 'POST', {
+      paused: false,
+    })
+  );
 
 /**
  * Sends as a producer would: a partition that is behind answers 429, and the
@@ -453,6 +485,39 @@ describe('fifo queue', () => {
     ]);
   });
 
+  it('takes one key per send and stores it in one partition', async () => {
+    const queue = await createQueue({ partitions: { min: 4, max: 4 } });
+    await addTarget(queue, 'orders');
+
+    const response = await sendOverHttp(queue, {
+      key: 'k',
+      messages: [{ body: 1, id: 'first' }, { body: 2 }, { body: 3 }],
+    });
+    expect(response.status).toBe(202);
+    const outcome = await response.json<{ accepted: boolean; ids: string[] }>();
+    expect(outcome.accepted).toBe(true);
+    expect(outcome.ids).toHaveLength(3);
+    expect(outcome.ids[0]).toBe('first');
+
+    const state = await waitFor(
+      () => overview(queue),
+      (current) => current.partitions.some((entry) => entry.accepted === 3)
+    );
+    expect(state.partitions.filter((entry) => entry.accepted > 0)).toHaveLength(
+      1
+    );
+    expect(bodiesByKey(await received(queue, 'orders', 3))).toEqual({
+      k: [1, 2, 3],
+    });
+
+    // Messages of several keys are not one send.
+    const mixed = await sendOverHttp(queue, [
+      { key: 'a', body: 1 },
+      { key: 'b', body: 2 },
+    ]);
+    expect(mixed.status).toBe(400);
+  });
+
   it('holds back only the key of a retried message', async () => {
     const queue = await createQueue();
     await stores.getByName(queue).behave('orders', { retryOnce: [1] });
@@ -460,6 +525,8 @@ describe('fifo queue', () => {
       await admin(`/queues/${queue}/targets/orders`, 'PUT', {
         destination: { type: 'rpc', binding: 'RPC_SINK' },
         retryDelaySeconds: 1,
+        // Until both keys are stored, so that they share the batch.
+        paused: true,
       })
     );
 
@@ -471,6 +538,7 @@ describe('fifo queue', () => {
       { key: 'b', body: 3 },
       { key: 'b', body: 4 },
     ]);
+    await resume(queue, 'orders');
     const deliveries = await received(queue, 'orders', 4);
     expect(
       deliveries.map((entry) => [entry.keys, entry.bodies, entry.attempts])
@@ -497,13 +565,15 @@ describe('fifo queue', () => {
 
   it('lets a POSTed target retry single messages in its answer', async () => {
     const queue = await createQueue();
-    await addTarget(queue, 'hook', {}, { retryOnce: [2] });
+    // Paused until all three are stored, so that they share the batch.
+    await addTarget(queue, 'hook', { paused: true }, { retryOnce: [2] });
 
     await produce(queue, [
       { key: 'a', body: 1 },
       { key: 'b', body: 2 },
       { key: 'c', body: 3 },
     ]);
+    await resume(queue, 'hook');
     const deliveries = await received(queue, 'hook', 3);
     expect(deliveries.map((entry) => [entry.bodies, entry.attempts])).toEqual([
       [
@@ -870,7 +940,7 @@ describe('fifo queue', () => {
       queue
     );
 
-    await queueBinding.send(queue, [{ key: 'k', body: 1 }]);
+    await queueBinding.send(queue, { key: 'k', messages: [{ body: 1 }] });
     expect(bodiesByKey(await received(queue, 'orders', 1))).toEqual({ k: [1] });
 
     await queueAdmin.delete(queue);
@@ -1105,7 +1175,7 @@ describe('fifo queue', () => {
         method: 'POST',
         headers:
           token === undefined ? {} : { Authorization: `Bearer ${token}` },
-        body: JSON.stringify([{ key: 'k', body: 1 }]),
+        body: JSON.stringify({ key: 'k', messages: [{ body: 1 }] }),
       });
     expect((await send()).status).toBe(401);
     expect((await send('consumer')).status).toBe(401);

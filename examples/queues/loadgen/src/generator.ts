@@ -191,8 +191,9 @@ export class LoadGenerator extends DurableObject<Env> {
     const { minMessages, maxMessages, keys } = run.options;
     const count =
       minMessages + Math.floor(Math.random() * (maxMessages - minMessages + 1));
+    // A send has one key: each request is one key's next messages.
+    const key = `key-${Math.floor(Math.random() * keys)}`;
     const messages = Array.from({ length: count }, () => ({
-      key: `key-${Math.floor(Math.random() * keys)}`,
       body: {
         generator: this.index,
         sequence: (this.sequence += 1),
@@ -201,11 +202,12 @@ export class LoadGenerator extends DurableObject<Env> {
     }));
 
     try {
-      const outcome = await this.env.QUEUE.send(queue, messages);
-      this.outcomes.accepted += outcome.accepted.length;
-      for (const rejection of outcome.rejected) {
-        this.outcomes.rejected += rejection.ids.length;
-        this.outcomes.lastRejection = describe(rejection.error);
+      const outcome = await this.env.QUEUE.send(queue, { key, messages });
+      if (outcome.accepted) {
+        this.outcomes.accepted += count;
+      } else {
+        this.outcomes.rejected += count;
+        this.outcomes.lastRejection = describe(outcome.error);
       }
     } catch (error) {
       this.outcomes.failed += 1;

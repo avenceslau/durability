@@ -1,4 +1,4 @@
-import type { MessageInput, QueueSettings } from '../src/model';
+import type { QueueSettings, SendInput } from '../src/model';
 import {
   element,
   errorMessage,
@@ -222,7 +222,7 @@ export const resizeForm = (
 };
 
 export const sendMessagesForm = (
-  send: (messages: MessageInput[]) => Promise<string>
+  send: (input: SendInput) => Promise<string>
 ): HTMLFormElement => {
   const notice = element('p', { class: 'notice' });
   const form = element(
@@ -249,12 +249,6 @@ export const sendMessagesForm = (
       )
     ),
     element(
-      'label',
-      { class: 'check' },
-      element('input', { type: 'checkbox', name: 'spread' }),
-      'Use a different key per message (key-0, key-1, ...) to spread across partitions'
-    ),
-    element(
       'div',
       { class: 'actions' },
       element('button', { type: 'submit' }, 'Send')
@@ -269,14 +263,11 @@ export const sendMessagesForm = (
     } catch {
       throw new Error('The body is not valid JSON');
     }
-    const key = textField(form, 'key');
-    const spread = new FormData(form).get('spread') !== null;
     const count = numberField(form, 'count') ?? 1;
-    const messages = Array.from({ length: count }, (_, index) => ({
-      key: spread ? `${key}-${index}` : key,
-      body,
-    }));
-    return send(messages);
+    return send({
+      key: textField(form, 'key'),
+      messages: Array.from({ length: count }, () => ({ body })),
+    });
   });
   return form;
 };
