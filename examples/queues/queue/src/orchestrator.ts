@@ -73,7 +73,8 @@ export class QueueError extends Error {
 const tickMs = 2_000;
 /** Ticks stop this long after the last partition reported. */
 const idleAfterMs = 30_000;
-const rateWindowMs = 30_000;
+/** Short, so that a queue that is refusing sends grows within seconds. */
+const rateWindowMs = 10_000;
 const summaryStaleMs = 15_000;
 /**
  * A resize does not wait for the one before it: accepting has to be able to
@@ -108,6 +109,30 @@ const memberOf = (
     index: identity.index,
   },
 });
+
+const checkTarget = (
+  queue: string,
+  settings: QueueSettings,
+  name: string,
+  target: TargetSettings
+): void => {
+  if (name === pullTargetName) {
+    throw new QueueError(
+      `"${pullTargetName}" is the queue's own target; turn pull consumers on or off in the settings`
+    );
+  }
+  if (target.maxConcurrency !== undefined && settings.maxConcurrency === null) {
+    throw new QueueError(
+      'A target ceiling needs the queue to have maxConcurrency set'
+    );
+  }
+  if (
+    target.destination.type === 'queue' &&
+    target.destination.queue === queue
+  ) {
+    throw new QueueError('A queue cannot be its own target');
+  }
+};
 
 /**
  * The control plane of one queue. It decides which partitions and limiters
@@ -279,11 +304,18 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   }
 
   private partitionConfig(): PartitionConfig {
+    const partitionsAlive = this.epochs.reduce(
+      (all, layout) => all + layout.count,
+      0
+    );
     return {
       targets: this.targets,
       limiters: this.limiterState.active,
       maxBacklog: this.settings.maxBacklog,
       pullRetentionMs: this.settings.pullRetentionDays * dayMs,
+      // A second each up to a hundred partitions, then longer, so that this
+      // object hears about a hundred reports a second however many there are.
+      sampleIntervalMs: Math.max(1_000, partitionsAlive * 10),
     };
   }
 
@@ -314,6 +346,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
         paused: false,
         startAt: 'latest',
         deliverFromEpoch: epochs[epochs.length - 1]!.epoch,
+        addedAt: Date.now(),
       } satisfies PartitionTarget,
     });
   }
@@ -338,13 +371,25 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     this.socket.changed(entry);
   }
 
-  create(queue: string, settings: QueueSettings): Promise<void> {
+  /**
+   * `targets` are part of the queue from its first moment. Added afterwards,
+   * a partition could hear of the queue before it heard of them, and treat
+   * what it accepted in between as having no target.
+   */
+  create(
+    queue: string,
+    settings: QueueSettings,
+    targets: Record<string, TargetSettings> = {}
+  ): Promise<void> {
     return this.exclusive(async () => {
       if (this.kv.get<string>('queue') !== undefined) {
         throw new QueueError(`Queue "${queue}" already exists`);
       }
       if (settings.partitions.min > settings.partitions.max) {
         throw new QueueError('partitions.min must not exceed partitions.max');
+      }
+      for (const [name, target] of Object.entries(targets)) {
+        checkTarget(queue, settings, name, target);
       }
 
       // A deleted queue's partitions keep their names, so a queue created
@@ -355,7 +400,15 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       };
       this.kv.put('queue', queue);
       this.kv.put('settings', settings);
-      this.kv.put('targets', {});
+      this.kv.put(
+        'targets',
+        Object.fromEntries(
+          Object.entries(targets).map(([name, target]) => [
+            name,
+            { ...target, deliverFromEpoch: first.epoch, addedAt: Date.now() },
+          ])
+        )
+      );
       this.kv.put('epochs', [first]);
       this.kv.put('lastEpoch', first.epoch);
       this.kv.put('resizedAt', Date.now());
@@ -422,26 +475,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
   putTarget(name: string, target: TargetSettings): Promise<void> {
     return this.exclusive(async () => {
-      const queue = this.queue;
-      if (name === pullTargetName) {
-        throw new QueueError(
-          `"${pullTargetName}" is the queue's own target; turn pull consumers on or off in the settings`
-        );
-      }
-      if (
-        target.maxConcurrency !== undefined &&
-        this.settings.maxConcurrency === null
-      ) {
-        throw new QueueError(
-          'A target ceiling needs the queue to have maxConcurrency set'
-        );
-      }
-      if (
-        target.destination.type === 'queue' &&
-        target.destination.queue === queue
-      ) {
-        throw new QueueError('A queue cannot be its own target');
-      }
+      checkTarget(this.queue, this.settings, name, target);
 
       const epochs = this.epochs;
       const start =
@@ -463,6 +497,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
         [name]: {
           ...target,
           deliverFromEpoch: existing?.deliverFromEpoch ?? start.epoch,
+          addedAt: existing?.addedAt ?? Date.now(),
         },
       });
 
@@ -937,7 +972,11 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       min: range.min,
       max: range.max,
       targetRate: range.targetRate,
-      acceptRate: (point.accepted - before.accepted) / seconds,
+      // What was refused is demand as well: a queue too small to accept
+      // would otherwise look quiet and stay small.
+      acceptRate:
+        (point.accepted + point.rejected - before.accepted - before.rejected) /
+        seconds,
       drainSeconds,
       waitingForPermits: (point.permits?.blocked ?? 0) > 0,
       now: point.at,

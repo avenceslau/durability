@@ -41,11 +41,11 @@ const createQueueForm = (): HTMLFormElement => {
       ),
       field(
         'Min partitions',
-        numberInput('min', { min: 1, max: 256, value: 1 })
+        numberInput('min', { min: 1, max: 1_000, value: 1 })
       ),
       field(
         'Max partitions',
-        numberInput('max', { min: 1, max: 256, value: 16 })
+        numberInput('max', { min: 1, max: 1_000, value: 16 })
       ),
       field(
         'Max concurrency',

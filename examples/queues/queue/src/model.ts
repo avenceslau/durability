@@ -120,11 +120,14 @@ export const targetInputSchema = v.object({
 });
 export type TargetSettings = v.InferOutput<typeof targetInputSchema>;
 
+/** The most partitions one queue may have: one orchestrator hears from all of them. */
+export const maxPartitions = 1_000;
+
 export const settingsInputSchema = v.object({
   partitions: v.optional(
     v.object({
-      min: v.optional(v.pipe(positive, v.maxValue(256)), 1),
-      max: v.optional(v.pipe(positive, v.maxValue(256)), 16),
+      min: v.optional(v.pipe(positive, v.maxValue(maxPartitions)), 1),
+      max: v.optional(v.pipe(positive, v.maxValue(maxPartitions)), 16),
       /** Accepted messages per second one partition should carry. */
       targetRate: v.optional(positive, 200),
     }),
@@ -152,6 +155,9 @@ export const settingsInputSchema = v.object({
 });
 export type QueueSettings = v.InferOutput<typeof settingsInputSchema>;
 
+/** Targets given when a queue is created, by name. */
+export const targetsInputSchema = v.record(targetNameSchema, targetInputSchema);
+
 /** Which partitions a key hashes onto. A resize starts a new epoch. */
 export type Layout = { epoch: number; count: number };
 
@@ -165,6 +171,12 @@ export type PartitionTarget = Omit<TargetSettings, 'destination'> & {
    * across a resize.
    */
   deliverFromEpoch: number;
+  /**
+   * When the target was added, by the orchestrator's clock. A partition may
+   * hear of a target some time after that, and what it accepted in between
+   * is the target's. Absent on targets stored before this was recorded.
+   */
+  addedAt?: number;
 };
 
 /** What the orchestrator pushes to every partition. */
@@ -173,6 +185,11 @@ export type PartitionConfig = {
   /** Limiter object names; empty when the queue has no concurrency limit. */
   limiters: string[];
   maxBacklog: number | null;
+  /**
+   * How often a partition reports to the orchestrator. It grows with the
+   * number of partitions, so that one orchestrator can take all of them.
+   */
+  sampleIntervalMs: number;
   /** How long a batch stays in the pull bucket. */
   pullRetentionMs: number;
 };

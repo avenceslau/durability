@@ -67,7 +67,7 @@ const append = sourceExcerpt(
   partitionFile,
   'append',
   'Accept a share of a send',
-  '  async append(inputs: AppendInput[]): Promise<AppendResult> {',
+  '  async append(call: AppendCall): Promise<AppendResult> {',
   '      ),\n    };\n  }'
 );
 const mergeSends = sourceExcerpt(
@@ -76,7 +76,7 @@ const mergeSends = sourceExcerpt(
   'merge-sends',
   'Merge sends that wait for a partition',
   'const createAppend = () => {',
-  '    keepAlive: waitUntil,\n  });\n};'
+  '    return merged(partition, input);\n  };\n};'
 );
 const stopAccepting = sourceExcerpt(
   partitionSource,
@@ -752,12 +752,28 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:worker'],
           source: sourceFocus(
             mergeSends,
-            'return coalescer<AppendInput, Share>({',
+            'const merged = coalescer<AppendInput, Share>({',
             'maxWeight: maxMessagesPerAppend,'
           ),
           durable: 'Nothing is written while waiting.',
           volatile: 'The sends waiting for each partition, in this isolate.',
           status: 'normal',
+        },
+        {
+          id: 'late',
+          title: 'Refuse what waited too long',
+          description:
+            'The Worker stamps each call with the time it made it. A partition that gets to a call more than five seconds later refuses it without touching storage. An overloaded partition works through what is queued for it quickly that way, and stays able to answer the Orchestrator, report, and deliver. The Worker then leaves that partition alone for a moment and tells it, with its next call, how much it refused meanwhile.',
+          stage: ['focus:partition'],
+          source: sourceFocus(
+            append,
+            'if (Date.now() - call.issuedAt > maxAppendLatenessMs) {',
+            "message: 'The partition is behind; retry later',"
+          ),
+          durable:
+            'Nothing: the refusal is counted in memory until the next report.',
+          volatile: 'The count of refused messages since the last report.',
+          status: 'gap',
         },
         {
           id: 'refuse',

@@ -15,7 +15,7 @@ export type PartitionLoad = {
   max: number;
   /** Accepted messages per second one partition should carry. */
   targetRate: number;
-  /** Messages per second the queue accepted recently. */
+  /** Messages per second sent to the queue recently, accepted or refused. */
   acceptRate: number;
   /**
    * Seconds the slowest running target needs to deliver what it has pending,

@@ -190,7 +190,7 @@ export const loadTestSection = async (): Promise<
         'Partitions per tenant, from',
         numberInput('partitionsMin', {
           min: 1,
-          max: 256,
+          max: 1_000,
           value: 8,
           required: true,
         })
@@ -199,7 +199,7 @@ export const loadTestSection = async (): Promise<
         'to',
         numberInput('partitionsMax', {
           min: 1,
-          max: 256,
+          max: 1_000,
           value: 32,
           required: true,
         })

@@ -5,6 +5,7 @@
  * binding to it.
  */
 import * as v from 'valibot';
+import { maxPartitions } from './model';
 
 const whole = (min: number, max: number) =>
   v.pipe(v.number(), v.safeInteger(), v.minValue(min), v.maxValue(max));
@@ -37,7 +38,10 @@ export const loadOptionsSchema = v.pipe(
      */
     deliverPerSecond: v.optional(v.nullable(whole(1, 1_000_000)), null),
     /** Applied to every tenant's queue. */
-    partitions: v.object({ min: whole(1, 256), max: whole(1, 256) }),
+    partitions: v.object({
+      min: whole(1, maxPartitions),
+      max: whole(1, maxPartitions),
+    }),
   }),
   v.check(
     (options) => options.minMessages <= options.maxMessages,

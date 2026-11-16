@@ -98,11 +98,11 @@ export const settingsForm = (
       { class: 'inline' },
       field(
         'Min partitions',
-        numberInput('min', { min: 1, max: 256, required: true })
+        numberInput('min', { min: 1, max: 1_000, required: true })
       ),
       field(
         'Max partitions',
-        numberInput('max', { min: 1, max: 256, required: true })
+        numberInput('max', { min: 1, max: 1_000, required: true })
       ),
       field(
         'Target rate per partition',
@@ -203,7 +203,7 @@ export const resizeForm = (
       { class: 'inline' },
       field(
         'Partitions',
-        numberInput('count', { min: 1, max: 256, required: true })
+        numberInput('count', { min: 1, max: 1_000, required: true })
       ),
       element(
         'div',

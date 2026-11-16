@@ -84,8 +84,13 @@ export class QueueAdmin extends WorkerEntrypoint<Cloudflare.Env> {
     return admin.listQueues();
   }
 
-  create(queue: string, settings?: admin.SettingsInput): Promise<void> {
-    return admin.createQueue(queue, settings);
+  /** `targets`, by name, are part of the queue before it accepts anything. */
+  create(
+    queue: string,
+    settings?: admin.SettingsInput,
+    targets?: Record<string, admin.TargetInput>
+  ): Promise<void> {
+    return admin.createQueue(queue, settings, targets);
   }
 
   /** Changes the settings that are given and keeps the rest. */
@@ -290,10 +295,15 @@ const queues = async (request: Request): Promise<Response> => {
     v.object({
       name: queueNameSchema,
       settings: v.optional(v.unknown(), {}),
+      targets: v.optional(v.unknown(), {}),
     }),
     request
   );
-  await admin.createQueue(input.name, input.settings as admin.SettingsInput);
+  await admin.createQueue(
+    input.name,
+    input.settings as admin.SettingsInput,
+    input.targets as Record<string, admin.TargetInput>
+  );
   return Response.json({ name: input.name }, { status: 201 });
 };
 

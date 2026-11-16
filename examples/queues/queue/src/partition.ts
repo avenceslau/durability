@@ -14,7 +14,7 @@ import {
   type TopologyStateUpdate,
 } from 'durability/experimental';
 import { DurabilitySemaphoreQueue } from 'durability/experimental/semaphore';
-import { DurabilityRouting } from 'durability/routing';
+import { DurabilityRouting, type LoadSnapshot } from 'durability/routing';
 import { exponential, jitter } from 'durability/utils';
 import { neverGiveUp } from './alarm-policy';
 import { limiterFor, partitionName } from './layout';
@@ -44,6 +44,15 @@ import {
 export type AppendInput = {
   identity: PartitionIdentity;
   messages: Message[];
+};
+
+/** One call from the Worker: the sends it merged, and what it knows. */
+export type AppendCall = {
+  inputs: AppendInput[];
+  /** When the Worker made the call, so the partition can tell how long it waited. */
+  issuedAt: number;
+  /** Messages the Worker refused for this partition since its last call. */
+  refused: number;
 };
 
 /** On success, the offsets of each input's messages, in the inputs' order. */
@@ -86,6 +95,14 @@ const deliveryRunMs = 20_000;
 /** A permit is returned after this long so other partitions get a turn. */
 const permitHoldMs = 10_000;
 const sampleIntervalMs = 1_000;
+/**
+ * A call that waited longer than this before the partition got to it is
+ * refused without touching storage. Long enough that a brief stall refuses
+ * nothing. An overloaded partition works through
+ * what is queued for it quickly that way, and stays able to answer the
+ * orchestrator, report, and deliver.
+ */
+const maxAppendLatenessMs = 5_000;
 const deadLetterRetryMs = 30_000;
 const shortWaitMs = 500;
 const deadLetterBatchSize = 100;
@@ -168,6 +185,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     handlers: {
       deliver: () => this.deliver(),
       enforceRetention: () => this.enforceRetention(),
+      sample: () => this.sampleNow(),
     },
     methods: {
       deliver: neverGiveUp,
@@ -224,6 +242,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   private requestedWhileDelivering = false;
   private deliveryScheduledFor: number | undefined;
   private sampledAt = 0;
+  private sampleScheduled = false;
+  /** Refused since the last sample; counting them must not cost a write each. */
+  private refusedSinceSample = 0;
+  private lastLoad: { at: number; load: LoadSnapshot } | undefined;
 
   constructor(ctx: DurableObjectState, bindings: Cloudflare.Env) {
     super(ctx, bindings);
@@ -463,12 +485,30 @@ export class Partition extends DurableObject<Cloudflare.Env> {
    * they wait for this partition. They are stored in one transaction, all of
    * them or none, so the answer is the same for every send in the call.
    */
-  async append(inputs: AppendInput[]): Promise<AppendResult> {
+  async append(call: AppendCall): Promise<AppendResult> {
+    const { inputs } = call;
     const first = inputs[0];
     if (!first) {
       throw new RangeError('Nothing to append');
     }
     this.remember(first.identity);
+    const messages = inputs.flatMap((input) => input.messages);
+    this.refusedSinceSample += call.refused;
+
+    if (Date.now() - call.issuedAt > maxAppendLatenessMs) {
+      this.refusedSinceSample += messages.length;
+      // Owed, so the orchestrator hears of the refusals even if nothing else
+      // makes this partition report.
+      await this.stageSample(true);
+      return {
+        success: false,
+        error: {
+          name: 'Backpressure',
+          message: 'The partition is behind; retry later',
+        },
+        load: await this.recentLoad(),
+      };
+    }
 
     if (this.ctx.storage.kv.get<boolean>('queueDeleted')) {
       return {
@@ -494,13 +534,11 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       };
     }
 
-    const messages = inputs.flatMap((input) => input.messages);
     if (await this.overBacklog()) {
-      this.ctx.storage.kv.put('counters', {
-        ...this.counters,
-        rejected: this.counters.rejected + messages.length,
-      });
-      await this.stageSample();
+      this.refusedSinceSample += messages.length;
+      // Owed, so the orchestrator hears of the refusals even if nothing else
+      // makes this partition report.
+      await this.stageSample(true);
       return {
         success: false,
         error: {
@@ -533,6 +571,40 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         result.value.slice(taken, (taken += input.messages.length))
       ),
     };
+  }
+
+  /**
+   * The offset of the first message stored at or after `time`, or the end of
+   * the log. Messages are stored in time order, so it is found by halving.
+   */
+  private async firstOffsetSince(time: number | undefined): Promise<number> {
+    const { oldestOffset, nextOffset } = await this.log.bounds();
+    if (time === undefined) {
+      return nextOffset;
+    }
+    let from = oldestOffset;
+    let to = nextOffset;
+    while (from < to) {
+      const middle = Math.floor((from + to) / 2);
+      // eslint-disable-next-line no-await-in-loop
+      const record = await this.recordAt(middle);
+      // A message that is gone was stored before everything still here.
+      if (record && record.appendedAt >= time) {
+        to = middle;
+      } else {
+        from = middle + 1;
+      }
+    }
+    return from;
+  }
+
+  /** The log's load, read at most once a second: a refusal should cost nothing. */
+  private async recentLoad(): Promise<LoadSnapshot> {
+    const now = Date.now();
+    if (!this.lastLoad || now - this.lastLoad.at > 1_000) {
+      this.lastLoad = { at: now, load: await this.log.load() };
+    }
+    return this.lastLoad.load;
   }
 
   /**
@@ -657,9 +729,14 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       }
       // A partition's first config lists targets that existed before it did,
       // so everything it holds is theirs. Only a target added later may skip
-      // what was accepted before it.
+      // what was accepted before it, and "before" is by when the target was
+      // added, not by when this partition heard: a send that followed the
+      // target may well have arrived here first.
       const start =
-        previous && target.startAt === 'latest' ? nextOffset : oldestOffset;
+        previous && target.startAt === 'latest'
+          ? // eslint-disable-next-line no-await-in-loop
+            await this.firstOffsetSince(target.addedAt)
+          : oldestOffset;
       // eslint-disable-next-line no-await-in-loop
       await this.log.commit(name, start);
     }
@@ -1538,6 +1615,13 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   private async sample(identity: PartitionIdentity): Promise<PartitionSample> {
     const { nextOffset } = await this.log.bounds();
     const positions = await this.log.cursors();
+    if (this.refusedSinceSample > 0) {
+      this.ctx.storage.kv.put('counters', {
+        ...this.counters,
+        rejected: this.counters.rejected + this.refusedSinceSample,
+      });
+      this.refusedSinceSample = 0;
+    }
     const counters = this.counters;
     const unsettled = this.unsettled();
     const sequence =
@@ -1567,18 +1651,37 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     };
   }
 
-  private async stageSample(force = false): Promise<void> {
+  /**
+   * Stages a sample for the orchestrator, at most one per interval. `owed`
+   * says the state has to arrive even if one was just sent, as at the end of
+   * a delivery run, which the orchestrator waits for before it calls an
+   * epoch drained: such a sample is sent when the interval is over.
+   */
+  private async stageSample(owed = false): Promise<void> {
     const identity = this.identity;
+    if (!identity || this.ctx.storage.kv.get<boolean>('queueDeleted')) {
+      return;
+    }
     const now = Date.now();
-    if (
-      !identity ||
-      this.ctx.storage.kv.get<boolean>('queueDeleted') ||
-      (!force && now - this.sampledAt < sampleIntervalMs)
-    ) {
+    const interval = this.config?.sampleIntervalMs ?? sampleIntervalMs;
+    const wait = this.sampledAt + interval - now;
+    if (wait > 0) {
+      if (owed && !this.sampleScheduled) {
+        this.sampleScheduled = true;
+        await this.alarms.sample(now + wait).catch((error: unknown) => {
+          this.sampleScheduled = false;
+          throw error;
+        });
+      }
       return;
     }
     this.sampledAt = now;
     await this.samples.stage('sample', await this.sample(identity));
+  }
+
+  private async sampleNow(): Promise<void> {
+    this.sampleScheduled = false;
+    await this.stageSample(true);
   }
 
   override alarm(info?: AlarmInvocationInfo) {

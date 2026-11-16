@@ -374,6 +374,13 @@ The cost is that accepting scales immediately while delivery of new messages wai
 the old backlog. The autoscaler accounts for that by at least doubling when it grows, and
 by not shrinking while a target is behind.
 
+Demand is what is sent to the queue, not only what it accepted. A partition that gets to
+a call more than five seconds after the Worker made it refuses the call without touching
+storage, which keeps an overloaded partition able to answer the orchestrator, and the
+Worker reports what it refused itself with its next call. Both are in the partition's
+report, so a queue too small for its traffic grows within seconds, up to 1,000 partitions.
+A resize does not wait for earlier ones to drain.
+
 **One resize runs at a time.** A target that is paused, or whose messages keep being
 retried, holds the old epoch until every message in it is acknowledged or dead-lettered,
 and no further resize starts before then.

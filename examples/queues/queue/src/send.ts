@@ -7,7 +7,7 @@ import { DurabilityRouting } from 'durability/routing';
 import { coalescer } from './coalesce';
 import { partitionFor, partitionName, topologyKey } from './layout';
 import type { Layout, Message, MessageInput } from './model';
-import { Partition, type AppendInput } from './partition';
+import { Partition, type AppendCall, type AppendInput } from './partition';
 
 export type PartitionMeta = { epoch: number; index: number };
 
@@ -82,40 +82,83 @@ const maxMessagesPerAppend = 1_000;
 const maxMessagesWaitingPerPartition = 5 * maxMessagesPerAppend;
 const maxMessagesHeld = 100_000;
 
+/**
+ * How long this isolate leaves a partition alone once it said it was behind,
+ * or failed to answer. Without it every refusal would be followed at once by
+ * the next call, and the partition would spend its time refusing.
+ */
+const partitionBackoffMs = 250;
+
 const createAppend = () => {
   const router = DurabilityRouting.client({
     target: Partition,
     exportName: 'Partition',
-    invoke: (stub, inputs: AppendInput[]) => stub.append(inputs),
-    sharding: (inputs) => partitionName(inputs[0]!.identity),
+    invoke: (stub, call: AppendCall) => stub.append(call),
+    sharding: (call) => partitionName(call.inputs[0]!.identity),
   });
+  /**
+   * Messages refused here for a partition since the last call to it. The
+   * next call tells the partition, which is how the autoscaler hears of
+   * demand the queue could not take.
+   */
+  const refused = new Map<string, number>();
+  const behindUntil = new Map<string, number>();
+  const refuse = (partition: string, input: AppendInput): Share => {
+    refused.set(
+      partition,
+      (refused.get(partition) ?? 0) + input.messages.length
+    );
+    return {
+      success: false,
+      error: {
+        name: 'Backpressure',
+        message: 'The partition is not keeping up; retry later',
+      },
+    };
+  };
+
   /**
    * Every send touches most partitions of its queue, so a partition would be
    * called once per send however many partitions there are. Sends that wait
    * for the same partition go to it in one call, which it stores in one
    * transaction: all of them or none.
    */
-  return coalescer<AppendInput, Share>({
-    invoke: async (_partition, inputs) => {
-      const result = await router.push(inputs);
-      const share: Share = result.success
-        ? { success: true }
-        : { success: false, error: result.error };
+  const merged = coalescer<AppendInput, Share>({
+    invoke: async (partition, inputs) => {
+      const reported = refused.get(partition) ?? 0;
+      refused.delete(partition);
+      const result = await router
+        .push({ inputs, issuedAt: Date.now(), refused: reported })
+        .catch((error: unknown) => {
+          refused.set(partition, (refused.get(partition) ?? 0) + reported);
+          behindUntil.set(partition, Date.now() + partitionBackoffMs);
+          throw error;
+        });
+      if (result.success) {
+        return inputs.map(() => ({ success: true }));
+      }
+      if (result.error.name === 'Backpressure') {
+        behindUntil.set(partition, Date.now() + partitionBackoffMs);
+      }
+      const share: Share = { success: false, error: result.error };
       return inputs.map(() => share);
     },
     weigh: (input) => input.messages.length,
     maxWeight: maxMessagesPerAppend,
     maxWaitingWeight: maxMessagesWaitingPerPartition,
     maxHeldWeight: maxMessagesHeld,
-    refuse: () => ({
-      success: false,
-      error: {
-        name: 'Backpressure',
-        message: 'The partition is not keeping up; retry later',
-      },
-    }),
+    refuse,
     keepAlive: waitUntil,
   });
+
+  return (partition: string, input: AppendInput): Promise<Share> => {
+    const until = behindUntil.get(partition);
+    if (until !== undefined && Date.now() < until) {
+      return Promise.resolve(refuse(partition, input));
+    }
+    behindUntil.delete(partition);
+    return merged(partition, input);
+  };
 };
 
 // Created on first use: this module and `partition.ts` import each other.
@@ -147,8 +190,11 @@ export const send = async (
   only?: string[]
 ): Promise<SendOutcome> => {
   const sentAt = Date.now();
-  let remaining: Message[] = inputs.map((input) => ({
-    id: input.id ?? crypto.randomUUID(),
+  // One random id for the send, numbered per message: as unique as one each,
+  // and a send of hundreds of messages need not draw hundreds.
+  const sendId = crypto.randomUUID();
+  let remaining: Message[] = inputs.map((input, index) => ({
+    id: input.id ?? `${sendId}/${index}`,
     key: input.key,
     body: input.body,
     sentAt,

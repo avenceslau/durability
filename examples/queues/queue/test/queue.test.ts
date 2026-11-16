@@ -78,6 +78,27 @@ const produce = async (
     body: JSON.stringify(messages),
   });
 
+/**
+ * Sends as a producer would: a partition that is behind answers 429, and the
+ * same messages are sent again.
+ */
+const produceUntilAccepted = async (
+  queue: string,
+  messages: { key: string; body: number; id?: string }[],
+  remaining = 40
+): Promise<void> => {
+  const response = await produce(queue, messages);
+  await response.body?.cancel();
+  if (response.status === 202) {
+    return;
+  }
+  if (response.status !== 429 || remaining === 0) {
+    throw new Error(`Send answered ${response.status}`);
+  }
+  await scheduler.wait(250);
+  return produceUntilAccepted(queue, messages, remaining - 1);
+};
+
 const overview = async (queue: string): Promise<Overview> =>
   (await expectOk(await admin(`/queues/${queue}`))).json();
 
@@ -466,9 +487,12 @@ describe('fifo queue', () => {
         [2, 1],
       ],
     ]);
-    expect(
-      (await overview(queue)).partitions[0]?.targets['orders']
-    ).toMatchObject({ retries: 1, deadLettered: 0 });
+    // A partition reports at most once a second, so the count follows.
+    const counted = await waitFor(
+      async () => (await overview(queue)).partitions[0]?.targets['orders'],
+      (target) => target?.retries === 1
+    );
+    expect(counted).toMatchObject({ retries: 1, deadLettered: 0 });
   });
 
   it('lets a POSTed target retry single messages in its answer', async () => {
@@ -672,6 +696,114 @@ describe('fifo queue', () => {
     await response.body?.cancel();
   });
 
+  it('refuses a call that waited too long, without storing it', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'orders');
+    await produce(queue, [{ key: 'k', body: 1 }]);
+    await received(queue, 'orders', 1);
+    const partition = await partitionWith(queue, 1);
+    const { epochs } = await overview(queue);
+
+    // As the Worker would call it, ten seconds ago, having itself refused
+    // five messages since its previous call.
+    const late = await partition.append({
+      inputs: [
+        {
+          identity: { queue, epoch: epochs[0]!.epoch, index: 0 },
+          messages: [{ id: 'late', key: 'k', body: 2, sentAt: Date.now() }],
+        },
+      ],
+      issuedAt: Date.now() - 10_000,
+      refused: 5,
+    });
+    expect(late).toMatchObject({
+      success: false,
+      error: { name: 'Backpressure' },
+    });
+
+    // Nothing more was stored, and all six count as refused, which is what
+    // the autoscaler reads as demand.
+    const sample = await waitFor(
+      async () => (await overview(queue)).partitions[0],
+      (current) => current?.rejected === 6
+    );
+    expect(sample?.accepted).toBe(1);
+    expect(await stores.getByName(queue).deliveries('orders')).toHaveLength(1);
+  });
+
+  it('gives a target what was sent after it was added, however late a partition hears', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'first');
+    await produce(queue, [
+      { key: 'k', body: 1 },
+      { key: 'k', body: 2 },
+    ]);
+    await received(queue, 'first', 2);
+    await scheduler.wait(20);
+    const addedAt = Date.now();
+    await scheduler.wait(20);
+    await produce(queue, [
+      { key: 'k', body: 3 },
+      { key: 'k', body: 4 },
+    ]);
+    await received(queue, 'first', 4);
+
+    // The partition now hears of a target that was added between the two
+    // sends: the config reaches it after messages 3 and 4 did.
+    const partition = await partitionWith(queue, 4);
+    const { epochs } = await overview(queue);
+    await runInDurableObject(partition, async (instance, state) => {
+      const config = state.storage.kv.get<PartitionConfig>('config')!;
+      const version = state.storage.kv.get<number>('config:version')!;
+      await instance.configure(
+        { queue, epoch: epochs[0]!.epoch, index: 0 },
+        {
+          group: queue,
+          channel: 'config',
+          topologyVersion: 0,
+          version: version + 1_000,
+          value: {
+            ...config,
+            targets: {
+              ...config.targets,
+              late: { ...config.targets['first']!, addedAt },
+            },
+          },
+        }
+      );
+    });
+
+    const byKey = bodiesByKey(await received(queue, 'late', 2));
+    expect(byKey['k']).toEqual([3, 4]);
+  });
+
+  it('creates a queue together with its targets', async () => {
+    const queue = `q-${crypto.randomUUID()}`;
+    await queueAdmin.create(
+      queue,
+      { partitions: { min: 2, max: 2 } },
+      { orders: { destination: { type: 'service', binding: 'SINK' } } }
+    );
+    // Sent at once: no partition may take the queue for one without targets.
+    await produce(
+      queue,
+      Array.from({ length: 8 }, (_, body) => ({ key: `k${body}`, body }))
+    );
+    await received(queue, 'orders', 8);
+    const state = await overview(queue);
+    expect(Object.keys(state.targets)).toEqual(['orders']);
+    expect(state.partitions.map((entry) => entry.withoutTarget)).toEqual(
+      state.partitions.map(() => 0)
+    );
+
+    const reserved = await admin('/queues', 'POST', {
+      name: `q-${crypto.randomUUID()}`,
+      targets: { pull: { destination: { type: 'archive' } } },
+    });
+    expect(reserved.status).toBe(409);
+    await reserved.body?.cancel();
+  });
+
   it('settles a batch the way Cloudflare Queues does', async () => {
     const delivery = (bodies: string[]) => ({
       queue: 'q',
@@ -748,16 +880,19 @@ describe('fifo queue', () => {
   });
 
   it('keeps every key in order across a resize', async () => {
-    const queue = await createQueue({ partitions: { min: 2, max: 8 } });
+    // Five at most, so the autoscaler cannot resize again behind the test.
+    const queue = await createQueue({ partitions: { min: 2, max: 5 } });
     await addTarget(queue, 'slow', { maxBatchSize: 2 }, { delayMs: 20 });
     const keys = Array.from({ length: 12 }, (_, index) => `key-${index}`);
     const send = (from: number, to: number) =>
       Promise.all(
         keys.map(async (key) => {
           for (let body = from; body < to; body += 1) {
+            // The id makes a send repeated after a 429 the same message.
             // eslint-disable-next-line no-await-in-loop
-            const response = await produce(queue, [{ key, body }]);
-            expect(response.status).toBe(202);
+            await produceUntilAccepted(queue, [
+              { key, body, id: `${key}/${body}` },
+            ]);
           }
         })
       );
@@ -793,11 +928,10 @@ describe('fifo queue', () => {
     const send = async (from: number, to: number) => {
       for (let body = from; body < to; body += 1) {
         // eslint-disable-next-line no-await-in-loop
-        const response = await produce(
+        await produceUntilAccepted(
           queue,
-          keys.map((key) => ({ key, body }))
+          keys.map((key) => ({ key, body, id: `${key}/${body}` }))
         );
-        expect(response.status).toBe(202);
       }
     };
     const resizeTo = async (count: number) =>
