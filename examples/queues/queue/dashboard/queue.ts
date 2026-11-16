@@ -36,10 +36,9 @@ const palette = [
   '#dc2626',
   '#65a30d',
 ];
-const liveRangeMs = 30 * 60_000;
-const historyRangeMs = 48 * 60 * 60_000;
+/** The charts show this much; the orchestrator keeps as much. */
+const chartRangeMs = 30 * 60_000;
 const liveRefreshMs = 5_000;
-const historyRefreshMs = 60_000;
 
 const statusLabels: Record<SocketStatus, string> = {
   connecting: 'connecting',
@@ -56,9 +55,6 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
   const connection = client.connect(queue);
   let overview: Overview | undefined;
   let status: SocketStatus = 'connecting';
-  let showHistory = false;
-  let history: Point[] = [];
-  let historyLoadedAt = 0;
   let liveLoadedAt = 0;
   let lastProbeAt = 0;
 
@@ -69,11 +65,6 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
   const badges = element('div', { class: 'badges' });
   const tiles = element('div', { class: 'tiles' });
   const charts = element('div', { class: 'charts' });
-  const rangeButton = element(
-    'button',
-    { type: 'button', class: 'secondary' },
-    'Show 48 h'
-  );
   const partitions = element('div');
   const limiters = element('div');
   const limiterSection = section('Limiters', limiters);
@@ -185,11 +176,7 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
     ),
     notice,
     tiles,
-    section(
-      'Throughput and backlog',
-      element('div', { class: 'actions' }, rangeButton),
-      charts
-    ),
+    section('Throughput and backlog, last 30 minutes', charts),
     section(
       'Targets',
       targets.element,
@@ -249,10 +236,10 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
     if (!overview) {
       return;
     }
-    const points = showHistory ? history : overview.points;
-    const maxGapMs = showHistory ? 180_000 : 10_000;
+    const { points } = overview;
+    const maxGapMs = 10_000;
     const to = Date.now();
-    const from = to - (showHistory ? historyRangeMs : liveRangeMs);
+    const from = to - chartRangeMs;
     const names = Object.keys(overview.targets).sort();
     charts.replaceChildren(
       lineChart({
@@ -353,26 +340,11 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
     targets.render(overview);
   };
 
-  const loadHistory = async (): Promise<void> => {
-    historyLoadedAt = Date.now();
-    history = await connection.rpc.history();
-    renderCharts();
-  };
-
-  rangeButton.addEventListener('click', () => {
-    showHistory = !showHistory;
-    rangeButton.textContent = showHistory ? 'Show 30 min' : 'Show 48 h';
-    renderCharts();
-    if (showHistory) {
-      loadHistory().catch(report);
-    }
-  });
-
   const onPoint = (point: Point): void => {
     if (!overview) {
       return;
     }
-    const oldest = Date.now() - liveRangeMs;
+    const oldest = Date.now() - chartRangeMs;
     overview.points = [
       ...overview.points.filter((entry) => entry.at >= oldest),
       point,
@@ -380,9 +352,6 @@ export const showQueue = (root: HTMLElement, queue: string): (() => void) => {
     renderLive();
     if (Date.now() - liveLoadedAt > liveRefreshMs) {
       loadLive().catch(report);
-    }
-    if (showHistory && Date.now() - historyLoadedAt > historyRefreshMs) {
-      loadHistory().catch(report);
     }
   };
 

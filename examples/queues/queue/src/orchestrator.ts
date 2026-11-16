@@ -73,8 +73,8 @@ const tickMs = 2_000;
 /** Ticks stop this long after the last partition reported. */
 const idleAfterMs = 30_000;
 const rateWindowMs = 30_000;
-const rawPointsMs = 30 * 60_000;
-const minutePointsMs = 48 * 60 * 60_000;
+/** How far back the dashboard's charts go. */
+const pointsKeptMs = 30 * 60_000;
 const eventsKept = 100;
 const dayMs = 24 * 60 * 60 * 1_000;
 const pullBatchSize = 100;
@@ -172,7 +172,6 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
           limiters: overview.limiters,
         };
       },
-      history: () => this.points('minute'),
       putTarget: {
         input: v.object({
           name: targetNameSchema,
@@ -858,27 +857,18 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     const body = JSON.stringify(point);
     this.sql.exec(
       `INSERT OR REPLACE INTO points (resolution, at, body)
-       VALUES ('raw', ?, ?), ('minute', ?, ?)`,
+       VALUES ('raw', ?, ?)`,
       point.at,
-      body,
-      point.at - (point.at % 60_000),
       body
     );
-    this.sql.exec(
-      `DELETE FROM points
-       WHERE (resolution = 'raw' AND at < ?)
-          OR (resolution = 'minute' AND at < ?)`,
-      point.at - rawPointsMs,
-      point.at - minutePointsMs
-    );
+    this.sql.exec('DELETE FROM points WHERE at < ?', point.at - pointsKeptMs);
     return point;
   }
 
-  private points(resolution: 'raw' | 'minute'): Point[] {
+  private points(): Point[] {
     return this.sql
       .exec<{ body: string }>(
-        'SELECT body FROM points WHERE resolution = ? ORDER BY at',
-        resolution
+        "SELECT body FROM points WHERE resolution = 'raw' ORDER BY at"
       )
       .toArray()
       .map((row) => JSON.parse(row.body) as Point);
@@ -1147,7 +1137,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
         shares: state.shares,
         samples: this.limiterSamples,
       },
-      points: this.points('raw'),
+      points: this.points(),
       events: this.sql
         .exec<{ body: string }>('SELECT body FROM events ORDER BY id DESC')
         .toArray()

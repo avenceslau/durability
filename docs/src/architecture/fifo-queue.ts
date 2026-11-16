@@ -1608,7 +1608,7 @@ export const walkthrough = validateWalkthrough({
           id: 'point',
           title: 'A tick adds the samples into a point',
           description:
-            'Every two seconds the Orchestrator sums the samples into one point of cumulative counters and stores it: 30 minutes at full resolution and 48 hours by the minute. The same point feeds the autoscaler.',
+            'Every two seconds the Orchestrator sums the samples into one point of cumulative counters and stores it, keeping the last 30 minutes. The same point feeds the autoscaler.',
           stage: ['focus:orchestrator'],
           source: sourceFocus(
             tick,
