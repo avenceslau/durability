@@ -91,6 +91,10 @@ const countRowSchema = v.object({
   count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
+const discardedRowSchema = v.object({
+  count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+  bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
+});
 const totalBytesRowSchema = v.object({
   total_bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
@@ -333,6 +337,48 @@ const trimThrough = (
   );
 
   return removed.length;
+};
+
+/**
+ * Deletes at most `limit` of the oldest records below `through` without
+ * reading them back, and returns how many were removed. Runs inside the
+ * caller's transaction.
+ */
+const discardBelow = (
+  sql: SqlStorage,
+  channel: string,
+  through: number,
+  limit: number
+): number => {
+  // Records leave from the oldest end only, so the ones held are consecutive.
+  const end = Math.min(through, readBounds(sql, channel).hotOffset + limit);
+  const held = v.parse(
+    discardedRowSchema,
+    sql
+      .exec(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(bytes), 0) AS bytes
+         FROM durability_log_records
+         WHERE channel = ? AND "offset" < ?`,
+        channel,
+        end
+      )
+      .toArray()[0]
+  );
+  if (held.count === 0) {
+    return 0;
+  }
+  sql.exec(
+    `DELETE FROM durability_log_records WHERE channel = ? AND "offset" < ?`,
+    channel,
+    end
+  );
+  sql.exec(
+    `UPDATE durability_log_seq SET total_bytes = MAX(0, total_bytes - ?)
+     WHERE channel = ?`,
+    held.bytes,
+    channel
+  );
+  return held.count;
 };
 
 /** Records where a flushed run now lives, so a read can rehydrate it. */
@@ -733,8 +779,8 @@ export const maxLogBytes = 1_073_741_824;
  *
  * Unlike fanout, records are retained rather than deleted on acknowledgement,
  * so a consumer can rewind or a new one can start from the beginning. Records
- * leave only through `trim`, and a consumer that falls behind retention reads a
- * `LogTruncatedError` rather than silently skipping records.
+ * leave only through `trim` and `discardBefore`, and a consumer that falls
+ * behind reads a `LogTruncatedError` rather than silently skipping records.
  */
 export class DurabilityLog<Body = unknown> {
   readonly #engine: Engine;
@@ -1091,6 +1137,30 @@ export class DurabilityLog<Body = unknown> {
         return removed;
       }
     }
+  }
+
+  /**
+   * Deletes the records below `offset` that the object still holds, oldest
+   * first and at most `limit` of them, and returns how many. They are not
+   * handed to cold storage.
+   *
+   * Retention removes records by age and size, whoever has read them. This is
+   * for a caller that knows no consumer will read below `offset` again and
+   * does not want to hold those records until retention reaches them. The
+   * log does not check cursors: a read below the new floor truncates, and the
+   * deduplication keys of the deleted records are free again.
+   */
+  async discardBefore(
+    offset: number,
+    limit = this.#maxBatchSize
+  ): Promise<number> {
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new LogAppendError('Offset must be a non-negative integer');
+    }
+    assertPositiveInteger('limit', limit);
+    return this.#engine.transactionSync((sql) =>
+      discardBelow(sql, this.#channel, offset, limit)
+    );
   }
 
   /**
