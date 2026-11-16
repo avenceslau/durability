@@ -20,6 +20,7 @@ import { neverGiveUp } from './alarm-policy';
 import { limiterFor, partitionName } from './layout';
 import { limiterClient } from './limiter';
 import {
+  atCapacityMessage,
   noTargetName,
   type Layout,
   type Message,
@@ -503,10 +504,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       await this.stageSample(true);
       return {
         success: false,
-        error: {
-          name: 'Backpressure',
-          message: 'The partition is behind; retry later',
-        },
+        error: { name: 'Backpressure', message: atCapacityMessage },
         load: await this.recentLoad(),
       };
     }

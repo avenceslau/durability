@@ -36,7 +36,7 @@ const accept = sourceExcerpt(
   'accept',
   'Answer a producer',
   'const accept = async (queue: string, request: Request): Promise<Response> => {',
-  '  return Response.json(outcome, { status });\n};'
+  "    headers: { 'Retry-After': String(growthSeconds) },\n  });\n};"
 );
 const layoutOf = sourceExcerpt(
   sendSource,
@@ -758,7 +758,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             append,
             'if (Date.now() - call.issuedAt > maxAppendLatenessMs) {',
-            "message: 'The partition is behind; retry later',"
+            "error: { name: 'Backpressure', message: atCapacityMessage },"
           ),
           durable:
             'Nothing: the refusal is counted in memory until the next report.',
@@ -811,11 +811,11 @@ export const walkthrough = validateWalkthrough({
           id: 'answer',
           title: 'Answer the producer',
           description:
-            'The partition stored the whole send or none of it, so the outcome is one answer: accepted, with the ids, or rejected, with the reason. Over HTTP that is 202, 429 for backpressure, or 503. A rejection is definite. A thrown call is not: the send may have been stored, and a retry must reuse the ids.',
+            'The partition stored the whole send or none of it, so the outcome is one answer: accepted, with the ids, or rejected, with the reason. Over HTTP that is 202, 429 with Retry-After for backpressure, or 503. A rejection is definite. A thrown call is not: the send may have been stored, and a retry must reuse the ids.',
           stage: ['focus:producer'],
           source: sourceFocus(
             accept,
-            "const status = outcome.error.name === 'Backpressure' ? 429 : 503;"
+            "headers: { 'Retry-After': String(growthSeconds) },"
           ),
           durable: 'Whatever the partition stored.',
           volatile: 'The outcome, known only to this request.',
@@ -1403,7 +1403,7 @@ export const walkthrough = validateWalkthrough({
           id: 'redirect',
           title: 'A Worker with the old list is redirected',
           description:
-            'KV is eventually consistent and isolates cache, so some Workers still hash with the old count. Their partition refuses and names the new layout; the Worker hashes again and sends there. The redirect moves only the keys of the partition that gave it, because another old partition may not have stopped yet. A message is therefore never accepted into the old epoch after one of its key went to the new.',
+            'KV is eventually consistent and isolates cache, so some Workers still hash with the old count. Their partition refuses and names the new layout; the Worker hashes again and sends there. A key moves only once its own partition has stopped, so the Worker tells the next old partition to stop before it moves that partition’s key: the stop travels with the sends and does not wait for the Orchestrator to reach a busy partition. A message is therefore never accepted into the old epoch after one of its key went to the new.',
           stage: ['focus:worker'],
           source: sourceFocus(
             send,

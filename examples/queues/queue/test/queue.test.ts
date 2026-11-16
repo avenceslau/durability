@@ -988,7 +988,7 @@ describe('fifo queue', () => {
     );
   });
 
-  it('moves a key to the next epoch only once its own partition has stopped', async () => {
+  it("stops a partition before it moves the partition's key to the next epoch", async () => {
     const queue = await createQueue({ partitions: { min: 2, max: 2 } });
     await addTarget(queue, 'orders', { paused: true });
     const layout = (await overview(queue)).epochs[0]!;
@@ -1006,22 +1006,40 @@ describe('fifo queue', () => {
     const [first, second] = [old(0), old(1)];
 
     // A resize stops the old partitions one after another. Here the second
-    // has stopped and the first has not.
+    // has stopped and the orchestrator has not reached the first.
     await second.stub.stopAccepting(second.identity, next);
 
     // The second partition redirects its key, so this isolate now knows the
-    // next layout.
+    // epoch is being replaced.
     const redirected = await produce(queue, [{ key: second.key, body: 1 }]);
     expect(redirected.status).toBe(202);
 
-    // The first partition still accepts, from any isolate that has not been
-    // redirected. Its key has to stay with it: in the next epoch, a message
-    // could be stored before one that the old partition accepts afterwards,
-    // and the old epoch is delivered first.
-    const kept = await produce(queue, [{ key: first.key, body: 1 }]);
-    expect(kept.status).toBe(202);
+    // The first partition would still accept, from this isolate and from any
+    // other. A message of its key in the next epoch could then be stored
+    // before one the old partition accepts afterwards, and the old epoch is
+    // delivered first. So the Worker stops the partition before the key moves.
+    const moved = await produce(queue, [{ key: first.key, body: 1 }]);
+    expect(moved.status).toBe(202);
+
+    // As an isolate that has heard nothing would call it.
+    const late = await first.stub.append({
+      inputs: [
+        {
+          identity: first.identity,
+          messages: [
+            { id: 'late', key: first.key, body: 2, sentAt: Date.now() },
+          ],
+        },
+      ],
+      issuedAt: Date.now(),
+      refused: 0,
+    });
+    expect(late).toMatchObject({
+      success: false,
+      error: { name: 'PartitionReplaced', next },
+    });
     const sample = await first.stub.stopAccepting(first.identity, next);
-    expect(sample.accepted).toBe(1);
+    expect(sample.accepted).toBe(0);
   });
 
   it('resizes again while an earlier resize still drains, and keeps order', async () => {

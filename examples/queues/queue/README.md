@@ -39,7 +39,7 @@ const outcome = await env.QUEUE.send('orders', {
 The outcome is either accepted, with the ids in order, or rejected, with the reason:
 
 - **Accepted** means stored. Delivery happens afterwards.
-- **`Backpressure`**: the partition cannot keep up (too much is waiting for it in the Worker, or a call waited over two seconds before the partition got to it), or the queue sets `maxBacklog` and a running target is that far behind. Retry later. What is refused counts as demand, so the queue adds partitions.
+- **`Backpressure`**: the partition cannot keep up, or the queue sets `maxBacklog` and a running target is that far behind. Nothing was stored. The message says that the queue is at capacity and adds partitions as demand grows, and how soon to retry (about 30 seconds); over HTTP that is a `429` with `Retry-After`. A partition cannot keep up when too much is waiting for it in the Worker, when a call waited over two seconds before the partition got to it, or when the runtime turned the call away from an overloaded object. What is refused counts as demand, so the queue adds partitions.
 - **`PartitionReplaced`** after three redirects: the queue is resizing. Retry shortly.
 - **A thrown call** is uncertain: the messages may or may not be stored. Retry **with the same `id`s**. A partition accepts an id once while it keeps the message, so only a retry that lands after a resize can store a message twice.
 
@@ -237,17 +237,17 @@ Clients that are not Workers send and pull over HTTP with bearer tokens, set as 
 
 The dashboard and the admin API under `/api` have **no sign-in of their own**. Anyone who can reach the Worker can create, reconfigure, and delete queues, so put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of it before you deploy; Access then decides who gets in, and the dashboard needs nothing more. The only check the Worker makes is that a request naming an origin names its own, so another site cannot act through a signed-in browser.
 
-| Route                                              | Token    | Does                                                                                                      |
-| -------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `POST /queues/<queue>/messages`                    | producer | `send`, with `{ key, messages }`. `202` when accepted, `429` on backpressure, `503` for other rejections. |
-| `POST /queues/<queue>/consumers/<consumer>/pull`   | consumer | `pull`, with `{ batches?, visibilityMs? }`. `null` when caught up.                                        |
-| `POST /queues/<queue>/consumers/<consumer>/ack`    | consumer | `ack` with `{ lease }`. `409` when the lease is no longer current. `nack` is the same.                    |
-| `GET`, `POST /api/queues`                          | none     | `list`; `create` with `{ name, settings? }`.                                                              |
-| `GET`, `PATCH`, `DELETE /api/queues/<queue>`       | none     | `overview`, `updateSettings`, `delete`.                                                                   |
-| `PUT`, `DELETE /api/queues/<queue>/targets/<name>` | none     | `putTarget`, `removeTarget`.                                                                              |
-| `POST /api/queues/<queue>/targets/<name>/pause`    | none     | `pauseTarget` with `{ paused }`.                                                                          |
-| `POST /api/queues/<queue>/resize`                  | none     | `resize` with `{ partitions }`.                                                                           |
-| `POST`, `GET /api/queues/<queue>/redrive`          | none     | `redrive` of the queue, `redriveStatus`. `POST …/targets/<name>/redrive` for one target.                  |
+| Route                                              | Token    | Does                                                                                                                         |
+| -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `POST /queues/<queue>/messages`                    | producer | `send`, with `{ key, messages }`. `202` when accepted, `429` with `Retry-After` on backpressure, `503` for other rejections. |
+| `POST /queues/<queue>/consumers/<consumer>/pull`   | consumer | `pull`, with `{ batches?, visibilityMs? }`. `null` when caught up.                                                           |
+| `POST /queues/<queue>/consumers/<consumer>/ack`    | consumer | `ack` with `{ lease }`. `409` when the lease is no longer current. `nack` is the same.                                       |
+| `GET`, `POST /api/queues`                          | none     | `list`; `create` with `{ name, settings? }`.                                                                                 |
+| `GET`, `PATCH`, `DELETE /api/queues/<queue>`       | none     | `overview`, `updateSettings`, `delete`.                                                                                      |
+| `PUT`, `DELETE /api/queues/<queue>/targets/<name>` | none     | `putTarget`, `removeTarget`.                                                                                                 |
+| `POST /api/queues/<queue>/targets/<name>/pause`    | none     | `pauseTarget` with `{ paused }`.                                                                                             |
+| `POST /api/queues/<queue>/resize`                  | none     | `resize` with `{ partitions }`.                                                                                              |
+| `POST`, `GET /api/queues/<queue>/redrive`          | none     | `redrive` of the queue, `redriveStatus`. `POST …/targets/<name>/redrive` for one target.                                     |
 
 `scripts/load.mjs` sends a steady stream over HTTP, which is the quickest way to watch the dashboard and the autoscaler:
 
@@ -294,7 +294,7 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 
 **Resizing without losing order.** A new partition count re-maps keys, so a resize starts a new _epoch_:
 
-1. The orchestrator tells the current partitions to stop accepting, each on its own and again until it answers, because a partition under load turns calls away. A stopped partition refuses sends and answers with the new layout, so a Worker isolate holding an old partition list is redirected instead of accepted out of order. A redirect moves only the keys of the partition that gave it: until a key's own partition has stopped, another isolate can still store that key there.
+1. The orchestrator tells the current partitions to stop accepting, each on its own and again until it answers, because a partition under load turns calls away. A stopped partition refuses sends and answers with the new layout, so a Worker isolate holding an old partition list is redirected instead of accepted out of order. A key moves to the new layout only once its own partition has stopped: until then, another isolate can still store that key there. A Worker that one partition has redirected therefore tells the next old partition to stop before it moves that partition's key, so the stop travels with the sends themselves and does not wait for the orchestrator to get through to a busy partition.
 2. It publishes the new partitions. They accept at once.
 3. A target is delivered from the new partitions only once the old ones have nothing left for it: every message acknowledged or dead-lettered.
 4. Old partitions with nothing left for any target leave the queue.
@@ -319,7 +319,7 @@ A target's own `maxConcurrency` is split between limiters in the same proportion
 - A message lives 4 days, delivered or not; `pullRetentionDays` applies to the pull bucket only. A partition holds up to 512 MB itself. When a target is further behind than that, the partition's oldest messages move to R2 under `backlog/` in the `STORAGE` bucket and are read back as delivery reaches them, so a slow or paused target costs storage and latency instead of refused sends. Set `maxBacklog` to refuse sends instead.
 - One orchestrator receives every partition's samples, so the dashboard, not the queue, is what stops scaling first. Partitions report less often as their number grows, so the dashboard of a queue with thousands of them lags by tens of seconds. A queue may have 10,000 partitions; it was tried with 4,000.
 - A new queue's partition list is in KV, which takes up to a minute to show it everywhere. Until then a send from another region is answered as if the queue did not exist.
-- One partition stores about 12,000 small messages a second at most, and comfortably half that. Beyond it the runtime turns calls away as `Durable Object is overloaded`, which a producer sees as a thrown call, not as backpressure.
+- One partition stores about 12,000 small messages a second at most, and comfortably half that. Beyond it the runtime turns calls away from the overloaded object, which the queue reports as backpressure. The queue takes the runtime's word that such a call never reached the partition; if one did, a producer that retries without its own ids has the message delivered twice.
 - The autoscaler's thresholds (`src/scaling.ts`) and `limiterTargetRate` are starting points, not measurements of your workload.
 - A message waiting for a retry is still subject to the 4 days: retries and delays that add up to more lose it without a dead letter. The partition reports it as the target's last error.
 - A delivery counts from when the partition picks the batch, as with a visibility timeout. A partition that restarts between picking a batch and calling the consumer has spent one of the message's attempts on a call that was never made, so with `maxRetries: 0` such a message goes to the dead letters undelivered.

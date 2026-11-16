@@ -125,6 +125,13 @@ export const targetInputSchema = v.object({
 export type TargetSettings = v.InferOutput<typeof targetInputSchema>;
 
 /**
+ * About how long a queue that refuses sends takes to have more partitions
+ * accepting. Told to producers with the refusal.
+ */
+export const growthSeconds = 30;
+export const atCapacityMessage = `The queue is at capacity and adds partitions as demand grows; retry in about ${growthSeconds} seconds`;
+
+/**
  * The most partitions one queue may have: one orchestrator hears from all of
  * them. Tried with 4,000.
  */
