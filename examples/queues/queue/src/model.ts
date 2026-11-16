@@ -124,8 +124,11 @@ export const targetInputSchema = v.object({
 });
 export type TargetSettings = v.InferOutput<typeof targetInputSchema>;
 
-/** The most partitions one queue may have: one orchestrator hears from all of them. */
-export const maxPartitions = 1_000;
+/**
+ * The most partitions one queue may have: one orchestrator hears from all of
+ * them. Tried with 4,000.
+ */
+export const maxPartitions = 10_000;
 
 export const settingsInputSchema = v.object({
   partitions: v.optional(

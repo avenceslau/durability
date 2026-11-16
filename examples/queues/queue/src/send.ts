@@ -5,7 +5,12 @@ import {
 } from 'durability/experimental';
 import { DurabilityRouting } from 'durability/routing';
 import { coalescer } from './coalesce';
-import { partitionFor, partitionName, topologyKey } from './layout';
+import {
+  partitionFor,
+  partitionName,
+  partitionRegion,
+  topologyKey,
+} from './layout';
 import type { Layout, Message, PartitionIdentity } from './model';
 import { Partition, type AppendCall, type AppendInput } from './partition';
 
@@ -109,7 +114,13 @@ const createAppend = () => {
     target: Partition,
     exportName: 'Partition',
     invoke: (stub, call: AppendCall) => stub.append(call),
-    sharding: (call) => partitionName(call.inputs[0]!.identity),
+    sharding: (call) => {
+      const { identity } = call.inputs[0]!;
+      return {
+        shard: partitionName(identity),
+        locationHint: partitionRegion(identity),
+      };
+    },
   });
   /**
    * Messages refused here for a partition since the last call to it. The

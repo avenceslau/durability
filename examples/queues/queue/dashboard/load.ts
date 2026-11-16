@@ -1,7 +1,7 @@
 import type { LoadCounts, LoadOptions, LoadStatus } from '../src/load';
 import { api } from './api';
 import { compact, dateTime, element, numberField, perSecond } from './dom';
-import { field, handleSubmit, numberInput } from './forms';
+import { field, handleSubmit, maxPartitions, numberInput } from './forms';
 
 type Answer = { available: false } | ({ available: true } & LoadStatus);
 
@@ -190,7 +190,7 @@ export const loadTestSection = async (): Promise<
         'Partitions per tenant, from',
         numberInput('partitionsMin', {
           min: 1,
-          max: 1_000,
+          max: maxPartitions,
           value: 8,
           required: true,
         })
@@ -199,7 +199,7 @@ export const loadTestSection = async (): Promise<
         'to',
         numberInput('partitionsMax', {
           min: 1,
-          max: 1_000,
+          max: maxPartitions,
           value: 32,
           required: true,
         })

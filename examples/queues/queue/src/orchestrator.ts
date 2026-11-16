@@ -33,7 +33,7 @@ import {
   type TargetSettings,
   type TargetTotals,
 } from './model';
-import { limiters, partitions } from './namespaces';
+import { limiters, partition } from './namespaces';
 import {
   planLimiters,
   planPartitions,
@@ -170,10 +170,10 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       config: {
         // Draining partitions still deliver, so they need target changes too.
         members: 'read',
-        deliver: (member, update) =>
-          partitions()
-            .getByName(member.id)
-            .configure({ queue: update.group, ...member.meta }, update),
+        deliver: (member, update) => {
+          const identity = { queue: update.group, ...member.meta };
+          return partition(identity).configure(identity, update);
+        },
       },
     },
   });
@@ -450,9 +450,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     await Promise.all(
       this.epochs
         .flatMap((layout) => partitionsOf(queue, layout))
-        .map((identity) =>
-          partitions().getByName(partitionName(identity)).stopForDeletedQueue()
-        )
+        .map((identity) => partition(identity).stopForDeletedQueue())
     );
     await this.topology.delete(queue);
     const { active, draining, created } = this.limiterState;
@@ -669,9 +667,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     until: number
   ): Promise<PartitionSample> {
     try {
-      return await partitions()
-        .getByName(partitionName(identity))
-        .stopAccepting(identity, next);
+      return await partition(identity).stopAccepting(identity, next);
     } catch (error) {
       if (Date.now() >= until) {
         throw error;

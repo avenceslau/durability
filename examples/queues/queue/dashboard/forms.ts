@@ -1,4 +1,10 @@
 import type { QueueSettings, SendInput } from '../src/model';
+
+/**
+ * `maxPartitions` of `src/model.ts`, repeated: importing it would add the
+ * schema library to the page.
+ */
+export const maxPartitions = 10_000;
 import {
   element,
   errorMessage,
@@ -98,11 +104,11 @@ export const settingsForm = (
       { class: 'inline' },
       field(
         'Min partitions',
-        numberInput('min', { min: 1, max: 1_000, required: true })
+        numberInput('min', { min: 1, max: maxPartitions, required: true })
       ),
       field(
         'Max partitions',
-        numberInput('max', { min: 1, max: 1_000, required: true })
+        numberInput('max', { min: 1, max: maxPartitions, required: true })
       ),
       field(
         'Target rate per partition',
@@ -203,7 +209,7 @@ export const resizeForm = (
       { class: 'inline' },
       field(
         'Partitions',
-        numberInput('count', { min: 1, max: 1_000, required: true })
+        numberInput('count', { min: 1, max: maxPartitions, required: true })
       ),
       element(
         'div',
