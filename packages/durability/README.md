@@ -164,7 +164,7 @@ export class Subscription extends DurableObject<Env> {
 }
 ```
 
-Scheduling a name again replaces its pending occurrence. If that name is already running, the current handler continues and the replacement runs afterward. Different names may run concurrently, but one name never has more than one active handler in the same instance.
+Scheduling a name again replaces its pending occurrence. If that name is already running, the current handler continues and the replacement runs afterward. Different names may run concurrently, but one name never has more than one attempt in progress in the same instance. A handler that ignores the abort of a timed-out attempt may still be running beside the next one.
 
 Named alarms inside the scheduler's `alarmMinDelayMs` window start from an in-memory timer at their requested time. The option accepts 1 to 15 seconds and defaults to 15 seconds; the scheduler never sets the physical alarm sooner than that delay; the physical alarm remains as a durable fallback for restarts. If concurrency capacity is full when the timer fires, execution waits in the shared FIFO queue. The scheduling method resolves after persistence and never waits for the handler to finish.
 
@@ -380,7 +380,7 @@ const durability = new Durability({
 });
 ```
 
-Each attempt receives its own `AbortSignal`. A timed-out operation follows the normal retry policy; a timed-out named alarm is terminal unless `retryTimeouts` is set. If a handler ignores abort, its in-memory lock and concurrency permit remain held until it actually settles, so a same-isolate retry cannot overlap it.
+Each attempt receives its own `AbortSignal`. A timed-out operation follows the normal retry policy; a timed-out named alarm is terminal unless `retryTimeouts` is set. A timeout ends the attempt: its concurrency permit is returned and the next attempt starts on schedule, whether or not the handler has stopped. Nothing can stop a running handler, so one that ignores abort keeps running beside the retry; its result is discarded, and once the retry has started its `memoize` calls reject. Stop work when the signal aborts, and make side effects safe to repeat.
 
 Throw `NonRetryableError` to move work directly to `failed` without another attempt. Errors named `NonRetryableError` from other packages, such as `cloudflare:workflows`, are recognized too.
 

@@ -432,7 +432,7 @@ describe('DurabilityAlarms', () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
-  it('holds the named alarm lock until a timed-out handler settles', async () => {
+  it('retries a timed-out named alarm while its handler is still running', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
@@ -456,7 +456,6 @@ describe('DurabilityAlarms', () => {
     const alarms = new DurabilityAlarms({
       context: contextFor(storage),
       handlers: { cleanup },
-      alarmHandoffMs: 150,
       methods: {
         cleanup: {
           attemptTimeoutMs: 100,
@@ -475,19 +474,17 @@ describe('DurabilityAlarms', () => {
     expect(timeoutSignal?.aborted).toBe(true);
 
     storage.alarmAt = null;
-    const blockedRetry = alarms.alarm();
-    await vi.advanceTimersByTimeAsync(150);
-    await blockedRetry;
-    expect(cleanup).toHaveBeenCalledTimes(1);
-
-    finishFirst?.();
-    await firstPending;
-    await vi.advanceTimersByTimeAsync(0);
-    storage.alarmAt = null;
     await alarms.alarm();
 
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(attempts).toEqual([1, 2]);
+
+    // The first handler settling late starts nothing further.
+    finishFirst?.();
+    await firstPending;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cleanup).toHaveBeenCalledTimes(2);
   });
 
   it('runs only one invocation of a named alarm at a time', async () => {
