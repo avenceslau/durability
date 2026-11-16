@@ -4,6 +4,9 @@
   "compatibility_date": "2026-10-30",
   "main": "./src/worker.ts",
   "workers_dev": false,
+  // The site itself is served from the custom domains only. Previews have no
+  // custom domain, so without this a pull request's preview has no URL.
+  "preview_urls": true,
   "routes": [
     { "pattern": "durability.shirei.dev", "custom_domain": true },
     { "pattern": "shirei.dev", "custom_domain": true },

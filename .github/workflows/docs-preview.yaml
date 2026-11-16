@@ -106,7 +106,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          url="$(jq --exit-status --raw-output '.preview.urls[0]' preview.json)"
+          if ! url="$(jq --exit-status --raw-output '.preview.urls[0]' preview.json)"; then
+            echo "::error::The preview has no URL. Preview URLs are off for the Worker: set preview_urls in docs/wrangler.jsonc and deploy the site once."
+            exit 1
+          fi
           gh pr comment "$PULL_REQUEST" \
             --repo "$GITHUB_REPOSITORY" \
             --edit-last \
