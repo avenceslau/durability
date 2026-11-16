@@ -75,12 +75,17 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # With --json Wrangler still prints the asset upload's progress
+        # first, so its output is not JSON as a whole. The JSON is the last
+        # thing printed and starts with a line holding only "{". It is cut out
+        # in a second command so that a failed Wrangler fails the step.
         run: |
           pnpm exec wrangler preview \
             --name "$PREVIEW_NAME" \
             --message "$HEAD_SHA" \
             --ignore-base-config \
-            --json > preview.json
+            --json > preview.out
+          sed -n '/^{$/,$p' preview.out > preview.json
 
       - name: Check the preview has no binding but its assets
         working-directory: docs
@@ -89,9 +94,10 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if ! jq --exit-status '.deployment.env | keys == ["ASSETS"] and .ASSETS.type == "assets"' preview.json; then
-            jq '.deployment.env' preview.json
+            # Output that cannot be read must not stop the preview being deleted.
+            jq '.deployment.env' preview.json || true
             pnpm exec wrangler preview delete --name "$PREVIEW_NAME" --skip-confirmation
-            echo "::error::The preview had bindings other than ASSETS and was deleted."
+            echo "::error::The preview could not be shown to have no binding but ASSETS, and was deleted."
             exit 1
           fi
 
