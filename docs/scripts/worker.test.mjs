@@ -41,6 +41,8 @@ test('redirect normalizes protocol and removes the incoming port', async () => {
 for (const host of [
   'https://durability.shirei.dev',
   'http://durability.shirei.dev',
+  // A pull request's preview: only the apex itself redirects.
+  'https://durability-124.shirei.dev',
   'http://localhost:8787',
 ]) {
   test(`serves asset responses unchanged on ${host}`, async () => {
@@ -74,11 +76,12 @@ test('Wrangler routes both domains through the Worker before matching assets', a
   assert.equal(config.assets.run_worker_first, true);
   assert.equal(config.assets.not_found_handling, '404-page');
   assert.equal(config.workers_dev, false);
-  // A pull request's preview is reached at its own workers.dev address.
-  assert.equal(config.preview_urls, true);
+  // Previews are served below the apex, at durability-<number>.shirei.dev,
+  // and nowhere on workers.dev.
+  assert.equal(config.preview_urls, undefined);
   assert.deepEqual(config.routes, [
     { pattern: 'durability.shirei.dev', custom_domain: true },
-    { pattern: 'shirei.dev', custom_domain: true },
+    { pattern: 'shirei.dev', custom_domain: true, previews_enabled: true },
   ]);
 });
 
@@ -98,7 +101,6 @@ test('Wrangler config gives the Worker its assets and no other binding', async (
     'compatibility_date',
     'main',
     'name',
-    'preview_urls',
     'previews',
     'routes',
     'workers_dev',
