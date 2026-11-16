@@ -28,6 +28,9 @@ export type Report = LoadCounts & {
   completed: number;
   latencySumMs: number;
   latencyMaxMs: number;
+  /** Why a request of this report failed, and why the queue refused messages. */
+  lastFailure?: string;
+  lastRejection?: string;
 };
 
 /** One generator sends at most this many requests a second, so the load comes from many objects. */

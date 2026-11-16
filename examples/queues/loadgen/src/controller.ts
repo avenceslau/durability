@@ -56,6 +56,8 @@ const inGroups = async <Item>(
 export class LoadController extends DurableObject<Env> {
   private run = this.ctx.storage.kv.get<Run>('run');
   private totals = this.ctx.storage.kv.get<LoadCounts>('totals') ?? noCounts();
+  private lastFailure: string | undefined;
+  private lastRejection: string | undefined;
   /** Each generator's last report; gone after a restart, back within a tick. */
   private readonly latest = new Map<number, { at: number; report: Report }>();
 
@@ -90,6 +92,8 @@ export class LoadController extends DurableObject<Env> {
     this.totals = noCounts();
     this.ctx.storage.kv.put('totals', this.totals);
     this.latest.clear();
+    this.lastFailure = undefined;
+    this.lastRejection = undefined;
     await this.wake(run);
     return this.status();
   }
@@ -147,6 +151,12 @@ export class LoadController extends DurableObject<Env> {
         max: latencyMaxMs,
       },
       totals: this.totals,
+      ...(this.lastFailure === undefined
+        ? {}
+        : { lastFailure: this.lastFailure }),
+      ...(this.lastRejection === undefined
+        ? {}
+        : { lastRejection: this.lastRejection }),
     };
   }
 
@@ -160,6 +170,8 @@ export class LoadController extends DurableObject<Env> {
     };
     this.ctx.storage.kv.put('totals', this.totals);
     this.latest.set(index, { at: Date.now(), report });
+    this.lastFailure = report.lastFailure ?? this.lastFailure;
+    this.lastRejection = report.lastRejection ?? this.lastRejection;
   }
 
   async deleteQueues(): Promise<number> {

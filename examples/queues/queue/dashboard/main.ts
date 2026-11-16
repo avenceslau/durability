@@ -95,7 +95,7 @@ const showQueueList = async (): Promise<void> => {
     api('GET', '/api/queues') as Promise<{ name: string; createdAt: number }[]>,
   ]);
   // The page may have been left while those were on their way.
-  if (location.hash.startsWith('#/queues/')) {
+  if (location.hash.startsWith('#/queues/') || location.hash === '#/load') {
     loadTest?.stop();
     return;
   }
@@ -149,9 +149,47 @@ const showQueueList = async (): Promise<void> => {
   );
 };
 
+/** The load test on a page of its own, which the API's `url` points at. */
+const showLoadTest = async (): Promise<void> => {
+  root.replaceChildren(
+    element(
+      'header',
+      { class: 'page-header' },
+      element('a', { href: '#/' }, 'Queues'),
+      element('h1', {}, 'Load test')
+    )
+  );
+  const loadTest = await loadTestSection();
+  if (location.hash !== '#/load') {
+    loadTest?.stop();
+    return;
+  }
+  if (!loadTest) {
+    root.appendChild(
+      element(
+        'p',
+        { class: 'notice error' },
+        'This queue has no load generator bound.'
+      )
+    );
+    return;
+  }
+  root.appendChild(loadTest.element);
+  leavePage = loadTest.stop;
+};
+
 function route(): void {
   leavePage?.();
   leavePage = undefined;
+
+  if (location.hash === '#/load') {
+    showLoadTest().catch((error: unknown) => {
+      root.appendChild(
+        element('p', { class: 'notice error' }, errorMessage(error))
+      );
+    });
+    return;
+  }
 
   const match = /^#\/queues\/([^/]+)$/.exec(location.hash);
   if (match?.[1] !== undefined) {

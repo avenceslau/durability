@@ -260,15 +260,20 @@ const load = async (request: Request, action?: string): Promise<Response> => {
   if (action !== undefined) {
     throw new HttpError(404, 'Not found');
   }
+  // Where the dashboard shows the run, for whoever started it from a script.
+  const url = new URL('/#/load', request.url).href;
   if (request.method === 'GET') {
-    return Response.json({ available: true, ...(await control.status()) });
+    return Response.json({ available: true, url, ...(await control.status()) });
   }
   if (request.method === 'POST') {
     const options = await parse(loadOptionsSchema, request);
-    return Response.json(await control.start(options), { status: 202 });
+    return Response.json(
+      { url, ...(await control.start(options)) },
+      { status: 202 }
+    );
   }
   if (request.method === 'DELETE') {
-    return Response.json(await control.stop());
+    return Response.json({ url, ...(await control.stop()) });
   }
   throw new HttpError(405, 'Method not allowed');
 };

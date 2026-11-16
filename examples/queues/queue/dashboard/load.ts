@@ -81,6 +81,7 @@ export const loadTestSection = async (): Promise<
 
   const summary = element('p', { class: 'hint' });
   const numbers = element('div', { class: 'tiles' });
+  const reasons = element('p', { class: 'hint' });
   const notice = element('p', { class: 'notice' });
   const startButton = element('button', { type: 'submit' }, 'Start');
   const stopButton = element(
@@ -179,6 +180,16 @@ export const loadTestSection = async (): Promise<
   const render = (status: LoadStatus): void => {
     summary.textContent = describe(status);
     numbers.replaceChildren(...tiles(status));
+    reasons.textContent = [
+      status.lastRejection === undefined
+        ? undefined
+        : `Last rejection: ${status.lastRejection}`,
+      status.lastFailure === undefined
+        ? undefined
+        : `Last failure: ${status.lastFailure}`,
+    ]
+      .filter((line) => line !== undefined)
+      .join(' · ');
     const running = status.phase === 'running';
     startButton.toggleAttribute('disabled', running);
     stopButton.toggleAttribute('disabled', !running);
@@ -242,6 +253,7 @@ export const loadTestSection = async (): Promise<
       element('h2', {}, 'Load test'),
       summary,
       numbers,
+      reasons,
       form
     ),
     stop: () => clearInterval(timer),

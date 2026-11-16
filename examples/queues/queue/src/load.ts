@@ -44,7 +44,7 @@ export type LoadCounts = {
   accepted: number;
   /** Messages the queue refused, for backpressure or another reason. */
   rejected: number;
-  /** Requests that threw or timed out. */
+  /** Requests that threw: nothing is known about their messages. */
   failed: number;
 };
 
@@ -60,6 +60,9 @@ export type LoadStatus = {
   latencyMs: { average: number; max: number };
   /** Since the run started. */
   totals: LoadCounts;
+  /** Why the most recent request failed, and why the queue last refused messages. */
+  lastFailure?: string;
+  lastRejection?: string;
 };
 
 export type LoadControl = {

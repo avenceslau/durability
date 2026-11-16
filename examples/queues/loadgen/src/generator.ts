@@ -17,9 +17,11 @@ const tickMs = 10_000;
 // one burst per tick.
 const sliceMs = 100;
 const slicesPerTick = tickMs / sliceMs;
-const requestTimeoutMs = 10_000;
 // A gap longer than a tick follows a restart; the cap stops it becoming a spike.
 const maxCatchUpMs = tickMs + 5_000;
+
+const describe = (error: { name: string; message: string }): string =>
+  `${error.name}: ${error.message}`.slice(0, 200);
 
 const nothing = (): Omit<Report, 'seconds' | 'requests'> => ({
   accepted: 0,
@@ -34,6 +36,10 @@ const nothing = (): Omit<Report, 'seconds' | 'requests'> => ({
  * Sends to one queue at a steady rate. It is an open loop: a request outlives
  * the tick that started it, so a slow queue does not slow the load down, and
  * what the queue cannot take shows up as rejections and latency.
+ *
+ * A request is given all the time the queue takes to answer it. Giving up
+ * early would count as failed a request whose messages the queue goes on to
+ * store, and the numbers would say less than the queue did.
  */
 export class LoadGenerator extends DurableObject<Env> {
   private run = this.ctx.storage.kv.get<Run>('run');
@@ -170,26 +176,20 @@ export class LoadGenerator extends DurableObject<Env> {
       },
     }));
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const outcome = await Promise.race([
-        this.env.QUEUE.send(queue, messages),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error('The send timed out')),
-            requestTimeoutMs
-          );
-        }),
-      ]);
+      const outcome = await this.env.QUEUE.send(queue, messages);
       this.outcomes.accepted += outcome.accepted.length;
-      this.outcomes.rejected += outcome.rejected.reduce(
-        (all, rejection) => all + rejection.ids.length,
-        0
-      );
-    } catch {
+      for (const rejection of outcome.rejected) {
+        this.outcomes.rejected += rejection.ids.length;
+        this.outcomes.lastRejection = describe(rejection.error);
+      }
+    } catch (error) {
       this.outcomes.failed += 1;
-    } finally {
-      clearTimeout(timer);
+      this.outcomes.lastFailure = describe(
+        error instanceof Error
+          ? error
+          : { name: 'Error', message: String(error) }
+      );
     }
 
     const latencyMs = Date.now() - startedAt;
