@@ -301,6 +301,8 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 
 Accepting scales immediately; delivery follows when the old backlog is gone, one epoch after another. A resize does not wait for the ones before it to drain, so a queue can keep growing to accept while a slow or paused target is still working through older partitions. Each resize that has not drained keeps its partitions alive, which is why at most eight epochs are live at once.
 
+**Growing is quick, shrinking is slow.** The autoscaler (`src/scaling.ts`) judges a queue on its last five seconds, at least doubles it when the traffic does not fit, and may grow it again ten seconds later. It halves a queue only after half an hour in which half its partitions would have carried the traffic, and half an hour after its last resize, so a queue of 4,000 partitions takes about six hours to return to one. The traffic that needed the partitions tends to come back, and every resize makes delivery wait.
+
 **Concurrency.** With `maxConcurrency` set, a partition takes a permit from a limiter before it delivers and keeps it for up to ten seconds of continuous work. A queue starts with one limiter; the orchestrator adds limiters when their request rate exceeds `limiterTargetRate`, and splits the limit between them by demand. `limitMode` chooses how permits move between limiters:
 
 - `strict` lowers one limiter, waits until it reports the work is done, then raises another. The limit is never exceeded.

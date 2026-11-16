@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { limiterFor } from '../src/layout';
 import type { LimiterSample } from '../src/model';
 import {
+  fitsInHalf,
   planLimiters,
   planPartitions,
   planShares,
@@ -20,6 +21,7 @@ const partitionLoad = {
   waitingForPermits: false,
   now: 10 * minute,
   lastResizeAt: 0,
+  quietSince: undefined,
 };
 
 describe('planPartitions', () => {
@@ -41,12 +43,41 @@ describe('planPartitions', () => {
     ).toBeUndefined();
   });
 
-  it('halves only after the longer cooldown', () => {
-    const quiet = { ...partitionLoad, current: 8, acceptRate: 100 };
-    expect(planPartitions(quiet)).toBe(4);
+  it('grows again for traffic sooner than for a backlog', () => {
+    const justResized = {
+      ...partitionLoad,
+      lastResizeAt: partitionLoad.now - 15_000,
+    };
+    expect(planPartitions({ ...justResized, acceptRate: 900 })).toBe(9);
     expect(
-      planPartitions({ ...quiet, lastResizeAt: quiet.now - minute })
+      planPartitions({ ...justResized, acceptRate: 10, drainSeconds: 120 })
     ).toBeUndefined();
+  });
+
+  it('halves only after half an hour of fitting in half, and of no resize', () => {
+    const now = 120 * minute;
+    const quiet = { ...partitionLoad, current: 8, acceptRate: 100, now };
+    expect(planPartitions(quiet)).toBeUndefined();
+    expect(
+      planPartitions({ ...quiet, quietSince: now - 10 * minute })
+    ).toBeUndefined();
+    expect(planPartitions({ ...quiet, quietSince: now - 30 * minute })).toBe(4);
+    expect(
+      planPartitions({
+        ...quiet,
+        quietSince: now - 30 * minute,
+        lastResizeAt: now - 10 * minute,
+      })
+    ).toBeUndefined();
+  });
+
+  it('counts a queue as fitting in half only while nothing is behind', () => {
+    const load = { current: 8, targetRate: 100, drainSeconds: undefined };
+    expect(fitsInHalf({ ...load, acceptRate: 400 })).toBe(true);
+    expect(fitsInHalf({ ...load, acceptRate: 401 })).toBe(false);
+    expect(fitsInHalf({ ...load, acceptRate: 10, drainSeconds: 120 })).toBe(
+      false
+    );
   });
 
   it('returns to the configured range', () => {

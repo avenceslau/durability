@@ -1345,12 +1345,12 @@ export const walkthrough = validateWalkthrough({
           id: 'decide',
           title: 'Decide a new partition count',
           description:
-            'Every tick the Orchestrator compares the accept rate with what one partition should carry, and checks whether a running target would need more than 30 seconds to deliver its backlog. Growing at least doubles, because every resize has a cost.',
+            'Every tick the Orchestrator compares the accept rate with what one partition should carry, and checks whether a running target would need more than 30 seconds to deliver its backlog. Growing is quick: it looks at the last five seconds, at least doubles, and may grow again ten seconds later. Shrinking is slow: the queue halves only after half an hour in which half its partitions would have been enough.',
           stage: ['*', 'focus:orchestrator'],
           source: sourceFocus(
             planPartitions,
-            'const forRate = clamp(Math.ceil(load.acceptRate / load.targetRate));',
-            'const needsDelivery = backlogged && !load.waitingForPermits;'
+            'const forRate = Math.ceil(load.acceptRate / load.targetRate);',
+            'return moveTo(Math.ceil(load.current / 2));'
           ),
           durable: 'The points the rates are computed from.',
           volatile: 'The decision.',

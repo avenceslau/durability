@@ -381,6 +381,12 @@ The cost is that accepting scales immediately while delivery of new messages wai
 the old backlog. The autoscaler accounts for that by at least doubling when it grows, and
 by not shrinking while a target is behind.
 
+Growing is quick and shrinking is slow. A queue that is refusing sends is judged on its
+last five seconds and may grow again ten seconds after a resize. It halves only after
+half an hour in which half its partitions would have carried the traffic, and half an
+hour after its last resize: the traffic that needed the partitions tends to come back,
+and every resize makes delivery wait.
+
 Demand is what is sent to the queue, not only what it accepted. A partition that gets to
 a call more than two seconds after the Worker made it refuses the call without touching
 storage, which keeps an overloaded partition able to answer the orchestrator, and the

@@ -36,6 +36,7 @@ import {
 import { limiters, partition } from './namespaces';
 import {
   planLimiters,
+  fitsInHalf,
   planPartitions,
   planShares,
   type ShareState,
@@ -81,7 +82,7 @@ const stopRetryMs = 500;
 /** Ticks stop this long after the last partition reported. */
 const idleAfterMs = 30_000;
 /** Short, so that a queue that is refusing sends grows within seconds. */
-const rateWindowMs = 10_000;
+const rateWindowMs = 5_000;
 const summaryStaleMs = 15_000;
 /**
  * A resize does not wait for the one before it: accepting has to be able to
@@ -992,7 +993,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       );
 
     const { partitions: range } = this.settings;
-    const count = planPartitions({
+    const load = {
       current: epochs[epochs.length - 1]!.count,
       min: range.min,
       max: range.max,
@@ -1006,10 +1007,32 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       waitingForPermits: (point.permits?.blocked ?? 0) > 0,
       now: point.at,
       lastResizeAt: this.kv.get<number>('resizedAt') ?? 0,
+    };
+    const count = planPartitions({
+      ...load,
+      quietSince: this.quietSince(load),
     });
     if (count !== undefined) {
       await this.startResize(count);
     }
+  }
+
+  /**
+   * Since when the queue has fitted in half its partitions without a break.
+   * Stored, because shrinking waits far longer than this object stays in memory.
+   */
+  private quietSince(load: Parameters<typeof fitsInHalf>[0] & { now: number }) {
+    const since = this.kv.get<number>('quietSince');
+    if (!fitsInHalf(load)) {
+      if (since !== undefined) {
+        this.kv.delete('quietSince');
+      }
+      return undefined;
+    }
+    if (since === undefined) {
+      this.kv.put('quietSince', load.now);
+    }
+    return since ?? load.now;
   }
 
   /**

@@ -4,8 +4,19 @@
  */
 import type { LimiterSample } from './model';
 
-const scaleOutCooldownMs = 30_000;
-const scaleInCooldownMs = 5 * 60_000;
+/** A queue that is refusing sends should not wait long to grow again. */
+const scaleOutCooldownMs = 10_000;
+/** Growing for a backlog makes delivery wait for a drain, so it repeats less soon. */
+const backlogCooldownMs = 30_000;
+/**
+ * A queue shrinks only after it would have fitted in half its partitions for
+ * this long without a break, and this long after its last resize. A resize
+ * makes delivery wait for a drain, and the traffic that needed the
+ * partitions tends to come back.
+ */
+const scaleInQuietMs = 30 * 60_000;
+const limiterScaleOutCooldownMs = 30_000;
+const limiterScaleInCooldownMs = 5 * 60_000;
 /** A backlog that would take longer than this to deliver asks for more partitions. */
 const maxDrainSeconds = 30;
 
@@ -26,40 +37,58 @@ export type PartitionLoad = {
   waitingForPermits: boolean;
   now: number;
   lastResizeAt: number;
+  /**
+   * Since when the queue has fitted in half its partitions without a break,
+   * by `fitsInHalf`. Undefined while it does not.
+   */
+  quietSince: number | undefined;
 };
+
+const backlogged = (load: Pick<PartitionLoad, 'drainSeconds'>): boolean =>
+  load.drainSeconds !== undefined && load.drainSeconds > maxDrainSeconds;
+
+/** True while half the partitions would carry the traffic and nothing is behind. */
+export const fitsInHalf = (
+  load: Pick<
+    PartitionLoad,
+    'current' | 'targetRate' | 'acceptRate' | 'drainSeconds'
+  >
+): boolean =>
+  Math.ceil(load.acceptRate / load.targetRate) <= load.current / 2 &&
+  !backlogged(load);
 
 /** The partition count a queue should move to, or undefined to stay. */
 export const planPartitions = (load: PartitionLoad): number | undefined => {
   const clamp = (count: number) =>
     Math.min(load.max, Math.max(load.min, count));
+  const moveTo = (count: number) =>
+    clamp(count) === load.current ? undefined : clamp(count);
 
   if (load.current < load.min || load.current > load.max) {
     return clamp(load.current);
   }
 
   const sinceResize = load.now - load.lastResizeAt;
-  const forRate = clamp(Math.ceil(load.acceptRate / load.targetRate));
-  const backlogged =
-    load.drainSeconds !== undefined && load.drainSeconds > maxDrainSeconds;
-  const needsDelivery = backlogged && !load.waitingForPermits;
+  const forRate = Math.ceil(load.acceptRate / load.targetRate);
 
+  // Doubling at least keeps resizes rare: each one makes delivery wait for a drain.
+  if (forRate > load.current && sinceResize >= scaleOutCooldownMs) {
+    return moveTo(Math.max(forRate, load.current * 2));
+  }
   if (
-    (forRate > load.current || needsDelivery) &&
-    sinceResize >= scaleOutCooldownMs
+    backlogged(load) &&
+    !load.waitingForPermits &&
+    sinceResize >= backlogCooldownMs
   ) {
-    // Doubling keeps resizes rare: each one makes delivery wait for a drain.
-    const grown = clamp(Math.max(forRate, load.current * 2));
-    return grown === load.current ? undefined : grown;
+    return moveTo(load.current * 2);
   }
 
-  // Shrinking makes delivery wait for a drain, which a backlog cannot afford.
   if (
-    forRate <= load.current / 2 &&
-    !backlogged &&
-    sinceResize >= scaleInCooldownMs
+    load.quietSince !== undefined &&
+    load.now - load.quietSince >= scaleInQuietMs &&
+    sinceResize >= scaleInQuietMs
   ) {
-    const shrunk = clamp(Math.ceil(load.current / 2));
-    return shrunk === load.current ? undefined : shrunk;
+    return moveTo(Math.ceil(load.current / 2));
   }
 
   return undefined;
@@ -83,13 +112,17 @@ export const planLimiters = (load: LimiterLoad): number => {
     Math.ceil(load.requestsPerSecond / load.targetRate)
   );
 
-  if (wanted > load.current && sinceChange >= scaleOutCooldownMs) {
+  if (wanted > load.current && sinceChange >= limiterScaleOutCooldownMs) {
     return load.current + 1;
   }
 
   const fitsInFewer =
     load.requestsPerSecond < (load.current - 1) * load.targetRate * 0.5;
-  if (load.current > 1 && fitsInFewer && sinceChange >= scaleInCooldownMs) {
+  if (
+    load.current > 1 &&
+    fitsInFewer &&
+    sinceChange >= limiterScaleInCooldownMs
+  ) {
     return load.current - 1;
   }
   return load.current;
