@@ -92,7 +92,7 @@ const trim = sourceExcerpt(
   'trim',
   'Flush the oldest records to cold storage',
   '  async trim(): Promise<number> {',
-  '      if (deleted < expiring.length) {\n        return removed;\n      }\n    }\n  }'
+  '        (cutoff !== undefined && row.appended_at < cutoff)\n      );\n    });\n  }'
 );
 const schedule = sourceExcerpt(
   alarmsSource,
@@ -328,7 +328,7 @@ export const walkthrough = validateWalkthrough({
     },
     storage: {
       description:
-        'The Partition’s own SQLite, every table keyed by channel first: durability_log_records (the hot window, with deduplication keys), durability_log_seq (next offset and bytes held), durability_log_cursors (one row per consumer group), durability_log_segments (cold locators), and durability_alarms. This log uses the default channel.',
+        'The Partition’s own SQLite, every table keyed by channel first: durability_log_records (the hot window, with deduplication keys), durability_log_seq (next offset and bytes held), durability_log_cursors (one row per consumer group), durability_log_segments (cold locators), durability_log_pending_flushes (the range of an unfinished flush), and durability_alarms. This log uses the default channel.',
       href: '/reference/storage/',
       source: 'append-records',
     },
@@ -496,14 +496,14 @@ export const walkthrough = validateWalkthrough({
           id: 'trim',
           title: 'Select records outside the hot bounds',
           description:
-            'trim() takes the oldest records, up to 100 at a time, while the log holds over 50,000 records or 256 MiB, or a record is older than seven days. The bounds are applied only when something calls trim().',
+            'trim() takes the oldest records, up to 100 at a time, while the log holds over 50,000 records or 256 MiB, or a record is older than seven days, and records the batch’s first and last offsets in durability_log_pending_flushes before writing it. A batch left by an unfinished flush is written again exactly as recorded. The bounds are applied only when something calls trim().',
           stage: ['focus:log'],
           source: sourceFocus(
             trim,
-            'const expiring = takeWhile(oldest, (row, index) => {',
+            'return takeWhile(oldest, (row, index) => {',
             '(cutoff !== undefined && row.appended_at < cutoff)'
           ),
-          durable: 'Rows are read, not changed.',
+          durable: 'The batch’s range; the rows are not changed.',
           volatile: 'The batch being moved.',
           status: 'normal',
         },
@@ -524,17 +524,17 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'index',
-          title: 'Index the segment, then delete the hot rows',
+          title: 'Index the segment and delete the hot rows together',
           description:
-            'The locator is stored in durability_log_segments before the rows are deleted, so a crash between them leaves the segment readable rather than records that point nowhere.',
+            'The locator is stored in durability_log_segments, the rows are deleted, and the recorded range is cleared in one transaction, so a crash leaves either the rows hot with their range recorded or the segment readable, never records that point nowhere.',
           stage: ['focus:storage'],
           source: sourceFocus(
             trim,
-            'insertSegment(this.#engine.sql, this.#channel, {',
-            'trimThrough(sql, this.#channel, last.offset + 1, expiring.length)'
+            'insertSegment(transaction, this.#channel, {',
+            'return trimThrough('
           ),
           durable:
-            'The segment locator, then the deletion of the flushed rows.',
+            'The segment locator, the deletion of the flushed rows, and the cleared range.',
           volatile: 'Nothing.',
           status: 'commit',
         },

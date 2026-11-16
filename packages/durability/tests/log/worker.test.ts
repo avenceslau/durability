@@ -112,6 +112,18 @@ describe('durable log', () => {
     expect(await revived.cursor('search')).toBe(2);
   });
 
+  it('acks a late range behind a hundred settled ones', async () => {
+    const stub = objectFor(crypto.randomUUID());
+    await stub.append(
+      Array.from({ length: 100 }, (_, value) => ({
+        body: { topic: 'a', value },
+      }))
+    );
+    // One delete naming every settled range would exceed the platform's 100
+    // bound parameters per query.
+    expect(await stub.ackLateLease('search', 99)).toBe(100);
+  });
+
   it('fences the previous holder once a lease expires', async () => {
     const stub = objectFor(crypto.randomUUID());
     await stub.append([{ body: { topic: 'a', value: 1 } }]);

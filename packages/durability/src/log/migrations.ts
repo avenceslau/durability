@@ -175,6 +175,23 @@ export const durabilityLogMigrations = [
       DROP TABLE durability_log_seq_with_channels;
     `,
   },
+  {
+    // The range of a cold flush is recorded before its write, so a retried
+    // write carries the same records under the same first offset.
+    name: 'durability_0025_create_log_pending_flushes',
+    up: `
+      CREATE TABLE durability_log_pending_flushes (
+        channel TEXT PRIMARY KEY,
+        first_offset INTEGER NOT NULL,
+        last_offset INTEGER NOT NULL
+      );
+    `,
+    // The rows hold no records, only the range a retry must repeat, and
+    // earlier versions recompute that range anyway.
+    down: `
+      DROP TABLE IF EXISTS durability_log_pending_flushes;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**
