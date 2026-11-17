@@ -15,6 +15,7 @@ export {
   createRestorableStubFactory,
   createTransformStub,
   withTransforms,
+  type RestorableNamespace,
   type TransformNamespace,
   type TransformStub,
   type TransformWith,

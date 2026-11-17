@@ -128,7 +128,7 @@ const decideRetry = sourceExcerpt(
   'decide-retry',
   'Decide whether a failure is final',
   'const decideRetry = <Result>(',
-  '    return { error, terminal, timestamp, nextAttemptAt: timestamp };\n  }'
+  '    return { error: cause, terminal, timestamp, nextAttemptAt: timestamp };\n  }'
 );
 
 export const walkthrough = validateWalkthrough({
@@ -625,8 +625,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:retention'],
           source: sourceFocus(
             decideRetry,
-            'isNonRetryable(error) ||',
-            'spec.isTerminal(error);'
+            'isNonRetryable(cause) ||',
+            'spec.isTerminal(cause);'
           ),
           durable:
             'A failed durability_alarms row and the sweeping key; the hot window keeps growing.',

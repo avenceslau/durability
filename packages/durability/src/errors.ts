@@ -276,18 +276,18 @@ const readString = (
 };
 
 /** Reduces any thrown value to a persistable name and message, never throwing. */
-export const serializeError = (error: unknown): SerializedError => {
-  if (error === null) {
+export const serializeError = (cause: unknown): SerializedError => {
+  if (cause === null) {
     return { name: 'Error', message: 'null' };
   }
 
-  if (!isObjectOrFunction(error)) {
-    return { name: 'Error', message: String(error) };
+  if (!isObjectOrFunction(cause)) {
+    return { name: 'Error', message: String(cause) };
   }
 
   return {
-    name: readString(error, 'name') ?? 'Error',
-    message: readString(error, 'message') ?? 'Unknown thrown value',
+    name: readString(cause, 'name') ?? 'Error',
+    message: readString(cause, 'message') ?? 'Unknown thrown value',
   };
 };
 
@@ -303,21 +303,21 @@ export const isErrorInstance = <Instance extends Error>(
 };
 
 /** Recognizes this package's NonRetryableError and same-named errors from other packages. */
-export const isNonRetryable = (error: unknown): boolean => {
-  if (isErrorInstance(error, NonRetryableError)) {
+export const isNonRetryable = (cause: unknown): boolean => {
+  if (isErrorInstance(cause, NonRetryableError)) {
     return true;
   }
 
-  if (!isObjectOrFunction(error)) {
+  if (!isObjectOrFunction(cause)) {
     return false;
   }
 
-  if (readString(error, 'name') === 'NonRetryableError') {
+  if (readString(cause, 'name') === 'NonRetryableError') {
     return true;
   }
 
   try {
-    const constructor = error.constructor;
+    const constructor = cause.constructor;
 
     return (
       isObjectOrFunction(constructor) &&
