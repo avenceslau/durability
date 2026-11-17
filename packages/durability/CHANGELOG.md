@@ -1,5 +1,24 @@
 # durability
 
+## 5.3.0
+
+### Minor Changes
+
+- 3e2ae33: Start the retry of a timed-out operation or named alarm on schedule even when its handler has not stopped. A timed-out attempt used to keep its in-memory lock and concurrency permit until the handler settled, so a handler that never settled left the work pending forever, never reaching `maxAttempts`, and held one of the object's permits for good. A timeout now ends the attempt: the permit is returned and the next attempt starts at its retry time. A handler that ignores its abort signal can therefore run beside the retry; its result is discarded, and its `memoize` calls reject once the retry has started.
+- 33f18fc: Stop a Durable Object from running into the runtime's limit of 10,000 pending `setTimeout` timers. Attempt, delivery, and publish timeouts and `DurabilityTracker` waits used to set one native timer each, so an object with enough of them open at once had `setTimeout` throw `QuotaExceededError`. They now sit in a min-heap ordered by due time behind a single native timer set for the earliest, so the number of native timers no longer grows with the number of open timeouts. Every other timer the helpers set inside a Durable Object goes through the same heap, and a `DurabilitySocketClient` connection keeps its call timeouts, reconnect backoff, and keep-alive ping behind one native timer of its own.
+
+  Add `DurabilityScheduler.setTimeout(callback, delayMs)`, which schedules an in-memory timeout on that same heap and returns a function that cancels it, so application code in a Durable Object can hold any number of timeouts without reaching the limit.
+
+### Patch Changes
+
+- 661d392: Make `migrate()` and each helper's `migrate()` fully atomic. Reverting migrations recorded by a newer version used to commit on its own, so a later failure in the same call (for example a broken `up` script) left those migrations reverted; now the downgrade, the batch, and the history-table bookkeeping share one transaction, and a failed call leaves the schema and its history exactly as they were.
+- 661d392: Keep the topology client's version fence across a missing read. After a read returned nothing, the client forgot the newest version it had seen, so a lagging replica could hand back an older snapshot from the same coordinator and readers resumed routing to members that had already left. The client now remembers the newest version separately from the cached view; an older snapshot that arrives with no view to keep serving is answered like the failed read before it, and the negative TTL is renewed.
+- 192c7be: `DurabilitySchedule` gains an experimental `reschedule()` for a `nextOccurrence` whose answers change for a reason durability cannot see, such as which ticks the object owns. It asks `nextOccurrence` again from `now - jitterMs` and resolves `true` when the stored next tick changed, moving the alarm earlier or later in the same transaction, as a tick does. A stored tick that is already due is left to fire, ticks whose `dueAt` already passed are skipped rather than collapsed into a catch-up run, and no tick fires twice. The version, the stored jitter, cancels, runs, and outcome retries are unchanged, so `set()` and `cancel()` behave as before. `nextOccurrence` must still be synchronous, but no longer has to be deterministic.
+- d2a80b7: Count a group's lease footprint against its `groupLimit` when the semaphore allocates grants. With `limitedGroups: 'withinGroupLimit'`, a group whose ceiling was filled by grants plus leased permits could still receive grants, in every provisioning mode, so more items ran than the group limit allowed. Retired leases stay charged to their group until their client confirms what it drew.
+- Updated dependencies [661d392]
+- Updated dependencies [661d392]
+  - @durability/transforms@0.6.2
+
 ## 5.2.1
 
 ### Patch Changes
