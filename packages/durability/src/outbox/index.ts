@@ -492,6 +492,8 @@ export class DurabilityOutbox<Value = unknown> {
       (row): OutboxEntry<Value> => ({
         key: row.entry_key,
         version: row.version,
+        // SAFETY: #stageIn is the only writer of payloads, each serialized
+        // from a Value.
         value: deserialize(row.payload) as Value,
         attempt: row.attempt,
         stagedAt: row.created_at,

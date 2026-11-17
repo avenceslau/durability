@@ -78,6 +78,8 @@ export const provider: SearchProvider = {
       window.location.origin
     );
 
+    // SAFETY: pagefind.js is the bundle Pagefind builds, whose module
+    // namespace is this API.
     const loaded = (await import(
       /* @vite-ignore */ pagefindUrl.href
     )) as PagefindApi;

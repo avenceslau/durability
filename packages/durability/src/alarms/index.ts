@@ -303,6 +303,8 @@ class DurabilityAlarmsCore<Names extends string> {
   lifecycle(
     hook: (event: DurabilityAlarmEvent) => void | Promise<void>
   ): () => void {
+    // SAFETY: every event this instance emits, from scheduling, alarmEntity
+    // attempts, and purges, has entityKind 'named_alarm'.
     return this.#lifecycle.add(hook as LifecycleHook);
   }
 
@@ -615,7 +617,7 @@ export interface DurabilityAlarmsConstructor {
 
 traceMethods(DurabilityAlarmsCore.prototype, 'DurabilityAlarms');
 
-// See Durability: members derived from the handler names cannot be declared on
-// the class, so the constructor is typed separately.
+// SAFETY: the constructor defines a scheduling method for every handler name on
+// the instance, members TypeScript cannot declare from a generic name union.
 export const DurabilityAlarms =
   DurabilityAlarmsCore as DurabilityAlarmsConstructor;

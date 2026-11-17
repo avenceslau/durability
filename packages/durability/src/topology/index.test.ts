@@ -4,6 +4,7 @@ import {
   DurabilityTopology,
   type DurabilityTopologyConfig,
   type DurabilityTopologyEvent,
+  type TopologyCurrent,
   type TopologyStateUpdate,
 } from './index';
 import {
@@ -18,6 +19,11 @@ type Limits = { max: number };
 type States = { limits: Limits; config: string };
 
 const coordinatorId = 'coordinator-1';
+
+const coordinatorContext = (storage = new FakeStorage()) => ({
+  storage,
+  id: coordinatorId,
+});
 
 class Store {
   readonly values = new Map<string, string>();
@@ -114,10 +120,7 @@ const fixture = () => {
 const active = (id: string) => ({ id, state: 'active' as const });
 
 const slowPublishConfig = (store: Store) => ({
-  context: {
-    storage: new FakeStorage(),
-    id: coordinatorId,
-  } as never,
+  context: coordinatorContext(),
   publish: { ...store.publisher, attemptTimeoutMs: 100 },
   retries: { delay: () => 60_000 },
 });
@@ -194,6 +197,15 @@ describe('DurabilityTopology', () => {
 
   it('rejects invalid drafts without committing anything', async () => {
     const { topology } = fixture();
+
+    // `update` as a JavaScript caller sees it, without the draft's static type.
+    const untyped: {
+      update(
+        group: string,
+        next: (current: TopologyCurrent<undefined, States>) => object
+      ): Promise<object>;
+    } = topology;
+
     await expect(
       topology.update('acme', () => ({ states: { limits: { max: 1 } } }))
     ).rejects.toThrow('does not exist');
@@ -206,14 +218,12 @@ describe('DurabilityTopology', () => {
       }))
     ).rejects.toThrow('Duplicate member');
     await expect(
-      topology.update('acme', (async () => ({
-        members: [active('a')],
-      })) as never)
+      untyped.update('acme', async () => ({ members: [active('a')] }))
     ).rejects.toThrow('synchronously');
     await expect(
-      topology.update('acme', () => ({
+      untyped.update('acme', () => ({
         members: [active('a')],
-        states: { unknown: 1 } as never,
+        states: { unknown: 1 },
       }))
     ).rejects.toThrow('Unknown topology channel');
     expect(topology.snapshot('acme')).toBeUndefined();
@@ -380,7 +390,7 @@ describe('DurabilityTopology', () => {
     await topology.update('acme', () => ({ members: [active('acme-0')] }));
 
     const result = await topology.update('acme', ({ members }) => {
-      (members[0] as { state: string }).state = 'draining';
+      members[0]!.state = 'draining';
 
       return {};
     });
@@ -439,10 +449,7 @@ describe('DurabilityTopology', () => {
     let blocked = false;
 
     const topology = new DurabilityTopology<undefined, States>({
-      context: {
-        storage: new FakeStorage(),
-        id: coordinatorId,
-      } as never,
+      context: coordinatorContext(),
       alarmConcurrency: 1,
       publish: store.publisher,
       states: {
@@ -484,10 +491,7 @@ describe('DurabilityTopology', () => {
     const write = store.publisher.write;
 
     const config = {
-      context: {
-        storage,
-        id: coordinatorId,
-      } as never,
+      context: coordinatorContext(storage),
       retries: { delay: () => 60_000 },
       publish: {
         ...store.publisher,
@@ -520,7 +524,7 @@ describe('DurabilityTopology', () => {
 
     const revived = new DurabilityTopology<undefined, States>({
       ...config,
-      context: { ...contextFor(storage), id: coordinatorId } as never,
+      context: coordinatorContext(contextFor(storage).storage),
     });
 
     const v2 = await revived.update('acme', ({ members }) => ({
@@ -548,10 +552,7 @@ describe('DurabilityTopology', () => {
 
     const topology = new DurabilityTopology<undefined, States>({
       ...withoutPublisher,
-      context: {
-        storage: new FakeStorage(),
-        id: coordinatorId,
-      } as never,
+      context: coordinatorContext(),
     });
 
     const result = await topology.update('acme', () => ({

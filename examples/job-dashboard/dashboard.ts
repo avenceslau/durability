@@ -39,6 +39,9 @@ const toRecord = (row: JobRow): TrackedRecord<Jobs> => ({
   state: JSON.parse(row.state),
 });
 
+// Browsers send the cursor back, so it is parsed like any other input.
+const jobsCursor = v.tuple([v.number(), v.string()]);
+
 const workQuery = v.object({
   cursor: v.optional(v.string()),
   status: v.optional(v.picklist(['pending', 'completed', 'failed'])),
@@ -62,7 +65,7 @@ export class Dashboard extends DurableObject<Env> {
       const [createdAt, afterId] =
         cursor === undefined
           ? [-1, '']
-          : (JSON.parse(cursor) as [number, string]);
+          : v.parse(jobsCursor, JSON.parse(cursor));
 
       const rows = this.sql
         .exec<JobRow>(

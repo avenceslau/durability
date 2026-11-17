@@ -178,6 +178,8 @@ function pipelined(node: PipelineNode) {
 
       let member: Promise<unknown> | undefined;
 
+      // SAFETY: TransformStub types a pipelined member access or call only
+      // when the resolved value's type has that member, as RpcPromise does.
       return pipelined({
         resolve: () =>
           (member ??= node
@@ -185,6 +187,7 @@ function pipelined(node: PipelineNode) {
             .then((value) => (value as Record<string, unknown>)[property])),
         call: (args) =>
           node.resolve().then((value) => {
+            // SAFETY: as above, the resolved value's type has this method.
             const target = value as Record<
               string,
               (...args: unknown[]) => unknown
@@ -201,6 +204,8 @@ function pipelined(node: PipelineNode) {
 }
 
 function pipelinedPromise(promise: Promise<unknown>): unknown {
+  // SAFETY: TransformStub types a pipelined call only when the resolved
+  // value's type is callable, as RpcPromise does.
   return pipelined({
     resolve: () => promise,
     call: (args) =>
@@ -273,6 +278,8 @@ export function createRestorableStubFactory(
   }
 
   return (...args) => {
+    // SAFETY: the Vite plugin rewrites only namespace `get` and `getByName`
+    // calls, which return a stub object.
     const reopen = () => get.apply(namespace, args) as object;
 
     return createSourceStub({ stub: reopen(), broken: false, reopen }, []);
@@ -302,6 +309,8 @@ function createSourceStub<TTarget extends object>(
   source: StubSource<TTarget>,
   transforms: ConfiguredCallerTransform[]
 ): TransformStub<TTarget> {
+  // SAFETY: the get trap adds `with` and returns every other member of the
+  // stub, wrapping only its methods, which is TransformStub<TTarget>.
   return new Proxy(source.stub, {
     get(_target, property) {
       if (property === 'with') {
@@ -351,6 +360,8 @@ function createSourceStub<TTarget extends object>(
           context: TransformContext
         ): Promise<unknown> => {
           if (Object.keys(context).length === 0) {
+            // SAFETY: `property` named a method of the stub above, and a
+            // reopened stub comes from the same namespace method.
             const methods = stub as Record<
               string,
               (...args: unknown[]) => unknown
@@ -499,6 +510,8 @@ function createSourceStub<TTarget extends object>(
 export function withTransforms<TNamespace extends NamespaceLike<object>>(
   namespace: TNamespace
 ): TransformNamespace<TNamespace> {
+  // SAFETY: the get trap replaces only `get`, wrapping its stubs with
+  // createTransformStub, which is TransformNamespace<TNamespace>.
   return new Proxy(namespace, {
     get(target, property, receiver) {
       if (property !== 'get') {

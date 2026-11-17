@@ -130,13 +130,17 @@ export class DurabilitySemaphore extends DurabilitySemaphoreServer {
       sync: (key, message) => client.sync(key, message),
       setContext: () => ({
         invoke: (method, args) => {
+          // SAFETY: the transform stub forwards the arguments of a typed
+          // SemaphoreSession call, so args are [key, message] for `method`.
           const key = args[0] as string;
 
           if (method === 'request') {
+            // SAFETY: see `key`; `request` takes a PermitRequest.
             return client.request(key, args[1] as PermitRequest);
           }
 
           if (method === 'sync') {
+            // SAFETY: see `key`; `sync` takes a PermitSync.
             return client.sync(key, args[1] as PermitSync);
           }
 

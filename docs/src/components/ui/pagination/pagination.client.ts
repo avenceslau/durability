@@ -84,7 +84,7 @@ function initPagination(root: HTMLElement): () => void {
   const onLeave = () => hide();
 
   const onFocusOut = (e: FocusEvent) => {
-    if (!root.contains(e.relatedTarget as Node)) {
+    if (!(e.relatedTarget instanceof Node && root.contains(e.relatedTarget))) {
       hide();
     }
   };

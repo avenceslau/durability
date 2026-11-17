@@ -396,7 +396,8 @@ export class DurabilityTopology<
       'DurabilityTopology'
     );
 
-    // The outbox only emits outbox events, which is all this hook accepts.
+    // SAFETY: the outbox only emits outbox events, which is all this hook
+    // accepts.
     const onLifecycleEvent = config.onLifecycleEvent as
       | LifecycleHook
       | undefined;
@@ -477,6 +478,8 @@ export class DurabilityTopology<
       const before = live ? parseMembers<Meta>(live) : [];
       const stateRows = readStates(sql, this.#ownerChannel, group);
 
+      // SAFETY: #writeStates is the only writer of state rows, storing each
+      // channel's value from a Partial<States>.
       const states = Object.fromEntries(
         stateRows.map((state) => [state.channel, deserialize(state.value)])
       ) as Partial<States>;
@@ -872,6 +875,7 @@ export class DurabilityTopology<
 
       member.joinedAt = joinedAt.get(id) ?? now;
 
+      // SAFETY: `meta` is the input's Meta, which passed jsonSchema unchanged.
       return member as TopologyMember<Meta>;
     });
 

@@ -1,4 +1,4 @@
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import { isString } from './predicates.js';
 
 function unsupported(member: string): never {
@@ -113,7 +113,13 @@ export class NodeSqlStorage implements SqlStorage {
 
     const statement = this.database.prepare(query);
 
-    return cursorOf(statement.all(...(bindings as SQLInputValue[])) as T[]);
+    const values = bindings.map((value) =>
+      value instanceof ArrayBuffer ? new Uint8Array(value) : value
+    );
+
+    // SAFETY: as with workerd's SqlStorage, the caller names its query's row
+    // type; no table has BLOB columns and integers read as numbers.
+    return cursorOf(statement.all(...values) as T[]);
   }
 
   get databaseSize(): never {

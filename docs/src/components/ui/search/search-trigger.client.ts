@@ -3,6 +3,8 @@
 import { mount } from '@cloudflare/nimbus-docs/client';
 
 mount('[data-search-trigger]', (btn) => {
+  // SAFETY: lib.dom omits the optional, Chromium-only User-Agent Client
+  // Hints API; it is declared optional here.
   const nav = navigator as Navigator & {
     userAgentData?: { platform?: string };
   };

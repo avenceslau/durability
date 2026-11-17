@@ -25,6 +25,8 @@ export function mountWalkthrough(element: Element): () => void {
   }
 
   const root = element;
+  // SAFETY: ArchitectureWalkthrough.astro renders data-model as
+  // JSON.stringify(publicState(model)), which returns a WalkthroughState.
   const model = JSON.parse(root.dataset.model!) as WalkthroughState;
   const controller = new AbortController();
   const { signal } = controller;
@@ -217,9 +219,9 @@ export function mountWalkthrough(element: Element): () => void {
       }
 
       if (edge.label !== undefined) {
-        const [labelWidth, labelHeight] = labelSize(edge.label).map(
-          (size) => size * state.layout.scale
-        ) as [number, number];
+        const [unscaledWidth, unscaledHeight] = labelSize(edge.label);
+        const labelWidth = unscaledWidth * state.layout.scale;
+        const labelHeight = unscaledHeight * state.layout.scale;
 
         const [x, y] = geometry.labelPoint;
         obstacles.push({

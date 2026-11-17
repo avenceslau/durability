@@ -43,7 +43,7 @@ if (typeof CloseEvent === 'undefined') {
     }
   }
 
-  globalThis.CloseEvent = NodeCloseEvent as typeof CloseEvent;
+  globalThis.CloseEvent = NodeCloseEvent;
 }
 
 type Todo = { id: string; title: string };

@@ -191,6 +191,8 @@ export class DurabilityTracker<Sources extends TrackerSources> {
   constructor(config: DurabilityTrackerConfig<Sources>) {
     this.#sources = Object.entries(config.sources).map(([key, input]) => [
       key,
+      // SAFETY: Durability and DurabilityAlarms register a source in their
+      // constructors, so an input without one is a custom UntypedSource.
       trackedSourceOf(input) ?? (input as UntypedSource),
     ]);
   }
@@ -203,6 +205,8 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const items = found.map(({ source, item }) => this.#handle(source, item));
     const page = cursor === undefined ? { items } : { items, cursor };
 
+    // SAFETY: each item is a record of the source registered under its
+    // `source` key, so its name and result match Sources[source].
     return page as TrackerPage<Sources, Key>;
   }
 
@@ -217,6 +221,8 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const records = found.map(({ item }) => item);
     const page = cursor === undefined ? { records } : { records, cursor };
 
+    // SAFETY: each record comes from the source registered under its
+    // `source` key, so its name and result match Sources[source].
     return page as TrackerRecordPage<Sources, Key>;
   }
 
@@ -234,6 +240,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
 
     const handle = this.#handle(resolved, itemFor(key, record));
 
+    // SAFETY: `record` was read from the source registered under `source`.
     return handle as TrackerHandle<Sources, Key>;
   }
 

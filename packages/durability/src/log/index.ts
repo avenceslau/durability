@@ -956,6 +956,8 @@ export class DurabilityLog<Body = unknown> {
     return {
       offset: row.offset,
       deduplicationKey: row.dedup_key,
+      // SAFETY: append is the only writer of this channel's payloads, each
+      // serialized from a Body.
       body: deserialize(row.payload) as Body,
       appendedAt: row.appended_at,
     };
@@ -1181,7 +1183,7 @@ export class DurabilityLog<Body = unknown> {
       });
 
       try {
-        await leases.onPoison!(lease as LogLease);
+        await leases.onPoison!(lease);
       } catch (error) {
         reportFailure(
           'durability.log.poison_handler.failed',

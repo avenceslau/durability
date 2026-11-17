@@ -98,9 +98,9 @@ const canonicalize = (value: Json): Json => {
 
   if (isJsonObject(value)) {
     return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalize(value[key] as Json)])
+      Object.entries(value)
+        .sort(([left], [right]) => (left < right ? -1 : 1))
+        .map(([key, item]) => [key, canonicalize(item)])
     );
   }
 
@@ -111,5 +111,6 @@ const canonicalize = (value: Json): Json => {
  * The stored form with object keys sorted at every depth, so two payloads
  * compare equal when they carry the same data regardless of key order.
  */
+// SAFETY: JSON.parse yields only JSON values.
 export const canonical = (stored: string): string =>
   JSON.stringify(canonicalize(JSON.parse(stored) as Json));

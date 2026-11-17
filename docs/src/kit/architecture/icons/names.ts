@@ -20,5 +20,5 @@ export const iconNames = [
 export type IconName = (typeof iconNames)[number]
 
 export function isIconName(value: unknown): value is IconName {
-  return iconNames.includes(value as IconName)
+  return iconNames.some((name) => name === value)
 }

@@ -118,7 +118,13 @@ const connect = async (
   const response = await socket.fetch(upgrade(user));
   expect(response.status).toBe(101);
 
-  return (response as Response & { webSocket: FakeWebSocket }).webSocket;
+  const { webSocket } = response;
+
+  if (!(webSocket instanceof FakeWebSocket)) {
+    throw new Error('Expected the client end of a WebSocketPair');
+  }
+
+  return webSocket;
 };
 
 const serverSide = (context: ReturnType<typeof socketContextFor>) =>
@@ -251,12 +257,14 @@ describe('DurabilitySocket', () => {
       frame({ type: 'call', id: 'bad', method: 'create', input: { id: 1 } })
     );
 
-    const [reply] = ws.frames() as [
-      { error: { name: string; message: string } },
-    ];
-
-    expect(reply.error.name).toBe('SocketInputError');
-    expect(reply.error.message).toMatch(/^Invalid input for "create": /);
+    expect(ws.frames()).toMatchObject([
+      {
+        error: {
+          name: 'SocketInputError',
+          message: expect.stringMatching(/^Invalid input for "create": /),
+        },
+      },
+    ]);
     expect(new SocketInputError('x', [{ message: 'boom' }]).issues).toEqual([
       { message: 'boom' },
     ]);
@@ -374,14 +382,11 @@ describe('DurabilitySocket', () => {
   it('broadcasts outbound events only to subscribers of that name', async () => {
     const { context, socket } = createSocket();
     await connect(socket, 'a');
+    const a = serverSide(context);
     await connect(socket, 'b');
+    const b = serverSide(context);
     await connect(socket, 'c');
-
-    const [a, b, c] = context.sockets as [
-      FakeWebSocket,
-      FakeWebSocket,
-      FakeWebSocket,
-    ];
+    const c = serverSide(context);
 
     await socket.webSocketMessage(
       a,
@@ -418,13 +423,15 @@ describe('DurabilitySocket', () => {
     );
 
     // A completed operation whose handler returned nothing looks like this.
-    socket.created({
+    const completed = {
       id: '1',
       title: 't',
       done: false,
       by: 'a',
       result: undefined,
-    } as Todo & { by: string });
+    };
+
+    socket.created(completed);
 
     expect(ws.frames()[ws.frames().length - 1]).toEqual({
       v: 1,
@@ -456,9 +463,7 @@ describe('DurabilitySocket', () => {
         },
       },
     ]);
-    expect((ws.deserializeAttachment() as { names: string[] }).names).toEqual(
-      []
-    );
+    expect(ws.deserializeAttachment()).toMatchObject({ names: [] });
   });
 
   it('replays retained events after `since` and prunes beyond retention', async () => {

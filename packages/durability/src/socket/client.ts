@@ -616,6 +616,8 @@ export class DurabilitySocketClient<Socket extends AnyDurabilitySocket> {
   connect(id: string): SocketConnection<Socket> {
     const connection = new Connection(this.#config, id, this.#transforms);
 
+    // SAFETY: the get trap returns a method for every string key, so the
+    // empty target is never read.
     const rpc = new Proxy({} as RpcMethods<InboundOf<Socket>>, {
       get: (_target, method) =>
         isString(method)
@@ -623,6 +625,8 @@ export class DurabilitySocketClient<Socket extends AnyDurabilitySocket> {
           : undefined,
     });
 
+    // SAFETY: the get trap returns a subscriber for every string key, so the
+    // empty target is never read.
     const on = new Proxy({} as EventHandlers<OutboundOf<Socket>>, {
       get: (_target, name) => {
         if (name === 'status') {

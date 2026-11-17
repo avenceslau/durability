@@ -177,6 +177,7 @@ const maxDelayMs = 2 ** 31 - 1;
 const pairKey = (key: string, second: string): string =>
   JSON.stringify([key, second]);
 
+// SAFETY: callers pass only outbox keys this queue staged, all built by pairKey.
 const parsePairKey = (value: string): [string, string] =>
   JSON.parse(value) as [string, string];
 
@@ -1309,6 +1310,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           id: row.id,
           key: row.key,
           group: row.grp,
+          // SAFETY: enqueue is the only writer of item payloads, each
+          // serialized from a Body.
           body: deserialize(row.payload) as Body,
           enqueuedAt: row.created_at,
           admittedAt: row.admitted_at ?? row.created_at,

@@ -326,7 +326,9 @@ function labelBoxes(
     }
 
     const [x, y] = edgeGeometry(edge, route, from, to).labelPoint
-    const [width, height] = labelSize(edge.label).map((value) => value * state.layout.scale) as [number, number]
+    const [labelWidth, labelHeight] = labelSize(edge.label)
+    const width = labelWidth * state.layout.scale
+    const height = labelHeight * state.layout.scale
     const inner = [width * 0.82, height - 10 * state.layout.scale] as const
 
     return [
@@ -481,7 +483,8 @@ test("every build keeps labels clear of each other, of nodes and notes, and of o
 
       const notes = diagram.notes.flatMap((note) => {
         const centre = state.layout.notes.get(note.id)
-        const [width, height] = note.size.map((value) => value * state.layout.scale) as [number, number]
+        const width = note.size[0] * state.layout.scale
+        const height = note.size[1] * state.layout.scale
 
         return centre === undefined || !state.visible.has(note.id)
           ? []

@@ -49,6 +49,8 @@ const fakeConnection = () => {
     remove: vi.fn(async () => undefined),
   };
 
+  // SAFETY: the get trap returns a subscriber for every name, so the empty
+  // target is never read.
   const on = new Proxy({} as SocketConnection<TestSocket>['on'], {
     get: (_target, name: string) => {
       if (name === 'status') {

@@ -103,6 +103,8 @@ export class DurabilityRouting extends RoutingLoad {
             );
           }
 
+          // SAFETY: the transform stub forwards the arguments of a typed `push`,
+          // so args are [Input, Context?]; transform context only adds keys.
           return client.push(
             args[0] as Input,
             { ...positional, ...context } as Context

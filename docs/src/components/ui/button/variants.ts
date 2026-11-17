@@ -79,6 +79,8 @@ const button = variants({
   },
   defaults: { variant: 'secondary', size: 'base', geometry: 'base' },
   compound: (['square', 'circle'] as const).flatMap((geometry) =>
+    // SAFETY: buttonSizeCompact is a Record<ButtonSize, string>, so its keys
+    // are the button sizes.
     (Object.keys(buttonSizeCompact) as ButtonSize[]).map((size) => ({
       geometry,
       size,
