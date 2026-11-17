@@ -19,12 +19,16 @@ import type {
   InboundOf,
   OutboundOf,
   SocketCall,
+  SocketClientFrame,
   SocketInboundInput,
   SocketInboundMap,
   SocketInboundOutput,
   SocketOutboundMap,
 } from './protocol';
 import { FakeStorage, FakeWebSocket, socketContextFor } from '../test-fakes';
+
+/** A frame without `v`, which `frame` adds. */
+type Unversioned<Frame> = Frame extends unknown ? Omit<Frame, 'v'> : never;
 
 type Todo = { id: string; title: string };
 
@@ -117,7 +121,8 @@ const connect = async (
 const serverSide = (context: ReturnType<typeof socketContextFor>) =>
   context.sockets[context.sockets.length - 1]!;
 
-const frame = (value: object) => JSON.stringify({ v: 1, ...value });
+const frame = (value: Unversioned<SocketClientFrame>) =>
+  JSON.stringify({ v: 1, ...value });
 
 describe('DurabilitySocket', () => {
   it('rejects reserved outbound names', () => {
@@ -447,15 +452,15 @@ describe('DurabilitySocket', () => {
     await connect(socket);
     const ws = serverSide(context);
 
-    for (const [id, since] of [
-      ['none', undefined],
-      ['stale', 1],
-      ['ahead', 9],
-      ['current', 5],
-    ] as const) {
+    for (const subscription of [
+      { id: 'none' },
+      { id: 'stale', since: 1 },
+      { id: 'ahead', since: 9 },
+      { id: 'current', since: 5 },
+    ]) {
       await socket.webSocketMessage(
         ws as unknown as WebSocket,
-        frame({ type: 'subscribe', id, names: ['removed'], since })
+        frame({ type: 'subscribe', names: ['removed'], ...subscription })
       );
     }
 
@@ -541,7 +546,7 @@ const createChannelSocket = (
 const send = (
   socket: { webSocketMessage(ws: WebSocket, message: string): Promise<void> },
   ws: FakeWebSocket,
-  value: object
+  value: Unversioned<SocketClientFrame>
 ) => socket.webSocketMessage(ws as unknown as WebSocket, frame(value));
 
 const connectServer = async (

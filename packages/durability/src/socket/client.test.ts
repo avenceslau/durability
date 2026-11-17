@@ -18,7 +18,10 @@ import {
   type SocketStatus,
 } from './client';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
-import type { SocketShape, socketShape } from './protocol';
+import type { SocketServerFrame, SocketShape, socketShape } from './protocol';
+
+/** A frame without `v`, which `receive` adds. */
+type Unversioned<Frame> = Frame extends unknown ? Omit<Frame, 'v'> : never;
 
 // Node's undici/WebSocket stack exposes MessageEvent/Event but not CloseEvent.
 if (typeof CloseEvent === 'undefined') {
@@ -87,7 +90,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('open'));
   }
 
-  receive(frame: object): void {
+  receive(frame: Unversioned<SocketServerFrame>): void {
     this.dispatchEvent(
       new MessageEvent('message', { data: JSON.stringify({ v: 1, ...frame }) })
     );

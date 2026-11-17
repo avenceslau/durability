@@ -6,6 +6,7 @@ import {
   SocketRemoteError,
 } from '../../src/socket/client';
 import { DurabilitySocket } from '../../src/socket';
+import type { SocketClientFrame } from '../../src/socket/protocol';
 import type { SocketTestObject, Todo } from './worker';
 
 declare global {
@@ -15,6 +16,9 @@ declare global {
     }
   }
 }
+
+/** A frame without `v`, which `send` adds. */
+type Unversioned<Frame> = Frame extends unknown ? Omit<Frame, 'v'> : never;
 
 type Socket = SocketTestObject['socket'];
 
@@ -128,7 +132,8 @@ const openRaw = async (id: string, query = '') => {
   return {
     frames,
     closed: () => closed,
-    send: (value: object) => ws.send(JSON.stringify({ v: 1, ...value })),
+    send: (value: Unversioned<SocketClientFrame>) =>
+      ws.send(JSON.stringify({ v: 1, ...value })),
     close: () => ws.close(1000, 'done'),
   };
 };
