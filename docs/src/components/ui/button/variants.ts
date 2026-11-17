@@ -19,7 +19,7 @@ export type ButtonVariant =
 
 export type ButtonSize = 'xs' | 'sm' | 'base' | 'lg';
 
-export type ButtonShape = 'base' | 'square' | 'circle';
+export type ButtonGeometry = 'base' | 'square' | 'circle';
 
 // `rounded-lg` is the default radius for every button; `circle` overrides
 // it to `rounded-full` (see `buttonVariants`), `square` keeps it.
@@ -39,7 +39,7 @@ export const buttonVariantClasses: Record<ButtonVariant, string> = {
     'bg-transparent text-foreground ring ring-border hover:ring-border-strong',
 };
 
-// Rectangular sizing (shape="base"). Radius comes from `buttonBase`.
+// Rectangular sizing (geometry="base"). Radius comes from `buttonBase`.
 export const buttonSizeText: Record<ButtonSize, string> = {
   xs: 'gap-1 px-2 py-1 text-xs',
   sm: 'gap-1 px-3 py-1.5 text-xs',
@@ -65,7 +65,7 @@ export const buttonIconSize: Record<ButtonSize, string> = {
 export interface ButtonVariantsOptions {
   variant?: ButtonVariant;
   size?: ButtonSize;
-  shape?: ButtonShape;
+  geometry?: ButtonGeometry;
 }
 
 const button = variants({
@@ -75,19 +75,19 @@ const button = variants({
     size: buttonSizeText,
     // Square and circle are icon-only: equal sides, no padding. Their size
     // comes from `compound` below.
-    shape: { base: '', square: 'p-0', circle: 'p-0 rounded-full' },
+    geometry: { base: '', square: 'p-0', circle: 'p-0 rounded-full' },
   },
-  defaults: { variant: 'secondary', size: 'base', shape: 'base' },
-  compound: (['square', 'circle'] as const).flatMap((shape) =>
+  defaults: { variant: 'secondary', size: 'base', geometry: 'base' },
+  compound: (['square', 'circle'] as const).flatMap((geometry) =>
     (Object.keys(buttonSizeCompact) as ButtonSize[]).map((size) => ({
-      shape,
+      geometry,
       size,
       class: buttonSizeCompact[size],
     }))
   ),
 });
 
-/** Compose the base + variant + size/shape classes for a button-shaped element. */
+/** Compose the base + variant + size/geometry classes for a button-shaped element. */
 export function buttonVariants(options: ButtonVariantsOptions = {}): string {
   return button(options);
 }

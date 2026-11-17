@@ -21,9 +21,9 @@ import {
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type {
   SocketClientFrame,
+  SocketMessageMaps,
   SocketServerFrame,
-  SocketShape,
-  socketShape,
+  socketMessageMaps,
 } from './protocol';
 
 /** A frame without `v`, which `receive` adds. */
@@ -49,7 +49,7 @@ if (typeof CloseEvent === 'undefined') {
 type Todo = { id: string; title: string };
 
 type TestSocket = {
-  readonly [socketShape]: SocketShape<
+  readonly [socketMessageMaps]: SocketMessageMaps<
     {
       list: () => Todo[];
       create: { input: StandardSchemaV1<Todo>; handle: (todo: Todo) => string };
@@ -125,7 +125,7 @@ afterEach(() => {
 });
 
 describe('DurabilitySocketClient', () => {
-  it('types rpc and on from the socket shape', () => {
+  it('types rpc and on from the socket message maps', () => {
     const conn = createClient().connect('a');
     expectTypeOf(conn.rpc.list).toEqualTypeOf<() => Promise<Todo[]>>();
     expectTypeOf(conn.rpc.create).toEqualTypeOf<

@@ -5,12 +5,12 @@
  *   <Button variant="primary">Save</Button>
  *   <Button variant="secondary" icon="ph:plus">Create</Button>
  *   <Button variant="ghost" loading>Saving…</Button>
- *   <Button variant="outline" shape="square" icon="ph:gear" aria-label="Settings" />
+ *   <Button variant="outline" geometry="square" icon="ph:gear" aria-label="Settings" />
  *
  * Variants: primary · secondary (default) · ghost · destructive ·
  * secondary-destructive · outline.
  * Sizes: xs · sm · base (default) · lg.
- * Shapes: base (default) · square · circle (icon-only — pass `aria-label`).
+ * Geometry: base (default) · square · circle (icon-only — pass `aria-label`).
  *
  * `icon` takes an iconify name (astro-icon) rendered before the label;
  * `loading` swaps it for a spinner and disables the button.
@@ -26,13 +26,13 @@ import {
   buttonIconSize,
   type ButtonVariant,
   type ButtonSize,
-  type ButtonShape,
+  type ButtonGeometry,
 } from "./variants";
 
 interface Props extends Omit<HTMLAttributes<"button">, "size"> {
   variant?: ButtonVariant;
   size?: ButtonSize;
-  shape?: ButtonShape;
+  geometry?: ButtonGeometry;
   /** Iconify name rendered before the label, e.g. "ph:plus". */
   icon?: string;
   /** Show a spinner and disable interaction. */
@@ -42,7 +42,7 @@ interface Props extends Omit<HTMLAttributes<"button">, "size"> {
 const {
   variant = "secondary",
   size = "base",
-  shape = "base",
+  geometry = "base",
   icon,
   loading = false,
   type = "button",
@@ -57,7 +57,7 @@ const {
   data-variant={variant}
   type={type}
   disabled={disabled || loading}
-  class={cn(buttonVariants({ variant, size, shape }), className)}
+  class={cn(buttonVariants({ variant, size, geometry }), className)}
   {...attrs}
 >
   {

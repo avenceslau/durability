@@ -12,7 +12,7 @@ export type { EdgeRoute, StageLayout } from "./layout.ts"
 export type FlowColor = "blue" | "red" | "green" | "orange" | "purple"
 
 /** How an edge runs: a smooth curve, a straight line, or horizontal and vertical runs joined by rounded corners. */
-export type EdgeShape = "curve" | "straight" | "orthogonal"
+export type EdgeRouting = "curve" | "straight" | "orthogonal"
 
 export interface FlowDefinition {
   /** Names the flow for screen readers while it is spotlit. */
@@ -78,7 +78,7 @@ export interface EdgeDefinition {
   /** Sideways bow from −1 to 1, as a fraction of the distance between the nodes; positive bows left of travel. */
   readonly bend?: number
   /** Overrides the diagram's `routing` for this edge. */
-  readonly route?: EdgeShape
+  readonly route?: EdgeRouting
   /** Arrowheads at both ends. */
   readonly both?: boolean
   /** Auto layout: a reply or loop that shouldn't push its target into a later rank. */
@@ -133,7 +133,7 @@ export interface ArchitectureDefinition {
    * How edges run unless they set `route`. `auto` runs edges between nodes in different rows orthogonally, through
    * the gaps between rows and columns, and curves the rest. Defaults to `curve`.
    */
-  readonly routing?: "auto" | EdgeShape
+  readonly routing?: "auto" | EdgeRouting
   /**
    * Lines up hand-placed positions (`at` and `pin`): coordinates within `tolerance` canvas units share a row or
    * column, and nearly even gaps become even. On by default with 4% of the canvas's longer side; `false` turns it off.
@@ -185,7 +185,7 @@ export interface DiagramEdge {
   readonly flow: string | undefined
   readonly color: FlowColor | undefined
   readonly bend: number | undefined
-  readonly route: EdgeShape | undefined
+  readonly route: EdgeRouting | undefined
   readonly both: boolean
   readonly back: boolean
   readonly stage: number
@@ -537,7 +537,7 @@ interface Parts {
   readonly pins: ReadonlyMap<string, Point>
   readonly mode: "auto" | "manual"
   readonly direction: "right" | "down"
-  readonly routing: "auto" | EdgeShape
+  readonly routing: "auto" | EdgeRouting
   readonly nodes: ReadonlyArray<DiagramNode>
   readonly edges: ReadonlyArray<DiagramEdge>
   readonly notes: ReadonlyArray<DiagramNote>

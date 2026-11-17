@@ -27,8 +27,8 @@ import {
   type SocketOutboundPayload,
   type SocketServerFrame,
   type SocketInboundMetadata,
-  type SocketShape,
-  socketShape,
+  type SocketMessageMaps,
+  socketMessageMaps,
 } from './protocol.js';
 
 /** The Durable Object state a socket needs: SQLite storage and hibernatable WebSockets. */
@@ -166,7 +166,7 @@ class DurabilitySocketCore<
   Outbound extends SocketOutboundMap,
   Metadata extends SocketInboundMetadata<Inbound>,
 > {
-  declare readonly [socketShape]: SocketShape<Inbound, Outbound>;
+  declare readonly [socketMessageMaps]: SocketMessageMaps<Inbound, Outbound>;
 
   readonly #context: DurabilitySocketContext;
   readonly #storage: DurableObjectStorage;

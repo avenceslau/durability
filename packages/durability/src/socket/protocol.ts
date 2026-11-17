@@ -114,7 +114,7 @@ export const parseServerFrame = (
 };
 
 // ---------------------------------------------------------------------------
-// Shape types shared by the server class and the browser client.
+// Types shared by the server class and the browser client.
 // ---------------------------------------------------------------------------
 
 /** Per-call context passed to inbound handlers. */
@@ -189,10 +189,10 @@ export type SocketInboundOutput<Handler> = Handler extends {
 export type SocketOutboundPayload<Event> =
   Event extends SocketOutboundEvent<infer Payload> ? Payload : never;
 
-export const socketShape: unique symbol = Symbol('durability.socket');
+export const socketMessageMaps: unique symbol = Symbol('durability.socket');
 
 /** Phantom type a server socket carries so clients can derive its surface. */
-export type SocketShape<
+export type SocketMessageMaps<
   Inbound extends SocketInboundMap,
   Outbound extends SocketOutboundMap,
 > = {
@@ -200,12 +200,15 @@ export type SocketShape<
   outbound: Outbound;
 };
 
-export type AnySocketShape = {
-  readonly [socketShape]: SocketShape<SocketInboundMap, SocketOutboundMap>;
+export type AnyDurabilitySocket = {
+  readonly [socketMessageMaps]: SocketMessageMaps<
+    SocketInboundMap,
+    SocketOutboundMap
+  >;
 };
 
-export type InboundOf<Socket extends AnySocketShape> =
-  Socket[typeof socketShape]['inbound'];
+export type InboundOf<Socket extends AnyDurabilitySocket> =
+  Socket[typeof socketMessageMaps]['inbound'];
 
-export type OutboundOf<Socket extends AnySocketShape> =
-  Socket[typeof socketShape]['outbound'];
+export type OutboundOf<Socket extends AnyDurabilitySocket> =
+  Socket[typeof socketMessageMaps]['outbound'];

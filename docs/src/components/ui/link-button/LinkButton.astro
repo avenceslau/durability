@@ -5,7 +5,7 @@
  *   <LinkButton href="/start" variant="primary">Get started</LinkButton>
  *   <LinkButton href="/docs" variant="secondary">Read the docs</LinkButton>
  *   <LinkButton href="#" variant="minimal" icon>Learn more</LinkButton>
- *   <LinkButton href="/x" shape="square" aria-label="Open"> … </LinkButton>
+ *   <LinkButton href="/x" geometry="square" aria-label="Open"> … </LinkButton>
  *
  * The `icon` prop appends a right-caret that nudges on hover.
  *
@@ -22,7 +22,7 @@ import {
   buttonIconSize,
   type ButtonVariant,
   type ButtonSize,
-  type ButtonShape,
+  type ButtonGeometry,
 } from "../button/variants";
 
 interface Props extends HTMLAttributes<"a"> {
@@ -32,7 +32,7 @@ interface Props extends HTMLAttributes<"a"> {
   /** Original `sm | md | lg`, plus Button's `xs | base`. */
   size?: ButtonSize | "md";
   /** `base` (default) · `square` · `circle` (icon-only — pass `aria-label`). */
-  shape?: ButtonShape;
+  geometry?: ButtonGeometry;
   /** Append a caret-right that nudges on hover. */
   icon?: boolean;
 }
@@ -41,7 +41,7 @@ const {
   href,
   variant = "primary",
   size = "md",
-  shape = "base",
+  geometry = "base",
   icon = false,
   class: className,
   ...attrs
@@ -57,7 +57,7 @@ const resolvedSize: ButtonSize = size === "md" ? "base" : size;
   data-variant={resolvedVariant}
   href={href}
   class={cn(
-    buttonVariants({ variant: resolvedVariant, size: resolvedSize, shape }),
+    buttonVariants({ variant: resolvedVariant, size: resolvedSize, geometry }),
     className,
   )}
   {...attrs}

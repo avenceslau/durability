@@ -4,7 +4,7 @@ import {
   parseServerFrame,
   socketProtocolErrorCode,
   socketProtocolVersion,
-  type AnySocketShape,
+  type AnyDurabilitySocket,
   type InboundOf,
   type OutboundOf,
   type SocketClientFrame,
@@ -114,7 +114,7 @@ type EventHandlers<Outbound> = {
 export type SocketResync = { names: string[] };
 
 /** One connection to one Durable Object. */
-export type SocketConnection<Socket extends AnySocketShape> = {
+export type SocketConnection<Socket extends AnyDurabilitySocket> = {
   rpc: RpcMethods<InboundOf<Socket>>;
   on: EventHandlers<OutboundOf<Socket>>;
   readonly status: SocketStatus;
@@ -584,7 +584,7 @@ const defaultWebSocket = (): (new (url: string) => WebSocket) => {
  * conn.on.resync(() => reload());
  * ```
  */
-export class DurabilitySocketClient<Socket extends AnySocketShape> {
+export class DurabilitySocketClient<Socket extends AnyDurabilitySocket> {
   readonly #config: Required<DurabilitySocketClientConfig>;
   readonly #transforms: readonly SocketTransform[];
 
@@ -682,12 +682,12 @@ export const logging =
   };
 
 export {
-  socketShape,
-  type AnySocketShape,
+  socketMessageMaps,
+  type AnyDurabilitySocket,
   type InboundOf,
   type OutboundOf,
   type SocketInboundInput,
   type SocketInboundOutput,
+  type SocketMessageMaps,
   type SocketOutboundPayload,
-  type SocketShape,
 } from './protocol.js';
