@@ -44,28 +44,28 @@ export class DurableAlarmTimeoutError extends Error {
 
 /** Error persisted when retry-delay evaluation fails or is unsafe. */
 export class DurableRetryPolicyError extends Error {
-  constructor(entity: string, reason?: unknown) {
+  constructor(entity: string, cause?: unknown) {
     super(
       `Retry policy for ${entity} must produce a non-negative safe-integer timestamp`
     );
     this.name = 'DurableRetryPolicyError';
 
-    if (reason !== undefined) {
-      Object.defineProperty(this, 'cause', { value: reason });
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause });
     }
   }
 }
 
 /** Error persisted when a successful result cannot be JSON-serialized. */
 export class DurableResultSerializationError extends Error {
-  constructor(operation: string, reason?: unknown) {
+  constructor(operation: string, cause?: unknown) {
     super(
       `Result for durable operation "${operation}" is not JSON-serializable`
     );
     this.name = 'DurableResultSerializationError';
 
-    if (reason !== undefined) {
-      Object.defineProperty(this, 'cause', { value: reason });
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause });
     }
   }
 }
@@ -75,14 +75,14 @@ export class DurableResultSerializationError extends Error {
  * terminal because every retry would fail the same way.
  */
 export class DurableMemoSerializationError extends NonRetryableError {
-  constructor(key: string, reason?: unknown) {
+  constructor(key: string, cause?: unknown) {
     super(
       `Memoized result for key ${JSON.stringify(key)} is not JSON-serializable`
     );
     this.name = 'DurableMemoSerializationError';
 
-    if (reason !== undefined) {
-      Object.defineProperty(this, 'cause', { value: reason });
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause });
     }
   }
 }
@@ -292,10 +292,10 @@ export const serializeError = (error: unknown): SerializedError => {
   };
 };
 
-export const isErrorInstance = (
+export const isErrorInstance = <Instance extends Error>(
   error: unknown,
-  constructor: new (...args: never[]) => Error
-): boolean => {
+  constructor: new (...args: never[]) => Instance
+): error is Instance => {
   try {
     return error instanceof constructor;
   } catch {
@@ -339,17 +339,17 @@ type FailureDetails = { readonly [field: string]: Json };
 export const reportFailure = (
   event: string,
   details: FailureDetails,
-  error: unknown
+  cause: unknown
 ): void => {
   try {
     const stack =
-      error !== null &&
-      (typeof error === 'object' || typeof error === 'function')
-        ? readString(error, 'stack')
+      cause !== null &&
+      (typeof cause === 'object' || typeof cause === 'function')
+        ? readString(cause, 'stack')
         : undefined;
 
     const logged: SerializedError & { stack?: string } = {
-      ...serializeError(error),
+      ...serializeError(cause),
     };
 
     if (stack) {

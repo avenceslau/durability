@@ -539,16 +539,16 @@ describe('Durability', () => {
     });
     expect(calls).toHaveLength(1);
 
-    const error = await durability
-      .send({
-        id: 'nested',
-        payload: { meta: { a: 1, b: 2 }, token: 'leaky-secret' },
-      })
-      .catch((caught: unknown) => caught);
+    const sending = durability.send({
+      id: 'nested',
+      payload: { meta: { a: 1, b: 2 }, token: 'leaky-secret' },
+    });
 
-    expect(error).toBeInstanceOf(DuplicateDurablePayloadError);
-    const reported = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
-    expect(reported).not.toContain('leaky-secret');
+    await expect(sending).rejects.toBeInstanceOf(DuplicateDurablePayloadError);
+    await expect(sending).rejects.toMatchObject({
+      message: expect.not.stringContaining('leaky-secret'),
+      stack: expect.not.stringContaining('leaky-secret'),
+    });
     expect(calls).toHaveLength(1);
   });
 

@@ -254,7 +254,7 @@ const outstandingWritesUntil = (
   return until ?? undefined;
 };
 
-const assertGroup = (group: unknown): void => {
+const assertGroup = (group: string): void => {
   if (typeof group !== 'string' || group.length === 0) {
     throw new TopologyError('Group must be a non-empty string');
   }
@@ -263,7 +263,7 @@ const assertGroup = (group: unknown): void => {
 const deliveryKey = (group: string, member: string): string =>
   JSON.stringify([group, member]);
 
-const isThenable = (value: unknown): boolean =>
+const isThenable = (value: unknown): value is PromiseLike<unknown> =>
   value !== null &&
   typeof value === 'object' &&
   'then' in value &&
@@ -473,7 +473,7 @@ export class DurabilityTopology<
       ) as Partial<States>;
 
       // A copy, so an updater that mutates `current` cannot make a change look like a no-op.
-      const draft: unknown = next({ members: structuredClone(before), states });
+      const draft = next({ members: structuredClone(before), states });
 
       if (isThenable(draft)) {
         throw new TopologyError('update must return its draft synchronously');
@@ -716,8 +716,8 @@ export class DurabilityTopology<
    * the isolate dies first, its record makes the next publication wait instead.
    */
   #settleLate(group: string, id: string, write: Promise<unknown>): void {
-    const onError = (error: unknown) =>
-      reportFailure('durability.topology.restage_failed', { group }, error);
+    const onError = (cause: unknown) =>
+      reportFailure('durability.topology.restage_failed', { group }, cause);
 
     const settled = write
       .then(
@@ -796,7 +796,7 @@ export class DurabilityTopology<
     );
   }
 
-  #parseDraft(draft: unknown): ParsedDraft<Meta, States> {
+  #parseDraft(draft: TopologyDraft<Meta, States>): ParsedDraft<Meta, States> {
     if (draft === null || typeof draft !== 'object') {
       throw new TopologyError('update must return a draft object');
     }
@@ -816,10 +816,7 @@ export class DurabilityTopology<
       throw new TopologyError('Draft states must be an object');
     }
 
-    return {
-      members: members as readonly TopologyMemberInput<Meta>[] | undefined,
-      states: states as Partial<States>,
-    };
+    return { members, states };
   }
 
   #normalize(

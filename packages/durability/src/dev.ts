@@ -65,9 +65,10 @@ const traceCall = <Details extends object, T>(
 
   // Observes the promise without changing what the caller sees.
   void result.then(
-    (value: unknown) => trace(`${operation}.return`, { call, result: value }),
-    (error: unknown) =>
-      trace(`${operation}.throw`, { call, error: serializeError(error) })
+    (value: Awaited<T>) =>
+      trace(`${operation}.return`, { call, result: value }),
+    (cause: unknown) =>
+      trace(`${operation}.throw`, { call, error: serializeError(cause) })
   );
 
   return result;
@@ -81,19 +82,20 @@ const loggableArgs = (args: readonly unknown[]): unknown[] =>
  * identifies the receiver when the arguments alone do not.
  */
 export const traceFunction = <
+  This,
   Args extends unknown[],
   Result,
   Details extends object,
 >(
   method: string,
-  fn: (...args: Args) => Result,
+  fn: (this: This, ...args: Args) => Result,
   details?: Details
-): ((...args: Args) => Result) => {
+): ((this: This, ...args: Args) => Result) => {
   if (!devMode) {
     return fn;
   }
 
-  return function (this: unknown, ...args: Args): Result {
+  return function (this: This, ...args: Args): Result {
     return traceCall(
       'call',
       { method, ...details, args: loggableArgs(args) },

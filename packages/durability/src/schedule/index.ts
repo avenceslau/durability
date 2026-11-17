@@ -1004,9 +1004,9 @@ export class DurabilitySchedule {
       })
       .then(
         (): ScheduledRunOutcome => ({ status: 'complete' }),
-        (error: unknown): ScheduledRunOutcome => ({
+        (cause: unknown): ScheduledRunOutcome => ({
           status: 'errored',
-          error: serializeError(error),
+          error: serializeError(cause),
         })
       )
       .then((outcome) => this.#record(run, outcome, startedAt))
@@ -1157,9 +1157,9 @@ export class DurabilitySchedule {
   async #failDelivery(
     run: ScheduledRun,
     attempt: number,
-    failure: unknown
+    cause: unknown
   ): Promise<void> {
-    const error = serializeError(failure);
+    const error = serializeError(cause);
 
     if (attempt >= this.#maxOutcomeAttempts) {
       await this.#engine.transaction((sql) => {
@@ -1173,7 +1173,7 @@ export class DurabilitySchedule {
       reportFailure(
         'durability.schedule.outcome_dead_lettered',
         { scheduledTime: run.scheduledTime, attempt },
-        failure
+        cause
       );
       this.#emit({
         ...this.#entity(run.scheduledTime),

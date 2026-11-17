@@ -1180,8 +1180,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       })
     );
 
-    const onError = (error: unknown) =>
-      reportFailure('durability.semaphore_queue.notify_failed', {}, error);
+    const onError = (cause: unknown) =>
+      reportFailure('durability.semaphore_queue.notify_failed', {}, cause);
 
     this.#engine.waitUntil(this.#notify().catch(onError), onError);
   }

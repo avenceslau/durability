@@ -60,30 +60,32 @@ export function syntaxNode(value: unknown): SyntaxNode | undefined {
 }
 
 /**
- * Calls `visit` with every child value of a node and the key it is stored
+ * Calls `visit` with every child node of a node and the key it is stored
  * under. Array children are visited item by item.
  */
 export function forEachChild(
   node: SyntaxNode,
-  visit: (child: unknown, key: string) => void
+  visit: (child: SyntaxNode, key: string) => void
 ): void {
-  for (const [key, child] of Object.entries(node)) {
+  for (const [key, value] of Object.entries(node)) {
     if (key === 'type') {
       continue;
     }
 
-    if (Array.isArray(child)) {
-      for (const item of child) {
-        visit(item, key);
+    for (const item of Array.isArray(value) ? value : [value]) {
+      const child = syntaxNode(item);
+
+      if (child) {
+        visit(child, key);
       }
-    } else {
-      visit(child, key);
     }
   }
 }
 
-export function unwrapExpression(value: unknown): SyntaxNode | undefined {
-  let node = syntaxNode(value);
+export function unwrapExpression(
+  expression: SyntaxNode | undefined
+): SyntaxNode | undefined {
+  let node = expression;
 
   while (
     node &&
@@ -127,9 +129,7 @@ export function identifierName(
     : undefined;
 }
 
-export function bindingIdentifiers(value: unknown): SyntaxNode[] {
-  const node = syntaxNode(value);
-
+export function bindingIdentifiers(node: SyntaxNode | undefined): SyntaxNode[] {
   if (!node) {
     return [];
   }
@@ -139,19 +139,21 @@ export function bindingIdentifiers(value: unknown): SyntaxNode[] {
   }
 
   if (node.type === 'RestElement') {
-    return bindingIdentifiers(node.argument);
+    return bindingIdentifiers(syntaxNode(node.argument));
   }
 
   if (node.type === 'AssignmentPattern') {
-    return bindingIdentifiers(node.left);
+    return bindingIdentifiers(syntaxNode(node.left));
   }
 
   if (node.type === 'TSParameterProperty') {
-    return bindingIdentifiers(node.parameter);
+    return bindingIdentifiers(syntaxNode(node.parameter));
   }
 
   if (node.type === 'ArrayPattern' && Array.isArray(node.elements)) {
-    return node.elements.flatMap(bindingIdentifiers);
+    return node.elements.flatMap((element) =>
+      bindingIdentifiers(syntaxNode(element))
+    );
   }
 
   if (node.type === 'ObjectPattern' && Array.isArray(node.properties)) {
@@ -163,8 +165,8 @@ export function bindingIdentifiers(value: unknown): SyntaxNode[] {
       }
 
       return property.type === 'RestElement'
-        ? bindingIdentifiers(property.argument)
-        : bindingIdentifiers(property.value);
+        ? bindingIdentifiers(syntaxNode(property.argument))
+        : bindingIdentifiers(syntaxNode(property.value));
     });
   }
 

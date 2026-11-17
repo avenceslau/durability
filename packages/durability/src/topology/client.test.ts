@@ -34,14 +34,17 @@ const clientFor = (
 };
 
 const reasonOf = async (promise: Promise<unknown>): Promise<string> => {
-  const error = await promise.then(
-    () => undefined,
-    (caught: unknown) => caught
-  );
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof TopologyUnavailableError) {
+      return error.reason;
+    }
 
-  expect(error).toBeInstanceOf(TopologyUnavailableError);
+    throw error;
+  }
 
-  return (error as TopologyUnavailableError).reason;
+  throw new Error('Expected a TopologyUnavailableError');
 };
 
 beforeEach(() => {

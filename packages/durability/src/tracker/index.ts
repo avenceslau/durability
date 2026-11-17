@@ -330,7 +330,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
         settle();
       };
 
-      const fail = (error: unknown) => finish(() => reject(error));
+      const fail = (cause: unknown) => finish(() => reject(cause));
 
       const resolveIfSettled = (result: AnyResult) => {
         if (result.status !== 'pending') {

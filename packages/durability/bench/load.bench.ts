@@ -29,7 +29,11 @@ type Scenario = {
   expect: (report: LoadReport, params: Scenario['params']) => void;
 };
 
-const emit = (name: string, params: unknown, report: LoadReport): void => {
+const emit = (
+  name: string,
+  params: Scenario['params'],
+  report: LoadReport
+): void => {
   console.log(
     `BENCH ${JSON.stringify({
       scenario: name,

@@ -139,24 +139,18 @@ export function collectRoutingInjections(
 ): RoutingInjection[] {
   const injections: RoutingInjection[] = [];
 
-  const visit = (value: unknown): void => {
-    const node = syntaxNode(value);
-
-    if (!node) {
-      return;
-    }
-
+  const visit = (node: SyntaxNode): void => {
     if (
       node.type === 'CallExpression' ||
       node.type === 'OptionalCallExpression'
     ) {
-      const callee = unwrapExpression(node.callee);
+      const callee = unwrapExpression(syntaxNode(node.callee));
 
       const factoryName =
         callee &&
         memberExpressionTypes.has(callee.type) &&
         propertyName(callee) === 'client'
-          ? identifierName(unwrapExpression(callee.object))
+          ? identifierName(unwrapExpression(syntaxNode(callee.object)))
           : undefined;
 
       const factoryBinding = factoryName
@@ -171,7 +165,7 @@ export function collectRoutingInjections(
           ? node.arguments
           : [];
 
-        const config = unwrapExpression(argumentsList[0]);
+        const config = unwrapExpression(syntaxNode(argumentsList[0]));
 
         if (config?.type === 'ObjectExpression') {
           if (!objectHasProperty(config, 'exportName')) {
@@ -191,7 +185,7 @@ export function collectRoutingInjections(
 
             if (targetProperty) {
               const target = unwrapExpression(
-                syntaxNode(targetProperty)?.value
+                syntaxNode(syntaxNode(targetProperty)?.value)
               );
 
               if (target?.type !== 'Identifier') {
