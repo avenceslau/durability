@@ -141,7 +141,7 @@ const decode = sourceExcerpt(
   'decode',
   'Re-validate the stored snapshot',
   'const encodedSchema = v.object({',
-  '  return snapshot as unknown as TopologySnapshot<Meta>;\n};'
+  '  return { ...snapshot, members: decoded as TopologyMember<Meta>[] };\n};'
 );
 
 const clientFallback = sourceExcerpt(

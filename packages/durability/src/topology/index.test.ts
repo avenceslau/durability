@@ -88,7 +88,7 @@ const fixture = () => {
   const events: DurabilityTopologyEvent[] = [];
 
   const context = {
-    storage: storage as unknown as DurableObjectStorage,
+    storage,
     id: { toString: () => coordinatorId },
   };
 
@@ -115,7 +115,7 @@ const active = (id: string) => ({ id, state: 'active' as const });
 
 const slowPublishConfig = (store: Store) => ({
   context: {
-    storage: new FakeStorage() as unknown as DurableObjectStorage,
+    storage: new FakeStorage(),
     id: coordinatorId,
   } as never,
   publish: { ...store.publisher, attemptTimeoutMs: 100 },
@@ -164,7 +164,7 @@ describe('DurabilityTopology', () => {
     expect(
       () =>
         new DurabilityTopology({
-          context: { storage: storage as unknown as DurableObjectStorage },
+          context: { storage },
         })
     ).toThrow(TopologyError);
   });
@@ -440,7 +440,7 @@ describe('DurabilityTopology', () => {
 
     const topology = new DurabilityTopology<undefined, States>({
       context: {
-        storage: new FakeStorage() as unknown as DurableObjectStorage,
+        storage: new FakeStorage(),
         id: coordinatorId,
       } as never,
       alarmConcurrency: 1,
@@ -485,7 +485,7 @@ describe('DurabilityTopology', () => {
 
     const config = {
       context: {
-        storage: storage as unknown as DurableObjectStorage,
+        storage,
         id: coordinatorId,
       } as never,
       retries: { delay: () => 60_000 },
@@ -549,7 +549,7 @@ describe('DurabilityTopology', () => {
     const topology = new DurabilityTopology<undefined, States>({
       ...withoutPublisher,
       context: {
-        storage: new FakeStorage() as unknown as DurableObjectStorage,
+        storage: new FakeStorage(),
         id: coordinatorId,
       } as never,
     });

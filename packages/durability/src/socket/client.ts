@@ -72,6 +72,12 @@ export type SocketTransform = (call: {
   next: (input?: unknown) => Promise<unknown>;
 }) => Promise<unknown>;
 
+/** The part of a `WebSocket` the client uses. */
+type SocketClientWebSocket = Pick<
+  WebSocket,
+  'addEventListener' | 'close' | 'send'
+>;
+
 export type DurabilitySocketClientConfig = {
   /** Builds the WebSocket URL for one Durable Object. */
   url: (id: string) => string;
@@ -80,7 +86,7 @@ export type DurabilitySocketClientConfig = {
   /** Interval between keep-alive pings; a silent connection is dropped after two. Defaults to 30 seconds. */
   pingIntervalMs?: number;
   /** WebSocket implementation. Defaults to the global `WebSocket`. */
-  webSocket?: new (url: string) => WebSocket;
+  webSocket?: new (url: string) => SocketClientWebSocket;
 };
 
 type RpcMethod<Input, Output> = [Input] extends [void]
@@ -146,7 +152,7 @@ class Connection {
   #acknowledged = new Set<string>();
 
   #status: SocketStatus = 'disconnected';
-  #ws: WebSocket | undefined;
+  #ws: SocketClientWebSocket | undefined;
   #generation = 0;
   #nextId = 0;
   #lastSeq: number | undefined;

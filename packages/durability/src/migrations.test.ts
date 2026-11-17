@@ -399,12 +399,7 @@ describe('migrations', () => {
     ];
 
     expect(() =>
-      migrateCapability(
-        storage as unknown as DurableObjectStorage,
-        'operations',
-        migrations,
-        undefined
-      )
+      migrateCapability(storage, 'operations', migrations, undefined)
     ).toThrow(/syntax error/);
     expect(tableNames(storage)).toEqual([]);
   });
@@ -501,18 +496,15 @@ describe('migrate', () => {
     },
   ];
 
-  const asStorage = (storage: FakeStorage) =>
-    storage as unknown as DurableObjectStorage;
-
   it('tracks application migrations apart from durability history', () => {
     const storage = new FakeStorage();
     Durability.migrate(contextFor(storage));
 
-    expect(migrate(asStorage(storage), jobsMigrations)).toEqual({
+    expect(migrate(storage, jobsMigrations)).toEqual({
       applied: ['0001_create_jobs', '0002_add_jobs_status'],
       rolledBack: [],
     });
-    expect(migrate(asStorage(storage), jobsMigrations)).toEqual({
+    expect(migrate(storage, jobsMigrations)).toEqual({
       applied: [],
       rolledBack: [],
     });
@@ -531,16 +523,16 @@ describe('migrate', () => {
 
   it('moves to a target and drops its history table once empty', () => {
     const storage = new FakeStorage();
-    migrate(asStorage(storage), jobsMigrations, { table: 'app_history' });
+    migrate(storage, jobsMigrations, { table: 'app_history' });
 
     expect(
-      migrate(asStorage(storage), jobsMigrations, {
+      migrate(storage, jobsMigrations, {
         table: 'app_history',
         target: '0001_create_jobs',
       })
     ).toEqual({ applied: [], rolledBack: ['0002_add_jobs_status'] });
     expect(
-      migrate(asStorage(storage), jobsMigrations, {
+      migrate(storage, jobsMigrations, {
         table: 'app_history',
         target: null,
       })
@@ -550,9 +542,9 @@ describe('migrate', () => {
 
   it('reverts migrations an application downgrade does not know', () => {
     const storage = new FakeStorage();
-    migrate(asStorage(storage), jobsMigrations);
+    migrate(storage, jobsMigrations);
 
-    expect(migrate(asStorage(storage), jobsMigrations.slice(0, 1))).toEqual({
+    expect(migrate(storage, jobsMigrations.slice(0, 1))).toEqual({
       applied: [],
       rolledBack: ['0002_add_jobs_status'],
     });
@@ -580,10 +572,10 @@ describe('migrate', () => {
       down: 'SELECT 1;',
     };
 
-    migrate(asStorage(storage), [createJobs!, createRuns]);
+    migrate(storage, [createJobs!, createRuns]);
     storage.sql.exec("INSERT INTO runs (id) VALUES ('kept')");
 
-    expect(() => migrate(asStorage(storage), [createJobs!, broken])).toThrow(
+    expect(() => migrate(storage, [createJobs!, broken])).toThrow(
       /syntax error/
     );
     expect(tableNames(storage)).toEqual(['jobs', 'runs', 'schema_migrations']);
@@ -604,12 +596,12 @@ describe('migrate', () => {
     const storage = new FakeStorage();
 
     expect(() =>
-      migrate(asStorage(storage), jobsMigrations, {
+      migrate(storage, jobsMigrations, {
         table: 'jobs; DROP TABLE x',
       })
     ).toThrow('Invalid schema migration table');
     expect(() =>
-      migrate(asStorage(storage), jobsMigrations, {
+      migrate(storage, jobsMigrations, {
         table: 'durability_migrations',
       })
     ).toThrow('Invalid schema migration table');

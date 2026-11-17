@@ -69,7 +69,7 @@ const get = sourceExcerpt(
   'get',
   'Reacquire a handle by ID',
   '  /** Reacquires a handle by id, for example after an RPC disconnect. */',
-  '    ) as unknown as TrackerHandle<Sources, Key>;\n  }'
+  '    return handle as TrackerHandle<Sources, Key>;\n  }'
 );
 
 const records = sourceExcerpt(

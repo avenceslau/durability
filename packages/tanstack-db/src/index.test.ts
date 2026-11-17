@@ -78,14 +78,14 @@ const fakeConnection = () => {
     },
   });
 
-  const connection = {
+  const connection: SocketConnection<TestSocket> = {
     rpc,
     on,
     get status() {
       return status;
     },
     close: () => undefined,
-  } as unknown as SocketConnection<TestSocket>;
+  };
 
   return {
     connection,

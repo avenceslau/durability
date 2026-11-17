@@ -22,7 +22,12 @@ import {
   type Engine,
   type SchedulerAttachment,
 } from '../scheduler/index.js';
-import { canonical, deserialize, serialize } from '../serialization.js';
+import {
+  canonical,
+  deserialize,
+  serialize,
+  type Json,
+} from '../serialization.js';
 import { TopologyClient, type TopologyClientConfig } from './client.js';
 import {
   encodeSnapshot,
@@ -301,11 +306,15 @@ const readStates = (sql: SqlStorage, ownerChannel: string, group: string) =>
       .toArray()
   );
 
-const parseMembers = <Meta>(row: GroupRow): TopologyMember<Meta>[] =>
-  v.parse(
+const parseMembers = <Meta>(row: GroupRow): TopologyMember<Meta>[] => {
+  const members: TopologyMember<Json | undefined>[] = v.parse(
     membersSchema,
     JSON.parse(row.members)
-  ) as unknown as TopologyMember<Meta>[];
+  );
+
+  // SAFETY: `meta` is validated only as JSON; this coordinator wrote it from a `TopologyMemberInput<Meta>`.
+  return members as TopologyMember<Meta>[];
+};
 
 const inRole = (member: TopologyMember<unknown>, role: TopologyRole): boolean =>
   role === 'read' || member.state === 'active';
@@ -863,7 +872,7 @@ export class DurabilityTopology<
 
       member.joinedAt = joinedAt.get(id) ?? now;
 
-      return member as unknown as TopologyMember<Meta>;
+      return member as TopologyMember<Meta>;
     });
 
     return members.sort((a, b) => (a.id < b.id ? -1 : 1));

@@ -203,7 +203,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const items = found.map(({ source, item }) => this.#handle(source, item));
     const page = cursor === undefined ? { items } : { items, cursor };
 
-    return page as unknown as TrackerPage<Sources, Key>;
+    return page as TrackerPage<Sources, Key>;
   }
 
   /**
@@ -217,7 +217,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const records = found.map(({ item }) => item);
     const page = cursor === undefined ? { records } : { records, cursor };
 
-    return page as unknown as TrackerRecordPage<Sources, Key>;
+    return page as TrackerRecordPage<Sources, Key>;
   }
 
   /** Reacquires a handle by id, for example after an RPC disconnect. */
@@ -232,10 +232,9 @@ export class DurabilityTracker<Sources extends TrackerSources> {
       return undefined;
     }
 
-    return this.#handle(
-      resolved,
-      itemFor(key, record)
-    ) as unknown as TrackerHandle<Sources, Key>;
+    const handle = this.#handle(resolved, itemFor(key, record));
+
+    return handle as TrackerHandle<Sources, Key>;
   }
 
   async #collect(

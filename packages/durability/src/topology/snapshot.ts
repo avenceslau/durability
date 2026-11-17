@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import { jsonSchema } from '../serialization.js';
+import { jsonSchema, type Json } from '../serialization.js';
 
 /** `active` members are in the write and read sets; `draining` members only in the read set. */
 export type TopologyMemberState = 'active' | 'draining';
@@ -52,6 +52,7 @@ export const memberInputSchema = v.object({
 
 const memberSchema = v.object({
   ...memberInputSchema.entries,
+  locationHint: v.exactOptional(v.picklist(locationHints)),
   joinedAt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
@@ -82,10 +83,14 @@ export const encodeSnapshot = <Meta>(
 export const decodeSnapshot = <Meta>(
   encoded: string
 ): TopologySnapshot<Meta> => {
-  const { format: _format, ...snapshot } = v.parse(
-    encodedSchema,
-    JSON.parse(encoded)
-  );
+  const {
+    format: _format,
+    members,
+    ...snapshot
+  } = v.parse(encodedSchema, JSON.parse(encoded));
 
-  return snapshot as unknown as TopologySnapshot<Meta>;
+  const decoded: TopologyMember<Json | undefined>[] = members;
+
+  // SAFETY: `meta` is validated only as JSON; the coordinator wrote it from the caller's `TopologyMemberInput<Meta>`.
+  return { ...snapshot, members: decoded as TopologyMember<Meta>[] };
 };

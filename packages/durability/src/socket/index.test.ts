@@ -187,11 +187,11 @@ describe('DurabilitySocket', () => {
     });
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's1', names: ['created'] })
     );
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({
         type: 'call',
         id: 'c1',
@@ -220,7 +220,7 @@ describe('DurabilitySocket', () => {
 
     for (const method of ['constructor', 'toString', '__proto__', 'missing']) {
       await socket.webSocketMessage(
-        ws as unknown as WebSocket,
+        ws,
         frame({ type: 'call', id: method, method })
       );
     }
@@ -244,7 +244,7 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'bad', method: 'create', input: { id: 1 } })
     );
 
@@ -265,11 +265,11 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'e1', method: 'echo', input: [1, 'two'] })
     );
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'e2', method: 'echo' })
     );
 
@@ -296,7 +296,7 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'f', method: 'fail' })
     );
 
@@ -315,7 +315,7 @@ describe('DurabilitySocket', () => {
     await connect(socket);
     const ws = serverSide(context);
 
-    await socket.webSocketMessage(ws as unknown as WebSocket, 'not json');
+    await socket.webSocketMessage(ws, 'not json');
 
     expect(ws.closed).toEqual({ code: 4002, reason: 'Invalid frame' });
     expect(ws.sent).toEqual([]);
@@ -334,11 +334,11 @@ describe('DurabilitySocket', () => {
     ];
 
     await socket.webSocketMessage(
-      a as unknown as WebSocket,
+      a,
       frame({ type: 'subscribe', id: 's', names: ['removed'] })
     );
     await socket.webSocketMessage(
-      b as unknown as WebSocket,
+      b,
       frame({ type: 'subscribe', id: 's', names: ['created', 'removed'] })
     );
     c.readyState = 3;
@@ -363,7 +363,7 @@ describe('DurabilitySocket', () => {
     await connect(socket);
     const ws = serverSide(context);
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's', names: ['created'] })
     );
 
@@ -391,7 +391,7 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's', names: ['created', 'nope'] })
     );
 
@@ -430,7 +430,7 @@ describe('DurabilitySocket', () => {
     await connect(socket);
     const ws = serverSide(context);
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's', names: ['removed'], since: 2 })
     );
 
@@ -459,7 +459,7 @@ describe('DurabilitySocket', () => {
       { id: 'current', since: 5 },
     ]) {
       await socket.webSocketMessage(
-        ws as unknown as WebSocket,
+        ws,
         frame({ type: 'subscribe', names: ['removed'], ...subscription })
       );
     }
@@ -547,7 +547,7 @@ const send = (
   socket: { webSocketMessage(ws: WebSocket, message: string): Promise<void> },
   ws: FakeWebSocket,
   value: Unversioned<SocketClientFrame>
-) => socket.webSocketMessage(ws as unknown as WebSocket, frame(value));
+) => socket.webSocketMessage(ws, frame(value));
 
 const connectServer = async (
   socket: { fetch(request: Request): Promise<Response> },
@@ -815,7 +815,7 @@ describe('DurabilitySocket channels', () => {
     const library = createChannelSocket(context, 'library', calls);
     const legacy = new FakeWebSocket();
     legacy.serializeAttachment({ metadata: { user: 'old' }, names: [] });
-    context.acceptWebSocket(legacy as unknown as WebSocket);
+    context.acceptWebSocket(legacy);
 
     await send(library, legacy, {
       type: 'call',

@@ -106,9 +106,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           : ['decorators-legacy', 'jsx', 'typescript'],
       });
 
-      const program = syntaxNode(
-        (ast as unknown as { program?: unknown }).program
-      );
+      const program = syntaxNode(ast.program);
 
       const scopes = indexScopes(ast);
 

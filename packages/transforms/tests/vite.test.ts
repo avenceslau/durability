@@ -1,52 +1,74 @@
 import { join, resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ResolvedConfig } from 'vite';
+import type { ResolvedConfig, Rolldown } from 'vite';
 import {
   unstable_convertConfigBindingsToStartWorkerBindings,
   unstable_readConfig,
 } from 'wrangler';
-import { doTransforms } from '../src/vite';
+import { isFunction, isString } from '../src/predicates';
+import { doTransforms, type DoTransformsPluginOptions } from '../src/vite';
 import { loadWranglerProject } from '../src/vite/wrangler';
 
 type TestPlugin = {
   configResolved(config: ResolvedConfig): Promise<void> | void;
-  transform(
+  /** Resolves to the transformed code, or null when the module is unchanged. */
+  transform(code: string, id: string): Promise<string | null>;
+};
+
+/** The plugin's hooks, called the way Vite calls plain function hooks. */
+function pluginHooks(options: DoTransformsPluginOptions): TestPlugin {
+  const { configResolved, transform: transformHook } = doTransforms(options);
+
+  if (!isFunction(configResolved) || !isFunction(transformHook)) {
+    throw new Error('do-transforms hooks must be functions');
+  }
+
+  const runTransform: (
     code: string,
     id: string
-  ):
-    | Promise<{ code: string } | null | undefined>
-    | { code: string }
-    | null
-    | undefined;
-};
+  ) => Promise<Rolldown.TransformResult> | Rolldown.TransformResult =
+    transformHook;
+
+  return {
+    configResolved,
+    async transform(code, id) {
+      const result = await runTransform(code, id);
+
+      if (result === null || result === undefined) {
+        return null;
+      }
+
+      if (isString(result) || !isString(result.code)) {
+        throw new Error(
+          'do-transforms must return code in a source description'
+        );
+      }
+
+      return result.code;
+    },
+  };
+}
 
 const fixtureRoot = resolve(import.meta.dirname, 'fixtures/vite');
 let plugin: TestPlugin;
 
 beforeAll(async () => {
-  plugin = doTransforms({
+  plugin = pluginHooks({
     wrangler: './wrangler.jsonc',
     types: false,
-  }) as unknown as TestPlugin;
+  });
   await plugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
 });
 
-async function transform(code: string): Promise<string | null> {
-  const result = await plugin.transform(code, join(fixtureRoot, 'worker.ts'));
-
-  return result?.code ?? null;
+function transform(code: string): Promise<string | null> {
+  return plugin.transform(code, join(fixtureRoot, 'worker.ts'));
 }
 
-async function transformWith(
+function transformWith(
   testPlugin: TestPlugin,
   code: string
 ): Promise<string | null> {
-  const result = await testPlugin.transform(
-    code,
-    join(fixtureRoot, 'worker.ts')
-  );
-
-  return result?.code ?? null;
+  return testPlugin.transform(code, join(fixtureRoot, 'worker.ts'));
 }
 
 describe('Vite binding transforms', () => {
@@ -249,11 +271,11 @@ export default {
   });
 
   it('rewrites namespace stubs to restorable factories when enabled', async () => {
-    const restorePlugin = doTransforms({
+    const restorePlugin = pluginHooks({
       wrangler: './wrangler.jsonc',
       types: false,
       restoreBrokenStubs: true,
-    }) as unknown as TestPlugin;
+    });
 
     await restorePlugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
 
@@ -309,11 +331,11 @@ export default {
   });
 
   it('only imports the restorable factory when no service is wrapped', async () => {
-    const restorePlugin = doTransforms({
+    const restorePlugin = pluginHooks({
       wrangler: './wrangler.jsonc',
       types: false,
       restoreBrokenStubs: true,
-    }) as unknown as TestPlugin;
+    });
 
     await restorePlugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
 
@@ -342,7 +364,7 @@ export default {
       join(fixtureRoot, 'worker.ts?import')
     );
 
-    expect(result?.code).toContain(
+    expect(result).toContain(
       '__doTransformsCreateStub((<Env>env).CONTEXT_SERVICE).greet()'
     );
   });
@@ -360,7 +382,7 @@ export default {
       join(fixtureRoot, 'worker.tsx')
     );
 
-    expect(result?.code).toContain(
+    expect(result).toContain(
       '__doTransformsCreateStub(env.CONTEXT_SERVICE).greet()'
     );
   });
@@ -368,10 +390,10 @@ export default {
   it('reports invalid Wrangler configuration', async () => {
     const wranglerPath = join(fixtureRoot, 'invalid.jsonc');
 
-    const invalidPlugin = doTransforms({
+    const invalidPlugin = pluginHooks({
       wrangler: wranglerPath,
       types: false,
-    }) as unknown as TestPlugin;
+    });
 
     const loading = invalidPlugin.configResolved({
       root: fixtureRoot,
@@ -386,10 +408,10 @@ export default {
   });
 
   it('rejects a types path that is not a declaration file', async () => {
-    const typesPlugin = doTransforms({
+    const typesPlugin = pluginHooks({
       wrangler: './wrangler.jsonc',
       types: './env.ts',
-    }) as unknown as TestPlugin;
+    });
 
     await expect(
       typesPlugin.configResolved({ root: fixtureRoot } as ResolvedConfig)
@@ -528,10 +550,10 @@ DurabilityRouting.client(config);
   });
 
   it('works with migrations only and existing RPC wrapper edits', async () => {
-    const migrationOnlyPlugin = doTransforms({
+    const migrationOnlyPlugin = pluginHooks({
       wrangler: './migrations-only.jsonc',
       types: false,
-    }) as unknown as TestPlugin;
+    });
 
     await migrationOnlyPlugin.configResolved({
       root: fixtureRoot,

@@ -557,7 +557,7 @@ describe('DO transforms', () => {
     const stub = createRestorableStubFactory(
       namespace,
       'getByName'
-    )?.('room') as unknown as { name: string; read(): Promise<string> };
+    )?.('room') as TransformStub<{ name: string; read(): Promise<string> }>;
 
     await expect(stub.read()).rejects.toThrow('broken');
     expect(opened).toBe(1);
@@ -590,7 +590,7 @@ describe('DO transforms', () => {
     const base = createRestorableStubFactory(
       namespace,
       'get'
-    )?.('id') as unknown as TransformStub<{ read(): Promise<string> }>;
+    )?.('id') as TransformStub<{ read(): Promise<string> }>;
 
     const retried = base.with(retry, { retries: 1, delay: () => 0 });
 
@@ -622,7 +622,7 @@ describe('DO transforms', () => {
     const stub = createRestorableStubFactory(
       namespace,
       'get'
-    )?.() as unknown as { read(): Promise<number> };
+    )?.() as TransformStub<{ read(): Promise<number> }>;
 
     await Promise.allSettled([stub.read(), stub.read()]);
     await expect(Promise.all([stub.read(), stub.read()])).resolves.toEqual([

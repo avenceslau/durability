@@ -83,18 +83,18 @@ class TestWebSocket extends EventTarget {
 
 const client = new DurabilitySocketClient<Socket>({
   url: (id) => `ws://example.com/socket/${id}`,
-  webSocket: TestWebSocket as unknown as new (url: string) => WebSocket,
+  webSocket: TestWebSocket,
 });
 
 const libraryClient = new DurabilitySocketClient<LibrarySocket>({
   url: (id) => `ws://example.com/socket/${id}?channel=library`,
-  webSocket: TestWebSocket as unknown as new (url: string) => WebSocket,
+  webSocket: TestWebSocket,
 });
 
 const nulClient = new DurabilitySocketClient<LibrarySocket>({
   url: (id) =>
     `ws://example.com/socket/${id}?channel=${encodeURIComponent(nulChannel)}`,
-  webSocket: TestWebSocket as unknown as new (url: string) => WebSocket,
+  webSocket: TestWebSocket,
 });
 
 const channelEvents = (id: string) =>
