@@ -93,7 +93,11 @@ Records leave only through `trim()`, which enforces `maxAgeMs` and `maxRecords`,
 ```ts
 private readonly alarms = new DurabilityAlarms({
   scheduler: this.scheduler,
-  handlers: { compact: () => this.log.trim() },
+  handlers: {
+    compact: async () => {
+      await this.log.trim();
+    },
+  },
 });
 
 alarm(info?: AlarmInvocationInfo) {

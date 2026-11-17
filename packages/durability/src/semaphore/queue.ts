@@ -104,7 +104,7 @@ export type DurabilitySemaphoreQueueConfig<Body> = SchedulerAttachment & {
    * Receives items once the holder has confirmed their permits, after the
    * admission commits. Retried until it returns; must be idempotent on item ID.
    */
-  admit(items: AdmittedItem<Body>[]): unknown | Promise<unknown>;
+  admit(items: AdmittedItem<Body>[]): void | Promise<void>;
   /**
    * Returns which of these admitted items are done. The queue asks on its own
    * alarm and releases them, so a permit whose `release()` was lost (a

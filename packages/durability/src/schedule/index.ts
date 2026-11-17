@@ -203,7 +203,7 @@ export type DurabilityScheduleConfig = SchedulerAttachment & {
    */
   nextOccurrence(expression: string, after: number): number | undefined;
   /** The work of one tick. Throwing or timing out makes the run `errored`. */
-  run(run: ScheduledRunContext): unknown;
+  run(run: ScheduledRunContext): void | Promise<void>;
   /**
    * Receives each run's outcome at least once. Returning acknowledges it and
    * deletes the run's row; throwing retries it with `outcomeRetries`.
@@ -211,7 +211,7 @@ export type DurabilityScheduleConfig = SchedulerAttachment & {
   onOutcome(
     run: ScheduledOutcomeDelivery,
     outcome: ScheduledRunOutcome
-  ): unknown;
+  ): void | Promise<void>;
   /** Runs in flight at once; later runs wait durably in order. Defaults to 10. */
   maxConcurrentRuns?: number;
   /** Maximum duration of one run. Defaults to 15 minutes. */

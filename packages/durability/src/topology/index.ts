@@ -57,8 +57,8 @@ export type TopologyStateUpdate<Value> = {
 
 export type TopologyPublisher<Meta> = TopologyRetryOptions & {
   /** Must be idempotent. Store `encoded` as is: it is what the client reads. */
-  write(snapshot: TopologySnapshot<Meta>, encoded: string): Promise<unknown>;
-  delete(group: string, version: number): Promise<unknown>;
+  write(snapshot: TopologySnapshot<Meta>, encoded: string): Promise<void>;
+  delete(group: string, version: number): Promise<void>;
 };
 
 export type TopologyChannel<Value, Meta> = TopologyRetryOptions & {
@@ -67,7 +67,7 @@ export type TopologyChannel<Value, Meta> = TopologyRetryOptions & {
   deliver(
     member: TopologyMember<Meta>,
     update: TopologyStateUpdate<Value>
-  ): unknown;
+  ): void | Promise<void>;
 };
 
 /**

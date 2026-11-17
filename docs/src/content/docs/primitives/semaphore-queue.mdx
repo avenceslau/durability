@@ -65,10 +65,11 @@ export class JobShard extends DurableObject<Env> {
     scheduler: this.scheduler,
     clientId: this.ctx.id.toString(),
     server: limits.with(timeout, 5_000),
-    admit: (items) =>
-      Promise.all(
+    admit: async (items) => {
+      await Promise.all(
         items.map((item) => this.jobs.run({ id: item.id, payload: item.body }))
-      ),
+      );
+    },
     // The hook above is best-effort; this check returns any permit it missed.
     finished: async (ids) => {
       const results = await Promise.all(

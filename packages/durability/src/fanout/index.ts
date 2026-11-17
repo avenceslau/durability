@@ -154,7 +154,7 @@ export type FanoutTarget<Body> = ExecutionPolicyOptions &
     | {
         deliver(
           messages: DurabilityFanoutMessage<Body>[]
-        ): unknown | Promise<unknown>;
+        ): void | Promise<void>;
         /**
          * Acks every message the consumer leaves unsettled when `deliver`
          * returns without throwing, in one transaction instead of one call
