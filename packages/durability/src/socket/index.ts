@@ -54,11 +54,6 @@ export type DurabilitySocketConfig<
   inbound: Inbound & SocketValidatedInbound<Inbound, Schemas>;
   /** Events the object may push, keyed by the methods they become on this instance. */
   outbound: Outbound;
-  /**
-   * Captures trusted per-connection data from the upgrade request. Stored in
-   * the WebSocket attachment, so it survives hibernation without re-auth.
-   */
-  metadata?: (request: Request) => Metadata | Promise<Metadata>;
   /** Outbound events kept for replay to reconnecting clients. Defaults to 1000. */
   retention?: number;
   /**
@@ -68,7 +63,20 @@ export type DurabilitySocketConfig<
    * whichever instance `webSocketMessage` delegates to.
    */
   channel?: string;
+} & SocketMetadataOption<Metadata>;
+
+type SocketMetadataConfig<Metadata> = {
+  /**
+   * Captures trusted per-connection data from the upgrade request. Stored in
+   * the WebSocket attachment, so it survives hibernation without re-auth.
+   * Required when a handler's `SocketCall<…>` metadata excludes `undefined`.
+   */
+  metadata: (request: Request) => Metadata | Promise<Metadata>;
 };
+
+type SocketMetadataOption<Metadata> = undefined extends Metadata
+  ? Partial<SocketMetadataConfig<Metadata>>
+  : SocketMetadataConfig<Metadata>;
 
 /** Thrown to the caller when an inbound payload fails its schema. */
 export class SocketInputError extends Error {
@@ -85,6 +93,7 @@ export class SocketInputError extends Error {
 
 type Attachment<Metadata> = {
   metadata: Metadata;
+  hasMetadata: boolean;
   names: string[];
   channel: string;
 };
@@ -96,6 +105,9 @@ const frameHandlersByObject = new WeakMap<Engine, Map<string, FrameHandler>>();
 
 // A configuration problem rather than a protocol violation, so clients reconnect.
 const channelMissingCloseCode = 1011;
+
+// Service Restart: the client reconnects, and the new upgrade captures metadata.
+const metadataMissingCloseCode = 1012;
 
 type EventRow = {
   seq: number;
@@ -152,17 +164,24 @@ const readAttachment = (ws: WebSocket): Attachment<unknown> => {
   if (!isObject(stored)) {
     return {
       metadata: undefined,
+      hasMetadata: false,
       names: [],
       channel: defaultChannel,
     };
   }
 
+  const metadata = 'metadata' in stored ? stored.metadata : undefined;
   const names = 'names' in stored ? stored.names : undefined;
   // Connections accepted before channels existed carry no channel.
   const channel = 'channel' in stored ? stored.channel : undefined;
 
   return {
-    metadata: 'metadata' in stored ? stored.metadata : undefined,
+    metadata,
+    // Attachments written before `hasMetadata` existed captured metadata if they hold any.
+    hasMetadata:
+      'hasMetadata' in stored
+        ? stored.hasMetadata === true
+        : metadata !== undefined,
     names: Array.isArray(names) ? names.filter(isString) : [],
     channel: isString(channel) ? channel : defaultChannel,
   };
@@ -179,11 +198,7 @@ class DurabilitySocketCore<
   readonly #storage: DurableObjectStorage;
   readonly #inbound: Map<string, SocketInboundHandler<never>>;
   readonly #outboundNames: Set<string>;
-  readonly #metadata: DurabilitySocketConfig<
-    Inbound,
-    Outbound,
-    Metadata
-  >['metadata'];
+  readonly #metadata: SocketMetadataConfig<Metadata>['metadata'] | undefined;
   readonly #retention: number;
   readonly #channel: string;
   readonly #frameHandlers: Map<string, FrameHandler>;
@@ -275,6 +290,7 @@ class DurabilitySocketCore<
     this.#context.acceptWebSocket(server);
     server.serializeAttachment({
       metadata,
+      hasMetadata: this.#metadata !== undefined,
       names: [],
       channel: this.#channel,
     } satisfies Attachment<Metadata | undefined>);
@@ -336,6 +352,18 @@ class DurabilitySocketCore<
   webSocketClose(_ws: WebSocket): void {}
 
   async #handle(ws: WebSocket, frame: SocketClientFrame): Promise<void> {
+    // A connection accepted before this socket captured metadata, such as
+    // before a deploy added it, must not reach a handler without it.
+    if (this.#metadata !== undefined && !readAttachment(ws).hasMetadata) {
+      trace('socket.close', {
+        code: metadataMissingCloseCode,
+        reason: 'Socket metadata was not captured',
+      });
+      ws.close(metadataMissingCloseCode, 'Socket metadata was not captured');
+
+      return;
+    }
+
     if (frame.type === 'subscribe') {
       this.#subscribe(ws, frame);
 
@@ -366,8 +394,9 @@ class DurabilitySocketCore<
     }
 
     const call: SocketCall<never> = {
-      // SAFETY: #inbound erases each handler's metadata type to never; fetch
-      // stored what config.metadata returned for this socket, if configured.
+      // SAFETY: #inbound erases each handler's metadata type to never. With
+      // config.metadata set, #handle closed every connection whose attachment
+      // lacks its result; without it, the handlers' metadata admits undefined.
       metadata: readAttachment(ws).metadata as never,
     };
 

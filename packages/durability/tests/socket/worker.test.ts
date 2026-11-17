@@ -3,6 +3,7 @@ import { evictDurableObject, runInDurableObject, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
   DurabilitySocketClient,
+  SocketConnectionLostError,
   SocketRemoteError,
 } from '../../src/socket/client';
 import { DurabilitySocket } from '../../src/socket';
@@ -256,6 +257,42 @@ describe('DurabilitySocket in workerd', () => {
 
     subscriber.close();
     writer.close();
+  });
+
+  it('reconnects a hibernated connection accepted before metadata was configured', async () => {
+    const id = 'metadata-added';
+    const stub = env.SOCKET_TEST.getByName(id);
+    const conn = client.connect(id);
+    await expect(conn.rpc.whoami()).resolves.toBe('alice');
+    const raw = await openRaw(id);
+
+    // What a version without `metadata` stored in each attachment.
+    await runInDurableObject(stub, (_instance, state) => {
+      for (const ws of state.getWebSockets()) {
+        ws.serializeAttachment({
+          metadata: undefined,
+          names: [],
+          channel: 'default',
+        });
+      }
+    });
+    await evictDurableObject(stub);
+
+    raw.send({ type: 'call', id: 'w', method: 'whoami' });
+    await waitFor(() =>
+      expect(raw.closed()).toEqual({
+        code: 1012,
+        reason: 'Socket metadata was not captured',
+      })
+    );
+    expect(raw.frames).toEqual([]);
+    await expect(conn.rpc.whoami()).rejects.toBeInstanceOf(
+      SocketConnectionLostError
+    );
+    await waitFor(() => expect(conn.status).toBe('connected'), 200);
+    await expect(conn.rpc.whoami()).resolves.toBe('alice');
+
+    conn.close();
   });
 });
 

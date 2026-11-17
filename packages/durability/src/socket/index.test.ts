@@ -191,6 +191,7 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
     expect(ws.deserializeAttachment()).toEqual({
       metadata: { userId: 'bob' },
+      hasMetadata: true,
       names: [],
       channel: 'default',
     });
@@ -219,6 +220,157 @@ describe('DurabilitySocket', () => {
         payload: { id: '1', title: 'x', by: 'bob' },
       },
       { v: 1, type: 'result', id: 'c1', output: '1' },
+    ]);
+  });
+
+  it('requires metadata only when a handler needs it', () => {
+    type User = { user: string };
+
+    type MetadataOption<Metadata> = Pick<
+      DurabilitySocketConfig<SocketInboundMap, SocketOutboundMap, Metadata>,
+      'metadata'
+    >;
+
+    expectTypeOf<MetadataOption<User>>().toEqualTypeOf<{
+      metadata: (request: Request) => User | Promise<User>;
+    }>();
+    expectTypeOf<MetadataOption<User | undefined>>().toEqualTypeOf<{
+      metadata?: (
+        request: Request
+      ) => User | undefined | Promise<User | undefined>;
+    }>();
+
+    // @ts-expect-error `metadata` is required because `whoami` needs a user
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<{ user: string }>) =>
+            call.metadata.user,
+        },
+      },
+      outbound: {},
+    });
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<{ user: string } | undefined>) =>
+            call.metadata?.user,
+        },
+        list: { input: v.undefined(), handle: () => [] },
+      },
+      outbound: {},
+    });
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<{ user: string } | undefined>) =>
+            call.metadata?.user,
+        },
+      },
+      outbound: {},
+      metadata: () => ({ user: 'alice' }),
+    });
+  });
+
+  it('closes connections accepted before metadata was captured, so the client reconnects', async () => {
+    const { context, socket, todos } = createSocket();
+    const beforeMetadata = new FakeWebSocket();
+    beforeMetadata.serializeAttachment({
+      metadata: undefined,
+      names: ['created'],
+      channel: 'default',
+    });
+    context.acceptWebSocket(beforeMetadata);
+
+    const withoutMetadata = new FakeWebSocket();
+    withoutMetadata.serializeAttachment({
+      metadata: undefined,
+      hasMetadata: false,
+      names: [],
+      channel: 'default',
+    });
+    context.acceptWebSocket(withoutMetadata);
+
+    await socket.webSocketMessage(
+      beforeMetadata,
+      frame({
+        type: 'call',
+        id: 'c1',
+        method: 'create',
+        input: { id: '1', title: 'x' },
+      })
+    );
+    await socket.webSocketMessage(
+      withoutMetadata,
+      frame({ type: 'subscribe', id: 's1', names: ['created'] })
+    );
+
+    for (const ws of [beforeMetadata, withoutMetadata]) {
+      expect(ws.closed).toEqual({
+        code: 1012,
+        reason: 'Socket metadata was not captured',
+      });
+      expect(ws.sent).toEqual([]);
+    }
+
+    expect(todos).toEqual([]);
+
+    await connect(socket, 'bob');
+    const reconnected = serverSide(context);
+    await socket.webSocketMessage(
+      reconnected,
+      frame({
+        type: 'call',
+        id: 'c2',
+        method: 'create',
+        input: { id: '1', title: 'x' },
+      })
+    );
+
+    expect(reconnected.closed).toBeUndefined();
+    expect(reconnected.frames()).toEqual([
+      { v: 1, type: 'result', id: 'c2', output: '1' },
+    ]);
+  });
+
+  it('records that a socket without metadata captured none and serves its connections', async () => {
+    const context = socketContextFor(new FakeStorage());
+
+    const socket = new DurabilitySocket({
+      context,
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<string | undefined>) =>
+            call.metadata ?? 'anonymous',
+        },
+      },
+      outbound: {},
+    });
+
+    await connect(socket);
+    const ws = serverSide(context);
+    await socket.webSocketMessage(
+      ws,
+      frame({ type: 'call', id: 'w', method: 'whoami' })
+    );
+
+    expect(ws.deserializeAttachment()).toEqual({
+      metadata: undefined,
+      hasMetadata: false,
+      names: [],
+      channel: 'default',
+    });
+    expect(ws.frames()).toEqual([
+      { v: 1, type: 'result', id: 'w', output: 'anonymous' },
     ]);
   });
 
@@ -662,11 +814,13 @@ describe('DurabilitySocket channels', () => {
 
     expect(appWs.deserializeAttachment()).toEqual({
       metadata: { user: 'default/alice' },
+      hasMetadata: true,
       names: [],
       channel: 'default',
     });
     expect(libraryWs.deserializeAttachment()).toEqual({
       metadata: { user: 'library/alice' },
+      hasMetadata: true,
       names: [],
       channel: 'library',
     });
@@ -765,6 +919,7 @@ describe('DurabilitySocket channels', () => {
     ]);
     expect(libraryWs.deserializeAttachment()).toEqual({
       metadata: { user: 'library/alice' },
+      hasMetadata: true,
       names: ['changed'],
       channel: 'library',
     });
@@ -913,6 +1068,7 @@ describe('DurabilitySocket channels', () => {
     ]);
     expect(legacy.deserializeAttachment()).toEqual({
       metadata: { user: 'old' },
+      hasMetadata: true,
       names: ['changed'],
       channel: 'default',
     });

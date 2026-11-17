@@ -485,7 +485,7 @@ export const walkthrough = validateWalkthrough({
           id: 'metadata',
           title: 'Metadata comes back from the attachment',
           description:
-            'The handler’s call.metadata is read from the socket’s attachment, so the user ID set at upgrade time is still there without authenticating again.',
+            'The handler’s call.metadata is read from the socket’s attachment, so the user ID set at upgrade time is still there without authenticating again. A connection accepted before the socket had metadata is closed with code 1012 instead, so the client reconnects and the new upgrade captures it.',
           stage: ['focus:websockets'],
           source: sourceFocus(
             call,

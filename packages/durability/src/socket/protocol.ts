@@ -137,22 +137,28 @@ export type SocketInboundMap<Metadata = never> = Record<
   SocketInboundHandler<Metadata>
 >;
 
+/** An unannotated `call` is `SocketCall<never>`, which constrains nothing. */
 type HandlerMetadata<Handler> = Handler extends {
   handle: (input: never, call: SocketCall<infer Metadata>) => unknown;
 }
-  ? Metadata
+  ? [Metadata] extends [never]
+    ? unknown
+    : Metadata
   : unknown;
 
-type UnionToIntersection<Union> = (
-  Union extends unknown ? (value: Union) => void : never
-) extends (value: infer Intersection) => void
-  ? Intersection
-  : never;
+type MetadataSinks<Inbound> = {
+  [Name in keyof Inbound]: (metadata: HandlerMetadata<Inbound[Name]>) => void;
+}[keyof Inbound];
 
-/** The metadata every inbound handler in the map can accept. */
-export type SocketInboundMetadata<Inbound> = UnionToIntersection<
-  { [Name in keyof Inbound]: HandlerMetadata<Inbound[Name]> }[keyof Inbound]
->;
+/**
+ * The metadata every inbound handler in the map can accept: the intersection
+ * of each handler's metadata, keeping a union such as `User | undefined` whole.
+ */
+export type SocketInboundMetadata<Inbound> = [MetadataSinks<Inbound>] extends [
+  (metadata: infer Metadata) => void,
+]
+  ? Metadata
+  : unknown;
 
 /** Marks an outbound event and carries its payload type. */
 export type SocketOutboundEvent<Payload> = {
