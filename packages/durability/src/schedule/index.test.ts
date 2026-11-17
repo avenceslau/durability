@@ -789,6 +789,262 @@ describe('DurabilitySchedule', () => {
   });
 });
 
+describe('DurabilitySchedule reschedule', () => {
+  const changingTicks = (initial: number[]) => {
+    let ticks = initial;
+    return {
+      nextOccurrence: vi.fn((_expression: string, after: number) =>
+        ticks.find((tick) => tick > after)
+      ),
+      change: (next: number[]) => {
+        ticks = next;
+      },
+    };
+  };
+
+  const scheduledTimes = (run: { mock: { calls: [ScheduledRunContext][] } }) =>
+    run.mock.calls.map(([call]) => call.scheduledTime);
+
+  it('moves the next tick earlier or later and moves the alarm with it', async () => {
+    start();
+    const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
+      async () => undefined
+    );
+    const { nextOccurrence, change } = changingTicks([13_000, 16_000]);
+    const { storage, schedule } = setup({ run, nextOccurrence });
+    await schedule.set({ expression: 'owned', version: 1 });
+    expect(schedule.get()?.nextAt).toBe(13_000);
+    expect(storage.alarmAt).toBe(13_000);
+
+    change([12_000, 13_000, 16_000]);
+    expect(await schedule.reschedule()).toBe(true);
+    expect(schedule.get()?.nextAt).toBe(12_000);
+    expect(storage.alarmAt).toBe(12_000);
+
+    change([16_000]);
+    expect(await schedule.reschedule()).toBe(true);
+    expect(schedule.get()?.nextAt).toBe(16_000);
+    expect(storage.alarmAt).toBe(16_000);
+    expect(await schedule.reschedule()).toBe(false);
+
+    change([11_000, 13_000]);
+    expect(await schedule.reschedule()).toBe(true);
+    expect(schedule.get()?.nextAt).toBe(11_000);
+    expect(storage.alarmAt).toBe(11_500);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(scheduledTimes(run)).toEqual([11_000]);
+    expect(schedule.get()?.nextAt).toBe(13_000);
+  });
+
+  it('leaves a due tick to fire and advances with the new nextOccurrence', async () => {
+    start();
+    const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
+      async () => undefined
+    );
+    const { nextOccurrence, change } = changingTicks([11_000, 14_000]);
+    const { schedule } = setup({ run, nextOccurrence });
+    await schedule.set({ expression: 'owned', version: 1 });
+
+    vi.setSystemTime(11_000);
+    change([12_000, 13_000]);
+    expect(await schedule.reschedule()).toBe(false);
+    expect(schedule.get()?.nextAt).toBe(11_000);
+
+    await schedule.alarm();
+    expect(scheduledTimes(run)).toEqual([11_000]);
+    expect(schedule.get()?.nextAt).toBe(12_000);
+  });
+
+  it('keeps a tick whose nominal time passed but whose firing time has not, and skips older ones', async () => {
+    start();
+    const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
+      async () => undefined
+    );
+    const { nextOccurrence, change } = changingTicks([15_000]);
+    const { storage, schedule } = setup({ run, nextOccurrence });
+    await schedule.set({ expression: 'owned', version: 1, jitterMs: 2_000 });
+    expect(schedule.get()?.nextAt).toBe(15_000);
+
+    vi.setSystemTime(12_500);
+    change([10_000, 11_000, 12_000, 15_000]);
+    expect(await schedule.reschedule()).toBe(true);
+    expect(nextOccurrence).toHaveBeenLastCalledWith('owned', 10_500);
+    expect(schedule.get()?.nextAt).toBe(11_000);
+    expect(storage.alarmAt).toBe(13_500);
+
+    for (const time of [13_000, 14_000, 17_000]) {
+      vi.setSystemTime(time);
+      // eslint-disable-next-line no-await-in-loop
+      await schedule.alarm();
+    }
+    expect(
+      run.mock.calls.map(([call]) => [call.scheduledTime, call.dueAt])
+    ).toEqual([
+      [11_000, 13_000],
+      [12_000, 14_000],
+      [15_000, 17_000],
+    ]);
+  });
+
+  it('changes nothing for an unset or cancelled schedule', async () => {
+    start();
+    const nextOccurrence = vi.fn(every);
+    const { storage, schedule } = setup({ nextOccurrence });
+
+    const unset = totalChanges(storage);
+    expect(await schedule.reschedule()).toBe(false);
+    expect(totalChanges(storage)).toBe(unset);
+    expect(schedule.get()).toBeUndefined();
+    expect(storage.alarmAt).toBeNull();
+
+    await schedule.set({ expression: '1000', version: 3 });
+    await schedule.cancel(4);
+    nextOccurrence.mockClear();
+    const cancelled = totalChanges(storage);
+    expect(await schedule.reschedule()).toBe(false);
+    expect(totalChanges(storage)).toBe(cancelled);
+    expect(nextOccurrence).not.toHaveBeenCalled();
+    expect(schedule.get()).toBeUndefined();
+    expect(storage.alarmAt).toBeNull();
+    expect(await schedule.set({ expression: '1000', version: 4 })).toBe(false);
+    expect(schedule.get()).toBeUndefined();
+  });
+
+  it('keeps the version and jitter, so the same version only re-arms and cancels still order by it', async () => {
+    start();
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const { nextOccurrence, change } = changingTicks([12_000, 13_000]);
+    const { storage, schedule } = setup({ nextOccurrence });
+    const definition = {
+      expression: 'owned',
+      version: 7,
+      jitterMs: { maxMs: 400 },
+    };
+    await schedule.set(definition);
+    expect(schedule.get()).toEqual({
+      expression: 'owned',
+      version: 7,
+      jitterMs: 200,
+      nextAt: 12_000,
+    });
+
+    random.mockReturnValue(0.9);
+    change([11_000, 13_000]);
+    expect(await schedule.reschedule()).toBe(true);
+    const rescheduled = {
+      expression: 'owned',
+      version: 7,
+      jitterMs: 200,
+      nextAt: 11_000,
+    };
+    expect(schedule.get()).toEqual(rescheduled);
+
+    change([12_000, 13_000]);
+    storage.alarmAt = null;
+    expect(await schedule.set(definition)).toBe(false);
+    expect(schedule.get()).toEqual(rescheduled);
+    expect(storage.alarmAt).toBe(11_500);
+
+    expect(await schedule.cancel(6)).toBe(false);
+    expect(schedule.get()).toEqual(rescheduled);
+    expect(await schedule.cancel(7)).toBe(true);
+    expect(schedule.get()).toBeUndefined();
+  });
+
+  it('never fires a tick twice across a reschedule with runs running and queued', async () => {
+    start();
+    const { run, release } = gatedRuns();
+    const { nextOccurrence, change } = changingTicks([
+      11_000, 12_000, 13_000, 14_000,
+    ]);
+    const { storage, schedule, outcomes } = setup({
+      run,
+      nextOccurrence,
+      maxConcurrentRuns: 1,
+    });
+    await schedule.set({ expression: 'owned', version: 1 });
+
+    vi.setSystemTime(11_000);
+    const pass = schedule.alarm();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(runRows(storage)).toEqual([
+      { scheduled_time: 11_000, state: 'running', attempt: 0 },
+      { scheduled_time: 12_000, state: 'queued', attempt: 0 },
+    ]);
+    expect(schedule.get()?.nextAt).toBe(13_000);
+
+    change([11_000, 11_500, 12_000, 12_500, 14_000]);
+    expect(await schedule.reschedule()).toBe(true);
+    expect(schedule.get()?.nextAt).toBe(12_500);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(runRows(storage)).toEqual([
+      { scheduled_time: 11_000, state: 'running', attempt: 0 },
+      { scheduled_time: 12_000, state: 'queued', attempt: 0 },
+      { scheduled_time: 12_500, state: 'queued', attempt: 0 },
+    ]);
+    expect(schedule.get()?.nextAt).toBe(14_000);
+
+    for (const time of [11_000, 12_000, 12_500]) {
+      release(time);
+      // eslint-disable-next-line no-await-in-loop
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await schedule.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    await pass;
+    expect(scheduledTimes(run)).toEqual([11_000, 12_000, 12_500]);
+    expect(outcomes.map(([delivery]) => delivery.scheduledTime)).toEqual([
+      11_000, 12_000, 12_500,
+    ]);
+    expect(runRows(storage)).toEqual([]);
+  });
+
+  it('stores no next tick when nextOccurrence returns none, and restores one later', async () => {
+    start();
+    const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
+      async () => undefined
+    );
+    const { nextOccurrence, change } = changingTicks([12_000]);
+    const { storage, schedule } = setup({ run, nextOccurrence });
+    await schedule.set({ expression: 'owned', version: 1 });
+
+    change([]);
+    expect(await schedule.reschedule()).toBe(true);
+    expect(schedule.get()).toEqual({
+      expression: 'owned',
+      version: 1,
+      jitterMs: 0,
+      nextAt: undefined,
+    });
+    expect(storage.alarmAt).toBeNull();
+    expect(await schedule.reschedule()).toBe(false);
+
+    change([13_000]);
+    expect(await schedule.reschedule()).toBe(true);
+    expect(schedule.get()?.nextAt).toBe(13_000);
+    expect(storage.alarmAt).toBe(13_000);
+
+    vi.setSystemTime(13_000);
+    await schedule.alarm();
+    expect(scheduledTimes(run)).toEqual([13_000]);
+  });
+
+  it('rejects an invalid time and keeps the stored tick', async () => {
+    start();
+    const { nextOccurrence } = changingTicks([12_000]);
+    const { storage, schedule } = setup({ nextOccurrence });
+    await schedule.set({ expression: 'owned', version: 1 });
+
+    nextOccurrence.mockImplementationOnce((_expression, after) => after);
+    await expect(schedule.reschedule()).rejects.toThrow(RangeError);
+    expect(schedule.get()?.nextAt).toBe(12_000);
+    expect(storage.alarmAt).toBe(12_000);
+  });
+});
+
 describe('DurabilitySchedule channels', () => {
   const channelRows = (storage: FakeStorage) =>
     storage.sql
