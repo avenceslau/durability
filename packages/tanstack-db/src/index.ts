@@ -7,7 +7,7 @@ import type {
   UpdateMutationFnParams,
 } from '@tanstack/db';
 import type {
-  AnySocketShape,
+  AnyDurabilitySocket,
   OutboundOf,
   SocketConnection,
   SocketOutboundPayload,
@@ -32,9 +32,9 @@ export type SocketCollectionUtils<
   write: (changes: SocketChange<Row, Key> | SocketChange<Row, Key>[]) => void;
 };
 
-type Rpc<Socket extends AnySocketShape> = SocketConnection<Socket>['rpc'];
+type Rpc<Socket extends AnyDurabilitySocket> = SocketConnection<Socket>['rpc'];
 
-type MutationContext<Socket extends AnySocketShape> = {
+type MutationContext<Socket extends AnyDurabilitySocket> = {
   /** The connection's typed RPC methods. */
   rpc: Rpc<Socket>;
   /**
@@ -46,12 +46,12 @@ type MutationContext<Socket extends AnySocketShape> = {
   awaitSynced: (options?: { timeoutMs?: number }) => Promise<void>;
 };
 
-type MutationHandler<Params, Socket extends AnySocketShape> = (
+type MutationHandler<Params, Socket extends AnyDurabilitySocket> = (
   params: Params & MutationContext<Socket>
 ) => Promise<void>;
 
 export type SocketCollectionConfig<
-  Socket extends AnySocketShape,
+  Socket extends AnyDurabilitySocket,
   Row extends object,
   Key extends string | number,
   Schema extends StandardSchemaV1 = never,
@@ -121,7 +121,7 @@ type SyncWriter<Row extends object, Key extends string | number> = (
  * ```
  */
 export const socketCollectionOptions = <
-  Socket extends AnySocketShape,
+  Socket extends AnyDurabilitySocket,
   Row extends object,
   Key extends string | number,
   Schema extends StandardSchemaV1 = never,

@@ -123,7 +123,7 @@ const HIDDEN_PORT: Port = {
 }
 
 const HIDDEN_ROUTE: EdgeRoute = {
-  shape: "curve",
+  routing: "curve",
   from: HIDDEN_PORT,
   to: HIDDEN_PORT,
   bend: 0,
@@ -169,7 +169,7 @@ function sameRoute(a: EdgeRoute | undefined, b: EdgeRoute | undefined): boolean 
   return (
     a !== undefined &&
     b !== undefined &&
-    a.shape === b.shape &&
+    a.routing === b.routing &&
     samePort(a.from, b.from) &&
     samePort(a.to, b.to) &&
     Math.abs(a.bend - b.bend) < 1e-6 &&
@@ -554,7 +554,7 @@ export function lerpRoute(a: EdgeRoute, b: EdgeRoute, t: number): EdgeRoute {
   }
 
   return {
-    shape: t < 0.5 ? a.shape : b.shape,
+    routing: t < 0.5 ? a.routing : b.routing,
     from: lerpPort(a.from, b.from, t),
     to: lerpPort(a.to, b.to, t),
     bend: lerp(a.bend, b.bend, t),

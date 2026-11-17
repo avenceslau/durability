@@ -145,7 +145,7 @@ describe('DurabilitySocket', () => {
     ).toThrow('"fetch" is reserved by DurabilitySocket');
   });
 
-  it('exposes inbound and outbound types through the socket shape', () => {
+  it('exposes inbound and outbound types through the socket message maps', () => {
     const { socket } = createSocket();
 
     type Socket = typeof socket;

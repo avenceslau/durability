@@ -2,9 +2,9 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { createCollection } from '@tanstack/db';
 import type {
   SocketConnection,
-  SocketShape,
+  SocketMessageMaps,
   SocketStatus,
-  socketShape,
+  socketMessageMaps,
 } from 'durability/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { socketCollectionOptions } from './index';
@@ -12,7 +12,7 @@ import { socketCollectionOptions } from './index';
 type Todo = { id: string; title: string; done: boolean };
 
 type TestSocket = {
-  readonly [socketShape]: SocketShape<
+  readonly [socketMessageMaps]: SocketMessageMaps<
     {
       list: () => Todo[];
       create: { input: StandardSchemaV1<Todo>; handle: (todo: Todo) => Todo };
