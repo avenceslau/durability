@@ -72,7 +72,7 @@ const deliver = sourceExcerpt(
   'deliver',
   'Call the target outside the transaction',
   '  async #deliver(',
-  '        serializeError(failure),\n        startedAt\n      );\n    }\n  }'
+  '      await this.#retry(state.claim, policy, undefined, failure, startedAt);\n    }\n  }'
 );
 
 const remove = sourceExcerpt(

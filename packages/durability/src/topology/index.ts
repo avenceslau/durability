@@ -108,6 +108,11 @@ export type TopologyDraft<Meta, States> = {
   states?: Partial<States>;
 };
 
+type ParsedDraft<Meta, States> = {
+  members: readonly TopologyMemberInput<Meta>[] | undefined;
+  states: Partial<States>;
+};
+
 type Publication<Meta> =
   | { snapshot: TopologySnapshot<Meta> }
   | { deleted: { group: string; version: number } };
@@ -791,10 +796,7 @@ export class DurabilityTopology<
     );
   }
 
-  #parseDraft(draft: unknown): {
-    members: readonly TopologyMemberInput<Meta>[] | undefined;
-    states: Partial<States>;
-  } {
+  #parseDraft(draft: unknown): ParsedDraft<Meta, States> {
     if (draft === null || typeof draft !== 'object') {
       throw new TopologyError('update must return a draft object');
     }

@@ -712,8 +712,8 @@ export class DurabilityFanout<Body = unknown> {
       });
     }
 
-    let failure: unknown = new Error(
-      'Consumer returned without settling the message'
+    let failure = serializeError(
+      new Error('Consumer returned without settling the message')
     );
 
     try {
@@ -780,7 +780,7 @@ export class DurabilityFanout<Body = unknown> {
         }
       }, policy.attemptTimeoutMs);
     } catch (error) {
-      failure = error;
+      failure = serializeError(error);
     } finally {
       for (const state of states) {
         state.closed = true;
@@ -825,13 +825,7 @@ export class DurabilityFanout<Body = unknown> {
 
       state.outcome = 'retry';
       // eslint-disable-next-line no-await-in-loop
-      await this.#retry(
-        state.claim,
-        policy,
-        undefined,
-        serializeError(failure),
-        startedAt
-      );
+      await this.#retry(state.claim, policy, undefined, failure, startedAt);
     }
   }
 

@@ -302,7 +302,7 @@ describe('fanout', () => {
     const seen: Array<[string, number]> = [];
     let recover = false;
 
-    const targets: Record<string, FanoutTarget<string>> = {
+    const targets = {
       a: {
         deliver: async (messages) => {
           seen.push(...messages.map((m): [string, number] => ['a', m.attempt]));
@@ -318,7 +318,7 @@ describe('fanout', () => {
           }
         },
       },
-    };
+    } satisfies Record<string, FanoutTarget<string>>;
 
     const { fanout, sink } = fixture(targets);
     await fanout.enqueue({ id: 'redrive', body: 'x' });

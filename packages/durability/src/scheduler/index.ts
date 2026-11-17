@@ -205,6 +205,11 @@ export type ExecutionSpec = {
   isTerminal: (error: unknown) => boolean;
 };
 
+type PendingTimes = {
+  physical?: number | undefined;
+  timer?: number | undefined;
+};
+
 type RetryDecision = {
   error: unknown;
   terminal: boolean;
@@ -662,10 +667,7 @@ export class Engine {
    * in-memory timer and skips work that is already executing
    * so a still-due active row cannot re-fire a zero-delay timer in a loop.
    */
-  private pendingTimes(participant: Participant): {
-    physical?: number | undefined;
-    timer?: number | undefined;
-  } {
+  private pendingTimes(participant: Participant): PendingTimes {
     const channels = this.channelsByTable.get(participant.table.name);
 
     if (

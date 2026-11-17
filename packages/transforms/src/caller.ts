@@ -154,7 +154,7 @@ function currentStub<TTarget extends object>(
  * the settled result, so a pipelined member access or call waits for it and then
  * runs against the resolved value instead of sharing the original round trip.
  */
-function pipelined(node: PipelineNode): unknown {
+function pipelined(node: PipelineNode) {
   return new Proxy(() => {}, {
     get(_target, property) {
       if (
@@ -286,12 +286,16 @@ export function createRestorableStubFactory(
 
 // Service binding stubs answer any property with a callable RPC stub, so only
 // an object exposing the DurableObjectId interface identifies a Durable Object.
-function isDurableObjectId(value: unknown): value is DurableObjectId {
-  if (typeof value !== 'object' || value === null) {
+function hasDurableObjectId(
+  stub: Members<'id'>
+): stub is { readonly id: DurableObjectId } {
+  const { id } = stub;
+
+  if (typeof id !== 'object' || id === null) {
     return false;
   }
 
-  const members: Members<'equals' | 'toString'> = value;
+  const members: Members<'equals' | 'toString'> = id;
 
   return (
     typeof members.equals === 'function' &&
@@ -404,8 +408,9 @@ function createSourceStub<TTarget extends object>(
           }
         };
 
-        const { id }: Members<'id'> = accessedStub;
-        const actorId = isDurableObjectId(id) ? id : undefined;
+        const actorId = hasDurableObjectId(accessedStub)
+          ? accessedStub.id
+          : undefined;
 
         const run = (
           index: number,

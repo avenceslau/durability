@@ -119,11 +119,13 @@ export const resolveLeasePolicy = (
 const scaled = (amount: number | { ratio: number }, limit: number): number =>
   typeof amount === 'number' ? amount : Math.floor(limit * amount.ratio);
 
+type PermitBudget = { grants: number; leases: number; shared: boolean };
+
 /** Permits grants may use, and permits leases may hold, for one limit. */
 export const budgets = (
   provisioning: SemaphoreProvisioning,
   limit: number
-): { grants: number; leases: number; shared: boolean } => {
+): PermitBudget => {
   if (provisioning.mode === 'over') {
     return {
       grants: limit,

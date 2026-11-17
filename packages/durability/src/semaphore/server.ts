@@ -141,6 +141,8 @@ type Allocation = {
   leases: LeaseGrant[];
 };
 
+type Reclaimed = { grants: GrantRow[]; events: DurabilitySemaphoreEvent[] };
+
 type RoundResult = {
   allocations: Map<Pending, Allocation>;
   usage: SemaphoreUsage;
@@ -848,10 +850,7 @@ export class DurabilitySemaphoreServer {
    * Returns every grant after reclaiming unclaimed permits past their window.
    * Events are returned, not emitted: the caller emits them after commit.
    */
-  #reclaim(
-    store: HolderStore,
-    now: number
-  ): { grants: GrantRow[]; events: DurabilitySemaphoreEvent[] } {
+  #reclaim(store: HolderStore, now: number): Reclaimed {
     const kept: GrantRow[] = [];
     const events: DurabilitySemaphoreEvent[] = [];
 

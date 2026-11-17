@@ -16,12 +16,12 @@ interface Props extends HTMLAttributes<"div"> {
 
 const { content, variant = "note", dismissible, class: className, ...attrs } = Astro.props;
 
-const config: Record<string, { color: string; tint: string }> = {
+const config = {
   note: { color: "var(--nb-info)", tint: "var(--nb-info-muted)" },
   tip: { color: "var(--nb-success)", tint: "var(--nb-success-muted)" },
   caution: { color: "var(--nb-warning)", tint: "var(--nb-warning-muted)" },
   danger: { color: "var(--nb-danger)", tint: "var(--nb-danger-muted)" },
-};
+} satisfies Record<NonNullable<Props["variant"]>, { color: string; tint: string }>;
 
 const c = config[variant] ?? config.note;
 ---

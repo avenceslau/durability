@@ -464,6 +464,11 @@ function matchIds(pattern: string, ids: ReadonlyArray<string>, where: string): R
   return matches
 }
 
+interface Spotlit {
+  readonly spotlight: Spotlight
+  readonly lit: ReadonlySet<string>
+}
+
 /** The ids a spotlight keeps lit: its edges and their ends, plus the focused node itself. */
 function lightUp(
   token: string,
@@ -471,10 +476,7 @@ function lightUp(
   visible: ReadonlySet<string>,
   shown: ReadonlyArray<DiagramEdge>,
   flows: Readonly<Record<string, FlowDefinition>>,
-): {
-  readonly spotlight: Spotlight
-  readonly lit: ReadonlySet<string>
-} {
+): Spotlit {
   const [kind, name = ""] = token.split(":")
   const lit = new Set<string>()
   let spotlight: Spotlight
