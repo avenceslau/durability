@@ -46,15 +46,33 @@ export type AsyncMethodKey<TTarget extends object> = Exclude<
   ReservedRpcMethod
 >;
 
+/** A structured-cloneable value that Cloudflare RPC can pass to `setContext`. */
+export type TransformContextValue =
+  | string
+  | number
+  | bigint
+  | boolean
+  | null
+  | undefined
+  | Date
+  | RegExp
+  | Error
+  | ArrayBuffer
+  | ArrayBufferView
+  | readonly TransformContextValue[]
+  | ReadonlyMap<TransformContextValue, TransformContextValue>
+  | ReadonlySet<TransformContextValue>
+  | { readonly [key: string]: TransformContextValue };
+
 /**
  * Metadata accumulated by caller transforms and optionally sent across RPC.
  *
  * Context is shallow-merged as each transform calls `next`. If the final context
- * is non-empty, the target must expose `setContext` and every value must be
- * supported by Cloudflare RPC serialization. Context is untrusted caller input;
- * never use it directly as proof of identity, tenancy, roles, or authorization.
+ * is non-empty, the target must expose `setContext`, which receives it as a
+ * structured clone. Context is untrusted caller input; never use it directly as
+ * proof of identity, tenancy, roles, or authorization.
  */
-export type TransformContext = Record<string, unknown>;
+export type TransformContext = Record<string, TransformContextValue>;
 
 export type EmptyTransformContext = Record<never, never>;
 

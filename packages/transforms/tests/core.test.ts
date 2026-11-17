@@ -72,6 +72,9 @@ function assertRegistrationTypes() {
     // @ts-expect-error callee options reject unknown properties
     extra: true,
   });
+  // @ts-expect-error context values must be structured-cloneable
+  defineTransform<TestDO, { onDone: () => void }>();
+  defineTransform<TestDO, { startedAt: Date; tags: Set<string> }>();
 
   class OtherDO {
     setContext(context: ObservabilityContext) {
