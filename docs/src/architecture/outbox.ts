@@ -535,7 +535,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             config,
             'Sinks must be idempotent on `(key, version)` and keep the highest version.',
-            'publish(entries: OutboxEntry<Value>[]): unknown | Promise<unknown>;'
+            'publish(entries: OutboxEntry<Value>[]): void | Promise<void>;'
           ),
           durable: 'Deduplication needs the sink’s own record of versions.',
           volatile: 'No in-memory state from the first attempt survived.',

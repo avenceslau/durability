@@ -134,7 +134,7 @@ export type DurabilityOutboxConfig<Value> = SchedulerAttachment & {
    * every entry not marked with `retry()`; throwing retries the whole batch.
    * Sinks must be idempotent on `(key, version)` and keep the highest version.
    */
-  publish(entries: OutboxEntry<Value>[]): unknown | Promise<unknown>;
+  publish(entries: OutboxEntry<Value>[]): void | Promise<void>;
   /** Defaults to 50. */
   maxBatchSize?: number;
   /**

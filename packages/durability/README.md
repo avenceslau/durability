@@ -1017,10 +1017,11 @@ export class JobShard extends DurableObject<Env> {
     scheduler: this.scheduler,
     clientId: this.ctx.id.toString(),
     server: limits.with(timeout, 5_000),
-    admit: (items) =>
-      Promise.all(
+    admit: async (items) => {
+      await Promise.all(
         items.map((item) => this.jobs.run({ id: item.id, payload: item.body }))
-      ),
+      );
+    },
     // The hook above is best-effort; this check returns any permit it missed.
     finished: async (ids) => {
       const results = await Promise.all(
@@ -1290,8 +1291,9 @@ export class Coordinator extends DurableObject<Env> {
   private readonly topology = new DurabilityTopology({
     scheduler: this.scheduler,
     publish: {
-      write: (snapshot, encoded) =>
-        this.env.TOPOLOGY.put(`topology/${snapshot.group}`, encoded),
+      write: async (snapshot, encoded) => {
+        await this.env.TOPOLOGY.put(`topology/${snapshot.group}`, encoded);
+      },
       delete: (group) => this.env.TOPOLOGY.delete(`topology/${group}`),
     },
     states: {
@@ -1397,8 +1399,9 @@ private readonly libraryTopology = new DurabilityTopology({
   scheduler: this.scheduler,
   channel: 'library',
   publish: {
-    write: (snapshot, encoded) =>
-      this.env.TOPOLOGY.put(`library/${snapshot.group}`, encoded),
+    write: async (snapshot, encoded) => {
+      await this.env.TOPOLOGY.put(`library/${snapshot.group}`, encoded);
+    },
     delete: (group) => this.env.TOPOLOGY.delete(`library/${group}`),
   },
 });
@@ -1491,7 +1494,11 @@ Records leave only through `trim()`, which enforces `maxAgeMs` and `maxRecords`,
 ```ts
 private readonly alarms = new DurabilityAlarms({
   scheduler: this.scheduler,
-  handlers: { compact: () => this.log.trim() },
+  handlers: {
+    compact: async () => {
+      await this.log.trim();
+    },
+  },
 });
 
 alarm(info?: AlarmInvocationInfo) {

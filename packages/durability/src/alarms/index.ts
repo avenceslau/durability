@@ -102,7 +102,7 @@ export type DurableAlarmInfo = {
 /** A handler for one named logical alarm. */
 export type DurableAlarmHandler = (
   info: DurableAlarmInfo
-) => unknown | Promise<unknown>;
+) => void | Promise<void>;
 
 const alarmHandlerSchema = v.custom<DurableAlarmHandler>(isFunction);
 

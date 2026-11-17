@@ -51,8 +51,9 @@ export class Coordinator extends DurableObject<Env> {
   private readonly topology = new DurabilityTopology({
     scheduler: this.scheduler,
     publish: {
-      write: (snapshot, encoded) =>
-        this.env.TOPOLOGY.put(`topology/${snapshot.group}`, encoded),
+      write: async (snapshot, encoded) => {
+        await this.env.TOPOLOGY.put(`topology/${snapshot.group}`, encoded);
+      },
       delete: (group) => this.env.TOPOLOGY.delete(`topology/${group}`),
     },
     states: {
@@ -158,8 +159,9 @@ private readonly libraryTopology = new DurabilityTopology({
   scheduler: this.scheduler,
   channel: 'library',
   publish: {
-    write: (snapshot, encoded) =>
-      this.env.TOPOLOGY.put(`library/${snapshot.group}`, encoded),
+    write: async (snapshot, encoded) => {
+      await this.env.TOPOLOGY.put(`library/${snapshot.group}`, encoded);
+    },
     delete: (group) => this.env.TOPOLOGY.delete(`library/${group}`),
   },
 });
