@@ -464,7 +464,7 @@ export function assignRanks(
   edges: ReadonlyArray<DiagramEdge>,
 ): ReadonlyMap<string, number> {
   const ids = new Set(nodes.map((node) => node.id))
-  const fixed = new Set(nodes.filter((node) => node.rank !== undefined).map((node) => node.id))
+  const fixed = new Set(nodes.flatMap((node) => (node.rank !== undefined ? [node.id] : [])))
 
   const ties = nodes.flatMap((node) => {
     const anchor = node.below ?? node.above
@@ -531,7 +531,7 @@ export function assignRanks(
     .sort((a, b) => get(b.id) - get(a.id))
 
   for (const node of sources) {
-    const next = forward.filter(([from]) => from === node.id).map(([, to]) => get(to))
+    const next = forward.flatMap(([from, to]) => (from === node.id ? [get(to)] : []))
 
     if (next.length > 0) {
       rank.set(node.id, Math.max(get(node.id), Math.min(...next) - 1))
@@ -1386,12 +1386,11 @@ function channelMids(
   }
 
   const blocked = obstacles
-    .filter((rect) => {
+    .flatMap((rect) => {
       const [start, end] = extent(rect, across)
 
-      return start < spanHigh && end > spanLow
+      return start < spanHigh && end > spanLow ? [extent(rect, axis)] : []
     })
-    .map((rect) => extent(rect, axis))
     .sort((x, y) => x[0] - y[0])
 
   const free: Array<readonly [number, number]> = []
@@ -1410,10 +1409,11 @@ function channelMids(
   }
 
   const mids = free.flatMap(([start, end]) =>
-    LANE_STEPS.filter((step) => Math.abs(step * LANE) < (end - start) / 2 - 4).map((step) => ({
-      mid: ((start + end) / 2 + step * LANE - a[axis]) / (b[axis] - a[axis]),
-      lane: Math.abs(step),
-    })),
+    LANE_STEPS.flatMap((step) =>
+      Math.abs(step * LANE) < (end - start) / 2 - 4
+        ? [{ mid: ((start + end) / 2 + step * LANE - a[axis]) / (b[axis] - a[axis]), lane: Math.abs(step) }]
+        : [],
+    ),
   )
 
   return mids.length === 0 ? middle : mids
@@ -1567,7 +1567,7 @@ function chooseRoutes(
   const mids = routable.map(() => 0.5)
 
   const obstacles = routable.map(({ edge }) =>
-    [...footprints].filter(([id]) => id !== edge.from && id !== edge.to).map(([, rect]) => expandRect(rect, 6)),
+    [...footprints].flatMap(([id, rect]) => (id !== edge.from && id !== edge.to ? [expandRect(rect, 6)] : [])),
   )
 
   const routeOf = (index: number, ports: readonly [Port, Port] | undefined, bend: number, mid: number): EdgeRoute => ({
