@@ -68,6 +68,7 @@ export type QueueLeaseRow = v.InferOutput<typeof queueLeaseRowSchema>;
 const queueItemColumns = v.keyof(queueItemRowSchema).options;
 const queueGrantColumns = v.keyof(queueGrantRowSchema).options;
 const queueLeaseColumns = v.keyof(queueLeaseRowSchema).options;
+
 const statusCountSchema = v.object({
   status: queueItemRowSchema.entries.status,
   count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
@@ -193,6 +194,7 @@ export class QueueStore {
 
   countItems(): Record<QueueItemRow['status'], number> {
     const counts = { queued: 0, claiming: 0, admitted: 0 };
+
     for (const row of v.parse(
       v.array(statusCountSchema),
       this.sql
@@ -205,6 +207,7 @@ export class QueueStore {
     )) {
       counts[row.status] = row.count;
     }
+
     return counts;
   }
 
@@ -458,6 +461,7 @@ export class QueueStore {
         this.channel
       )
       .toArray()[0]?.['at'];
+
     return typeof at === 'number' ? at : undefined;
   }
 

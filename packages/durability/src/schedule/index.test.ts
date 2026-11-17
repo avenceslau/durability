@@ -26,6 +26,7 @@ type Overrides = Partial<
 
 const every = (expression: string, after: number): number => {
   const interval = Number(expression);
+
   return (Math.floor(after / interval) + 1) * interval;
 };
 
@@ -43,6 +44,7 @@ const setup = (
 ) => {
   const outcomes: Array<[ScheduledOutcomeDelivery, ScheduledRunOutcome]> = [];
   const events: DurabilityScheduleEvent[] = [];
+
   const schedule = new DurabilitySchedule({
     context: objectContext(storage),
     alarmMinDelayMs: 1_000,
@@ -57,6 +59,7 @@ const setup = (
     },
     ...overrides,
   });
+
   return { storage, schedule, outcomes, events };
 };
 
@@ -80,13 +83,16 @@ const totalChanges = (storage: FakeStorage): number =>
 /** Runs that stay in flight until released by scheduled time. */
 const gatedRuns = () => {
   const releases = new Map<number, () => void>();
+
   const run = vi.fn(
     ({ scheduledTime }: ScheduledRunContext) =>
       new Promise<void>((resolve) => {
         releases.set(scheduledTime, resolve);
       })
   );
+
   const release = (scheduledTime: number) => releases.get(scheduledTime)?.();
+
   return { run, release };
 };
 
@@ -95,6 +101,7 @@ const isSettled = (promise: Promise<unknown>) => {
   void promise.finally(() => {
     settled = true;
   });
+
   return () => settled;
 };
 
@@ -133,9 +140,11 @@ describe('DurabilitySchedule', () => {
 
   it('runs a tick once, reports it, and keeps nothing afterwards', async () => {
     start();
+
     const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
       async () => undefined
     );
+
     const { storage, schedule, outcomes, events } = setup({ run });
     await schedule.set({ expression: '1000', version: 1 });
 
@@ -190,9 +199,11 @@ describe('DurabilitySchedule', () => {
 
   it('arms the physical alarm once per run in the steady state', async () => {
     start();
+
     const { storage, schedule, outcomes } = setup({
       run: () => new Promise((resolve) => setTimeout(resolve, 100)),
     });
+
     await schedule.set({ expression: '5000', version: 1 });
     const setAlarm = vi.spyOn(storage, 'setAlarm');
 
@@ -252,10 +263,12 @@ describe('DurabilitySchedule', () => {
   it('overlaps runs up to maxConcurrentRuns, queues the rest, and holds the alarm until they finish', async () => {
     start();
     const { run, release } = gatedRuns();
+
     const { storage, schedule, outcomes, events } = setup({
       run,
       maxConcurrentRuns: 2,
     });
+
     await schedule.set({ expression: '1000', version: 1 });
 
     vi.setSystemTime(11_000);
@@ -305,11 +318,13 @@ describe('DurabilitySchedule', () => {
   it('hands off before the alarm wall-time limit and rejoins from the next alarm', async () => {
     start();
     const { run, release } = gatedRuns();
+
     const { storage, schedule, outcomes } = setup(
       { run },
       new FakeStorage(),
       100
     );
+
     await schedule.set({ expression: '1000', version: 1 });
 
     // The platform clears a firing alarm before invoking the handler.
@@ -342,6 +357,7 @@ describe('DurabilitySchedule', () => {
     start();
     let finish: (() => void) | undefined;
     const signals: AbortSignal[] = [];
+
     const run = vi.fn(
       ({ signal }: ScheduledRunContext) =>
         new Promise<void>((resolve) => {
@@ -349,11 +365,13 @@ describe('DurabilitySchedule', () => {
           finish = resolve;
         })
     );
+
     const { storage, schedule, outcomes } = setup({
       run,
       runTimeoutMs: 100,
       maxConcurrentRuns: 1,
     });
+
     await schedule.set({ expression: '1000', version: 1 });
 
     vi.setSystemTime(11_000);
@@ -428,16 +446,19 @@ describe('DurabilitySchedule', () => {
 
   it('retries a failed outcome delivery durably until it is acknowledged', async () => {
     start();
+
     const onOutcome = vi
       .fn<DurabilityScheduleConfig['onOutcome']>()
       .mockRejectedValueOnce(new Error('sink down'))
       .mockResolvedValue(undefined);
+
     const { storage, schedule, events } = setup({
       nextOccurrence: (_expression, after) =>
         after < 11_000 ? 11_000 : undefined,
       onOutcome,
       outcomeRetries: { delay: () => 500 },
     });
+
     await schedule.set({ expression: 'once', version: 1 });
 
     vi.setSystemTime(11_000);
@@ -464,15 +485,18 @@ describe('DurabilitySchedule', () => {
   it('dead-letters an outcome after maxAttempts deliveries', async () => {
     start();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
     const onOutcome = vi
       .fn<DurabilityScheduleConfig['onOutcome']>()
       .mockRejectedValue(new Error('sink down'));
+
     const { storage, schedule, events } = setup({
       nextOccurrence: (_expression, after) =>
         after < 11_000 ? 11_000 : undefined,
       onOutcome,
       outcomeRetries: { maxAttempts: 2, delay: () => 0 },
     });
+
     await schedule.set({ expression: 'once', version: 1 });
 
     vi.setSystemTime(11_000);
@@ -534,6 +558,7 @@ describe('DurabilitySchedule', () => {
 
   it('ends ticks when nextOccurrence returns undefined and rejects invalid times', async () => {
     start();
+
     const { storage, schedule } = setup({
       nextOccurrence: (expression, after) =>
         expression === 'never' ? undefined : after,
@@ -554,9 +579,11 @@ describe('DurabilitySchedule', () => {
 
   it('fires each tick jitterMs after its nominal time without drifting', async () => {
     start();
+
     const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
       async () => undefined
     );
+
     const { storage, schedule, outcomes } = setup({ run });
     await schedule.set({ expression: '1000', version: 1, jitterMs: 700 });
     expect(schedule.get()).toEqual({
@@ -572,6 +599,7 @@ describe('DurabilitySchedule', () => {
     expect(run).not.toHaveBeenCalled();
 
     const before = totalChanges(storage);
+
     for (const time of [11_700, 12_700, 13_700]) {
       vi.setSystemTime(time);
       // eslint-disable-next-line no-await-in-loop
@@ -645,6 +673,7 @@ describe('DurabilitySchedule', () => {
     expect(schedule.get()?.jitterMs).toBe(400);
 
     random.mockRestore();
+
     for (let version = 3; version < 100; version += 1) {
       // eslint-disable-next-line no-await-in-loop
       await schedule.set({ expression: '1000', version, jitterMs });
@@ -686,9 +715,11 @@ describe('DurabilitySchedule', () => {
 
   it('fires every tick once and in order when jitterMs exceeds the interval', async () => {
     start();
+
     const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
       async () => undefined
     );
+
     const { schedule } = setup({ run });
     await schedule.set({ expression: '1000', version: 1, jitterMs: 2_500 });
 
@@ -765,15 +796,18 @@ describe('DurabilitySchedule', () => {
 
   it('attaches once per scheduler', () => {
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: contextFor(storage),
     });
+
     const config = {
       scheduler,
       nextOccurrence: every,
       run: () => undefined,
       onOutcome: () => undefined,
     };
+
     expect(() => new DurabilitySchedule(config)).not.toThrow();
     expect(() => new DurabilitySchedule(config)).toThrow(
       'already attached to this scheduler'
@@ -792,6 +826,7 @@ describe('DurabilitySchedule', () => {
 describe('DurabilitySchedule reschedule', () => {
   const changingTicks = (initial: number[]) => {
     let ticks = initial;
+
     return {
       nextOccurrence: vi.fn((_expression: string, after: number) =>
         ticks.find((tick) => tick > after)
@@ -807,9 +842,11 @@ describe('DurabilitySchedule reschedule', () => {
 
   it('moves the next tick earlier or later and moves the alarm with it', async () => {
     start();
+
     const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
       async () => undefined
     );
+
     const { nextOccurrence, change } = changingTicks([13_000, 16_000]);
     const { storage, schedule } = setup({ run, nextOccurrence });
     await schedule.set({ expression: 'owned', version: 1 });
@@ -839,9 +876,11 @@ describe('DurabilitySchedule reschedule', () => {
 
   it('leaves a due tick to fire and advances with the new nextOccurrence', async () => {
     start();
+
     const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
       async () => undefined
     );
+
     const { nextOccurrence, change } = changingTicks([11_000, 14_000]);
     const { schedule } = setup({ run, nextOccurrence });
     await schedule.set({ expression: 'owned', version: 1 });
@@ -858,9 +897,11 @@ describe('DurabilitySchedule reschedule', () => {
 
   it('keeps a tick whose nominal time passed but whose firing time has not, and skips older ones', async () => {
     start();
+
     const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
       async () => undefined
     );
+
     const { nextOccurrence, change } = changingTicks([15_000]);
     const { storage, schedule } = setup({ run, nextOccurrence });
     await schedule.set({ expression: 'owned', version: 1, jitterMs: 2_000 });
@@ -878,6 +919,7 @@ describe('DurabilitySchedule reschedule', () => {
       // eslint-disable-next-line no-await-in-loop
       await schedule.alarm();
     }
+
     expect(
       run.mock.calls.map(([call]) => [call.scheduledTime, call.dueAt])
     ).toEqual([
@@ -916,11 +958,13 @@ describe('DurabilitySchedule reschedule', () => {
     const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
     const { nextOccurrence, change } = changingTicks([12_000, 13_000]);
     const { storage, schedule } = setup({ nextOccurrence });
+
     const definition = {
       expression: 'owned',
       version: 7,
       jitterMs: { maxMs: 400 },
     };
+
     await schedule.set(definition);
     expect(schedule.get()).toEqual({
       expression: 'owned',
@@ -932,12 +976,14 @@ describe('DurabilitySchedule reschedule', () => {
     random.mockReturnValue(0.9);
     change([11_000, 13_000]);
     expect(await schedule.reschedule()).toBe(true);
+
     const rescheduled = {
       expression: 'owned',
       version: 7,
       jitterMs: 200,
       nextAt: 11_000,
     };
+
     expect(schedule.get()).toEqual(rescheduled);
 
     change([12_000, 13_000]);
@@ -955,14 +1001,17 @@ describe('DurabilitySchedule reschedule', () => {
   it('never fires a tick twice across a reschedule with runs running and queued', async () => {
     start();
     const { run, release } = gatedRuns();
+
     const { nextOccurrence, change } = changingTicks([
       11_000, 12_000, 13_000, 14_000,
     ]);
+
     const { storage, schedule, outcomes } = setup({
       run,
       nextOccurrence,
       maxConcurrentRuns: 1,
     });
+
     await schedule.set({ expression: 'owned', version: 1 });
 
     vi.setSystemTime(11_000);
@@ -992,6 +1041,7 @@ describe('DurabilitySchedule reschedule', () => {
       // eslint-disable-next-line no-await-in-loop
       await vi.advanceTimersByTimeAsync(0);
     }
+
     await schedule.cancel();
     await vi.advanceTimersByTimeAsync(0);
     await pass;
@@ -1004,9 +1054,11 @@ describe('DurabilitySchedule reschedule', () => {
 
   it('stores no next tick when nextOccurrence returns none, and restores one later', async () => {
     start();
+
     const run = vi.fn<(run: ScheduledRunContext) => Promise<void>>(
       async () => undefined
     );
+
     const { nextOccurrence, change } = changingTicks([12_000]);
     const { storage, schedule } = setup({ run, nextOccurrence });
     await schedule.set({ expression: 'owned', version: 1 });
@@ -1122,6 +1174,7 @@ describe('DurabilitySchedule channels', () => {
     const storage = new FakeStorage();
     const context = objectContext(storage);
     const { run, release } = gatedRuns();
+
     const slow = setup(
       {
         channel: 'slow',
@@ -1130,7 +1183,9 @@ describe('DurabilitySchedule channels', () => {
       },
       storage
     );
+
     const fastRun = vi.fn(async () => undefined);
+
     const fast = setup(
       {
         channel: 'fast',
@@ -1139,6 +1194,7 @@ describe('DurabilitySchedule channels', () => {
       },
       storage
     );
+
     await slow.schedule.set({ expression: '1000', version: 1 });
     await fast.schedule.set({ expression: '700', version: 1 });
 
@@ -1166,13 +1222,16 @@ describe('DurabilitySchedule channels', () => {
 
   it('retains a removed channel, interrupts only its own runs, and resumes it when it returns', async () => {
     start();
+
     const reported = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
+
     const storage = new FakeStorage();
     const firstContext = objectContext(storage);
     const stuck = () => new Promise<void>(() => undefined);
     const firstApp = setup({ run: stuck, context: firstContext }, storage);
+
     const firstLibrary = setup(
       {
         channel: 'library',
@@ -1181,6 +1240,7 @@ describe('DurabilitySchedule channels', () => {
       },
       storage
     );
+
     await firstApp.schedule.set({ expression: '1000', version: 1 });
     await firstLibrary.schedule.set({ expression: '1000', version: 1 });
     vi.setSystemTime(11_000);
@@ -1240,10 +1300,12 @@ describe('DurabilitySchedule channels', () => {
 
     const thirdContext = objectContext(storage);
     setup({ context: thirdContext }, storage);
+
     const library = setup(
       { channel: 'library', context: thirdContext },
       storage
     );
+
     vi.setSystemTime(13_500);
     await library.schedule.alarm();
     expect(library.outcomes).toEqual([
@@ -1282,6 +1344,7 @@ describe('DurabilitySchedule channels', () => {
     const reported = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
+
     const application = setup({}, storage);
     vi.setSystemTime(11_000);
     await application.schedule.alarm();
@@ -1313,6 +1376,7 @@ describe('DurabilitySchedule channels', () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
     const keys = new Map<string, string>();
+
     for (const channel of ['default', '1', '11000', 'a:1', 'x"y']) {
       const { schedule } = setup(
         {
@@ -1324,6 +1388,7 @@ describe('DurabilitySchedule channels', () => {
         },
         storage
       );
+
       // eslint-disable-next-line no-await-in-loop
       await schedule.set({ expression: '1000', version: 1 });
     }

@@ -20,6 +20,7 @@ const imageJobs = sourceExcerpt(
   'export class ImageJobs extends DurableObject<Env> {',
   '    return this.durability.alarm(info);\n  }'
 );
+
 const construct = sourceExcerpt(
   durability,
   durabilityFile,
@@ -28,6 +29,7 @@ const construct = sourceExcerpt(
   "    this.#engine.migrateSchema('operations', durabilityOperationMigrations);",
   '      runDue: (now) => this.#runDue(now),\n    });'
 );
+
 const register = sourceExcerpt(
   durability,
   durabilityFile,
@@ -36,6 +38,7 @@ const register = sourceExcerpt(
   '  async #run(input: {',
   '    this.#engine.waitUntil(background, onError);\n  }'
 );
+
 const runDue = sourceExcerpt(
   durability,
   durabilityFile,
@@ -44,6 +47,7 @@ const runDue = sourceExcerpt(
   '  async #runDue(now: number): Promise<void> {',
   '    });\n  }'
 );
+
 const transaction = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -52,6 +56,7 @@ const transaction = sourceExcerpt(
   '  async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {',
   '    return result;\n  }'
 );
+
 const reconcile = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -60,6 +65,7 @@ const reconcile = sourceExcerpt(
   '  private async reconcile(',
   '    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);\n  }'
 );
+
 const alarm = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -68,6 +74,7 @@ const alarm = sourceExcerpt(
   '  async alarm(info?: AlarmInvocationInfo): Promise<void> {',
   '    this.scheduleEarlyAlarm(Date.now() + delay);\n  }'
 );
+
 const runAlarm = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -76,6 +83,7 @@ const runAlarm = sourceExcerpt(
   '  private async runAlarm(info?: AlarmInvocationInfo): Promise<void> {',
   '    await this.scheduleNextAlarm();\n  }'
 );
+
 const execute = sourceExcerpt(
   scheduler,
   schedulerFile,

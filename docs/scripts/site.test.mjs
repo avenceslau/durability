@@ -5,9 +5,11 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const output = fileURLToPath(new URL('../dist/', import.meta.url));
+
 const routes = (await readdir(output, { recursive: true }))
   .filter((file) => file === 'index.html' || file.endsWith('/index.html'))
   .map((file) => file.replace(/(?:^|\/)index\.html$/u, ''));
+
 const primitives = [
   'operations',
   'alarms',
@@ -44,28 +46,37 @@ test('internal page links and anchors resolve in the built site', async () => {
   await Promise.all(
     routes.map(async (route) => {
       const html = await readFile(resolve(output, route, 'index.html'), 'utf8');
+
       const origin = new URL(
         `https://durability.shirei.dev/${route}${route ? '/' : ''}`
       );
+
       await Promise.all(
         [...html.matchAll(/href="([^"\s]+)"/gu)].map(async (match) => {
           const href = match[1];
           const target = new URL(href, origin);
+
           if (target.origin !== origin.origin) {
             return;
           }
+
           const path = decodeURIComponent(target.pathname).replace(/^\//u, '');
+
           if (path.startsWith('_astro/') || path.startsWith('pagefind/')) {
             return;
           }
+
           let file =
             path.endsWith('/') || path === ''
               ? resolve(output, path, 'index.html')
               : resolve(output, path);
+
           if ((await stat(file)).isDirectory()) {
             file = resolve(file, 'index.html');
           }
+
           const body = await readFile(file, 'utf8');
+
           if (target.hash) {
             const id = decodeURIComponent(target.hash.slice(1));
             assert.ok(
@@ -84,6 +95,7 @@ test('canonical URLs and the sitemap use the docs domain', async () => {
     resolve(output, 'getting-started/index.html'),
     'utf8'
   );
+
   assert.match(
     html,
     /rel="canonical" href="https:\/\/durability\.shirei\.dev\/getting-started\/"/u
@@ -105,6 +117,7 @@ for (const primitive of primitives) {
       ),
       'utf8'
     );
+
     assert.match(source, /^## How it uses your Durable Object$/mu);
     assert.match(
       source,
@@ -118,9 +131,11 @@ for (const primitive of primitives) {
 
 test('every diagram is an interactive walkthrough, not Mermaid', async () => {
   const content = new URL('../src/content/', import.meta.url);
+
   const files = (await readdir(content, { recursive: true })).filter((file) =>
     /\.mdx?$/u.test(file)
   );
+
   await Promise.all(
     files.map(async (file) => {
       const source = await readFile(new URL(file, content), 'utf8');
@@ -149,6 +164,7 @@ test('Nimbus publishes readable walkthrough fallbacks for agents', async () => {
         resolve(output, `${slug}/index.md`),
         'utf8'
       );
+
       assert.match(
         markdown,
         /full-screen explorer with the complete source files/u
@@ -163,6 +179,7 @@ test('ordinary page edit links point to the actual source once', async () => {
     resolve(output, 'getting-started/index.html'),
     'utf8'
   );
+
   assert.match(
     html,
     /edit\/main\/docs\/src\/content\/docs\/getting-started\.md/u
@@ -175,5 +192,6 @@ test('companion package references still point to their source READMEs', async (
     resolve(output, 'reference/transforms/index.html'),
     'utf8'
   );
+
   assert.match(html, /edit\/main\/packages\/transforms\/README\.md/u);
 });

@@ -24,7 +24,9 @@ export const trace = (
   if (!devMode) {
     return 0;
   }
+
   sequence += 1;
+
   // Tracing is best-effort: a logger that throws must not change the operation.
   try {
     console.debug({
@@ -36,6 +38,7 @@ export const trace = (
   } catch {
     // Keep the sequence number so later entries still order correctly.
   }
+
   return sequence;
 };
 
@@ -46,22 +49,27 @@ const traceCall = <T>(
 ): T => {
   const call = trace(operation, details);
   let result: T;
+
   try {
     result = run();
   } catch (error) {
     trace(`${operation}.throw`, { call, error: serializeError(error) });
     throw error;
   }
+
   if (!(result instanceof Promise)) {
     trace(`${operation}.return`, { call, result });
+
     return result;
   }
+
   // Observes the promise without changing what the caller sees.
   void result.then(
     (value: unknown) => trace(`${operation}.return`, { call, result: value }),
     (error: unknown) =>
       trace(`${operation}.throw`, { call, error: serializeError(error) })
   );
+
   return result;
 };
 
@@ -80,6 +88,7 @@ export const traceFunction = <Args extends unknown[], Result>(
   if (!devMode) {
     return fn;
   }
+
   return function (this: unknown, ...args: Args): Result {
     return traceCall(
       'call',
@@ -94,11 +103,14 @@ export const traceMethods = (prototype: object, owner: string): void => {
   if (!devMode) {
     return;
   }
+
   for (const name of Object.getOwnPropertyNames(prototype)) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+
     if (name === 'constructor' || typeof descriptor?.value !== 'function') {
       continue;
     }
+
     Object.defineProperty(prototype, name, {
       ...descriptor,
       value: traceFunction(`${owner}.${name}`, descriptor.value),
@@ -113,6 +125,7 @@ export const traceLifecycle = <Event extends Record<string, unknown>>(
   if (!devMode) {
     return emit;
   }
+
   return (event) => {
     trace('lifecycle', event);
     emit(event);
@@ -126,12 +139,15 @@ const traceSql = (sql: SqlStorage): SqlStorage =>
   new Proxy(sql, {
     get(target, key) {
       const value: unknown = Reflect.get(target, key);
+
       if (key === 'exec') {
         return (query: string, ...bindings: SqlStorageValue[]) => {
           trace('sql', { query: compactQuery(query), bindings });
+
           return target.exec(query, ...bindings);
         };
       }
+
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
@@ -141,17 +157,23 @@ const proxyStorage = <Storage extends object>(
   scope: string
 ): Storage => {
   let sql: SqlStorage | undefined;
+
   return new Proxy(storage, {
     get(target, key) {
       const value: unknown = Reflect.get(target, key);
+
       if (key === 'sql' && value !== undefined) {
         sql ??= traceSql(value as SqlStorage);
+
         return sql;
       }
+
       if (typeof value !== 'function') {
         return value;
       }
+
       const method = `${scope}.${String(key)}`;
+
       return (...args: unknown[]) => {
         // Alarm writes inside `transaction` go through the transaction object.
         const forwarded =
@@ -164,6 +186,7 @@ const proxyStorage = <Storage extends object>(
                 ...args.slice(1),
               ]
             : args;
+
         return traceCall('storage', { method, args: loggableArgs(args) }, () =>
           Reflect.apply(value, target, forwarded)
         );
@@ -187,12 +210,16 @@ export const traceStorage = <Storage extends object>(
   if (!devMode || storageProxies.has(storage)) {
     return storage;
   }
+
   const existing = tracedStorage.get(storage);
+
   if (existing) {
     return existing as Storage;
   }
+
   const traced = proxyStorage(storage, 'storage');
   tracedStorage.set(storage, traced);
   storageProxies.add(traced);
+
   return traced;
 };

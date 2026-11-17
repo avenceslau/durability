@@ -17,6 +17,7 @@ type Env = {
 };
 
 type ResizeInput = { imageId: string; width: number };
+
 type ResizeOutput = { url: string };
 
 export class ImageJobs extends DurableObject<Env> {
@@ -44,9 +45,11 @@ export class ImageJobs extends DurableObject<Env> {
             signal,
           }
         );
+
         if (!response.ok) {
           throw new Error(`Resize failed with ${response.status}`);
         }
+
         return response.json();
       },
     },
@@ -75,21 +78,26 @@ export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     const [, imageId, action] = url.pathname.split('/');
+
     if (!imageId || !action) {
       return new Response('Expected /:imageId/resize or /:imageId/result', {
         status: 404,
       });
     }
+
     const width = Number(url.searchParams.get('width') ?? 512);
     const jobs = env.IMAGE_JOBS.getByName(imageId);
 
     if (request.method === 'POST' && action === 'resize') {
       await jobs.resize(imageId, width);
+
       return new Response('registered', { status: 202 });
     }
+
     if (action === 'result') {
       return Response.json(await jobs.result(imageId, width));
     }
+
     return new Response('Not found', { status: 404 });
   },
 } satisfies ExportedHandler<Env>;

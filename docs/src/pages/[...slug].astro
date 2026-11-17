@@ -17,7 +17,9 @@ import { components } from "../components";
 export const getStaticPaths = getDocsStaticPaths;
 
 const page = await getDocsPage(Astro);
+
 if (page instanceof Response) { return page; }
+
 const { entry, Content, headings, markdownUrl, ogImageUrl } = page;
 
 const currentSlug = stripBase(Astro.url.pathname, import.meta.env.BASE_URL).replace(/\/$/, "") || "/";
@@ -27,17 +29,21 @@ const { sidebar: sidebarOn, tableOfContents: tocOn } = await getRouteFlags(entry
 const sidebar = sidebarOn
   ? await getSidebar(currentSlug, { collection: entry.collection })
   : false;
+
 const prevNext = await getPrevNext(currentSlug, {
   sidebarTree: sidebar === false ? [] : sidebar,
   overrides: { prev: entry.data.prev, next: entry.data.next },
 });
+
 // Pass `collection` so versioned pages (docs-<v>) get version-prefixed
 // breadcrumb hrefs — parity with the getSidebar call above.
 const breadcrumbs = await getBreadcrumbs(currentSlug, { collection: entry.collection });
 const editUrl = entry.data.sourceEditUrl ?? await getEditUrl(entry);
+
 // Frontmatter wins; git is the fallback.
 const lastUpdated = entry.data.lastUpdated ??
   await getLastUpdated(entry);
+
 // `tocOn` already implies `tableOfContents !== false`, but TS can't carry
 // that boolean narrowing to the value here — re-check it so `getTOC` only
 // ever sees its options object (or undefined), never `false`.

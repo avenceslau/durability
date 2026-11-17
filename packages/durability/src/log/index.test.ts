@@ -15,6 +15,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -30,10 +31,12 @@ describe('log', () => {
     > = {}
   ) => {
     const storage = new FakeStorage();
+
     const log = new DurabilityLog<string>({
       context: { storage: storage as unknown as DurableObjectStorage },
       ...options,
     });
+
     return { log, storage };
   };
 
@@ -42,9 +45,11 @@ describe('log', () => {
     bodies: string[]
   ): Promise<number[]> => {
     const result = await log.append(bodies.map((body) => ({ body })));
+
     if (!result.success) {
       throw new Error(`append rejected: ${result.error.message}`);
     }
+
     return result.value;
   };
 
@@ -103,14 +108,17 @@ describe('log', () => {
 
   it('reuses the offset of an already appended key', async () => {
     const { log } = fixture();
+
     const first = await log.append([
       { deduplicationKey: 'one', body: 'a' },
       { deduplicationKey: 'two', body: 'b' },
     ]);
+
     const repeat = await log.append([
       { deduplicationKey: 'two', body: 'b' },
       { deduplicationKey: 'three', body: 'c' },
     ]);
+
     expect(first).toMatchObject({ success: true, value: [0, 1] });
     expect(repeat).toMatchObject({ success: true, value: [1, 2] });
 
@@ -124,10 +132,12 @@ describe('log', () => {
 
   it('shares one offset between duplicate keys in a single batch', async () => {
     const { log } = fixture();
+
     const result = await log.append([
       { deduplicationKey: 'same', body: 'a' },
       { deduplicationKey: 'same', body: 'a' },
     ]);
+
     expect(result).toMatchObject({ success: true, value: [0, 0] });
     expect((await log.read({ from: 0 })).records).toHaveLength(1);
     expect(await log.bounds()).toEqual({
@@ -194,16 +204,19 @@ describe('log', () => {
 
   it('flushes expiring records before deleting them', async () => {
     const archived: LogRecord<string>[] = [];
+
     const { log } = fixture({
       retention: { maxRecords: 1 },
       cold: {
         write: async ({ records, firstOffset }) => {
           archived.push(...records);
+
           return `segment-${firstOffset}`;
         },
         read: async () => undefined,
       },
     });
+
     await offsetsOf(log, ['a', 'b', 'c']);
     expect(await log.trim()).toBe(2);
     expect(archived.map((record) => [record.offset, record.body])).toEqual([
@@ -222,6 +235,7 @@ describe('log', () => {
         read: async () => undefined,
       },
     });
+
     await offsetsOf(log, ['a', 'b']);
     await expect(log.trim()).rejects.toThrow('cold storage unavailable');
     expect(await log.bounds()).toEqual({
@@ -233,22 +247,26 @@ describe('log', () => {
 
   it('archives each expiring record exactly once past a delete batch', async () => {
     const archived: number[] = [];
+
     const { log } = fixture({
       retention: { maxRecords: 1 },
       cold: {
         write: async ({ records, firstOffset }) => {
           archived.push(...records.map((record) => record.offset));
+
           return `segment-${firstOffset}`;
         },
         read: async () => undefined,
       },
     });
+
     // More records than one backend delete call accepts, so a backend that
     // silently truncated the trim would re-archive the remainder.
     for (let batch = 0; batch < 6; batch += 1) {
       // eslint-disable-next-line no-await-in-loop
       await offsetsOf(log, ['a', 'b', 'c', 'd', 'e']);
     }
+
     expect(await log.trim()).toBe(29);
     expect(archived).toHaveLength(29);
     expect(new Set(archived).size).toBe(29);
@@ -272,11 +290,13 @@ describe('log', () => {
     segments: Map<string, LogRecord<string>[]>;
   } => {
     const segments = new Map<string, LogRecord<string>[]>();
+
     return {
       segments,
       write: async ({ records, firstOffset }) => {
         const locator = `segment-${firstOffset}`;
         segments.set(locator, records);
+
         return locator;
       },
       read: async (locator) => segments.get(locator),
@@ -353,18 +373,21 @@ describe('log', () => {
 
   it('handles many flushed segments', async () => {
     const cold = coldStore();
+
     // One record per segment.
     const { log } = fixture({
       maxBatchSize: 1,
       retention: { maxRecords: 1 },
       cold,
     });
+
     for (let index = 0; index < 150; index += 1) {
       // eslint-disable-next-line no-await-in-loop
       await offsetsOf(log, [`v${index}`]);
       // eslint-disable-next-line no-await-in-loop
       await log.trim();
     }
+
     expect(cold.segments.size).toBe(149);
     expect((await log.read({ from: 0 })).records[0]).toMatchObject({
       offset: 0,
@@ -448,6 +471,7 @@ describe('log', () => {
       retention: { maxRecords: 3 },
       leases: { leaseMs: 1_000, maxParallelism: 2 },
     });
+
     await offsetsOf(log, ['a', 'b', 'c', 'd']);
     const whole = await log.lease('search', 2);
     const straddling = await log.lease('search', 2);
@@ -480,10 +504,13 @@ describe('log', () => {
 
   it('moves the cursor past offsets trimmed before they were ever leased', async () => {
     const { log } = fixture({ retention: { maxRecords: 2 }, leases: {} });
+
     const first = await (async () => {
       await offsetsOf(log, ['a']);
+
       return log.lease('search');
     })();
+
     await log.ack('search', first!.batchId);
     expect(await log.cursor('search')).toBe(1);
 
@@ -499,19 +526,23 @@ describe('log', () => {
 
   it('redelivers a whole range that retention flushed partly to cold storage', async () => {
     const segments = new Map<string, LogRecord<string>[]>();
+
     const cold: LogColdStorage<string> = {
       write: async (segment) => {
         const locator = `s${segments.size}`;
         segments.set(locator, segment.records);
+
         return locator;
       },
       read: async (locator) => segments.get(locator),
     };
+
     const { log } = fixture({
       cold,
       retention: { maxRecords: 3 },
       leases: { leaseMs: 1_000 },
     });
+
     await offsetsOf(log, ['a', 'b', 'c', 'd']);
     const first = await log.lease('search', 4);
     await log.nack('search', first!.batchId);
@@ -557,20 +588,25 @@ describe('log', () => {
       maxBatchSize: 2,
       leases: { maxParallelism: 8, leaseMs: 1_000 },
     });
+
     for (const body of ['a', 'b', 'c', 'd', 'e', 'f']) {
       // eslint-disable-next-line no-await-in-loop
       await offsetsOf(log, [body]);
     }
+
     const leases = [];
+
     for (let i = 0; i < 6; i += 1) {
       // eslint-disable-next-line no-await-in-loop
       leases.push(await log.lease('search', 1));
     }
+
     // Every range but the first is acked while the first is still out.
     for (const lease of leases.slice(1)) {
       // eslint-disable-next-line no-await-in-loop
       await log.ack('search', lease!.batchId);
     }
+
     expect(await log.cursor('search')).toBeUndefined();
     await log.ack('search', leases[0]!.batchId);
     expect(await log.cursor('search')).toBe(6);
@@ -613,11 +649,13 @@ describe('log', () => {
       // eslint-disable-next-line no-await-in-loop
       await log.nack('search', lease!.batchId);
     }
+
     expect(await log.cursor('search')).toBeUndefined();
   });
 
   it('skips a poison range once it has somewhere to go', async () => {
     const poisoned: number[] = [];
+
     const { log } = fixture({
       leases: {
         maxAttempts: 2,
@@ -626,6 +664,7 @@ describe('log', () => {
         },
       },
     });
+
     await offsetsOf(log, ['a', 'b']);
 
     const first = await log.lease('search', 1);
@@ -648,6 +687,7 @@ describe('log', () => {
     const { log } = fixture({
       leases: { maxAttempts: 1, onPoison: async () => undefined },
     });
+
     await offsetsOf(log, ['a']);
     const first = await log.lease('search');
     await log.nack('search', first!.batchId);
@@ -658,11 +698,13 @@ describe('log', () => {
 
   it('rehydrates a leased range that retention already flushed', async () => {
     const cold = coldStore();
+
     const { log } = fixture({
       retention: { maxRecords: 1 },
       cold,
       leases: {},
     });
+
     await offsetsOf(log, ['a', 'b']);
 
     const lease = await log.lease('search', 1);
@@ -697,6 +739,7 @@ describe('log', () => {
       maxBatchSize: 2,
       retention: { maxRecords: 1 },
     });
+
     await offsetsOf(log, ['a', 'b']);
     await offsetsOf(log, ['c', 'd']);
     await offsetsOf(log, ['e']);
@@ -731,11 +774,13 @@ describe('log channels', () => {
       lastOffset: 0,
       records: [],
     };
+
     const cold: LogColdStorage<string> = {
       write: async ({ channel = 'default', firstOffset }) =>
         JSON.stringify([channel, firstOffset]),
       read: async () => [],
     };
+
     await expect(cold.write(segment)).resolves.toBe('["default",0]');
   });
 
@@ -747,9 +792,11 @@ describe('log channels', () => {
     records: { body: string; deduplicationKey?: string }[]
   ): Promise<number[]> => {
     const result = await log.append(records);
+
     if (!result.success) {
       throw new Error(`append rejected: ${result.error.message}`);
     }
+
     return result.value;
   };
 
@@ -757,18 +804,23 @@ describe('log channels', () => {
   const sharedCold = () => {
     const segments = new Map<string, LogRecord<string>[]>();
     const written: LogSegment<string>[] = [];
+
     const cold: LogColdStorage<string> = {
       write: async (segment) => {
         written.push(segment);
         const locator = JSON.stringify([segment.channel, segment.firstOffset]);
+
         if (segments.has(locator)) {
           throw new Error(`segment ${locator} already exists`);
         }
+
         segments.set(locator, segment.records);
+
         return locator;
       },
       read: async (locator) => segments.get(locator),
     };
+
     return { cold, segments, written };
   };
 
@@ -858,17 +910,20 @@ describe('log channels', () => {
   it('trims, flushes, and forgets one channel without touching another', async () => {
     const context = contextFor(new FakeStorage());
     const { cold, written } = sharedCold();
+
     const app = new DurabilityLog<string>({
       context,
       retention: { maxRecords: 1 },
       cold,
     });
+
     const library = new DurabilityLog<string>({
       context,
       channel: 'library',
       retention: { maxRecords: 2 },
       cold,
     });
+
     await append(app, [
       { body: 'app-a' },
       { body: 'app-b' },
@@ -927,10 +982,12 @@ describe('log channels', () => {
 
   it('keeps byte budgets separate per channel', async () => {
     const context = contextFor(new FakeStorage());
+
     const app = new DurabilityLog<string>({
       context,
       retention: { maxBytes: 200 },
     });
+
     const library = new DurabilityLog<string>({ context, channel: 'library' });
     await append(library, [{ body: 'x'.repeat(300) }]);
     await append(app, [{ body: 'aaa' }]);
@@ -941,15 +998,18 @@ describe('log channels', () => {
 
   it('settles, reclaims, and allocates leases only within their channel', async () => {
     const context = contextFor(new FakeStorage());
+
     const app = new DurabilityLog<string>({
       context,
       leases: { leaseMs: 1_000 },
     });
+
     const library = new DurabilityLog<string>({
       context,
       channel: 'library',
       leases: { leaseMs: 1_000 },
     });
+
     await append(app, [{ body: 'app-a' }, { body: 'app-b' }]);
     await append(library, [{ body: 'library-a' }, { body: 'library-b' }]);
     const uuid = vi.spyOn(crypto, 'randomUUID');
@@ -1002,6 +1062,7 @@ describe('log channels', () => {
       durabilityLogLeaseMigrations,
       leasesBeforeChannels
     );
+
     for (const [offset, body] of [
       [1, 'b'],
       [2, 'c'],
@@ -1015,6 +1076,7 @@ describe('log channels', () => {
         serialize(body)
       );
     }
+
     storage.sql.exec(
       'UPDATE durability_log_seq SET next_offset = 3, total_bytes = 2'
     );
@@ -1044,6 +1106,7 @@ describe('log channels', () => {
           ]
         : undefined
     );
+
     const log = new DurabilityLog<string>({
       context,
       leases: {},
@@ -1052,6 +1115,7 @@ describe('log channels', () => {
         read,
       },
     });
+
     new DurabilityLog<string>({ context, channel: 'library' });
 
     expect(await log.bounds()).toEqual({
@@ -1090,11 +1154,13 @@ describe('log channels', () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
     const app = new DurabilityLog<string>({ context, leases: {} });
+
     const library = new DurabilityLog<string>({
       context,
       channel: 'library',
       leases: {},
     });
+
     await append(app, [{ body: 'app' }]);
     await append(library, [{ body: 'library' }]);
     await library.lease('worker');

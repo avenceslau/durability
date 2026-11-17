@@ -33,12 +33,14 @@ describe('operation channels', () => {
       id
     );
     const recompute = vi.fn(() => 'wrong');
+
     const app = new Durability({
       context,
       handlers: {
         work: ({ memoize }: DurableCall<null>) => memoize('saved', recompute),
       },
     });
+
     const library = new Durability({
       context,
       channel: 'library',
@@ -46,6 +48,7 @@ describe('operation channels', () => {
         work: ({ id: callId }: DurableCall<null>) => `library:${callId}`,
       },
     });
+
     await library.work({ id: 'a', payload: null });
     await app.alarm();
     await expect(app.work.getResult(id)).resolves.toEqual({
@@ -70,11 +73,13 @@ describe('operation channels', () => {
       const storage = new FakeStorage();
       const context = contextFor(storage);
       const app = new Durability({ context, handlers: { work: () => 'app' } });
+
       const library = new Durability({
         context,
         channel: 'library',
         handlers: { work: () => 'library' },
       });
+
       await app.work({ id, payload: null });
       await library.work({ id, payload: null });
       await app.alarm();
@@ -104,26 +109,32 @@ describe('operation channels', () => {
     const context = contextFor(storage);
     const appCompute = vi.fn(() => 'app');
     const libraryCompute = vi.fn(() => 'library');
+
     const run =
       (compute: () => string) =>
       async ({ memoize, attempt }: DurableCall<null>) => {
         const result = await memoize('saved', compute);
+
         if (attempt === 1) {
           throw new Error('retry');
         }
+
         return result;
       };
+
     const app = new Durability({
       context,
       retries: { delay: () => 60_000 },
       handlers: { work: run(appCompute) },
     });
+
     const library = new Durability({
       context,
       channel: 'library',
       retries: { delay: () => 60_000 },
       handlers: { work: run(libraryCompute) },
     });
+
     for (const channel of ['default', 'library']) {
       storage.sql.exec(
         `INSERT INTO durability_calls
@@ -132,6 +143,7 @@ describe('operation channels', () => {
         channel
       );
     }
+
     await app.alarm();
     expect(appCompute).toHaveBeenCalledTimes(1);
     expect(libraryCompute).toHaveBeenCalledTimes(1);
@@ -158,11 +170,13 @@ describe('operation channels', () => {
   it('refuses a destructive downgrade while non-default records exist', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
+
     const library = new Durability({
       context,
       channel: 'library',
       handlers: { work: () => 'kept' },
     });
+
     await library.work({ id: 'same', payload: null });
     await library.alarm();
     expect(() => Durability.migrate(context, beforeChannels)).toThrow(
@@ -188,21 +202,27 @@ describe('operation channels', () => {
   it("does not treat another channel's same-ID work as active with live timers", async () => {
     vi.useFakeTimers();
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: contextFor(storage),
       liveTimers: true,
     });
+
     let finish!: () => void;
+
     const slow = new Promise<void>((resolve) => {
       finish = resolve;
     });
+
     const app = new Durability({ scheduler, handlers: { work: () => slow } });
     const work = vi.fn(() => 'library');
+
     const library = new Durability({
       scheduler,
       channel: 'library',
       handlers: { work },
     });
+
     await app.work({ id: 'same', payload: null });
     await vi.advanceTimersByTimeAsync(0);
     storage.sql.exec(

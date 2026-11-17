@@ -36,15 +36,19 @@ const parseFrame = (text: string): Record<string, unknown> | undefined => {
   if (text.length > socketMaxFrameLength) {
     return undefined;
   }
+
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(text);
   } catch {
     return undefined;
   }
+
   if (!isRecord(parsed) || parsed['v'] !== socketProtocolVersion) {
     return undefined;
   }
+
   return parsed;
 };
 
@@ -52,12 +56,15 @@ export const parseClientFrame = (
   text: string
 ): SocketClientFrame | undefined => {
   const frame = parseFrame(text);
+
   if (!frame || typeof frame['id'] !== 'string') {
     return undefined;
   }
+
   if (frame['type'] === 'call' && typeof frame['method'] === 'string') {
     return frame as SocketClientFrame;
   }
+
   if (
     frame['type'] === 'subscribe' &&
     isStringArray(frame['names']) &&
@@ -65,6 +72,7 @@ export const parseClientFrame = (
   ) {
     return frame as SocketClientFrame;
   }
+
   return undefined;
 };
 
@@ -72,24 +80,30 @@ export const parseServerFrame = (
   text: string
 ): SocketServerFrame | undefined => {
   const frame = parseFrame(text);
+
   if (!frame) {
     return undefined;
   }
+
   if (frame['type'] === 'event') {
     return Number.isSafeInteger(frame['seq']) &&
       typeof frame['name'] === 'string'
       ? (frame as SocketServerFrame)
       : undefined;
   }
+
   if (typeof frame['id'] !== 'string') {
     return undefined;
   }
+
   if (frame['type'] === 'result') {
     return frame as SocketServerFrame;
   }
+
   if (frame['type'] === 'error' && isSerializedError(frame['error'])) {
     return frame as SocketServerFrame;
   }
+
   if (
     frame['type'] === 'subscribed' &&
     Number.isSafeInteger(frame['seq']) &&
@@ -97,6 +111,7 @@ export const parseServerFrame = (
   ) {
     return frame as SocketServerFrame;
   }
+
   return undefined;
 };
 

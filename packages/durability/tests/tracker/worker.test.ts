@@ -21,6 +21,7 @@ const waitFor = async (
     if (remaining === 0) {
       throw error;
     }
+
     await scheduler.wait(5);
     await waitFor(assertion, remaining - 1);
   }
@@ -46,9 +47,11 @@ describe('DurabilityTracker over RPC', () => {
       },
     ]);
     const [item] = items;
+
     if (!item) {
       throw new Error('Expected a tracked job');
     }
+
     const waiting = item.wait({ timeoutMs: 5_000 });
     await release(stub, 'job-1');
 
@@ -67,21 +70,27 @@ describe('DurabilityTracker over RPC', () => {
   it("lists handles and waits over Cap'n Web", async () => {
     const stub = env.TRACKER_TEST.get(env.TRACKER_TEST.newUniqueId());
     await stub.start('job-3', 5);
+
     const response = await stub.fetch('https://tracker.test/rpc', {
       headers: { Upgrade: 'websocket' },
     });
+
     const socket = response.webSocket;
+
     if (!socket) {
       throw new Error('Expected a WebSocket upgrade');
     }
+
     socket.accept();
     using api = newWebSocketRpcSession<TrackerApi>(socket);
 
     const { items } = await api.listWork();
     const [item] = items;
+
     if (!item) {
       throw new Error('Expected a tracked job');
     }
+
     expect(item).toMatchObject({ source: 'jobs', id: 'job-3' });
     const waiting = item.wait({ timeoutMs: 5_000 });
     await release(stub, 'job-3');

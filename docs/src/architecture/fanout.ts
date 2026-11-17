@@ -20,6 +20,7 @@ const emailDelivery = sourceExcerpt(
   'export class EmailDelivery extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const consumer = sourceExcerpt(
   example,
   exampleFile,
@@ -28,6 +29,7 @@ const consumer = sourceExcerpt(
   'export class EmailConsumer extends WorkerEntrypoint<Env> {',
   '      // Unsettled messages retry; exhausting the budget dead-letters this target only.'
 );
+
 const fetchHandler = sourceExcerpt(
   example,
   exampleFile,
@@ -36,6 +38,7 @@ const fetchHandler = sourceExcerpt(
   '  async fetch(request): Promise<Response> {',
   '    return Response.json(result, { status: result.success ? 202 : 409 });'
 );
+
 const construct = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -44,6 +47,7 @@ const construct = sourceExcerpt(
   '    this.#engine = engineFor(config);',
   '      runDue: () => this.#runDue(),\n    });'
 );
+
 const enqueue = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -52,6 +56,7 @@ const enqueue = sourceExcerpt(
   '  async enqueue(',
   '    return { success: true, value: entries.map(({ id }) => id), load };\n  }'
 );
+
 const runTarget = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -60,6 +65,7 @@ const runTarget = sourceExcerpt(
   '  async #runDue(): Promise<void> {',
   '      release();\n    }\n  }'
 );
+
 const deliver = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -68,6 +74,7 @@ const deliver = sourceExcerpt(
   '  async #deliver(',
   '        serializeError(failure),\n        startedAt\n      );\n    }\n  }'
 );
+
 const remove = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -76,6 +83,7 @@ const remove = sourceExcerpt(
   '  #removeDelivery(sql: SqlStorage, row: DeliveryRow): boolean {',
   '    return true;\n  }'
 );
+
 const retry = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -84,6 +92,7 @@ const retry = sourceExcerpt(
   '  async #retry(',
   '      nextAttemptAt,\n      error,\n    });\n  }'
 );
+
 const deadLetter = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -92,6 +101,7 @@ const deadLetter = sourceExcerpt(
   '  async #deadLetter(',
   '        caught\n      );\n    }\n  }'
 );
+
 const listDue = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -100,6 +110,7 @@ const listDue = sourceExcerpt(
   '  #listDue(target: string, now: number): DeliveryRow[] {',
   '    return [...first, ...retries];\n  }'
 );
+
 const reconcile = sourceExcerpt(
   scheduler,
   schedulerFile,

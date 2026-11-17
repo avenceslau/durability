@@ -25,6 +25,7 @@ class Sink {
     if (this.fail) {
       throw new Error('sink unavailable');
     }
+
     this.entries.set(entry.id, entry);
   };
 
@@ -37,6 +38,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -49,6 +51,7 @@ describe('fanout', () => {
   ) => {
     const storage = new FakeStorage();
     const routing = new RoutingLoad();
+
     const config = {
       // Each fanout built from the config is a new object instance.
       get context() {
@@ -59,6 +62,7 @@ describe('fanout', () => {
       dlq: sink.write,
       retries: { maxAttempts: 2, delay: () => 1_000 },
     };
+
     return {
       storage,
       routing,
@@ -72,15 +76,19 @@ describe('fanout', () => {
     const a = vi.fn(async (messages: DurabilityFanoutMessage<string>[]) => {
       await Promise.all(messages.map((m) => m.ack()));
     });
+
     const b = vi.fn(async () => undefined);
+
     const { fanout, sink } = fixture({
       a: { deliver: a },
       b: { deliver: b },
     });
+
     const result = await fanout.enqueue([
       { id: 'one', body: '1' },
       { id: 'two', body: '2' },
     ]);
+
     expect(result).toMatchObject({
       success: true,
       value: ['one', 'two'],
@@ -107,6 +115,7 @@ describe('fanout', () => {
 
   it('deduplicates against the original recipients while siblings remain pending', async () => {
     const delivered: string[] = [];
+
     const { fanout, config } = fixture({
       fast: {
         deliver: async (messages) => {
@@ -116,6 +125,7 @@ describe('fanout', () => {
       },
       slow: { deliver: async () => undefined },
     });
+
     await fanout.enqueue({ id: 'same', body: 'payload' });
     await fanout.alarm();
     const recreated = new DurabilityFanout(config);
@@ -132,10 +142,12 @@ describe('fanout', () => {
     const { fanout } = fixture({ one: { deliver } });
     await fanout.enqueue({ id: 'existing', body: 'original' });
     await fanout.alarm();
+
     const result = await fanout.enqueue([
       { id: 'new', body: 'first' },
       { id: 'existing', body: 'different' },
     ]);
+
     expect(result).toMatchObject({
       success: false,
       error: { name: 'FanoutEnqueueError' },
@@ -151,6 +163,7 @@ describe('fanout', () => {
     'retains removed targets without delivering old messages to new ones on %s',
     async (channel) => {
       const storage = new FakeStorage();
+
       const fanout = new DurabilityFanout({
         context: contextFor(storage),
         channel,
@@ -161,6 +174,7 @@ describe('fanout', () => {
         },
         retries: { maxAttempts: 2, delay: () => 1_000 },
       });
+
       await fanout.enqueue({ id: 'old', body: 'x' });
       await fanout.alarm();
       // Discard the evicted instance's timers while preserving simulated time.
@@ -168,6 +182,7 @@ describe('fanout', () => {
       vi.clearAllTimers();
       vi.setSystemTime(now);
       const added = vi.fn(async () => undefined);
+
       const recreated = new DurabilityFanout({
         context: contextFor(storage),
         channel,
@@ -177,9 +192,11 @@ describe('fanout', () => {
           },
         },
       });
+
       const reported = vi
         .spyOn(console, 'error')
         .mockImplementation(() => undefined);
+
       vi.advanceTimersByTime(1_000);
       await recreated.alarm();
       expect(added).not.toHaveBeenCalled();
@@ -202,18 +219,22 @@ describe('fanout', () => {
 
   it('lets a healthy target complete while another target is still awaiting a consumer', async () => {
     let finish!: () => void;
+
     const gate = new Promise<void>((resolve) => {
       finish = resolve;
     });
+
     const healthy = vi.fn(
       async (messages: DurabilityFanoutMessage<string>[]) => {
         await Promise.all(messages.map((m) => m.ack()));
       }
     );
+
     const { fanout } = fixture({
       slow: { deliver: () => gate },
       healthy: { deliver: healthy },
     });
+
     await fanout.enqueue({ body: 'x' });
     await vi.waitFor(() => expect(healthy).toHaveBeenCalledOnce());
     await vi.waitFor(async () =>
@@ -230,6 +251,7 @@ describe('fanout', () => {
         throw new Error('storage failed');
       }
     });
+
     const { fanout } = fixture({ archive: { storage: write } });
     await fanout.enqueue({ id: 'stored', body: 'x' });
     await fanout.alarm();
@@ -249,11 +271,13 @@ describe('fanout', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const sink = new Sink();
     sink.fail = true;
+
     const deliver = vi.fn(
       async (messages: DurabilityFanoutMessage<string>[]) => {
         await Promise.all(messages.map((m) => m.deadLetter()));
       }
     );
+
     const { fanout, config } = fixture({ destination: { deliver } }, sink);
     await fanout.enqueue({ id: 'bad', body: 'bad' });
     await fanout.alarm();
@@ -277,6 +301,7 @@ describe('fanout', () => {
   it('redrives only the failed target through routing with a fresh attempt budget', async () => {
     const seen: Array<[string, number]> = [];
     let recover = false;
+
     const targets: Record<string, FanoutTarget<string>> = {
       a: {
         deliver: async (messages) => {
@@ -287,12 +312,14 @@ describe('fanout', () => {
       b: {
         deliver: async (messages) => {
           seen.push(...messages.map((m): [string, number] => ['b', m.attempt]));
+
           if (recover) {
             await Promise.all(messages.map((m) => m.ack()));
           }
         },
       },
     };
+
     const { fanout, sink } = fixture(targets);
     await fanout.enqueue({ id: 'redrive', body: 'x' });
     await fanout.alarm();
@@ -301,6 +328,7 @@ describe('fanout', () => {
     const entry = [...sink.entries.values()][0]!;
     const other = fixture(targets);
     const sharding = vi.fn(() => 'different-shard');
+
     const router = new RoutingClient({
       sharding,
       invoke: async (_address, message: StoredMessage<string>) =>
@@ -313,11 +341,14 @@ describe('fanout', () => {
           { targets: [message.target] }
         ),
     });
+
     recover = true;
     const accepted = await router.push(entry);
+
     if (accepted.success) {
       sink.remove(entry.id);
     }
+
     await other.fanout.alarm();
     expect(sharding).toHaveBeenCalledOnce();
     expect(seen).toEqual([
@@ -331,6 +362,7 @@ describe('fanout', () => {
 
   it('supports retry(10), throws on duplicate settlement, and invalidates late capabilities', async () => {
     const captured: DurabilityFanoutMessage<string>[] = [];
+
     const { fanout, storage } = fixture({
       one: {
         deliver: async (messages) => {
@@ -339,6 +371,7 @@ describe('fanout', () => {
         },
       },
     });
+
     await fanout.enqueue({ id: 'one', body: 'x' });
     await fanout.alarm();
     await expect(captured[0]!.ack()).rejects.toBeInstanceOf(
@@ -353,6 +386,7 @@ describe('fanout', () => {
 
   it('prioritizes unseen messages over immediately due retries', async () => {
     const seen: string[] = [];
+
     const { config } = fixture({
       one: {
         deliver: async (messages) => {
@@ -363,6 +397,7 @@ describe('fanout', () => {
         },
       },
     });
+
     const fanout = new DurabilityFanout({ ...config, maxBatchSize: 1 });
     await fanout.enqueue([
       { id: 'a', body: 'a' },
@@ -376,14 +411,17 @@ describe('fanout', () => {
 
   it('bounds a timed-out batch, reports its duration, and rejects late settlement', async () => {
     const captured: DurabilityFanoutMessage<string>[] = [];
+
     const { config } = fixture({
       slow: {
         deliver: (messages) => {
           captured.push(...messages);
+
           return new Promise(() => undefined);
         },
       },
     });
+
     const fanout = new DurabilityFanout({ ...config, attemptTimeoutMs: 25 });
     await fanout.enqueue({ body: 'slow' });
     const running = fanout.alarm();
@@ -404,7 +442,9 @@ describe('fanout', () => {
     const { storage, config } = fixture({
       target: { deliver: async () => undefined },
     });
+
     const transact = storage.transaction.bind(storage);
+
     const fanout = new DurabilityFanout({
       ...config,
       targets: {
@@ -413,6 +453,7 @@ describe('fanout', () => {
             vi.spyOn(storage, 'transaction').mockImplementationOnce(
               async (callback) => {
                 await new Promise((resolve) => setTimeout(resolve, 20));
+
                 return transact(callback);
               }
             );
@@ -422,6 +463,7 @@ describe('fanout', () => {
         },
       },
     });
+
     await fanout.enqueue([
       { id: 'a', body: 'a' },
       { id: 'b', body: 'b' },
@@ -442,6 +484,7 @@ describe('fanout', () => {
     const { config } = fixture({
       target: { deliver: async () => undefined },
     });
+
     const fanout = new DurabilityFanout({
       ...config,
       targets: {
@@ -450,11 +493,13 @@ describe('fanout', () => {
             if (message.messageId === 'bad') {
               throw new Error('write failed');
             }
+
             await new Promise((resolve) => setTimeout(resolve, 20));
           },
         },
       },
     });
+
     await fanout.enqueue([
       { id: 'slow', body: 'slow' },
       { id: 'bad', body: 'bad' },
@@ -474,6 +519,7 @@ describe('fanout', () => {
     const { fanout, storage } = fixture({
       target: { deliver: async () => undefined },
     });
+
     vi.spyOn(storage, 'transaction').mockRejectedValueOnce(
       new Error('storage unavailable')
     );
@@ -489,10 +535,12 @@ describe('fanout', () => {
   it('returns rejection before writing any unserializable batch', async () => {
     const deliver = vi.fn(async () => undefined);
     const { fanout } = fixture({ target: { deliver } });
+
     const invalid = {
       id: 'bad',
       body: (() => undefined) as unknown as string,
     };
+
     expect(
       await fanout.enqueue([{ id: 'good', body: 'good' }, invalid])
     ).toMatchObject({ success: false });
@@ -502,18 +550,21 @@ describe('fanout', () => {
 
   it('acks what an ackOnReturn consumer leaves unsettled and keeps explicit settlements', async () => {
     const seen: string[] = [];
+
     const { fanout } = fixture({
       one: {
         ackOnReturn: true,
         deliver: async (messages) => {
           seen.push(...messages.map((m) => `${m.id}:${m.attempt}`));
           const first = messages.find((m) => m.id === 'a');
+
           if (first?.attempt === 1) {
             await first.retry(10);
           }
         },
       },
     });
+
     await fanout.enqueue([
       { id: 'a', body: 'a' },
       { id: 'b', body: 'b' },
@@ -535,6 +586,7 @@ describe('fanout', () => {
     const deliver = vi.fn(async () => {
       throw new Error('consumer failed');
     });
+
     const { fanout } = fixture({ one: { ackOnReturn: true, deliver } });
     await fanout.enqueue([
       { id: 'a', body: 'a' },
@@ -549,6 +601,7 @@ describe('fanout', () => {
   it('holds first deliveries for batchDelayMs so nearby messages share one batch', async () => {
     vi.setSystemTime(1_800_000_000_001);
     const batches: string[][] = [];
+
     const { config } = fixture({
       one: {
         ackOnReturn: true,
@@ -557,6 +610,7 @@ describe('fanout', () => {
         },
       },
     });
+
     const fanout = new DurabilityFanout({ ...config, batchDelayMs: 100 });
 
     await fanout.enqueue({ id: 'first', body: 'x' });
@@ -582,6 +636,7 @@ describe('fanout', () => {
 
   it('drops exhausted and dead-lettered deliveries when no DLQ is configured', async () => {
     const events: string[] = [];
+
     const { config } = fixture({
       one: {
         deliver: async (messages) => {
@@ -593,7 +648,9 @@ describe('fanout', () => {
         },
       },
     });
+
     const { dlq: _dlq, ...withoutDlq } = config;
+
     const fanout = new DurabilityFanout({
       ...withoutDlq,
       onLifecycleEvent: (event) => {
@@ -602,6 +659,7 @@ describe('fanout', () => {
         }
       },
     });
+
     await fanout.enqueue([
       { id: 'rejected', body: 'x' },
       { id: 'exhausted', body: 'y' },
@@ -623,6 +681,7 @@ describe('fanout', () => {
     const lookups = vi.fn(async (id: string) => `resolved:${id}`);
     let failing = true;
     const delivered: string[] = [];
+
     const { fanout, storage } = fixture({
       consumer: {
         deliver: async (messages) => {
@@ -631,10 +690,13 @@ describe('fanout', () => {
               const address = await message.memoize('address', () =>
                 lookups(message.id)
               );
+
               if (failing) {
                 await message.retry();
+
                 return;
               }
+
               delivered.push(address);
               await message.ack();
             })
@@ -642,6 +704,7 @@ describe('fanout', () => {
         },
       },
     });
+
     const memoRows = () =>
       storage.sql
         .exec('SELECT owner, memo_key FROM durability_memos')
@@ -689,6 +752,7 @@ describe('fanout', () => {
     const { fanout, config } = fixture({
       slow: { deliver: async () => undefined },
     });
+
     await fanout.enqueue([
       { id: 'a', body: 'a' },
       { id: 'b', body: 'b' },
@@ -706,9 +770,11 @@ describe('fanout', () => {
 
   it('claims each delivery and its deadline with one update', async () => {
     const storage = new FakeStorage();
+
     const deliver = vi.fn(
       (_messages: DurabilityFanoutMessage<string>[]) => undefined
     );
+
     const fanout = new DurabilityFanout<string>({
       context: contextFor(storage),
       targets: {
@@ -718,6 +784,7 @@ describe('fanout', () => {
         },
       },
     });
+
     const exec = vi.spyOn(storage.sql, 'exec');
     await fanout.enqueue([
       { id: 'first', body: 'a' },
@@ -732,6 +799,7 @@ describe('fanout', () => {
       .filter((query) =>
         query.startsWith('UPDATE durability_fanout_deliveries SET')
       );
+
     expect(updates).toHaveLength(2);
     expect(
       updates.every((query) =>
@@ -749,10 +817,12 @@ describe('fanout', () => {
     const { fanout, storage } = fixture({
       one: { ackOnReturn: true, deliver: () => undefined },
     });
+
     const batch = Array.from({ length: 10 }, (_, i) => ({
       id: `m${i}`,
       body: 'x',
     }));
+
     await fanout.enqueue(batch);
     await vi.waitFor(async () =>
       expect((await fanout.load()).outbound.pendingDeliveries).toBe(0)
@@ -771,9 +841,11 @@ describe('fanout', () => {
 
   it('shares a physical alarm with existing operations and named alarms', async () => {
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: { storage: storage as unknown as DurableObjectStorage },
     });
+
     const fanout = new DurabilityFanout<string>({
       scheduler,
       targets: {
@@ -784,16 +856,21 @@ describe('fanout', () => {
         },
       },
     });
+
     const handler = vi.fn(async () => 'done');
+
     const operations = new Durability({
       scheduler,
       handlers: { work: handler },
     });
+
     const alarmHandler = vi.fn(async () => undefined);
+
     const alarms = new DurabilityAlarms({
       scheduler,
       handlers: { cleanup: alarmHandler },
     });
+
     await alarms.cleanup(Date.now() + 10);
     await fanout.enqueue({ body: 'message' });
     await operations.work({ id: 'work', payload: undefined });
@@ -809,6 +886,7 @@ describe('fanout', () => {
 
 describe('fanout channels', () => {
   const beforeChannels = 'durability_0005_create_fanout';
+
   const libraryOwner = JSON.stringify([
     'durability_fanout_deliveries',
     'library',
@@ -834,6 +912,7 @@ describe('fanout channels', () => {
     const librarySink = new Sink();
     const appAttempts: number[] = [];
     const libraryAttempts: number[] = [];
+
     const app = new DurabilityFanout<string>({
       scheduler,
       targets: {
@@ -846,6 +925,7 @@ describe('fanout channels', () => {
       retries: { maxAttempts: 1 },
       dlq: appSink.write,
     });
+
     const library = new DurabilityFanout<string>({
       scheduler,
       channel: 'library',
@@ -900,6 +980,7 @@ describe('fanout channels', () => {
     const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
     const sink = new Sink();
     const saved: string[] = [];
+
     const consumer = (
       value: string,
       settle: 'ack' | 'retry'
@@ -915,12 +996,14 @@ describe('fanout channels', () => {
         );
       },
     });
+
     const app = new DurabilityFanout<string>({
       scheduler,
       targets: {
         consumer: consumer('app', 'ack'),
       },
     });
+
     const library = new DurabilityFanout<string>({
       scheduler,
       channel: 'library',
@@ -1007,11 +1090,13 @@ describe('fanout channels', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
     });
+
     const targets = {
       consumer: {
         deliver: () => undefined,
       },
     };
+
     expect(() => new DurabilityFanout({ scheduler, targets })).not.toThrow();
     expect(
       () =>
@@ -1046,7 +1131,9 @@ describe('fanout channels', () => {
     const error = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
+
     const storage = new FakeStorage();
+
     const retrying = new DurabilityFanout<string>({
       context: contextFor(storage),
       channel: 'library',
@@ -1057,6 +1144,7 @@ describe('fanout channels', () => {
       },
       retries: { delay: () => 1_000 },
     });
+
     await retrying.enqueue({ id: 'm', body: 'x' });
     await retrying.alarm();
     evict();
@@ -1069,6 +1157,7 @@ describe('fanout channels', () => {
         },
       },
     });
+
     vi.advanceTimersByTime(1_000);
     await appOnly.alarm();
     expect(error).toHaveBeenCalledWith(
@@ -1086,6 +1175,7 @@ describe('fanout channels', () => {
     evict();
 
     const delivered: number[] = [];
+
     const returned = new DurabilityFanout<string>({
       context: contextFor(storage),
       channel: 'library',
@@ -1098,6 +1188,7 @@ describe('fanout channels', () => {
         },
       },
     });
+
     expect((await returned.load()).outbound.pendingDeliveries).toBe(1);
     vi.advanceTimersByTime(60_000);
     await returned.alarm();
@@ -1131,6 +1222,7 @@ describe('fanout channels', () => {
       serialize('saved before upgrade')
     );
     const received: unknown[] = [];
+
     const deliver =
       (channel: string) =>
       async (messages: DurabilityFanoutMessage<string>[]) => {
@@ -1149,7 +1241,9 @@ describe('fanout channels', () => {
           await message.ack();
         }
       };
+
     const scheduler = new DurabilityScheduler({ context });
+
     const app = new DurabilityFanout<string>({
       scheduler,
       targets: {
@@ -1158,6 +1252,7 @@ describe('fanout channels', () => {
         },
       },
     });
+
     const library = new DurabilityFanout<string>({
       scheduler,
       channel: 'library',
@@ -1167,6 +1262,7 @@ describe('fanout channels', () => {
         },
       },
     });
+
     expect((await app.load()).outbound.pendingDeliveries).toBe(1);
     expect((await library.load()).outbound.pendingDeliveries).toBe(0);
     await expect(app.enqueue({ id: 'm', body: 'new' })).resolves.toMatchObject({
@@ -1199,22 +1295,26 @@ describe('fanout channels', () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
     const scheduler = new DurabilityScheduler({ context });
+
     const targets = {
       consumer: {
         deliver: () => undefined,
       },
     };
+
     const app = new DurabilityFanout<string>({
       scheduler,
       targets,
       batchDelayMs: 60_000,
     });
+
     const library = new DurabilityFanout<string>({
       scheduler,
       channel: 'library',
       targets,
       batchDelayMs: 60_000,
     });
+
     await app.enqueue({ id: 'kept', body: 'x' });
     await library.enqueue({ id: 'blocking', body: 'x' });
 

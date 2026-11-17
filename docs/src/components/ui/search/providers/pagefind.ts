@@ -65,6 +65,7 @@ const defaultFilters: PagefindFilters | undefined =
 export const provider: SearchProvider = {
   async init() {
     if (pagefind) return;
+
     // `searchIndex.bundle` is the site's bundle (`/pagefind/`, under the
     // base when there is one); a site built in slices (`NIMBUS_BUILD_ONLY`)
     // keeps each slice's bundle under its prefix, and `merge` names the other
@@ -74,9 +75,11 @@ export const provider: SearchProvider = {
       `${searchIndex.bundle}pagefind.js`,
       window.location.origin
     );
+
     const loaded = (await import(
       /* @vite-ignore */ pagefindUrl.href
     )) as PagefindApi;
+
     // Every index is built from the output root, so result URLs already carry
     // their prefix and need only the base, which Pagefind adds to each one.
     const baseUrl = `${(import.meta.env.BASE_URL ?? '/').replace(/\/+$/, '')}/`;
@@ -90,15 +93,18 @@ export const provider: SearchProvider = {
 
   async search(query) {
     if (!pagefind) await this.init?.();
+
     if (!pagefind) return [];
 
     const search = await pagefind.search(
       query,
       defaultFilters ? { filters: defaultFilters } : undefined
     );
+
     const results = await Promise.all(
       search.results.slice(0, 10).map((result) => result.data())
     );
+
     return results.map(
       (result): SearchResult => ({
         title: result.meta?.title ?? 'Untitled',

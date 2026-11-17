@@ -12,22 +12,29 @@ const REVEAL_PADDING = 12;
 
 function initToc(root: HTMLElement): () => void {
   const nav = root.querySelector<HTMLElement>('nav');
+
   const activePath = root.querySelector<SVGPathElement>(
     '[data-nb-toc-rail-active]'
   );
+
   const links = root.querySelectorAll<HTMLElement>('[data-nb-toc-link]');
+
   if (!nav || !activePath || links.length === 0) return () => {};
 
   const scrollHost =
     root.closest<HTMLElement>('[data-nb-toc-scroll-host]') ?? root;
+
   const slugs = Array.from(links).map((l) => l.dataset.nbSlug!);
+
   // Observe only resolvable headings, each carrying its original index, so
   // scroll-spy stays aligned with the full-length links/segments even when a
   // heading slugs to "" (e.g. emoji-only `## 🎉`) and has no DOM target.
   const observed = slugs
     .map((slug, index) => ({ el: document.getElementById(slug), index }))
     .filter((o): o is { el: HTMLElement; index: number } => o.el !== null);
+
   if (observed.length === 0) return () => {};
+
   const indexOfEl = new Map<HTMLElement, number>(
     observed.map((o) => [o.el, o.index])
   );
@@ -47,6 +54,7 @@ function initToc(root: HTMLElement): () => void {
 
     const m = Array.from(links).map((link) => {
       const r = link.getBoundingClientRect();
+
       return {
         x: rtl ? r.right - navRect.left - 1 : r.left - navRect.left + 1,
         yTop: r.top - navRect.top,
@@ -66,6 +74,7 @@ function initToc(root: HTMLElement): () => void {
     // back once at the end.
     const measure = (subPath: string) => {
       activePath!.setAttribute('d', subPath);
+
       return activePath!.getTotalLength();
     };
 
@@ -81,6 +90,7 @@ function initToc(root: HTMLElement): () => void {
       } else {
         const prev = m[i - 1];
         let connector: string;
+
         if (Math.abs(cur.x - prev.x) < 0.5) {
           connector = `L ${cur.x} ${cur.yTop} `;
         } else {
@@ -88,6 +98,7 @@ function initToc(root: HTMLElement): () => void {
           const midY = (prev.yBot + cur.yTop) / 2;
           connector = `C ${prev.x} ${midY}, ${cur.x} ${midY}, ${cur.x} ${cur.yTop} `;
         }
+
         d += connector;
         cumulative += measure(`M ${prevX} ${prevYBot} ${connector}`);
       }
@@ -111,6 +122,7 @@ function initToc(root: HTMLElement): () => void {
 
   function applyActive(index: number, instant: boolean) {
     const seg = segments[index];
+
     if (!seg) return;
 
     if (instant) {
@@ -138,6 +150,7 @@ function initToc(root: HTMLElement): () => void {
 
     if (linkRect.top < hostRect.top + REVEAL_PADDING) {
       scrollHost.scrollTop += linkRect.top - hostRect.top - REVEAL_PADDING;
+
       return;
     }
 
@@ -155,6 +168,7 @@ function initToc(root: HTMLElement): () => void {
     const activeLink = links[index] ?? null;
     activeLink?.setAttribute('aria-current', 'true');
     currentLink = activeLink;
+
     if (activeLink) revealActiveLink(activeLink);
 
     applyActive(index, !hasApplied);
@@ -170,8 +184,10 @@ function initToc(root: HTMLElement): () => void {
   function resolve() {
     if (pinnedIndex !== null) {
       setActive(pinnedIndex);
+
       return;
     }
+
     setActive(atBottom ? links.length - 1 : observedIndex);
   }
 
@@ -180,23 +196,29 @@ function initToc(root: HTMLElement): () => void {
     (entries) => {
       for (const entry of entries) {
         const i = indexOfEl.get(entry.target as HTMLElement);
+
         if (i === undefined) continue;
+
         if (entry.isIntersecting) inBand.add(i);
         else inBand.delete(i);
       }
+
       if (inBand.size > 0) observedIndex = Math.max(...inBand);
       resolve();
     },
     { rootMargin: `0px 0px -${(1 - READING_BAND) * 100}% 0px`, threshold: 0 }
   );
+
   observed.forEach((o) => spy.observe(o.el));
 
   function updateBottom() {
     const scrollEl = document.scrollingElement ?? document.documentElement;
     const maxScroll = scrollEl.scrollHeight - window.innerHeight;
+
     const next =
       maxScroll > BOTTOM_EPSILON &&
       scrollEl.scrollTop >= maxScroll - BOTTOM_EPSILON;
+
     if (next !== atBottom) {
       atBottom = next;
       resolve();
@@ -206,26 +228,32 @@ function initToc(root: HTMLElement): () => void {
   function updateObservedIndex() {
     const bandBottom = window.innerHeight * READING_BAND;
     let nextIndex = 0;
+
     for (const o of observed) {
       if (o.el.getBoundingClientRect().top <= bandBottom) nextIndex = o.index;
       else break;
     }
+
     observedIndex = nextIndex;
   }
 
   function releaseStalePin() {
     if (pinnedIndex === null) return;
     const heading = document.getElementById(slugs[pinnedIndex]);
+
     if (!heading) {
       pinnedIndex = null;
       pinnedEnteredViewport = false;
+
       return;
     }
 
     const rect = heading.getBoundingClientRect();
     const inViewport = rect.bottom >= 0 && rect.top <= window.innerHeight;
+
     if (inViewport) {
       pinnedEnteredViewport = true;
+
       return;
     }
 
@@ -236,6 +264,7 @@ function initToc(root: HTMLElement): () => void {
   }
 
   let ticking = false;
+
   function onScroll() {
     if (ticking) return;
     ticking = true;
@@ -254,9 +283,11 @@ function initToc(root: HTMLElement): () => void {
     updateBottom();
     releaseStalePin();
     resolve();
+
     if (currentIndex >= 0) {
       applyActive(currentIndex, true);
       const activeLink = links[currentIndex];
+
       if (activeLink) revealActiveLink(activeLink);
     }
   }
@@ -275,11 +306,14 @@ function initToc(root: HTMLElement): () => void {
         e.altKey
       )
         return;
+
       const link = (e.target as Element).closest<HTMLElement>(
         '[data-nb-toc-link]'
       );
+
       if (!link) return;
       const i = slugs.indexOf(link.dataset.nbSlug!);
+
       if (i === -1) return;
       pinnedIndex = i;
       const heading = document.getElementById(slugs[i]);
@@ -298,6 +332,7 @@ function initToc(root: HTMLElement): () => void {
     pinnedEnteredViewport = false;
     resolve();
   }
+
   const NAV_KEYS = new Set([
     'ArrowUp',
     'ArrowDown',
@@ -308,6 +343,7 @@ function initToc(root: HTMLElement): () => void {
     ' ',
     'Spacebar',
   ]);
+
   window.addEventListener('wheel', releasePin, {
     passive: true,
     signal: controller.signal,
@@ -341,12 +377,14 @@ function initToc(root: HTMLElement): () => void {
       slugs.forEach((slug, index) => {
         if (observed.some((o) => o.index === index)) return;
         const el = document.getElementById(slug);
+
         if (!el) return;
         observed.push({ el, index });
         indexOfEl.set(el, index);
         spy.observe(el);
         added = true;
       });
+
       if (!added) return;
       observed.sort((a, b) => a.index - b.index);
       onLayoutChange();

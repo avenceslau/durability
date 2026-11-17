@@ -23,7 +23,9 @@ type Email = {
   customerId: string;
   region?: DurableObjectLocationHint;
 };
+
 type Batch = { messages: FanoutInput<Email>[]; options?: FanoutEnqueueOptions };
+
 type Context = { lane?: string };
 
 export class EmailConsumer extends WorkerEntrypoint<Env> {
@@ -39,6 +41,7 @@ export class EmailConsumer extends WorkerEntrypoint<Env> {
           body: JSON.stringify(message.body),
         }
       );
+
       if (response.ok) {
         // eslint-disable-next-line no-await-in-loop
         await message.ack();
@@ -138,6 +141,7 @@ export async function redrive(env: Env, after: number): Promise<number> {
   const cutoff = Math.max(after, Date.now() - replayWindowMs);
   let cursor: string | undefined;
   let accepted = 0;
+
   do {
     // eslint-disable-next-line no-await-in-loop
     const page = await env.DEAD_LETTERS.list({
@@ -145,19 +149,24 @@ export async function redrive(env: Env, after: number): Promise<number> {
       limit: 100,
       ...(cursor === undefined ? {} : { cursor }),
     });
+
     for (const object of page.objects) {
       // eslint-disable-next-line no-await-in-loop
       const stored = await env.DEAD_LETTERS.get(object.key);
+
       if (!stored) {
         continue;
       }
+
       // This Worker wrote the entry; an application reading foreign data should
       // validate it instead of casting.
       // eslint-disable-next-line no-await-in-loop
       const entry = (await stored.json()) as StoredMessage<Email>;
+
       if (entry.storedAt < cutoff) {
         continue;
       }
+
       // The entry ID distinguishes this redrive from the original registration,
       // so it cannot collide with siblings still delivering.
       // eslint-disable-next-line no-await-in-loop
@@ -167,17 +176,21 @@ export async function redrive(env: Env, after: number): Promise<number> {
         ],
         options: { targets: [entry.target] },
       });
+
       if (!result.success) {
         continue;
       }
+
       // Never delete on rejection or transport uncertainty. A crash between
       // acceptance and deletion can still duplicate work: this is at-least-once.
       // eslint-disable-next-line no-await-in-loop
       await env.DEAD_LETTERS.delete(object.key);
       accepted += 1;
     }
+
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor !== undefined);
+
   return accepted;
 }
 
@@ -186,12 +199,15 @@ export default {
     if (request.method !== 'POST') {
       return new Response('POST an email array', { status: 405 });
     }
+
     // Demo input only: authenticate and validate untrusted payloads in an application.
     const messages = (await request.json<Email[]>()).map((body) => ({ body }));
+
     const result = await routing
       .with(lane, 'vip')
       .with(timeout, 5_000)
       .push({ messages });
+
     return Response.json(result, { status: result.success ? 202 : 409 });
   },
 } satisfies ExportedHandler<Env>;

@@ -48,16 +48,20 @@ export const retry = defineTransform<object, EmptyTransformContext>().caller(
           }
 
           const retryAttempt = attempt + 1;
+
           const pendingDelay = delay
             ? delay({ error, attempt: retryAttempt })
             : Math.random() * Math.min(100 * 2 ** (retryAttempt - 1), 30_000);
+
           // eslint-disable-next-line no-await-in-loop -- Retry delays may depend on the current failure.
           const delayMs = await pendingDelay;
+
           if (!Number.isFinite(delayMs) || delayMs < 0) {
             throw new RangeError(
               'retry delay must be a non-negative finite number'
             );
           }
+
           if (delayMs > 0) {
             // eslint-disable-next-line no-await-in-loop -- Backoff must finish before the next attempt.
             await new Promise((resolve) => setTimeout(resolve, delayMs));

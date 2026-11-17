@@ -20,9 +20,11 @@ afterEach(() => {
 
 const deferred = () => {
   let resolve!: () => void;
+
   const promise = new Promise<void>((settle) => {
     resolve = settle;
   });
+
   return { promise, resolve };
 };
 
@@ -33,20 +35,24 @@ describe('DurabilityTracker listing', () => {
   it('pages across sources and filters by status and name', async () => {
     const gate = deferred();
     const shared = scheduler();
+
     const durability = new Durability({
       scheduler: shared,
       handlers: {
         resize: async ({ payload }: DurableCall<{ size: number }>) => {
           await gate.promise;
+
           return payload.size;
         },
         done: async (_call: DurableCall<null>) => 'ok',
       },
     });
+
     const alarms = new DurabilityAlarms({
       scheduler: shared,
       handlers: { cleanup: async () => undefined },
     });
+
     const tracker = new DurabilityTracker({
       sources: { jobs: durability, alarms },
     });
@@ -90,16 +96,20 @@ describe('DurabilityTracker listing', () => {
 
   it('returns the same pages as plain records', async () => {
     const gate = deferred();
+
     const durability = new Durability({
       scheduler: scheduler(),
       handlers: {
         resize: async ({ payload }: DurableCall<{ size: number }>) => {
           await gate.promise;
+
           return payload.size;
         },
       },
     });
+
     const tracker = new DurabilityTracker({ sources: { jobs: durability } });
+
     for (const id of ['a', 'b', 'c']) {
       // eslint-disable-next-line no-await-in-loop
       await durability.resize({ id, payload: { size: 1 } });
@@ -121,6 +131,7 @@ describe('DurabilityTracker listing', () => {
 
   it('follows cursors through status-filtered pages', async () => {
     const gate = deferred();
+
     const durability = new Durability({
       scheduler: scheduler(),
       handlers: {
@@ -128,11 +139,14 @@ describe('DurabilityTracker listing', () => {
         slow: async (_call: DurableCall<null>) => gate.promise,
       },
     });
+
     const tracker = new DurabilityTracker({ sources: { jobs: durability } });
+
     for (const id of ['a', 'b', 'c', 'd']) {
       // eslint-disable-next-line no-await-in-loop
       await durability.quick({ id, payload: null });
     }
+
     await durability.slow({ id: 'e', payload: null });
     await vi.waitFor(async () => {
       expect(await durability.quick.getResult('d')).toMatchObject({
@@ -142,6 +156,7 @@ describe('DurabilityTracker listing', () => {
 
     const ids: string[] = [];
     let cursor: string | undefined;
+
     do {
       // eslint-disable-next-line no-await-in-loop
       const page = await tracker.list({ status: 'pending', limit: 2, cursor });
@@ -155,15 +170,18 @@ describe('DurabilityTracker listing', () => {
 
   it('waits for an operation to complete', async () => {
     const gate = deferred();
+
     const durability = new Durability({
       scheduler: scheduler(),
       handlers: {
         resize: async (_call: DurableCall<null>) => {
           await gate.promise;
+
           return 'resized';
         },
       },
     });
+
     const tracker = new DurabilityTracker({ sources: { jobs: durability } });
     await durability.resize({ id: 'job', payload: null });
     const handle = await tracker.get('jobs', 'job');
@@ -191,16 +209,20 @@ describe('DurabilityTracker', () => {
         delay: () => 60_000,
       },
     });
+
     const tracker = new DurabilityTracker({ sources: { jobs: durability } });
+
     return { durability, tracker };
   };
 
   it('returns a terminal failure as soon as it is persisted', async () => {
     const gate = deferred();
+
     const { durability, tracker } = setup(async () => {
       await gate.promise;
       throw new NonRetryableError('bad input');
     });
+
     await durability.work({ id: 'job', payload: null });
     const handle = await tracker.get('jobs', 'job');
 
@@ -216,6 +238,7 @@ describe('DurabilityTracker', () => {
 
   it('keeps waiting through a scheduled retry and returns pending on timeout', async () => {
     const gate = deferred();
+
     const { durability, tracker } = setup(
       async () => {
         await gate.promise;
@@ -223,6 +246,7 @@ describe('DurabilityTracker', () => {
       },
       { maxAttempts: 3 }
     );
+
     await durability.work({ id: 'job', payload: null });
     const handle = await tracker.get('jobs', 'job');
 
@@ -238,10 +262,13 @@ describe('DurabilityTracker', () => {
 
   it('settles every waiter from one completion', async () => {
     const gate = deferred();
+
     const { durability, tracker } = setup(async () => {
       await gate.promise;
+
       return 1;
     });
+
     await durability.work({ id: 'job', payload: null });
     const handle = await tracker.get('jobs', 'job');
 
@@ -249,6 +276,7 @@ describe('DurabilityTracker', () => {
       handle?.wait({ timeoutMs: 10_000 }),
       handle?.wait({ timeoutMs: 10_000 }),
     ];
+
     gate.resolve();
 
     await expect(Promise.all(waiters)).resolves.toEqual([
@@ -259,10 +287,13 @@ describe('DurabilityTracker', () => {
 
   it('returns not_found when the record is purged or its id reused', async () => {
     const gate = deferred();
+
     const { durability, tracker } = setup(async () => {
       await gate.promise;
+
       return 'old';
     });
+
     await durability.work({ id: 'job', payload: null });
     const handle = await tracker.get('jobs', 'job');
 
@@ -307,10 +338,12 @@ describe('DurabilityTracker', () => {
 
   it('reports a named alarm success even though success deletes it', async () => {
     const gate = deferred();
+
     const alarms = new DurabilityAlarms({
       context: contextFor(new FakeStorage()),
       handlers: { cleanup: async () => gate.promise },
     });
+
     const tracker = new DurabilityTracker({ sources: { alarms } });
     await alarms.cleanup(Date.now());
     const handle = await tracker.get('alarms', 'cleanup');
@@ -330,6 +363,7 @@ describe('DurabilityTracker', () => {
       context: contextFor(new FakeStorage()),
       handlers: { cleanup: async () => undefined },
     });
+
     const tracker = new DurabilityTracker({ sources: { alarms } });
     await alarms.cleanup(Date.now() + 60_000);
     const handle = await tracker.get('alarms', 'cleanup');
@@ -342,6 +376,7 @@ describe('DurabilityTracker', () => {
 
   it('reads custom sources and unsubscribes after settlement', async () => {
     type Approvals = { approval: { approvedBy: string } };
+
     let row: TrackedRecord<Approvals> = {
       id: 'order-1',
       name: 'approval',
@@ -349,15 +384,19 @@ describe('DurabilityTracker', () => {
       createdAt: 1,
       state: { status: 'pending' },
     };
+
     const listeners = new Set<(settled?: TrackedRecord<Approvals>) => void>();
+
     const approvals: TrackedSource<Approvals> = {
       get: async (id) => (id === row.id ? row : undefined),
       list: async () => ({ records: [row] }),
       watch: (_id, listener) => {
         listeners.add(listener);
+
         return () => listeners.delete(listener);
       },
     };
+
     const tracker = new DurabilityTracker({ sources: { approvals } });
     const [handle] = (await tracker.list()).items;
 
@@ -367,6 +406,7 @@ describe('DurabilityTracker', () => {
       ...row,
       state: { status: 'completed', result: { approvedBy: 'ana' } },
     };
+
     for (const listener of listeners) {
       listener();
     }
@@ -386,9 +426,11 @@ describe('DurabilityTracker', () => {
       createdAt: 1,
       state: { status: 'pending' as const },
     }));
+
     const tracker = new DurabilityTracker({
       sources: { custom: { get, list: async () => ({ records: [] }) } },
     });
+
     const handle = await tracker.get('custom', 'x');
     get.mockClear();
 
@@ -422,26 +464,34 @@ describe('DurabilityTracker', () => {
       const tracker = new DurabilityTracker({
         sources: { jobs: durability, alarms },
       });
+
       const { items } = await tracker.list({ source: 'jobs' });
+
       for (const item of items) {
         expectTypeOf(item.source).toEqualTypeOf<'jobs'>();
+
         if (item.name === 'resize' && item.state.status === 'completed') {
           expectTypeOf(item.state.result).toEqualTypeOf<number>();
         }
+
         if (item.name === 'label' && item.state.status === 'completed') {
           expectTypeOf(item.state.result).toEqualTypeOf<string>();
         }
       }
+
       const handle = await tracker.get('alarms', 'cleanup');
       expectTypeOf(handle?.name).toEqualTypeOf<'cleanup' | undefined>();
       const { records } = await tracker.records({ source: 'jobs' });
+
       for (const record of records) {
         expectTypeOf(record).not.toHaveProperty('wait');
+
         if (record.name === 'resize' && record.state.status === 'completed') {
           expectTypeOf(record.state.result).toEqualTypeOf<number>();
         }
       }
     };
+
     expectTypeOf(assertTypes).toBeFunction();
   });
 });

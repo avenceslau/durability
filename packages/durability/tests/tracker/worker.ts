@@ -13,6 +13,7 @@ export class TrackerTestObject extends DurableObject {
         await new Promise<void>((resolve) => {
           this.gates.set(id, resolve);
         });
+
         return payload.size * 2;
       },
     },
@@ -29,9 +30,11 @@ export class TrackerTestObject extends DurableObject {
   async startAndTrack(id: string, size: number) {
     await this.start(id, size);
     const handle = await this.tracker.get('jobs', id);
+
     if (!handle) {
       throw new Error(`Job "${id}" was not registered`);
     }
+
     return handle;
   }
 
@@ -41,6 +44,7 @@ export class TrackerTestObject extends DurableObject {
 
   async waitManyTimes(id: string, count: number, timeoutMs: number) {
     const handle = await this.tracker.get('jobs', id);
+
     if (!handle) {
       throw new Error(`Job "${id}" was not registered`);
     }
@@ -48,17 +52,20 @@ export class TrackerTestObject extends DurableObject {
     const results = await Promise.all(
       Array.from({ length: count }, () => handle.wait({ timeoutMs }))
     );
+
     return results.filter(({ status }) => status === 'pending').length;
   }
 
   async waitTwiceWithNoNativeTimerLeft(id: string) {
     const handle = await this.tracker.get('jobs', id);
+
     if (!handle) {
       throw new Error(`Job "${id}" was not registered`);
     }
 
     const first = handle.wait({ timeoutMs: 50 });
     const otherTimers: ReturnType<typeof setTimeout>[] = [];
+
     try {
       for (;;) {
         otherTimers.push(setTimeout(() => undefined, 60_000));
@@ -66,12 +73,15 @@ export class TrackerTestObject extends DurableObject {
     } catch {
       // setTimeout throws once the runtime's limit is reached.
     }
+
     const second = handle.wait({ timeoutMs: 100 });
 
     const results = await Promise.all([first, second]);
+
     for (const timer of otherTimers) {
       clearTimeout(timer);
     }
+
     return {
       otherTimers: otherTimers.length,
       statuses: results.map(({ status }) => status),
@@ -81,6 +91,7 @@ export class TrackerTestObject extends DurableObject {
   release(id: string): boolean {
     const release = this.gates.get(id);
     release?.();
+
     return release !== undefined;
   }
 

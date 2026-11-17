@@ -86,5 +86,6 @@ export const decodeSnapshot = <Meta>(
     encodedSchema,
     JSON.parse(encoded)
   );
+
   return snapshot as unknown as TopologySnapshot<Meta>;
 };

@@ -15,9 +15,11 @@ export const resolveNamespace = <Target extends Rpc.DurableObjectBranded>(
   error: (message: string) => Error
 ): DurableObjectNamespace<Target> => {
   const namespace = config.namespace?.();
+
   if (namespace) {
     return namespace;
   }
+
   if (!config.exportName) {
     throw error(
       'Use the durability Vite plugin, exportName, or an explicit namespace to resolve the target'
@@ -25,6 +27,7 @@ export const resolveNamespace = <Target extends Rpc.DurableObjectBranded>(
   }
 
   const exported: unknown = Reflect.get(workerExports, config.exportName);
+
   if (
     exported === null ||
     (typeof exported !== 'object' && typeof exported !== 'function') ||
@@ -34,5 +37,6 @@ export const resolveNamespace = <Target extends Rpc.DurableObjectBranded>(
       `Export "${config.exportName}" is not a Durable Object namespace`
     );
   }
+
   return exported as DurableObjectNamespace<Target>;
 };

@@ -16,9 +16,11 @@ export const openList = (listId: string, render: (todos: Todo[]) => void) => {
 
   const reload = async () => {
     todos.clear();
+
     for (const todo of await conn.rpc.list()) {
       todos.set(todo.id, todo);
     }
+
     render([...todos.values()]);
   };
 

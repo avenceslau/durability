@@ -59,14 +59,17 @@ type RunRow = v.InferOutput<typeof runRowSchema>;
 const timeRowSchema = v.object({
   scheduled_time: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const dueRowSchema = v.object({
   scheduled_time: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   due_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const timedRowSchema = v.object({
   scheduled_time: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   next_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const serializedErrorSchema = v.object({
   name: v.string(),
   message: v.string(),
@@ -291,6 +294,7 @@ const assertNonNegative = (name: string, value: number): void => {
 // Bounds the firing time so adding the offset to a nominal time stays safe.
 const assertJitter = (name: string, value: number): void => {
   assertNonNegative(name, value);
+
   if (value > maxDelayMs) {
     throw new RangeError(`${name} must be at most ${maxDelayMs}`);
   }
@@ -299,18 +303,22 @@ const assertJitter = (name: string, value: number): void => {
 const pickJitter = (jitterMs: ScheduleDefinition['jitterMs'] = 0): number => {
   if (typeof jitterMs === 'number') {
     assertJitter('Schedule jitterMs', jitterMs);
+
     return jitterMs;
   }
+
   if (typeof jitterMs !== 'object' || jitterMs === null) {
     throw new TypeError('Schedule jitterMs must be a number or { maxMs }');
   }
 
   assertJitter('Schedule jitterMs.maxMs', jitterMs.maxMs);
+
   return Math.floor(Math.random() * (jitterMs.maxMs + 1));
 };
 
 const assertDelay = (name: string, value: number): void => {
   assertPositiveInteger(name, value);
+
   if (value > maxDelayMs) {
     throw new RangeError(`${name} must be at most ${maxDelayMs}`);
   }
@@ -352,11 +360,13 @@ export class DurabilitySchedule {
       'DurabilitySchedule',
       config.channel ?? defaultChannel
     );
+
     for (const name of ['nextOccurrence', 'run', 'onOutcome'] as const) {
       if (typeof config[name] !== 'function') {
         throw new TypeError(`Schedule requires a ${name} function`);
       }
     }
+
     this.#nextOccurrence = config.nextOccurrence;
     this.#run = config.run;
     this.#onOutcome = config.onOutcome;
@@ -418,6 +428,7 @@ export class DurabilitySchedule {
   /** The stored schedule, or `undefined` when none is set or it was cancelled. */
   get(): ScheduleState | undefined {
     const stored = readSchedule(this.#engine.sql, this.#channel);
+
     if (stored === undefined || stored.expression === null) {
       return undefined;
     }
@@ -438,18 +449,22 @@ export class DurabilitySchedule {
    */
   async set(definition: ScheduleDefinition): Promise<boolean> {
     const { expression, version } = definition;
+
     if (typeof expression !== 'string' || expression.length === 0) {
       throw new TypeError('Schedule expression must be a non-empty string');
     }
+
     assertNonNegative('Schedule version', version);
     const jitterMs = pickJitter(definition.jitterMs);
 
     // Even a no-op transaction reconciles the physical alarm.
     const applied = await this.#engine.transaction((sql) => {
       const stored = readSchedule(sql, this.#channel);
+
       if (stored !== undefined && stored.version >= version) {
         return false;
       }
+
       const nextAt = this.#nextAfter(expression, Date.now());
       writeSchedule(sql, this.#channel, {
         version,
@@ -457,9 +472,12 @@ export class DurabilitySchedule {
         next_at: nextAt ?? null,
         jitter_ms: jitterMs,
       });
+
       return true;
     });
+
     this.#wake();
+
     return applied;
   }
 
@@ -476,29 +494,38 @@ export class DurabilitySchedule {
   async reschedule(): Promise<boolean> {
     const changed = await this.#engine.transaction((sql) => {
       const schedule = readSchedule(sql, this.#channel);
+
       if (schedule === undefined || schedule.expression === null) {
         return false;
       }
+
       const now = Date.now();
       const dueAt = firesAt(schedule);
+
       if (dueAt !== undefined && dueAt <= now) {
         return false;
       }
+
       const nextAt =
         this.#nextAfter(schedule.expression, now - schedule.jitter_ms) ?? null;
+
       if (nextAt === schedule.next_at) {
         return false;
       }
+
       sql.exec(
         'UPDATE durability_schedule SET next_at = ? WHERE channel = ? AND id = 1',
         nextAt,
         this.#channel
       );
+
       return true;
     });
+
     if (changed) {
       this.#wake();
     }
+
     return changed;
   }
 
@@ -516,9 +543,11 @@ export class DurabilitySchedule {
     return this.#engine.transaction((sql) => {
       const stored = readSchedule(sql, this.#channel);
       const live = stored !== undefined && stored.expression !== null;
+
       if (version === undefined && !live) {
         return false;
       }
+
       if (
         version !== undefined &&
         stored !== undefined &&
@@ -526,12 +555,14 @@ export class DurabilitySchedule {
       ) {
         return false;
       }
+
       writeSchedule(sql, this.#channel, {
         version: version ?? stored?.version ?? 0,
         expression: null,
         next_at: null,
         jitter_ms: 0,
       });
+
       return live;
     });
   }
@@ -553,8 +584,10 @@ export class DurabilitySchedule {
         )
         .toArray()
     );
+
     const held: number[] = [];
     const pending: number[] = [];
+
     for (const row of rows) {
       if (
         this.#active.has(row.scheduled_time) ||
@@ -565,7 +598,9 @@ export class DurabilitySchedule {
         pending.push(row.next_at);
       }
     }
+
     const tick = firesAt(readSchedule(sql, this.#channel));
+
     if (tick !== undefined) {
       pending.push(tick);
     }
@@ -573,19 +608,23 @@ export class DurabilitySchedule {
     if (pending.length > 0) {
       return Math.min(...pending);
     }
+
     return held.length === 0 ? undefined : Math.min(...held);
   }
 
   #nextAfter(expression: string, after: number): number | undefined {
     const next = this.#nextOccurrence(expression, after);
+
     if (next === undefined) {
       return undefined;
     }
+
     if (!Number.isSafeInteger(next) || next <= after) {
       throw new RangeError(
         `nextOccurrence must return undefined or a safe integer after ${after}, got ${String(next)}`
       );
     }
+
     return next;
   }
 
@@ -618,6 +657,7 @@ export class DurabilitySchedule {
    */
   #hold(): Promise<void> {
     this.#wake();
+
     if (this.#loop) {
       return this.#loop;
     }
@@ -626,6 +666,7 @@ export class DurabilitySchedule {
       if (this.#loop === loop) {
         this.#loop = undefined;
       }
+
       // A loop that outlived its alarm invocation republishes the in-memory
       // timer it suppressed while holding.
       void this.#engine
@@ -634,7 +675,9 @@ export class DurabilitySchedule {
           reportFailure('durability.schedule.refresh_failed', {}, error)
         );
     });
+
     this.#loop = loop;
+
     return loop;
   }
 
@@ -643,9 +686,11 @@ export class DurabilitySchedule {
       this.#woken = false;
       // eslint-disable-next-line no-await-in-loop
       await this.#pass();
+
       if (this.#active.size === 0 && this.#delivering.size === 0) {
         return;
       }
+
       // eslint-disable-next-line no-await-in-loop
       await this.#sleep(this.#nextWakeAt());
     }
@@ -654,6 +699,7 @@ export class DurabilitySchedule {
   async #pass(): Promise<void> {
     await this.#interruptOrphans();
     this.#deliverDue();
+
     try {
       await this.#tick();
     } finally {
@@ -672,9 +718,11 @@ export class DurabilitySchedule {
     }
 
     let cancelTimeout: (() => void) | undefined;
+
     try {
       await new Promise<void>((resolve) => {
         this.#wakeSleeper = resolve;
+
         if (until !== undefined) {
           cancelTimeout = this.#engine.timer.schedule(
             resolve,
@@ -691,6 +739,7 @@ export class DurabilitySchedule {
   /** The next time the loop has timed work: a tick or an outcome retry. */
   #nextWakeAt(): number | undefined {
     const sql = this.#engine.sql;
+
     const times = v
       .parse(
         v.array(runRowSchema),
@@ -704,10 +753,13 @@ export class DurabilitySchedule {
       )
       .filter((row) => !this.#delivering.has(row.scheduled_time))
       .map((row) => row.next_at);
+
     const tick = firesAt(readSchedule(sql, this.#channel));
+
     if (tick !== undefined) {
       times.push(tick);
     }
+
     return times.length === 0 ? undefined : Math.min(...times);
   }
 
@@ -724,14 +776,17 @@ export class DurabilitySchedule {
           this.#channel
         )
       ).filter((time) => !this.#active.has(time));
+
     if (orphans(this.#engine.sql).length === 0) {
       return;
     }
 
     const error = serializeError(new ScheduledRunInterruptedError());
+
     const interrupted = await this.#engine.transaction((sql) => {
       const times = orphans(sql);
       const now = Date.now();
+
       for (const time of times) {
         sql.exec(
           `UPDATE durability_schedule_runs
@@ -743,8 +798,10 @@ export class DurabilitySchedule {
           time
         );
       }
+
       return times;
     });
+
     for (const time of interrupted) {
       this.#emit({
         ...this.#entity(time),
@@ -757,6 +814,7 @@ export class DurabilitySchedule {
 
   async #tick(): Promise<void> {
     const dueAt = firesAt(readSchedule(this.#engine.sql, this.#channel));
+
     if (dueAt === undefined || dueAt > Date.now()) {
       return;
     }
@@ -764,6 +822,7 @@ export class DurabilitySchedule {
     const due = await this.#reserveSlots((sql, free) => {
       const schedule = readSchedule(sql, this.#channel);
       const now = Date.now();
+
       if (
         schedule === undefined ||
         schedule.expression === null ||
@@ -774,18 +833,21 @@ export class DurabilitySchedule {
       }
 
       const scheduledTime = schedule.next_at;
+
       // Searching from nominal times keeps the offset from drifting; ticks
       // whose firing time already passed collapse into this run.
       const nextAt = this.#nextAfter(
         schedule.expression,
         Math.max(scheduledTime, now - schedule.jitter_ms)
       );
+
       sql.exec(
         'UPDATE durability_schedule SET next_at = ? WHERE channel = ? AND id = 1',
         nextAt ?? null,
         this.#channel
       );
       const queued = free <= 0;
+
       const [row] = v.parse(
         v.array(dueRowSchema),
         sql
@@ -803,14 +865,17 @@ export class DurabilitySchedule {
           )
           .toArray()
       );
+
       if (row === undefined) {
         return { reserve: [], result: undefined };
       }
+
       return {
         reserve: queued ? [] : [scheduledTime],
         result: { run: this.#describe(row), queued },
       };
     });
+
     if (due === undefined) {
       return;
     }
@@ -820,6 +885,7 @@ export class DurabilitySchedule {
       type: 'due',
       queued: due.queued,
     });
+
     if (!due.queued) {
       this.#start(due.run);
     }
@@ -829,6 +895,7 @@ export class DurabilitySchedule {
     if (this.#active.size >= this.#maxConcurrentRuns) {
       return;
     }
+
     const queued = this.#engine.sql
       .exec(
         `SELECT 1 FROM durability_schedule_runs
@@ -837,6 +904,7 @@ export class DurabilitySchedule {
         this.#channel
       )
       .toArray();
+
     if (queued.length === 0) {
       return;
     }
@@ -865,12 +933,15 @@ export class DurabilitySchedule {
                 )
                 .toArray()
             );
+
       return {
         reserve: rows.map((row) => row.scheduled_time),
         result: rows,
       };
     });
+
     started.sort((a, b) => a.scheduled_time - b.scheduled_time);
+
     for (const row of started) {
       this.#start(this.#describe(row));
     }
@@ -888,22 +959,27 @@ export class DurabilitySchedule {
     ) => { reserve: number[]; result: Result }
   ): Promise<Result> {
     let reserved: number[] = [];
+
     try {
       return await this.#engine.transaction((sql) => {
         const { reserve, result } = mark(
           sql,
           this.#maxConcurrentRuns - this.#active.size
         );
+
         reserved = reserve;
+
         for (const time of reserve) {
           this.#active.add(time);
         }
+
         return result;
       });
     } catch (error) {
       for (const time of reserved) {
         this.#active.delete(time);
       }
+
       throw error;
     }
   }
@@ -914,13 +990,16 @@ export class DurabilitySchedule {
     this.#emit({ ...this.#entity(scheduledTime), type: 'started' });
 
     const controller = new AbortController();
+
     const handler = Promise.resolve().then(() =>
       this.#run({ ...run, signal: controller.signal })
     );
+
     const recorded = this.#engine.timer
       .withTimeout(handler, this.#runTimeoutMs, () => {
         const error = new ScheduledRunTimeoutError(this.#runTimeoutMs);
         controller.abort(error);
+
         return error;
       })
       .then(
@@ -945,6 +1024,7 @@ export class DurabilitySchedule {
       .then(() => {
         this.#active.delete(scheduledTime);
         this.#wake();
+
         return this.#startQueued();
       })
       .catch((error) =>
@@ -962,6 +1042,7 @@ export class DurabilitySchedule {
     startedAt: number
   ): Promise<void> {
     const error = outcome.status === 'errored' ? outcome.error : undefined;
+
     const recorded = await this.#engine.transaction(
       (sql) =>
         scheduledTimes(
@@ -978,6 +1059,7 @@ export class DurabilitySchedule {
           )
         ).length > 0
     );
+
     if (!recorded) {
       return;
     }
@@ -1005,6 +1087,7 @@ export class DurabilitySchedule {
         )
         .toArray()
     );
+
     for (const row of due) {
       this.#deliver(this.#describe(row), outcomeOf(row), row.attempt + 1);
     }
@@ -1016,6 +1099,7 @@ export class DurabilitySchedule {
     attempt: number
   ): void {
     const { scheduledTime } = run;
+
     if (this.#delivering.has(scheduledTime)) {
       return;
     }
@@ -1050,6 +1134,7 @@ export class DurabilitySchedule {
       );
     } catch (failure) {
       await this.#failDelivery(run, attempt, failure);
+
       return;
     }
 
@@ -1069,6 +1154,7 @@ export class DurabilitySchedule {
     failure: unknown
   ): Promise<void> {
     const error = serializeError(failure);
+
     if (attempt >= this.#maxOutcomeAttempts) {
       await this.#engine.transaction((sql) => {
         sql.exec(
@@ -1089,6 +1175,7 @@ export class DurabilitySchedule {
         attempt,
         error,
       });
+
       return;
     }
 
@@ -1116,12 +1203,14 @@ export class DurabilitySchedule {
   #retryDelay(attempt: number): number {
     try {
       const delay = Math.round(this.#delay(attempt));
+
       if (Number.isSafeInteger(delay) && delay >= 0 && delay <= maxDelayMs) {
         return delay;
       }
     } catch (error) {
       reportFailure('durability.schedule.retry_policy_failed', {}, error);
     }
+
     return fallbackRetryMs;
   }
 }

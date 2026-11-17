@@ -20,14 +20,17 @@ const loadDurability = async (dev: boolean | undefined) => {
   if (dev !== undefined) {
     vi.stubGlobal('__DURABILITY_DEV__', dev);
   }
+
   vi.resetModules();
   const { Durability } = await import('./index');
+
   return Durability;
 };
 
 const runOperation = async (dev: boolean | undefined) => {
   const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
   const Durability = await loadDurability(dev);
+
   const durability = new Durability({
     context: contextFor(new FakeStorage()),
     handlers: {
@@ -90,11 +93,13 @@ describe('dev mode', () => {
         query: expect.stringContaining('INSERT INTO durability_calls'),
       })
     );
+
     const lifecycle = entries.find(
       (entry) =>
         entry.event === 'durability.dev.lifecycle' &&
         entry['outcome'] === 'completed'
     );
+
     expect(lifecycle).toMatchObject({
       type: 'attempt_settled',
       outcome: 'completed',
@@ -117,7 +122,9 @@ describe('dev mode', () => {
     const debug = vi
       .spyOn(console, 'debug')
       .mockImplementation(() => undefined);
+
     const Durability = await loadDurability(true);
+
     const durability = new Durability({
       context: contextFor(new FakeStorage()),
       retries: { maxAttempts: 1 },
@@ -140,10 +147,12 @@ describe('dev mode', () => {
       v.array(traceEntrySchema),
       debug.mock.calls.map(([entry]) => entry)
     );
+
     const call = entries.find(
       (entry) =>
         entry.event === 'durability.dev.call' && entry.method === 'memoize'
     );
+
     expect(call).toMatchObject({
       owner: 'durability_calls',
       key: 'step-1',

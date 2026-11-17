@@ -37,6 +37,7 @@ const {
 } = Astro.props;
 
 const lang = config.locale ?? "en";
+
 // Per-page agent-index pointer. For pages in non-primary or version
 // collections, this resolves to `/<prefix>/llms.txt` (e.g. `/v0/llms.txt`
 // for a v0 docs page, `/blog/llms.txt` for a blog post). Falls back to
@@ -45,19 +46,26 @@ const lang = config.locale ?? "en";
 // llms.txt isn't emitted for them); suppress the AgentDirective entirely.
 const versionStatusKey =
   apiVersion && collection ? `${collection}@${apiVersion}` : collection;
+
 const versionStatus = versionStatusKey
   ? await getVersionStatus(versionStatusKey)
   : null;
+
 const isHiddenVersion = versionStatus?.isHidden === true;
+
 const llmsIndexPath = collection
   ? await getCollectionLlmsUrl(collection)
   : "/llms.txt";
+
 const baseUrl = import.meta.env.BASE_URL;
 const basedLlmsUrl = withBase(llmsIndexPath, baseUrl);
+
 const llmsUrl = Astro.site
   ? new URL(basedLlmsUrl, Astro.site).href
   : basedLlmsUrl;
+
 const basedMarkdownUrl = markdownUrl ? withBase(markdownUrl, baseUrl) : undefined;
+
 const resolvedMarkdownUrl =
   basedMarkdownUrl && Astro.site
     ? new URL(basedMarkdownUrl, Astro.site).href
@@ -81,8 +89,10 @@ const resolvedMarkdownUrl =
 
         const readPref = () => {
           if (unsaved) return unsaved;
+
           try {
             const v = localStorage.getItem(KEY);
+
             return v === "dark" || v === "light" ? v : null;
           } catch {
             return null;
@@ -94,6 +104,7 @@ const resolvedMarkdownUrl =
         const applyTheme = () => {
           const root = document.documentElement;
           const mode = resolveMode();
+
           if (mode === "dark") root.setAttribute("data-mode", "dark");
           else root.removeAttribute("data-mode");
           root.style.colorScheme = mode;
@@ -151,7 +162,9 @@ const resolvedMarkdownUrl =
 
     <script>
       import { codeCopy, headingAnchors } from "@cloudflare/nimbus-docs/client";
+
       codeCopy();
+
       headingAnchors();
     </script>
   </body>

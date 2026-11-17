@@ -26,6 +26,7 @@ export class ChannelsTestObject extends DurableObject {
     await this.app.work({ id, payload: null });
     await this.library.work({ id, payload: null });
     await this.app.alarm();
+
     return {
       app: await this.app.work.getResult(id),
       library: await this.library.work.getResult(id),

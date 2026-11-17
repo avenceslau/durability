@@ -70,27 +70,35 @@ export function sourceExcerpt(
   end: string
 ): SourceExcerpt {
   const offset = source.indexOf(start);
+
   if (offset < 0 || source.indexOf(start, offset + start.length) >= 0) {
     throw new Error(`${file}: source anchor must occur exactly once: ${start}`);
   }
+
   let endOffset = source.indexOf(end, offset + start.length);
+
   // End markers represent complete source lines, not an inner brace whose
   // indentation happens to contain the requested suffix.
   while (endOffset >= 0) {
     const after = source[endOffset + end.length];
+
     if (
       (endOffset === 0 || source[endOffset - 1] === '\n') &&
       (after === undefined || after === '\n' || after === '\r')
     ) {
       break;
     }
+
     endOffset = source.indexOf(end, endOffset + 1);
   }
+
   if (endOffset < 0) {
     throw new Error(`${file}: missing complete ending source anchor: ${end}`);
   }
+
   const lineOffset = source.lastIndexOf('\n', offset) + 1;
   const raw = source.slice(lineOffset, endOffset + end.length);
+
   return {
     id,
     title,
@@ -108,6 +116,7 @@ export function sourceFocus(
   end = start
 ): ArchitectureStep['source'] {
   const fromOffset = excerpt.code.indexOf(start);
+
   if (
     fromOffset < 0 ||
     excerpt.code.indexOf(start, fromOffset + start.length) >= 0
@@ -116,10 +125,13 @@ export function sourceFocus(
       `${excerpt.file}: focus anchor must occur exactly once: ${start}`
     );
   }
+
   const toOffset = excerpt.code.indexOf(end, fromOffset);
+
   if (toOffset < 0) {
     throw new Error(`${excerpt.file}: missing focus ending: ${end}`);
   }
+
   return {
     excerpt: excerpt.id,
     from:
@@ -160,8 +172,10 @@ export function scenarioDiagram(
           typeof token === 'string' &&
           (token.startsWith('focus:') || token.startsWith('flow:'))
       );
+
       const focus =
         spotlight ?? introducedNodes(model, step).map((id) => `focus:${id}`)[0];
+
       return [...(index === 0 ? ['*'] : []), ...(focus ? [focus] : [])];
     }),
   });
@@ -184,6 +198,7 @@ export function previewDiagram(
   const flows = Object.keys(model.diagram.flows ?? {}).filter((flow) =>
     model.diagram.edges?.some((edge) => edge.flow === flow)
   );
+
   return defineArchitecture({
     ...model.diagram,
     stages: [['*'], ...flows.map((flow) => [`flow:${flow}`])],
@@ -200,24 +215,29 @@ export function stepNodes(
   introduced: string[] = []
 ): string[] {
   const state = diagram.stages[index]!;
+
   const shown = diagram.nodes
     .map((node) => node.id)
     .filter((id) => state.visible.has(id));
 
   if (state.spotlight?.kind === 'focus') {
     const focused = state.spotlight.id;
+
     return [
       focused,
       ...shown.filter((id) => id !== focused && state.lit.has(id)),
     ];
   }
+
   if (state.spotlight) {
     const lit = shown.filter((id) => state.lit.has(id));
+
     return [
       ...lit.filter((id) => introduced.includes(id)),
       ...lit.filter((id) => !introduced.includes(id)),
     ];
   }
+
   return shown;
 }
 
@@ -232,6 +252,7 @@ export function validateWalkthrough(
       throw new Error(`${model.id}: invalid or duplicate ${kind} IDs`);
     }
   };
+
   unique([model.id], 'walkthrough');
   unique(
     model.excerpts.map((excerpt) => excerpt.id),
@@ -244,15 +265,19 @@ export function validateWalkthrough(
 
   const nodes = Object.keys(model.diagram.nodes);
   const excerpts = new Set(model.excerpts.map((excerpt) => excerpt.id));
+
   for (const id of nodes) {
     const detail = model.details[id];
+
     if (!detail) {
       throw new Error(`${model.id}: node ${id} has no details`);
     }
+
     if (detail.source && !excerpts.has(detail.source)) {
       throw new Error(`${model.id}: node ${id} references a missing source`);
     }
   }
+
   for (const id of Object.keys(model.details)) {
     if (!nodes.includes(id)) {
       throw new Error(`${model.id}: details for unknown node ${id}`);
@@ -262,6 +287,7 @@ export function validateWalkthrough(
   if (!model.scenarios.length || !model.excerpts.length) {
     throw new Error(`${model.id}: a walkthrough needs source and scenarios`);
   }
+
   for (const excerpt of model.excerpts) {
     if (
       !model.scenarios.some((scenario) =>
@@ -276,10 +302,12 @@ export function validateWalkthrough(
 
   overviewDiagram(model);
   previewDiagram(model);
+
   for (const scenario of model.scenarios) {
     if (!scenario.steps.length) {
       throw new Error(`${model.id}: empty scenario ${scenario.id}`);
     }
+
     unique(
       scenario.steps.map((step) => step.id),
       'step'
@@ -290,17 +318,22 @@ export function validateWalkthrough(
       stages: scenario.steps.map((step) => step.stage),
     });
     const diagram = scenarioDiagram(model, scenario);
+
     for (const [index, step] of scenario.steps.entries()) {
       const excerpt = model.excerpts.find(
         (entry) => entry.id === step.source.excerpt
       );
+
       if (!excerpt) {
         throw new Error(`${model.id}/${step.id}: missing source excerpt`);
       }
+
       if (stepNodes(diagram, index).length === 0) {
         throw new Error(`${model.id}/${step.id}: the step shows no nodes`);
       }
+
       const last = excerpt.startLine + excerpt.code.split('\n').length - 1;
+
       if (
         step.source.from < excerpt.startLine ||
         step.source.to > last ||
@@ -310,6 +343,7 @@ export function validateWalkthrough(
       }
     }
   }
+
   return model;
 }
 
@@ -330,12 +364,15 @@ export function sourceFiles(
   model: ArchitectureWalkthrough
 ): { file: string; code: string }[] {
   const files = new Map<string, string>();
+
   for (const excerpt of model.excerpts) {
     if (files.has(excerpt.file) && files.get(excerpt.file) !== excerpt.source) {
       throw new Error(`${model.id}: conflicting source for ${excerpt.file}`);
     }
+
     files.set(excerpt.file, excerpt.source);
   }
+
   return [...files].map(([file, code]) => ({ file, code }));
 }
 

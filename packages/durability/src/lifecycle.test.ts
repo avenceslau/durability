@@ -10,6 +10,7 @@ afterEach(() => {
 describe('lifecycle hooks', () => {
   it('fans events out to attached hooks with typed completed results', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -17,17 +18,21 @@ describe('lifecycle hooks', () => {
       },
       includeResults: true,
     });
+
     const configured: string[] = [];
     const results: number[] = [];
+
     const detach = durability.lifecycle((event) => {
       if (event.type === 'attempt_settled' && event.outcome === 'completed') {
         expectTypeOf(event.result).toEqualTypeOf<number | undefined>();
         expectTypeOf(event.operation).toEqualTypeOf<'work'>();
+
         if (event.result !== undefined) {
           results.push(event.result);
         }
       }
     });
+
     durability.lifecycle((event) => {
       configured.push(event.type);
     });

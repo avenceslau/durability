@@ -19,9 +19,11 @@ type ConfiguredBindingKind = 'namespace' | 'stub';
 
 function isEnvRoot(scopes: ScopeIndex, value: unknown, scope: Scope): boolean {
   const node = unwrapExpression(value);
+
   if (!node) {
     return false;
   }
+
   if (node.type === 'Identifier' && typeof node.name === 'string') {
     return (
       resolveBinding(scopes.nodeScopes.get(node) ?? scope, node.name)?.kind ===
@@ -30,6 +32,7 @@ function isEnvRoot(scopes: ScopeIndex, value: unknown, scope: Scope): boolean {
   }
 
   let trustsThisEnv = false;
+
   for (
     let current: Scope | undefined = scope;
     current;
@@ -40,6 +43,7 @@ function isEnvRoot(scopes: ScopeIndex, value: unknown, scope: Scope): boolean {
       break;
     }
   }
+
   return (
     trustsThisEnv &&
     memberExpressionTypes.has(node.type) &&
@@ -55,9 +59,11 @@ function kindOfEnvProperty(
   if (!name) {
     return undefined;
   }
+
   if (bindings.durableObjectBindingNames.has(name)) {
     return 'namespace';
   }
+
   return bindings.stubBindingNames.has(name) ? 'stub' : undefined;
 }
 
@@ -72,24 +78,29 @@ export function configuredBindingKind(
   scope: Scope
 ): ConfiguredBindingKind | undefined {
   const node = unwrapExpression(value);
+
   if (!node) {
     return undefined;
   }
+
   if (node.type === 'Identifier' && typeof node.name === 'string') {
     const binding = resolveBinding(
       scopes.nodeScopes.get(node) ?? scope,
       node.name
     );
+
     return binding?.kind === 'namespace' || binding?.kind === 'stub'
       ? binding.kind
       : undefined;
   }
+
   if (
     !memberExpressionTypes.has(node.type) ||
     !isEnvRoot(scopes, node.object, scope)
   ) {
     return undefined;
   }
+
   return kindOfEnvProperty(bindings, propertyName(node));
 }
 
@@ -101,17 +112,21 @@ function setKind(
   if (!binding || !kind || binding.kind === kind) {
     return false;
   }
+
   binding.kind = kind;
   binding.wrapReferences = wrapReferences;
+
   return true;
 }
 
 function destructuredPropertyName(property: SyntaxNode): string | undefined {
   const key = syntaxNode(property.key);
+
   const literal =
     key?.type === 'StringLiteral' && typeof key.value === 'string'
       ? key.value
       : undefined;
+
   return property.computed === true
     ? literal
     : (identifierName(key) ?? literal);
@@ -126,10 +141,12 @@ function markDestructuredBindings(
   const properties = Array.isArray(pattern.properties)
     ? pattern.properties
     : [];
+
   let changed = false;
 
   for (const propertyValue of properties) {
     const property = syntaxNode(propertyValue);
+
     if (!property || property.type !== 'ObjectProperty') {
       continue;
     }
@@ -138,15 +155,19 @@ function markDestructuredBindings(
       bindings,
       destructuredPropertyName(property)
     );
+
     const locals = bindingIdentifiers(property.value);
+
     const localName =
       locals.length === 1 ? identifierName(locals[0]) : undefined;
+
     const binding = localName ? scope.bindings.get(localName) : undefined;
 
     if (setKind(binding, kind, kind === 'stub')) {
       changed = true;
     }
   }
+
   return changed;
 }
 
@@ -157,6 +178,7 @@ function markDeclarator(
   scope: Scope
 ): boolean {
   const pattern = syntaxNode(declarator.id);
+
   if (!pattern) {
     return false;
   }
@@ -164,12 +186,14 @@ function markDeclarator(
   if (pattern.type === 'Identifier') {
     const name = identifierName(pattern);
     const binding = name ? scope.bindings.get(name) : undefined;
+
     const kind = configuredBindingKind(
       scopes,
       bindings,
       declarator.init,
       scope
     );
+
     return setKind(binding, kind, false);
   }
 
@@ -179,6 +203,7 @@ function markDeclarator(
   ) {
     return markDestructuredBindings(bindings, pattern, scope);
   }
+
   return false;
 }
 
@@ -192,6 +217,7 @@ export function markConfiguredBindings(
 ): void {
   for (let changed = true; changed; ) {
     changed = false;
+
     for (const { node, scope } of scopes.declarators) {
       if (markDeclarator(scopes, bindings, node, scope)) {
         changed = true;

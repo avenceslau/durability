@@ -26,6 +26,7 @@ const emailDelivery = sourceExcerpt(
   'export class EmailDelivery extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const clientConfig = sourceExcerpt(
   example,
   exampleFile,
@@ -34,6 +35,7 @@ const clientConfig = sourceExcerpt(
   'export const routing = DurabilityRouting.client({',
   '});'
 );
+
 const redrive = sourceExcerpt(
   example,
   exampleFile,
@@ -42,6 +44,7 @@ const redrive = sourceExcerpt(
   'export async function redrive(env: Env, after: number): Promise<number> {',
   '  return accepted;\n}'
 );
+
 const fetchHandler = sourceExcerpt(
   example,
   exampleFile,
@@ -50,6 +53,7 @@ const fetchHandler = sourceExcerpt(
   'export default {',
   '} satisfies ExportedHandler<Env>;'
 );
+
 const stub = sourceExcerpt(
   routing,
   routingFile,
@@ -58,6 +62,7 @@ const stub = sourceExcerpt(
   '    const client = new RoutingClient<Input, Value, Context>({',
   '        return config.invoke(stub, input);\n      },'
 );
+
 const resolve = sourceExcerpt(
   target,
   targetFile,
@@ -66,6 +71,7 @@ const resolve = sourceExcerpt(
   'export const resolveNamespace = <Target extends Rpc.DurableObjectBranded>(',
   '  return exported as DurableObjectNamespace<Target>;\n};'
 );
+
 const push = sourceExcerpt(
   routingClient,
   routingClientFile,
@@ -74,6 +80,7 @@ const push = sourceExcerpt(
   '  async push(input: Input, context?: Context): Promise<EnqueueResult<Value>> {',
   '    return response;\n  }'
 );
+
 const select = sourceExcerpt(
   routingClient,
   routingClientFile,
@@ -82,6 +89,7 @@ const select = sourceExcerpt(
   '  #select(observations: ReadonlyMap<string, LoadSnapshot>): string {',
   '    return pressure(a) <= pressure(b) ? first : second;\n  }'
 );
+
 const resize = sourceExcerpt(
   routingClient,
   routingClientFile,
@@ -90,6 +98,7 @@ const resize = sourceExcerpt(
   '  #resize(load: LoadSnapshot): void {',
   '      this.#lastResize = now;\n    }\n  }'
 );
+
 const loadState = sourceExcerpt(
   load,
   loadFile,
@@ -98,6 +107,7 @@ const loadState = sourceExcerpt(
   'export class RoutingLoad {',
   '      this.buckets[direction].set(slot, bucket);\n    };\n  }'
 );
+
 const snapshot = sourceExcerpt(
   load,
   loadFile,
@@ -106,6 +116,7 @@ const snapshot = sourceExcerpt(
   '  snapshot(pendingDeliveries: number): LoadSnapshot {',
   '    };\n  }'
 );
+
 const enqueue = sourceExcerpt(
   fanout,
   fanoutFile,
@@ -114,6 +125,7 @@ const enqueue = sourceExcerpt(
   "    const finish = this.#routing.begin('inbound');",
   '    return { success: true, value: entries.map(({ id }) => id), load };'
 );
+
 const pendingRows = sourceExcerpt(
   fanout,
   fanoutFile,

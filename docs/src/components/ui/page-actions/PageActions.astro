@@ -10,6 +10,7 @@ interface Props extends HTMLAttributes<"div"> {
 }
 
 const { markdownUrl, lastUpdated, class: className, ...attrs } = Astro.props;
+
 const resolvedMarkdownUrl = markdownUrl
   ? withBase(markdownUrl, import.meta.env.BASE_URL)
   : undefined;

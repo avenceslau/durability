@@ -29,9 +29,11 @@ export class Pipeline extends DurableObject<Env> {
           `https://orders/${payload.orderId}`,
           { headers: { 'Idempotency-Key': id }, signal }
         );
+
         if (!response.ok) {
           throw new Error(`Order lookup failed with ${response.status}`);
         }
+
         return response.json();
       },
     },
@@ -69,6 +71,7 @@ export class Pipeline extends DurableObject<Env> {
       if (event.type === 'registered') {
         return this.publish(event, { status: 'pending' });
       }
+
       if (
         event.type === 'attempt_settled' &&
         event.outcome === 'completed' &&
@@ -79,12 +82,14 @@ export class Pipeline extends DurableObject<Env> {
           result: event.result,
         });
       }
+
       if (
         (event.type === 'attempt_settled' && event.outcome === 'failed') ||
         event.type === 'terminal'
       ) {
         return this.publish(event, { status: 'failed', error: event.error });
       }
+
       return undefined;
     });
   }
@@ -125,9 +130,11 @@ export class Pipeline extends DurableObject<Env> {
    */
   async track(orderId: string) {
     const handle = await this.tracker.get('jobs', `import:${orderId}`);
+
     if (!handle) {
       throw new Error(`Order "${orderId}" was never imported`);
     }
+
     return handle;
   }
 

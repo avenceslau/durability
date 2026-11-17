@@ -79,6 +79,7 @@ const base: ArchitectureDefinition = {
 function stage(index: number, definition: ArchitectureDefinition = base): StageState {
   const state = defineArchitecture(definition).stages[index]
   assert.ok(state !== undefined)
+
   return state
 }
 
@@ -157,6 +158,7 @@ test("manual nodes stay put and their edges run border to border with heads and 
     ...base,
     layout: "manual",
   })
+
   const state = diagram.stages[3]
   const edge = diagram.edges.find(({ id }) => id === "api->engine1")
   assert.ok(state !== undefined && edge !== undefined)
@@ -165,8 +167,10 @@ test("manual nodes stay put and their edges run border to border with heads and 
     const view = state.nodes.get(id)
     const center = state.layout.nodes.get(id)
     assert.ok(view !== undefined && center !== undefined)
+
     return nodeRect(view, center, state.layout.scale)
   }
+
   const route = state.layout.edges.get(edge.id)
   assert.ok(route !== undefined)
 
@@ -191,6 +195,7 @@ test("set tokens change what a node shows from their stage on", () => {
       ["engine2"],
     ]),
   )
+
   const labels = diagram.stages.map((state) => state.nodes.get("engine1")?.label)
   const replicas = diagram.stages.map((state) => state.nodes.get("engine1")?.replicas)
 

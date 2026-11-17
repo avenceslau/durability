@@ -26,6 +26,7 @@ const coordinator = sourceExcerpt(
   'export class TopologyCoordinator extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const shard = sourceExcerpt(
   coordinatorWorker,
   workerFile,
@@ -34,6 +35,7 @@ const shard = sourceExcerpt(
   'export class TopologyShard extends DurableObject<Env> {',
   '    });\n  }'
 );
+
 const construct = sourceExcerpt(
   topology,
   topologyFile,
@@ -42,6 +44,7 @@ const construct = sourceExcerpt(
   '    const scheduler = config.scheduler ?? new DurabilityScheduler(config);',
   '            this.#deliver(name, channel, entries, timeoutMs),'
 );
+
 const update = sourceExcerpt(
   topology,
   topologyFile,
@@ -50,6 +53,7 @@ const update = sourceExcerpt(
   '  async update(',
   '    return { snapshot, published: await this.#publishNow(group) };\n  }'
 );
+
 const transaction = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -58,6 +62,7 @@ const transaction = sourceExcerpt(
   '  async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {',
   '    return result;\n  }'
 );
+
 const stageDeliveries = sourceExcerpt(
   topology,
   topologyFile,
@@ -66,6 +71,7 @@ const stageDeliveries = sourceExcerpt(
   '  #stageDeliveries(',
   '          value: deserialize(value),\n        });\n      }\n    }\n  }'
 );
+
 const publish = sourceExcerpt(
   topology,
   topologyFile,
@@ -74,6 +80,7 @@ const publish = sourceExcerpt(
   '  async #publishSnapshots(',
   '          entry.retry(Math.min(outstandingUntil - Date.now(), maxTimeoutMs));\n        }\n      })\n    );\n  }'
 );
+
 const landing = sourceExcerpt(
   topology,
   topologyFile,
@@ -82,6 +89,7 @@ const landing = sourceExcerpt(
   ' * How long after its timeout an abandoned publisher write is assumed able to',
   '  return until ?? undefined;\n};'
 );
+
 const deliver = sourceExcerpt(
   topology,
   topologyFile,
@@ -90,6 +98,7 @@ const deliver = sourceExcerpt(
   '  async #deliver(',
   '          entry.retry();\n        }\n      })\n    );\n  }'
 );
+
 const runBatch = sourceExcerpt(
   outbox,
   outboxFile,
@@ -98,6 +107,7 @@ const runBatch = sourceExcerpt(
   '  async #runBatch(key?: string): Promise<void> {',
   '      return claimed;\n    });'
 );
+
 const clientGet = sourceExcerpt(
   client,
   clientFile,
@@ -106,6 +116,7 @@ const clientGet = sourceExcerpt(
   '  get(group: string): Promise<TopologyView<Meta>> {',
   '    return run;\n  }'
 );
+
 const clientLoad = sourceExcerpt(
   client,
   clientFile,
@@ -114,6 +125,7 @@ const clientLoad = sourceExcerpt(
   '  async #load(group: string): Promise<TopologyView<Meta>> {',
   '    return this.#fallback(group, entry);\n  }'
 );
+
 const clientRead = sourceExcerpt(
   client,
   clientFile,
@@ -122,6 +134,7 @@ const clientRead = sourceExcerpt(
   '  async #read(',
   "      return { failure: { reason: 'invalid', cause } };\n    }\n  }"
 );
+
 const decode = sourceExcerpt(
   snapshot,
   snapshotFile,
@@ -130,6 +143,7 @@ const decode = sourceExcerpt(
   'const encodedSchema = v.object({',
   '  return snapshot as unknown as TopologySnapshot<Meta>;\n};'
 );
+
 const clientFallback = sourceExcerpt(
   client,
   clientFile,

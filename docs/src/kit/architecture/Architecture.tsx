@@ -47,6 +47,7 @@ const reducedMotion = "(prefers-reduced-motion: reduce)"
 function subscribeReducedMotion(onChange: () => void): () => void {
   const query = window.matchMedia(reducedMotion)
   query.addEventListener("change", onChange)
+
   return () => query.removeEventListener("change", onChange)
 }
 
@@ -78,6 +79,7 @@ function useStageFrame(diagram: ArchitectureDiagram, state: StageState, timing: 
     if (reduceMotion || shownDiagram.current !== diagram) {
       shownDiagram.current = diagram
       show(settled)
+
       return
     }
 
@@ -86,6 +88,7 @@ function useStageFrame(diagram: ArchitectureDiagram, state: StageState, timing: 
 
     if (plan.duration === 0) {
       show(settled)
+
       return
     }
 
@@ -97,6 +100,7 @@ function useStageFrame(diagram: ArchitectureDiagram, state: StageState, timing: 
 
       if (elapsed >= plan.duration) {
         show(settled)
+
         return
       }
 
@@ -105,6 +109,7 @@ function useStageFrame(diagram: ArchitectureDiagram, state: StageState, timing: 
     }
 
     handle = requestAnimationFrame(tick)
+
     return () => cancelAnimationFrame(handle)
   }, [diagram, state, settled, timing, reduceMotion])
 
@@ -356,6 +361,7 @@ function NodeShape({ frame, part, holds }: {
   readonly holds: number
 }): React.JSX.Element {
   const [width, height] = frame.size
+
   const rect: Rect = {
     x: -width / 2,
     y: -height / 2,
@@ -363,6 +369,7 @@ function NodeShape({ frame, part, holds }: {
     height,
     radius: NODE.radius,
   }
+
   const before = frame.previous ?? frame.view
   const mix = frame.previous === undefined ? 1 : frame.mix
   const oldLayers = stackOffset(before.replicas) / NODE.replicaOffset
@@ -370,6 +377,7 @@ function NodeShape({ frame, part, holds }: {
   const layers = Math.max(oldLayers, newLayers)
   // Back cards first, furthest first, so the front card covers them.
   const backs = Array.from({ length: layers }, (_, index) => layers - index)
+
   const contents = [
     {
       view: before,
@@ -390,6 +398,7 @@ function NodeShape({ frame, part, holds }: {
             x: rect.x + layer * NODE.replicaOffset,
             y: rect.y - layer * NODE.replicaOffset,
           }
+
           const opacity = (layer <= oldLayers ? 1 - mix : 0) + (layer <= newLayers ? mix : 0)
 
           return (
@@ -511,6 +520,7 @@ export function Architecture({
   selectedNode,
 }: ArchitectureProps): React.JSX.Element {
   const { move = DEFAULT_TIMING.move, appear = DEFAULT_TIMING.appear, draw = DEFAULT_TIMING.draw } = timing ?? {}
+
   const phases = useMemo(
     () => ({
       move,
@@ -522,15 +532,18 @@ export function Architecture({
 
   const lastStage = diagram.stages.length - 1
   const index = Math.min(Math.max(stage ?? step ?? 0, 0), lastStage)
+
   // Clicks hold through every build; the deck mounts each slide afresh, which clears them.
   const [clicked, setClicked] = useState<{
     readonly diagram: ArchitectureDiagram
     readonly clicks: CompositeClicks
   }>()
+
   const clicks = clicked?.diagram === diagram ? clicked.clicks : new Map<string, boolean>()
   const state = shownStage(diagram, index, clicks)
   const svg = useRef<SVGSVGElement>(null)
   const refocus = useRef<string>(undefined)
+
   const toggle = (id: string, keyboard: boolean): void => {
     refocus.current = keyboard ? id : undefined
     setClicked({
@@ -558,9 +571,11 @@ export function Architecture({
   })
   const { spotlight } = state
   const focusId = spotlight?.kind === "focus" ? spotlight.id : undefined
+
   const shownLabels = diagram.nodes
     .filter((node) => state.visible.has(node.id))
     .map((node) => state.nodes.get(node.id)?.label ?? node.label)
+
   const description = [
     `Shows ${shownLabels.join(", ")}.`,
     spotlight?.kind === "flow" ? `Highlights the ${spotlight.label} flow.` : "",
@@ -657,6 +672,7 @@ export function Architecture({
 
           const { rect, scale } = groupFrame
           const title = group.composite ? (state.nodes.get(group.id)?.label ?? group.label) : group.label
+
           const box = (
             <>
               <rect

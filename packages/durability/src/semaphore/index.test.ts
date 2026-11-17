@@ -14,6 +14,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -56,10 +57,13 @@ describe('semaphore', () => {
     > = {}
   ) => {
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: { storage: storage as unknown as DurableObjectStorage },
     });
+
     const events: DurabilitySemaphoreEvent[] = [];
+
     const semaphore = new DurabilitySemaphoreServer({
       scheduler,
       limit: 10,
@@ -68,20 +72,25 @@ describe('semaphore', () => {
       },
       ...options,
     } as DurabilitySemaphoreConfig);
+
     /** Sends a request and runs the round it joins. */
     const round = async (...requests: PermitRequest[]) => {
       const replies = requests.map((message) => semaphore.handle(message));
       await vi.advanceTimersByTimeAsync(2_000);
+
       return Promise.all(replies) as Promise<PermitGrant[]>;
     };
+
     const grantOf = (message: PermitRequest) =>
       semaphore.handle(message) as Promise<PermitGrant>;
+
     return { storage, scheduler, semaphore, events, round, grantOf };
   };
 
   it('allocates one round in arrival order and attributes the limit', async () => {
     const { semaphore, round, events } = fixture();
     const start = Date.now();
+
     const [late, early] = await round(
       request('late', [{ group: 'g', count: 6, oldestAt: 200 }]),
       request('early', [{ group: 'g', count: 6, oldestAt: 100 }])
@@ -111,11 +120,14 @@ describe('semaphore', () => {
         if (group === 'broken') {
           throw new Error('lookup failed');
         }
+
         return group === 'small' ? 2 : undefined;
       },
       canGrant: (group) => group !== 'denied',
     });
+
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
     const [grant] = await round(
       request('c', [
         { group: 'small', count: 5, oldestAt: 1 },
@@ -139,10 +151,13 @@ describe('semaphore', () => {
 
   it('applies claim and release reports as clamped high-water marks', async () => {
     const { semaphore, round } = fixture();
+
     const [grant] = await round(
       request('c', [{ group: 'g', count: 4, oldestAt: 1 }])
     );
+
     const grantId = grant!.grants[0]!.grantId;
+
     const sync = (clientId: string, claimed: number, released: number) =>
       semaphore.handle({
         type: 'sync',
@@ -175,9 +190,11 @@ describe('semaphore', () => {
     const { semaphore, round, events } = fixture({
       grantTimeoutMs: 5_000,
     });
+
     const [grant] = await round(
       request('c', [{ group: 'g', count: 4, oldestAt: 1 }])
     );
+
     const grantId = grant!.grants[0]!.grantId;
     await semaphore.handle({
       type: 'sync',
@@ -212,9 +229,11 @@ describe('semaphore', () => {
 
   it('frees reported releases before allocating in the same round', async () => {
     const { round } = fixture({ limit: 4 });
+
     const [first] = await round(
       request('a', [{ group: 'g', count: 4, oldestAt: 1 }])
     );
+
     const grantId = first!.grants[0]!.grantId;
 
     const [second] = await round(
@@ -224,6 +243,7 @@ describe('semaphore', () => {
         [{ grantId, claimed: 4, released: 3 }]
       )
     );
+
     expect(given(second!)).toEqual([{ group: 'g', permits: 2 }]);
     expect(second!.grantResults).toEqual([
       { grantId, claimed: 4, status: 'ok' },
@@ -235,13 +255,17 @@ describe('semaphore', () => {
       roundWaitMs: 1_000,
       roundPeriodMs: 3_000,
     });
+
     const first = grantOf(
       request('a', [{ group: 'g', count: 1, oldestAt: 1 }])
     );
+
     await vi.advanceTimersByTimeAsync(500);
+
     const second = grantOf(
       request('b', [{ group: 'g', count: 1, oldestAt: 2 }])
     );
+
     await vi.advanceTimersByTimeAsync(500);
     const roundAt = Date.now();
     expect((await first).nextRequestAt).toBe(roundAt + 3_000);
@@ -250,6 +274,7 @@ describe('semaphore', () => {
     const third = grantOf(
       request('c', [{ group: 'g', count: 1, oldestAt: 3 }])
     );
+
     let settled = false;
     void third.finally(() => {
       settled = true;
@@ -262,6 +287,7 @@ describe('semaphore', () => {
 
   it('never overlaps rounds when limit resolution is slow', async () => {
     let resolveLimit!: (limit: number) => void;
+
     const { semaphore, grantOf } = fixture({
       roundWaitMs: 100,
       roundPeriodMs: 100,
@@ -270,14 +296,18 @@ describe('semaphore', () => {
           resolveLimit = resolve;
         }),
     });
+
     const first = grantOf(
       request('a', [{ group: 'g', count: 1, oldestAt: 1 }])
     );
+
     await vi.advanceTimersByTimeAsync(100);
+
     // The round is now awaiting limit(); this request must join the next round.
     const second = grantOf(
       request('b', [{ group: 'g', count: 1, oldestAt: 2 }])
     );
+
     await vi.advanceTimersByTimeAsync(1_000);
     let secondSettled = false;
     void second.finally(() => {
@@ -302,11 +332,13 @@ describe('semaphore', () => {
 
   it('handles more grants than one storage page', async () => {
     const { semaphore, round } = fixture({ limit: 300 });
+
     const clients = Array.from({ length: 130 }, (_, index) =>
       request(`client-${String(index).padStart(3, '0')}`, [
         { group: 'g', count: 1, oldestAt: index },
       ])
     );
+
     const grants = await round(...clients);
     expect(grants.every((grant) => grant.grants.length === 1)).toBe(true);
     expect((await semaphore.usage()).granted).toBe(130);
@@ -325,6 +357,7 @@ describe('semaphore', () => {
         });
       }
     }
+
     expect((await semaphore.usage()).granted).toBe(65);
   });
 
@@ -334,6 +367,7 @@ describe('semaphore', () => {
         throw new Error('limit unavailable');
       },
     });
+
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expect(
       semaphore.handle({ type: 'nonsense' } as unknown as SemaphoreRequest)
@@ -365,9 +399,11 @@ describe('semaphore', () => {
         limit: 2,
         leases: { provisioning: { mode: 'over', extra: 4 } },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'g', count: 5, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'g', permits: 2 }]);
       expect(leased(first!)).toEqual([
         { group: 'g', permits: 4, retired: false },
@@ -382,6 +418,7 @@ describe('semaphore', () => {
       const [second] = await round(
         request('b', [{ group: 'g', count: 1, oldestAt: 2 }])
       );
+
       expect(given(second!)).toEqual([]);
       expect(second!.leases).toBeUndefined();
     });
@@ -391,9 +428,11 @@ describe('semaphore', () => {
         limit: 10,
         leases: { provisioning: { mode: 'under', reserve: 4 } },
       });
+
       const [grant] = await round(
         leasing('a', [{ group: 'g', count: 10, oldestAt: 1 }])
       );
+
       expect(given(grant!)).toEqual([{ group: 'g', permits: 6 }]);
       expect(leased(grant!)).toEqual([
         { group: 'g', permits: 4, retired: false },
@@ -411,9 +450,11 @@ describe('semaphore', () => {
         limit: 10,
         leases: { provisioning: { mode: 'strict' } },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'g', count: 7, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'g', permits: 7 }]);
       expect(leased(first!)).toEqual([
         { group: 'g', permits: 3, retired: false },
@@ -424,6 +465,7 @@ describe('semaphore', () => {
       const [second] = await round(
         leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }])
       );
+
       expect(given(second!)).toEqual([]);
       expect(second!.blocked).toEqual([{ group: 'g', reason: 'limit' }]);
 
@@ -433,6 +475,7 @@ describe('semaphore', () => {
         leasing('a', [], [{ leaseId, drawn: 3, released: 3 }]),
         leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }])
       );
+
       expect(leased(third!)).toEqual([
         { group: 'g', permits: 3, retired: true },
       ]);
@@ -452,9 +495,11 @@ describe('semaphore', () => {
         limit: 1,
         leases: { provisioning: { mode: 'over', extra: 4 }, ttlMs: 5_000 },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'g', count: 3, oldestAt: 1 }])
       );
+
       const leaseId = first!.leases![0]!.leaseId;
       expect(leased(first!)).toEqual([
         { group: 'g', permits: 4, retired: false },
@@ -462,6 +507,7 @@ describe('semaphore', () => {
 
       // A report within the TTL refreshes it (the lease was issued 1s ago).
       vi.setSystemTime(Date.now() + 3_000);
+
       const refreshed = (await semaphore.handle({
         type: 'sync',
         v: 1,
@@ -469,15 +515,18 @@ describe('semaphore', () => {
         grants: [],
         leases: [{ leaseId, drawn: 2, released: 0 }],
       })) as { leases?: { expiresAt: number }[] };
+
       expect(refreshed.leases![0]!.expiresAt).toBe(Date.now() + 5_000);
 
       // Silence past the TTL retires it, but its client may be cut off with
       // work running: the whole lease stays counted and nothing is re-leased.
       vi.setSystemTime(Date.now() + 6_000);
+
       const [stale, waiting] = await round(
         leasing('a', [], [{ leaseId, drawn: 2, released: 0 }]),
         leasing('b', [{ group: 'g', count: 1, oldestAt: 3 }])
       );
+
       expect(leased(stale!)).toEqual([
         { group: 'g', permits: 4, retired: true },
       ]);
@@ -492,10 +541,12 @@ describe('semaphore', () => {
         grants: [],
         leases: [{ leaseId, drawn: 2, released: 0, retired: true }],
       });
+
       const [, served] = await round(
         leasing('a', []),
         leasing('b', [{ group: 'g', count: 1, oldestAt: 3 }])
       );
+
       expect(leased(served!)).toEqual([
         { group: 'g', permits: 2, retired: false },
       ]);
@@ -506,6 +557,7 @@ describe('semaphore', () => {
         leasing('c', [], [{ leaseId: 'forgotten', drawn: 2, released: 0 }]),
         leasing('d', [{ group: 'g', count: 1, oldestAt: 4 }])
       );
+
       expect(leased(unknown!)).toEqual([
         { group: '', permits: 0, retired: true },
       ]);
@@ -517,9 +569,11 @@ describe('semaphore', () => {
         limit: 10,
         leases: { provisioning: { mode: 'strict' }, permitsPerLease: 2 },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'g', permits: 1 }]);
       expect(leased(first!)).toEqual([
         { group: 'g', permits: 2, retired: false },
@@ -532,6 +586,7 @@ describe('semaphore', () => {
         leasing('a', [], [{ leaseId, drawn: 0, released: 0 }]),
         leasing('b', [{ group: 'g', count: 5, oldestAt: 2 }])
       );
+
       expect(given(second!)).toEqual([{ group: 'g', permits: 5 }]);
       expect(leased(second!)).toEqual([
         { group: 'g', permits: 2, retired: false },
@@ -540,21 +595,26 @@ describe('semaphore', () => {
 
     it('retires a held lease when its group becomes limited, even in an unrelated round', async () => {
       let capped = false;
+
       const { round } = fixture({
         limit: 10,
         groupLimit: (group) => (capped && group === 'g' ? 1 : undefined),
         leases: { provisioning: { mode: 'over', extra: 4 } },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
       );
+
       expect(leased(first!)).toHaveLength(1);
 
       capped = true;
+
       const [, holder] = await round(
         leasing('b', [{ group: 'other', count: 1, oldestAt: 2 }]),
         leasing('a', [])
       );
+
       expect(leased(holder!)).toEqual([
         { group: 'g', permits: 4, retired: true },
       ]);
@@ -562,22 +622,27 @@ describe('semaphore', () => {
 
     it('retires undrawn lease headroom when the limit is lowered, freeing it once the client confirms', async () => {
       let limit = 10;
+
       const { semaphore, round } = fixture({
         limit: () => limit,
         leases: { provisioning: { mode: 'strict' } },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'g', count: 2, oldestAt: 1 }])
       );
+
       const leaseId = first!.leases![0]!.leaseId;
       expect(leased(first!)).toEqual([
         { group: 'g', permits: 8, retired: false },
       ]);
 
       limit = 5;
+
       const [second] = await round(
         leasing('a', [], [{ leaseId, drawn: 3, released: 0 }])
       );
+
       // 2 granted + 8 leased = 10 > 5: the lease stops drawing, but the client
       // may have drawn since its report, so all 8 stay counted.
       expect(leased(second!)).toEqual([
@@ -598,21 +663,26 @@ describe('semaphore', () => {
 
     it('under: a reserve at or above the limit still leaves one permit for grants', async () => {
       let limit = 3;
+
       const { round } = fixture({
         limit: () => limit,
         groupLimit: (group) => (group === 'capped' ? 1 : undefined),
         leases: { provisioning: { mode: 'under', reserve: 3 } },
       });
+
       // 'capped' is excluded from leases, so only grants can admit it.
       const [first] = await round(
         leasing('a', [{ group: 'capped', count: 1, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'capped', permits: 1 }]);
 
       limit = 1;
+
       const [second] = await round(
         request('b', [{ group: 'other', count: 1, oldestAt: 2 }])
       );
+
       expect(given(second!)).toEqual([]);
       expect(second!.blocked).toEqual([{ group: 'other', reason: 'limit' }]);
     });
@@ -625,11 +695,13 @@ describe('semaphore', () => {
           permitsPerLease: 3,
         },
       });
+
       // 'z' takes the one grant permit; the reserve of 3 goes to a lease for 'a'.
       const [, first] = await round(
         request('z', [{ group: 'g', count: 1, oldestAt: 0 }]),
         leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
       );
+
       const leaseId = first!.leases![0]!.leaseId;
       expect(given(first!)).toEqual([]);
       expect(leased(first!)).toEqual([
@@ -643,6 +715,7 @@ describe('semaphore', () => {
         leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }]),
         leasing('c', [{ group: 'g', count: 1, oldestAt: 3 }])
       );
+
       expect(leased(b!)).toEqual([{ group: 'g', permits: 1, retired: false }]);
       expect(leased(c!)).toEqual([]);
       expect(c!.contended).toBe(true);
@@ -662,6 +735,7 @@ describe('semaphore', () => {
       const [later] = await round(
         leasing('c', [{ group: 'g', count: 1, oldestAt: 3 }])
       );
+
       expect(leased(later!)).toEqual([
         { group: 'g', permits: 2, retired: false },
       ]);
@@ -674,9 +748,11 @@ describe('semaphore', () => {
         groupLimit: (group) => (group === 'capped' ? 3 : undefined),
         leases: { provisioning: { mode: 'over', extra: 10 } },
       });
+
       const [first] = await excluded.round(
         leasing('a', [{ group: 'capped', count: 5, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'capped', permits: 3 }]);
       expect(leased(first!)).toEqual([]);
 
@@ -688,9 +764,11 @@ describe('semaphore', () => {
           limitedGroups: 'withinGroupLimit',
         },
       });
+
       const [second] = await within.round(
         leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
       );
+
       expect(given(second!)).toEqual([{ group: 'capped', permits: 2 }]);
       expect(leased(second!)).toEqual([
         { group: 'capped', permits: 1, retired: false },
@@ -709,9 +787,11 @@ describe('semaphore', () => {
           groupLimit: (group) => (group === 'capped' ? 3 : undefined),
           leases: { provisioning, limitedGroups: 'withinGroupLimit' },
         });
+
         const [first] = await round(
           leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
         );
+
         expect(given(first!)).toEqual([{ group: 'capped', permits: 2 }]);
         expect(leased(first!)).toEqual([
           { group: 'capped', permits: 1, retired: false },
@@ -722,6 +802,7 @@ describe('semaphore', () => {
         const [other] = await round(
           leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
         );
+
         expect(given(other!)).toEqual([]);
         expect(leased(other!)).toEqual([]);
         expect(other!.blocked).toEqual([
@@ -736,6 +817,7 @@ describe('semaphore', () => {
             [{ leaseId, drawn: 1, released: 0 }]
           )
         );
+
         expect(given(holder!)).toEqual([]);
         expect(leased(holder!)).toEqual([
           { group: 'capped', permits: 1, retired: false },
@@ -747,6 +829,7 @@ describe('semaphore', () => {
           leasing('a', [], [{ leaseId, drawn: 1, released: 1 }]),
           leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
         );
+
         expect(leased(settled!)).toEqual([
           { group: 'capped', permits: 1, retired: true },
         ]);
@@ -764,9 +847,11 @@ describe('semaphore', () => {
           limitedGroups: 'withinGroupLimit',
         },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'capped', permits: 2 }]);
       expect(leased(first!)).toEqual([
         { group: 'capped', permits: 3, retired: false },
@@ -779,6 +864,7 @@ describe('semaphore', () => {
         leasing('a', [], [{ leaseId, drawn: 2, released: 1 }]),
         leasing('b', [{ group: 'capped', count: 3, oldestAt: 2 }])
       );
+
       expect(given(second!)).toEqual([{ group: 'capped', permits: 1 }]);
       expect(leased(second!)).toEqual([]);
 
@@ -787,12 +873,14 @@ describe('semaphore', () => {
         leasing('a', [], [{ leaseId, drawn: 2, released: 1, retired: true }]),
         leasing('c', [{ group: 'capped', count: 3, oldestAt: 3 }])
       );
+
       expect(given(third!)).toEqual([{ group: 'capped', permits: 1 }]);
 
       const [, fourth] = await round(
         leasing('a', [], [{ leaseId, drawn: 2, released: 2, retired: true }]),
         leasing('d', [{ group: 'capped', count: 3, oldestAt: 4 }])
       );
+
       expect(given(fourth!)).toEqual([{ group: 'capped', permits: 1 }]);
     });
 
@@ -807,15 +895,19 @@ describe('semaphore', () => {
           ttlMs: 5_000,
         },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
       );
+
       const leaseId = first!.leases![0]!.leaseId;
 
       vi.setSystemTime(Date.now() + 6_000);
+
       const [expired] = await round(
         leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
       );
+
       expect(given(expired!)).toEqual([]);
       expect(expired!.blocked).toEqual([
         { group: 'capped', reason: 'group_limit' },
@@ -828,23 +920,28 @@ describe('semaphore', () => {
         grants: [],
         leases: [{ leaseId, drawn: 0, released: 0, retired: true }],
       });
+
       const [confirmed] = await round(
         leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
       );
+
       expect(given(confirmed!)).toEqual([{ group: 'capped', permits: 1 }]);
     });
 
     it('exclude: a retired lease of a newly limited group counts against its limit until confirmed', async () => {
       let capped = false;
+
       const { semaphore, round } = fixture({
         limit: 10,
         groupLimit: (group) => (capped && group === 'g' ? 3 : undefined),
         grantTimeoutMs: 60_000,
         leases: { provisioning: { mode: 'over', extra: 4 } },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'g', count: 1, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'g', permits: 1 }]);
       expect(leased(first!)).toEqual([
         { group: 'g', permits: 4, retired: false },
@@ -852,9 +949,11 @@ describe('semaphore', () => {
       const leaseId = first!.leases![0]!.leaseId;
 
       capped = true;
+
       const [second] = await round(
         leasing('b', [{ group: 'g', count: 1, oldestAt: 2 }])
       );
+
       expect(given(second!)).toEqual([]);
       expect(second!.blocked).toEqual([{ group: 'g', reason: 'group_limit' }]);
 
@@ -866,9 +965,11 @@ describe('semaphore', () => {
         grants: [],
         leases: [{ leaseId, drawn: 1, released: 0, retired: true }],
       });
+
       const [third] = await round(
         leasing('b', [{ group: 'g', count: 2, oldestAt: 2 }])
       );
+
       expect(given(third!)).toEqual([{ group: 'g', permits: 1 }]);
       expect(leased(third!)).toEqual([]);
     });
@@ -883,9 +984,11 @@ describe('semaphore', () => {
           limitedGroups: 'withinGroupLimit',
         },
       });
+
       const [first] = await round(
         leasing('a', [{ group: 'capped', count: 2, oldestAt: 1 }])
       );
+
       expect(given(first!)).toEqual([{ group: 'capped', permits: 2 }]);
       expect(leased(first!)).toEqual([
         { group: 'capped', permits: 2, retired: false },
@@ -902,6 +1005,7 @@ describe('semaphore', () => {
           [{ leaseId, drawn: 2, released: 1 }]
         )
       );
+
       expect(given(second!)).toEqual([]);
       expect(leased(second!)).toEqual([
         { group: 'capped', permits: 2, retired: false },
@@ -918,10 +1022,12 @@ describe('semaphore', () => {
           limitedGroups: 'withinGroupLimit',
         },
       });
+
       const [a, b] = await round(
         leasing('a', [{ group: 'capped', count: 1, oldestAt: 1 }]),
         leasing('b', [{ group: 'capped', count: 1, oldestAt: 2 }])
       );
+
       expect(given(a!)).toEqual([{ group: 'capped', permits: 1 }]);
       expect(given(b!)).toEqual([{ group: 'capped', permits: 1 }]);
       expect(leased(a!)).toEqual([
@@ -932,6 +1038,7 @@ describe('semaphore', () => {
       const [c] = await round(
         leasing('c', [{ group: 'capped', count: 1, oldestAt: 3 }])
       );
+
       expect(given(c!)).toEqual([]);
       expect(leased(c!)).toEqual([]);
     });
@@ -940,9 +1047,11 @@ describe('semaphore', () => {
   it('drives the holder through SemaphoreClient', async () => {
     const { semaphore } = fixture();
     const invoked: string[] = [];
+
     const client = new SemaphoreClient({
       invoke: (address, message) => {
         invoked.push(`${address.key}:${address.locationHint}`);
+
         return semaphore.handle(message);
       },
       locationHint: () => 'weur',
@@ -952,6 +1061,7 @@ describe('semaphore', () => {
       'acct',
       request('c', [{ group: 'g', count: 1, oldestAt: 1 }])
     );
+
     await vi.advanceTimersByTimeAsync(1_000);
     const grant = await reply;
     expect(client.nextRequestAt('acct')).toBe(grant.nextRequestAt);
@@ -963,6 +1073,7 @@ describe('semaphore', () => {
     const broken = new SemaphoreClient({
       invoke: async () => ({ type: 'synced', v: 1, grantResults: [] }),
     });
+
     await expect(broken.request('acct', request('c', []))).rejects.toThrow(
       /Unexpected response/
     );
@@ -971,13 +1082,16 @@ describe('semaphore', () => {
     ).rejects.toThrow(/non-empty/);
   });
 });
+
 describe('semaphore schema upgrades', () => {
   it('adds lease tables on top of an earlier semaphore schema', async () => {
     const { DurabilitySemaphoreServer: Server } = await import('./server');
+
     const {
       durabilitySemaphoreMigrations,
       durabilitySemaphoreQueueMigrations,
     } = await import('./migrations');
+
     const { migrateCapability } = await import('../migrations');
     const storage = new FakeStorage();
     migrateCapability(

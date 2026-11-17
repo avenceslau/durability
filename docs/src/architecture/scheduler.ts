@@ -18,6 +18,7 @@ const subscription = sourceExcerpt(
   'export class Subscription extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const engineState = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -26,14 +27,16 @@ const engineState = sourceExcerpt(
   'export class Engine {',
   '  private readonly activeByTable = new Map<string, Set<string>>();'
 );
+
 const attach = sourceExcerpt(
   scheduler,
   schedulerFile,
   'attach',
   'Join the object’s one engine',
   'type ObjectScheduler = { engine: unknown; installation: symbol };',
-  "    throw new Error('Unknown DurabilityScheduler instance');\n  }\n  return engine;\n};"
+  "    throw new Error('Unknown DurabilityScheduler instance');\n  }\n\n  return engine;\n};"
 );
+
 const configure = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -42,6 +45,7 @@ const configure = sourceExcerpt(
   '  attach(\n    context: DurabilityContext,',
   '      waiter(this.createRelease());\n    }\n  }'
 );
+
 const register = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -50,6 +54,7 @@ const register = sourceExcerpt(
   '  register(participant: Participant): void {',
   '      this.waitUntil(resumed, onError);\n    }\n  }'
 );
+
 const unattached = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -58,6 +63,7 @@ const unattached = sourceExcerpt(
   '  private async postponeUnattachedChannels(',
   '          now\n        );\n      }\n    });\n  }'
 );
+
 const transaction = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -66,6 +72,7 @@ const transaction = sourceExcerpt(
   '  async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {',
   '    return result;\n  }'
 );
+
 const reconcile = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -74,6 +81,7 @@ const reconcile = sourceExcerpt(
   '  private async reconcile(',
   '    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);\n  }'
 );
+
 const earlyTimer = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -82,6 +90,7 @@ const earlyTimer = sourceExcerpt(
   '  private scheduleEarlyAlarm(timestamp: number | undefined): void {',
   '    this.earlyAlarm = { timestamp, cancel };\n  }'
 );
+
 const permits = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -90,6 +99,7 @@ const permits = sourceExcerpt(
   '  tryAcquirePermit(): (() => void) | undefined {',
   '    };\n  }'
 );
+
 const alarm = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -98,6 +108,7 @@ const alarm = sourceExcerpt(
   '  async alarm(info?: AlarmInvocationInfo): Promise<void> {',
   '    this.scheduleEarlyAlarm(Date.now() + delay);\n  }'
 );
+
 const runAlarm = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -106,6 +117,7 @@ const runAlarm = sourceExcerpt(
   '  private async runAlarm(info?: AlarmInvocationInfo): Promise<void> {',
   '    await this.scheduleNextAlarm();\n  }'
 );
+
 const execute = sourceExcerpt(
   scheduler,
   schedulerFile,

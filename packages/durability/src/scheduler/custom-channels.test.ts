@@ -24,6 +24,7 @@ it("keeps one held channel from suppressing another channel's timer", async () =
     'ready',
     start + 5_000
   );
+
   const next = (channel: string) =>
     storage.sql
       .exec<{ next_at: number | null }>(
@@ -31,11 +32,13 @@ it("keeps one held channel from suppressing another channel's timer", async () =
         channel
       )
       .one().next_at ?? undefined;
+
   const ready = vi.fn(async () => {
     storage.sql.exec(
       "UPDATE custom_work SET next_at = NULL WHERE channel = 'ready'"
     );
   });
+
   engine.registerChannel({
     table: { name: 'custom_work', key: 'id' },
     channel: 'held',
@@ -74,9 +77,11 @@ it('retains missing custom-timed channels without executing their work', async (
     runDue: async () => undefined,
     nextPendingAt: () => undefined,
   });
+
   const reported = vi
     .spyOn(console, 'error')
     .mockImplementation(() => undefined);
+
   await scheduler.alarm();
   await scheduler.alarm();
   expect(storage.sql.exec('SELECT * FROM custom_work').toArray()).toEqual([
@@ -115,6 +120,7 @@ it('resumes retained work when a custom-timed channel reattaches', async () => {
       "UPDATE custom_work SET next_at = NULL WHERE channel = 'library'"
     );
   });
+
   engine.registerChannel({
     table: { name: 'custom_work', key: 'id' },
     channel: 'library',
@@ -149,9 +155,11 @@ it('reports a missing channel whose configuration exists before any runs', async
     runDue: async () => undefined,
     nextPendingAt: () => undefined,
   });
+
   const reported = vi
     .spyOn(console, 'error')
     .mockImplementation(() => undefined);
+
   await scheduler.alarm();
   expect(reported).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -168,6 +176,7 @@ it('reserves channels for capabilities without alarm work', () => {
   const scheduler = new DurabilityScheduler({
     context: contextFor(new FakeStorage()),
   });
+
   const engine = engineFor({ scheduler });
   engine.claimChannel('records', 'default', 'Records');
   engine.claimChannel('records', 'library', 'Records');
@@ -183,9 +192,11 @@ it('allows another refresh after a coalesced transaction fails', async () => {
   const storage = new FakeStorage();
   const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
   const engine = engineFor({ scheduler });
+
   const getAlarm = vi
     .spyOn(storage, 'getAlarm')
     .mockRejectedValueOnce(new Error('read failed'));
+
   const refreshing = engine.scheduleNextAlarm();
   expect(engine.scheduleNextAlarm()).toBe(refreshing);
   await expect(refreshing).rejects.toThrow('read failed');
@@ -218,16 +229,21 @@ it('reconciles a channel attached while an earlier refresh is committing', async
   });
 
   let observed!: () => void;
+
   const snapshotRead = new Promise<void>((resolve) => {
     observed = resolve;
   });
+
   let release!: () => void;
+
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
+
   vi.spyOn(storage, 'getAlarm').mockImplementationOnce(async () => {
     observed();
     await blocked;
+
     return storage.alarmAt;
   });
   const refresh = vi.spyOn(engine, 'scheduleNextAlarm');
@@ -239,6 +255,7 @@ it('reconciles a channel attached while an earlier refresh is committing', async
       "UPDATE custom_work SET next_at = NULL WHERE channel = 'library'"
     );
   });
+
   engine.registerChannel({
     table: {
       name: 'custom_work',

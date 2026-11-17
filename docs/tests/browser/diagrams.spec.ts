@@ -74,8 +74,10 @@ test('diagrams fit on a narrow screen', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/compositions/email-delivery/');
   await expect(page.locator('.aw-preview svg.architecture')).toBeVisible();
+
   const hasPageOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth
   );
+
   expect(hasPageOverflow).toBe(false);
 });

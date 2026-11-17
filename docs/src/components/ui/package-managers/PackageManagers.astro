@@ -17,16 +17,21 @@ interface Props extends CommandOptions {
 
 const { pkg, type = "add", args, dev, comment } = Astro.props;
 const tabs = getTabs(type, pkg, { args, dev, comment });
+
 // Prop hash + a per-page counter (on Astro.locals) so two blocks with
 // identical props still get distinct ids. Counter order is stable within a
 // render, so incremental/warm builds match cold — unlike crypto.randomUUID().
 const locals = Astro.locals as typeof Astro.locals & {
   __nbCounters?: Map<string, number>;
 };
+
 const counters =
   locals.__nbCounters ?? (locals.__nbCounters = new Map<string, number>());
+
 const n = (counters.get("package-managers") ?? 0) + 1;
+
 counters.set("package-managers", n);
+
 const uid =
   "pm-" +
   createHash("sha256")
@@ -44,19 +49,23 @@ const uid =
       class extends HTMLElement {
         connectedCallback() {
           const card = this.closest("[data-nb-pm]");
+
           if (!card) return;
           let saved;
+
           try {
             saved = sessionStorage.getItem("ui-pm-tab");
           } catch {
             return;
           }
+
           if (!saved) return;
           const tabs = card.querySelectorAll("[data-nb-pm-tab]");
           let idx = -1;
           tabs.forEach(function (t, i) {
             if (t.textContent?.trim() === saved) idx = i;
           });
+
           if (idx < 1) return;
           tabs.forEach(function (t, i) {
             t.setAttribute("aria-selected", String(i === idx));

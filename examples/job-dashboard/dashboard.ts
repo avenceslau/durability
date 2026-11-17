@@ -55,6 +55,7 @@ export class Dashboard extends DurableObject<Env> {
   private readonly jobs: TrackedSource<Jobs> = {
     get: async (id) => {
       const row = this.readRow(id);
+
       return row && toRecord(row);
     },
     list: async ({ limit, cursor, status, name }) => {
@@ -62,6 +63,7 @@ export class Dashboard extends DurableObject<Env> {
         cursor === undefined
           ? [-1, '']
           : (JSON.parse(cursor) as [number, string]);
+
       const rows = this.sql
         .exec<JobRow>(
           `SELECT * FROM jobs
@@ -80,9 +82,11 @@ export class Dashboard extends DurableObject<Env> {
           limit + 1
         )
         .toArray();
+
       const page = rows.slice(0, limit);
       const last = page[page.length - 1];
       const records = page.map(toRecord);
+
       return rows.length > limit && last
         ? { records, cursor: JSON.stringify([last.created_at, last.id]) }
         : { records };
@@ -90,6 +94,7 @@ export class Dashboard extends DurableObject<Env> {
     watch: (id, listener) => {
       const listeners = this.watchers.get(id) ?? new Set();
       this.watchers.set(id, listeners.add(listener));
+
       return () => {
         listeners.delete(listener);
       };
@@ -108,6 +113,7 @@ export class Dashboard extends DurableObject<Env> {
         handle: async (orderId: string) => {
           const pipeline = this.env.PIPELINE.getByName(this.tenant);
           await pipeline.importOrder(orderId);
+
           return pipeline.track(orderId).wait({ timeoutMs: 30_000 });
         },
       },
@@ -162,11 +168,14 @@ export class Dashboard extends DurableObject<Env> {
         JSON.stringify(job.state)
       );
       const row = this.readRow(job.id);
+
       if (!row) {
         continue;
       }
+
       const record = toRecord(row);
       this.socket.job(record);
+
       for (const listener of this.watchers.get(job.id) ?? []) {
         listener();
       }

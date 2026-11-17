@@ -52,6 +52,7 @@ export const claimAttempt = (
 ): number | undefined => {
   const deadlineAssignment =
     nextAttemptAt === undefined ? '' : ', next_attempt_at = ?';
+
   return v.parse(
     v.optional(attemptRowSchema),
     sql
@@ -173,8 +174,10 @@ export const listCreated = (
     query.after === undefined
       ? [-1, '']
       : v.parse(createdCursorSchema, JSON.parse(query.after));
+
   const status = query.status ?? null;
   const name = query.name ?? null;
+
   const found = sql
     .exec(
       `SELECT * FROM ${table.name}
@@ -198,9 +201,11 @@ export const listCreated = (
 
   const rows = found.slice(0, query.limit);
   const last = rows[rows.length - 1];
+
   if (found.length <= query.limit || !last) {
     return { rows };
   }
+
   return {
     rows,
     next: JSON.stringify([last['created_at'], last[table.key]]),

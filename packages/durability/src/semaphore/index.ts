@@ -26,6 +26,7 @@ import {
 import { DurabilitySemaphoreServer } from './server.js';
 
 export { SemaphoreProtocolError } from '../errors.js';
+
 export {
   durabilitySemaphoreMigrations,
   durabilitySemaphoreQueueMigrations,
@@ -42,14 +43,19 @@ export type {
   SemaphoreRequest,
   SemaphoreResponse,
 } from './protocol.js';
+
 export type { SemaphoreAddress, SemaphoreClientConfig } from './client.js';
+
 export { SemaphoreClient } from './client.js';
+
 export type {
   DurabilitySemaphoreConfig,
   DurabilitySemaphoreEvent,
   SemaphoreUsage,
 } from './server.js';
+
 export type { SemaphoreLeaseOptions, SemaphoreProvisioning } from './leases.js';
+
 export {
   DurabilitySemaphoreQueue,
   type AdmittedItem,
@@ -98,12 +104,14 @@ export class DurabilitySemaphore extends DurabilitySemaphoreServer {
           config,
           (text) => new SemaphoreProtocolError(text)
         );
+
         const stub = namespace.getByName(
           address.key,
           address.locationHint === undefined
             ? undefined
             : { locationHint: address.locationHint }
         );
+
         return config.invoke(stub, message);
       },
       ...(config.locationHint === undefined
@@ -117,18 +125,22 @@ export class DurabilitySemaphore extends DurabilitySemaphoreServer {
       setContext: () => ({
         invoke: (method, args) => {
           const key = args[0] as string;
+
           if (method === 'request') {
             return client.request(key, args[1] as PermitRequest);
           }
+
           if (method === 'sync') {
             return client.sync(key, args[1] as PermitSync);
           }
+
           throw new SemaphoreProtocolError(
             `Unknown semaphore method "${method}"`
           );
         },
       }),
     };
+
     return createTransformStub(session);
   }
 }

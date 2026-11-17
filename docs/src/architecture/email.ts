@@ -18,6 +18,7 @@ const consumer = sourceExcerpt(
   'export class EmailConsumer extends WorkerEntrypoint<Env> {',
   '      // Unsettled messages retry; exhausting the budget dead-letters this target only.\n    }\n  }\n}'
 );
+
 const delivery = sourceExcerpt(
   emailSource,
   file,
@@ -26,6 +27,7 @@ const delivery = sourceExcerpt(
   '/** The application owns this DO and composes its capabilities explicitly. */',
   '    return this.scheduler.alarm(info);\n  }\n}'
 );
+
 const routing = sourceExcerpt(
   emailSource,
   file,
@@ -34,6 +36,7 @@ const routing = sourceExcerpt(
   'export const routing = DurabilityRouting.client({',
   '      next({ context: { lane: name } })\n);'
 );
+
 const redrive = sourceExcerpt(
   emailSource,
   file,
@@ -42,6 +45,7 @@ const redrive = sourceExcerpt(
   'export async function redrive(env: Env, after: number): Promise<number> {',
   '  return accepted;\n}'
 );
+
 const fetchHandler = sourceExcerpt(
   emailSource,
   file,
@@ -50,6 +54,7 @@ const fetchHandler = sourceExcerpt(
   'export default {',
   '} satisfies ExportedHandler<Env>;'
 );
+
 const enqueue = sourceExcerpt(
   fanoutSource,
   fanoutFile,
@@ -58,6 +63,7 @@ const enqueue = sourceExcerpt(
   '  async enqueue(',
   '    return { success: true, value: entries.map(({ id }) => id), load };\n  }'
 );
+
 const runDue = sourceExcerpt(
   fanoutSource,
   fanoutFile,
@@ -66,6 +72,7 @@ const runDue = sourceExcerpt(
   '  async #runDue(): Promise<void> {',
   '    );\n  }'
 );
+
 const runTarget = sourceExcerpt(
   fanoutSource,
   fanoutFile,
@@ -74,6 +81,7 @@ const runTarget = sourceExcerpt(
   '  async #runTarget(id: string): Promise<void> {',
   '      release();\n    }\n  }'
 );
+
 const removeDelivery = sourceExcerpt(
   fanoutSource,
   fanoutFile,
@@ -82,6 +90,7 @@ const removeDelivery = sourceExcerpt(
   '  #removeDelivery(sql: SqlStorage, row: DeliveryRow): boolean {',
   '    return true;\n  }'
 );
+
 const retry = sourceExcerpt(
   fanoutSource,
   fanoutFile,
@@ -90,6 +99,7 @@ const retry = sourceExcerpt(
   '  async #retry(',
   '      error,\n    });\n  }'
 );
+
 const deadLetter = sourceExcerpt(
   fanoutSource,
   fanoutFile,

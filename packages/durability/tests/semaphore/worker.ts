@@ -66,6 +66,7 @@ export const queueChannels = {
   side: 'side\u0000.queue',
   batch: 'batch',
 } as const;
+
 type QueueName = keyof typeof queueChannels;
 
 /** A client shard: queues jobs per account and records admissions. */
@@ -87,6 +88,7 @@ export class JobShard extends DurableObject {
     server: typeof limits
   ): DurabilitySemaphoreQueue<string> {
     const storageKey = name === 'main' ? 'admitted' : `admitted:${name}`;
+
     return new DurabilitySemaphoreQueue<string>({
       scheduler: this.scheduler,
       channel: queueChannels[name],
@@ -95,6 +97,7 @@ export class JobShard extends DurableObject {
       admit: async (items) => {
         const admitted =
           (await this.ctx.storage.get<string[]>(storageKey)) ?? [];
+
         admitted.push(...items.map((item) => item.id));
         await this.ctx.storage.put(storageKey, admitted);
       },

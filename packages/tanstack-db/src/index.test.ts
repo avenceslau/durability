@@ -39,6 +39,7 @@ const fakeConnection = () => {
   const rpc = {
     list: vi.fn(async () => {
       await listGate;
+
       return [...rows];
     }),
     create: vi.fn(async (todo: Todo) => todo),
@@ -51,19 +52,24 @@ const fakeConnection = () => {
         return (handler: (status: SocketStatus) => void) => {
           statusHandlers.add(handler);
           handler(status);
+
           return () => statusHandlers.delete(handler);
         };
       }
+
       if (name === 'resync') {
         return (handler: (info: { names: string[] }) => void) => {
           resyncHandlers.add(handler);
+
           return () => resyncHandlers.delete(handler);
         };
       }
+
       return (handler: Handler) => {
         const set = handlers.get(name) ?? new Set();
         handlers.set(name, set);
         set.add(handler);
+
         return () => set.delete(handler);
       };
     },
@@ -91,6 +97,7 @@ const fakeConnection = () => {
       listGate = new Promise((resolve) => {
         release = resolve;
       });
+
       return () => {
         release();
         listGate = Promise.resolve();
@@ -98,6 +105,7 @@ const fakeConnection = () => {
     },
     setStatus: (next: SocketStatus) => {
       status = next;
+
       for (const handler of statusHandlers) {
         handler(next);
       }
@@ -256,6 +264,7 @@ describe('socketCollectionOptions', () => {
     fake.rpc.create.mockImplementationOnce(async (row: Todo) => {
       // The server pushes the event before answering the call.
       fake.emit('created', row);
+
       return row;
     });
     const transaction = todos.insert(todo('a'));
@@ -286,6 +295,7 @@ describe('socketCollectionOptions', () => {
     vi.useFakeTimers();
     const fake = fakeConnection();
     const order: string[] = [];
+
     const todos = createTodos(fake, {
       onInsert: async ({ transaction, rpc, awaitSynced }) => {
         await rpc.create(transaction.mutations[0].modified);
@@ -294,6 +304,7 @@ describe('socketCollectionOptions', () => {
         order.push('synced');
       },
     });
+
     fake.resync();
     await todos.preload();
 
@@ -315,9 +326,11 @@ describe('socketCollectionOptions', () => {
     const fake = fakeConnection();
     fake.rpc.create.mockImplementation(async (row: Todo) => {
       fake.emit('created', row);
+
       return row;
     });
     const order: string[] = [];
+
     const todos = createTodos(fake, {
       onInsert: async ({ transaction, rpc, awaitSynced }) => {
         await rpc.create(transaction.mutations[0].modified);
@@ -325,6 +338,7 @@ describe('socketCollectionOptions', () => {
         order.push('synced');
       },
     });
+
     fake.resync();
     await todos.preload();
 

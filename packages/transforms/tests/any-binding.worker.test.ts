@@ -16,6 +16,7 @@ const recorder = defineTransform<object>().caller(
   (calls: Call[]) =>
     async ({ method, args, next }) => {
       calls.push({ method, args });
+
       return next();
     }
 );
@@ -24,6 +25,7 @@ const actorRecorder = defineTransform<PipelineDO>().caller(
   (actorIds: DurableObjectId[]) =>
     async ({ actorId, next }) => {
       actorIds.push(actorId);
+
       return next();
     }
 );
@@ -34,6 +36,7 @@ function assertActorIdTypes(
   defineTransform<object>().caller(() => async (context) => {
     // @ts-expect-error only Durable Object transforms receive an actor ID
     void context.actorId;
+
     return context.next();
   });
 
@@ -43,6 +46,7 @@ function assertActorIdTypes(
   // @ts-expect-error every member of a union target must be a Durable Object stub
   createTransformStub(binding).with(actorRecorder, []);
 }
+
 void assertActorIdTypes;
 
 describe('Vite plugin coverage', () => {
@@ -78,6 +82,7 @@ describe('KV', () => {
 
   it('retries real binding errors and wraps them with errorBoundary', async () => {
     const calls: Call[] = [];
+
     const kv = env.KV.with(errorBoundary)
       .with(retry, { retries: 2, delay: () => 0 })
       .with(recorder, calls);
@@ -163,6 +168,7 @@ describe('Workflows', () => {
       id: 'transform-probe',
       params: { value: 'hi' },
     });
+
     const fetched = await workflow.get(created.id);
 
     expect(fetched.id).toBe('transform-probe');
@@ -212,6 +218,7 @@ describe('Durable Object promise pipelining', () => {
 describe('caller actor IDs', () => {
   it('exposes the addressed Durable Object ID to caller transforms', async () => {
     const actorIds: DurableObjectId[] = [];
+
     const stub = env.PIPELINE_DO.getByName('actor')
       .with(timeout, 1_000)
       .with(actorRecorder, actorIds);

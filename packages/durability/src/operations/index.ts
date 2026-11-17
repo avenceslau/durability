@@ -312,6 +312,7 @@ const callState = (
       lastError: call.last_error,
     };
   }
+
   if (call.status === 'failed') {
     return {
       status: 'failed',
@@ -322,14 +323,17 @@ const callState = (
       },
     };
   }
+
   if (call.result === null) {
     throw new Error(`Completed durable call "${call.id}" has no result`);
   }
+
   return { status: 'completed', result: deserialize(call.result) };
 };
 
 const callRecord = (sql: SqlStorage, call: CallRow): UntypedRecord => {
   const state = callState(call);
+
   return {
     id: call.id,
     name: call.operation,
@@ -393,10 +397,12 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const reserved = new Set(
       Object.getOwnPropertyNames(DurabilityCore.prototype)
     );
+
     for (const operation of Object.keys(handlers)) {
       if (reserved.has(operation)) {
         throw new Error(`"${operation}" is reserved by Durability`);
       }
+
       const method = Object.assign(
         traceFunction(
           `Durability.${operation}`,
@@ -411,6 +417,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
           ),
         }
       );
+
       Object.defineProperty(this, operation, {
         value: method,
         enumerable: true,
@@ -439,7 +446,9 @@ class DurabilityCore<Handlers extends HandlerMap> {
       durabilityOperationMigrations,
       target
     );
+
     deleteMemosOfDroppedTable(context.storage.sql, callsTable);
+
     return result;
   }
 
@@ -469,6 +478,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
       this.#active,
       'Durable operation was purged'
     );
+
     this.#emit({
       type: 'purged',
       entityKind: 'operation',
@@ -476,14 +486,17 @@ class DurabilityCore<Handlers extends HandlerMap> {
       before,
       count,
     });
+
     return count;
   }
 
   #trackedSource(): UntypedSource {
     const sql = this.#engine.sql;
+
     return {
       get: async (id) => {
         const call = readCall(sql, this.#channel, id);
+
         return call && callRecord(sql, call);
       },
       list: async ({ limit, cursor, status, name }) => {
@@ -493,9 +506,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
           status,
           name,
         });
+
         const records = v
           .parse(v.array(callRowSchema), page.rows)
           .map((call) => callRecord(sql, call));
+
         return page.next === undefined
           ? { records }
           : { records, cursor: page.next };
@@ -519,11 +534,13 @@ class DurabilityCore<Handlers extends HandlerMap> {
         )
         .toArray()
     );
+
     // With liveTimers an active operation reschedules itself when it settles, so
     // skipping it keeps a long handler from blocking a concurrent alarm pass.
     const pending = this.#engine.liveTimers
       ? due.filter(({ id: key }) => !this.#active.has(key))
       : due;
+
     await this.#engine.runConcurrent(pending, async ({ id: key }) => {
       try {
         await this.#execute(key);
@@ -538,10 +555,13 @@ class DurabilityCore<Handlers extends HandlerMap> {
     idempotencyKey: string
   ): Promise<DurableOperationResult<unknown>> {
     const call = readCall(this.#engine.sql, this.#channel, idempotencyKey);
+
     if (!call) {
       return { status: 'not_found' };
     }
+
     assertOperation(idempotencyKey, call.operation, operation);
+
     return callState(call);
   }
 
@@ -554,6 +574,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
     const payload = serialize(input.payload);
     const now = Date.now();
     const generation = crypto.randomUUID();
+
     const { inserted, winner } = await this.#engine.transaction((sql) => {
       const created =
         sql
@@ -573,18 +594,24 @@ class DurabilityCore<Handlers extends HandlerMap> {
             generation
           )
           .toArray().length > 0;
+
       const current = readCall(sql, this.#channel, key);
+
       if (!current) {
         throw new Error(`Durable call "${input.id}" was not persisted`);
       }
+
       assertOperation(input.id, current.operation, input.operation);
+
       // Reuse is idempotent only for the same data; anything else is a caller
       // bug that would otherwise be dropped silently.
       if (!created && canonical(current.payload) !== canonical(payload)) {
         throw new DuplicateDurablePayloadError(input.id, input.operation);
       }
+
       return { inserted: created, winner: current };
     });
+
     if (!inserted) {
       return;
     }
@@ -597,18 +624,22 @@ class DurabilityCore<Handlers extends HandlerMap> {
     });
     // Start eagerly only when a permit is free; otherwise the reconciled alarm picks the row up.
     const eagerPermit = this.#engine.tryAcquirePermit();
+
     if (!eagerPermit) {
       return;
     }
+
     const onError = (error: unknown) =>
       reportFailure(
         'durability.background_execution.failed',
         { operation: input.operation, id: input.id },
         error
       );
+
     const background = this.#execute(key, eagerPermit)
       .then(() => this.#engine.scheduleNextAlarm())
       .catch(onError);
+
     this.#engine.waitUntil(background, onError);
   }
 
@@ -620,34 +651,43 @@ class DurabilityCore<Handlers extends HandlerMap> {
   async #execute(key: string, eagerPermit?: () => void): Promise<void> {
     const previousStart = this.#executionStarts.get(key) ?? Promise.resolve();
     let releaseStart!: () => void;
+
     const currentStart = new Promise<void>((resolve) => {
       releaseStart = resolve;
     });
+
     this.#executionStarts.set(key, currentStart);
     let permitTransferred = false;
 
     try {
       await previousStart;
       const call = readCall(this.#engine.sql, this.#channel, key);
+
       if (!call || call.status !== 'pending') {
         return;
       }
+
       const running = this.#active.get(key);
+
       if (running?.generation === call.generation_id) {
         releaseStart();
         await running.settled;
+
         return;
       }
 
       const execution = this.#start(call, eagerPermit);
       permitTransferred = true;
       releaseStart();
+
       return execution;
     } finally {
       releaseStart();
+
       if (this.#executionStarts.get(key) === currentStart) {
         this.#executionStarts.delete(key);
       }
+
       if (!permitTransferred) {
         eagerPermit?.();
       }
@@ -656,9 +696,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
 
   #start(call: CallRow, eagerPermit: (() => void) | undefined): Promise<void> {
     const policy = this.#policy(call.operation);
+
     const handler = this.#handlers[call.operation] as
       | ((durableCall: DurableCall<unknown>) => unknown)
       | undefined;
+
     return this.#engine.startExecution(
       {
         table: this.#table,
@@ -687,6 +729,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
               `No handler registered for operation "${call.operation}"`
             );
           }
+
           return handler({
             id: call.id,
             operation: call.operation,
@@ -702,12 +745,15 @@ class DurabilityCore<Handlers extends HandlerMap> {
         },
         complete: (result, attempt) => {
           let serialized: string;
+
           try {
             serialized = serialize(result);
           } catch (error) {
             throw new DurableResultSerializationError(call.operation, error);
           }
+
           const timestamp = Date.now();
+
           const updated = updateAttempt(
             this.#engine.sql,
             this.#table,
@@ -717,6 +763,7 @@ class DurabilityCore<Handlers extends HandlerMap> {
             serialized,
             timestamp
           );
+
           return updated ? timestamp : undefined;
         },
         isTerminal: (error) =>

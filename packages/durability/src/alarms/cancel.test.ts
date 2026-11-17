@@ -28,6 +28,7 @@ describe('named alarm cancel', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
     const runs: number[] = [];
+
     const alarms = new DurabilityAlarms({
       context: contextFor(storage),
       handlers: {
@@ -56,11 +57,14 @@ describe('named alarm cancel', () => {
     const storage = new FakeStorage();
     const background: Promise<unknown>[] = [];
     let releaseHandler: (() => void) | undefined;
+
     const gate = new Promise<void>((resolve) => {
       releaseHandler = resolve;
     });
+
     let aborted = false;
     const runs: number[] = [];
+
     const alarms = new DurabilityAlarms({
       context: waitUntilContext(storage, background),
       handlers: {
@@ -97,6 +101,7 @@ describe('named alarm cancel', () => {
     const storage = new FakeStorage();
     const background: Promise<unknown>[] = [];
     let runs = 0;
+
     const alarms = new DurabilityAlarms({
       context: waitUntilContext(storage, background),
       retries: { delay: () => 0, maxAttempts: 3 },

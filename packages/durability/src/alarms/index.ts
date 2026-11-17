@@ -241,10 +241,12 @@ class DurabilityAlarmsCore<Names extends string> {
     const reserved = new Set(
       Object.getOwnPropertyNames(DurabilityAlarmsCore.prototype)
     );
+
     for (const name of this.#handlers.keys()) {
       if (reserved.has(name)) {
         throw new Error(`"${name}" is reserved by DurabilityAlarms`);
       }
+
       const method = Object.assign(
         traceFunction(`DurabilityAlarms.${name}`, (scheduledTime: number) =>
           this.#schedule(name, scheduledTime)
@@ -255,6 +257,7 @@ class DurabilityAlarmsCore<Names extends string> {
           ),
         }
       );
+
       Object.defineProperty(this, name, {
         value: method,
         enumerable: true,
@@ -283,7 +286,9 @@ class DurabilityAlarmsCore<Names extends string> {
       durabilityNamedAlarmMigrations,
       target
     );
+
     deleteMemosOfDroppedTable(context.storage.sql, alarmsTable);
+
     return result;
   }
 
@@ -313,6 +318,7 @@ class DurabilityAlarmsCore<Names extends string> {
       this.#active,
       'Durable alarm was purged'
     );
+
     this.#emit({
       type: 'purged',
       entityKind: 'named_alarm',
@@ -320,15 +326,18 @@ class DurabilityAlarmsCore<Names extends string> {
       before,
       count,
     });
+
     return count;
   }
 
   /** Success deletes an occurrence, so only pending and failed ones are listed. */
   #trackedSource(): UntypedSource {
     const sql = this.#engine.sql;
+
     return {
       get: async (name) => {
         const row = readAlarm(sql, this.#channel, name);
+
         return row && alarmRecord(sql, row);
       },
       list: async ({ limit, cursor, status, name }) => {
@@ -338,9 +347,11 @@ class DurabilityAlarmsCore<Names extends string> {
           status,
           name,
         });
+
         const records = v
           .parse(v.array(alarmRowSchema), page.rows)
           .map((row) => alarmRecord(sql, row));
+
         return page.next === undefined
           ? { records }
           : { records, cursor: page.next };
@@ -349,8 +360,10 @@ class DurabilityAlarmsCore<Names extends string> {
         return this.#engine.watch(this.#table, name, (completed) => {
           if (!completed) {
             listener();
+
             return;
           }
+
           listener({
             id: name,
             name,
@@ -380,11 +393,13 @@ class DurabilityAlarmsCore<Names extends string> {
         )
         .toArray()
     );
+
     // With liveTimers a running occurrence re-arms itself when it settles, so
     // skipping it keeps a long handler from blocking a concurrent alarm pass.
     const pending = this.#engine.liveTimers
       ? due.filter((row) => !this.#active.has(row.name))
       : due;
+
     const failures: unknown[] = [];
     await this.#engine.runConcurrent(pending, async (row) => {
       try {
@@ -393,6 +408,7 @@ class DurabilityAlarmsCore<Names extends string> {
         failures.push(error);
       }
     });
+
     if (failures.length > 0) {
       throw failures[0];
     }
@@ -447,6 +463,7 @@ class DurabilityAlarmsCore<Names extends string> {
 
   async #cancel(name: string): Promise<boolean> {
     const key = name;
+
     const cancelled = await this.#engine.transaction((sql) => {
       const removed =
         sql
@@ -458,11 +475,14 @@ class DurabilityAlarmsCore<Names extends string> {
             key
           )
           .toArray().length > 0;
+
       if (removed) {
         deleteMemos(sql, this.#table, key);
       }
+
       return removed;
     });
+
     if (!cancelled) {
       return false;
     }
@@ -473,6 +493,7 @@ class DurabilityAlarmsCore<Names extends string> {
       .get(key)
       ?.controller?.abort(new Error(`Durable alarm "${name}" was cancelled`));
     this.#engine.notify(this.#table, key);
+
     return true;
   }
 
@@ -485,6 +506,7 @@ class DurabilityAlarmsCore<Names extends string> {
     platform: AlarmInvocationInfo | undefined
   ): Promise<void> {
     const running = this.#active.get(row.name);
+
     if (running) {
       return running.settled;
     }
@@ -492,6 +514,7 @@ class DurabilityAlarmsCore<Names extends string> {
     const name = row.name;
     const policy = this.#policy(name);
     const retryTimeouts = policy.method?.retryTimeouts ?? false;
+
     return this.#engine.startExecution({
       table: this.#table,
       key: row.name,
@@ -511,11 +534,13 @@ class DurabilityAlarmsCore<Names extends string> {
         new DurableAlarmTimeoutError(name, policy.attemptTimeoutMs),
       invoke: (attempt, signal) => {
         const handler = this.#handlers.get(name);
+
         if (!handler) {
           throw new NonRetryableError(
             `No named alarm handler registered for "${name}"`
           );
         }
+
         return handler({
           name,
           scheduledTime: row.scheduled_at,
@@ -534,11 +559,13 @@ class DurabilityAlarmsCore<Names extends string> {
       },
       complete: (_result, attempt) => {
         const timestamp = Date.now();
+
         const removed = deleteAttempt(this.#engine.sql, this.#table, {
           key: row.name,
           generation: row.generation_id,
           attempt,
         });
+
         return removed ? timestamp : undefined;
       },
       isTerminal: (error) =>

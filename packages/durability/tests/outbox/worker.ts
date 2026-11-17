@@ -35,10 +35,12 @@ export class OutboxObject extends DurableObject {
         value
       );
       await this.outbox.stage(key, value);
+
       if (fail) {
         throw new Error('rolled back');
       }
     });
+
     return committed.then(
       () => true,
       () => false

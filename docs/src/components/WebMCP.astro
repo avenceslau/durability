@@ -17,8 +17,10 @@ import { searchIndex } from "virtual:nimbus/config";
 
 <script>
   import { initDocumentationWebMcp, mount } from "@cloudflare/nimbus-docs/client";
+
   mount('meta[name="nimbus-webmcp"]', (element) => {
     const options = JSON.parse(element.getAttribute("content")!);
+
     return initDocumentationWebMcp(options);
   });
 </script>

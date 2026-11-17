@@ -24,6 +24,7 @@ export class LogTestObject extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const scheduler = new DurabilityScheduler({ context: this.ctx });
+
     // Real cold storage: one immutable object per flushed segment. Channels
     // count offsets separately, so the key includes the channel.
     const cold: LogColdStorage<LogEvent> = {
@@ -32,13 +33,16 @@ export class LogTestObject extends DurableObject<Env> {
         await this.env.DEAD_LETTERS.put(locator, JSON.stringify(records), {
           onlyIf: { etagDoesNotMatch: '*' },
         });
+
         return locator;
       },
       read: async (locator) => {
         const stored = await this.env.DEAD_LETTERS.get(locator);
+
         return stored ? await stored.json<LogRecord<LogEvent>[]>() : undefined;
       },
     };
+
     this.log = new DurabilityLog<LogEvent>({
       scheduler,
       retention: { maxRecords: 3 },

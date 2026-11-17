@@ -167,10 +167,13 @@ const timeoutOf = (
 ): number => {
   const timeoutMs =
     options?.attemptTimeoutMs ?? fallback.attemptTimeoutMs ?? 30_000;
+
   assertPositiveInteger('attemptTimeoutMs', timeoutMs);
+
   if (timeoutMs > maxTimeoutMs) {
     throw new RangeError(`attemptTimeoutMs must be at most ${maxTimeoutMs}`);
   }
+
   return timeoutMs;
 };
 
@@ -184,6 +187,7 @@ const outboxOptions = (
   fallback: TopologyRetryOptions
 ) => {
   const delay = options?.retries?.delay ?? fallback.retries?.delay;
+
   return {
     attemptTimeoutMs: Math.min(timeoutMs * 2, maxTimeoutMs),
     ...(delay === undefined ? {} : { retries: { delay } }),
@@ -222,6 +226,7 @@ const outstandingWritesUntil = (
     group,
     now
   );
+
   const { until } = v.parse(
     v.object({ until: v.nullable(v.pipe(v.number(), v.safeInteger())) }),
     sql
@@ -233,6 +238,7 @@ const outstandingWritesUntil = (
       )
       .toArray()[0]
   );
+
   return until ?? undefined;
 };
 
@@ -311,21 +317,25 @@ export class DurabilityTopology<
       'DurabilityTopology',
       config.channel ?? defaultChannel
     );
+
     // The outboxes must share this helper's engine, so a private scheduler is
     // created explicitly instead of letting each attach its own.
     const scheduler = config.scheduler ?? new DurabilityScheduler(config);
     this.#engine = engineFor({ scheduler });
     const coordinator = this.#engine.objectId();
+
     if (coordinator === undefined) {
       throw new TopologyError(
         'DurabilityTopology needs the Durable Object context, which carries its ID'
       );
     }
+
     this.#ownerChannel = ownerChannel;
     this.#coordinator = coordinator;
     this.#engine.migrateSchema('topology', durabilityTopologyMigrations);
 
     const publisher = config.publish;
+
     if (
       publisher !== undefined &&
       (typeof publisher.write !== 'function' ||
@@ -333,6 +343,7 @@ export class DurabilityTopology<
     ) {
       throw new TopologyError('publish needs write and delete functions');
     }
+
     const publication =
       publisher === undefined
         ? undefined
@@ -342,10 +353,12 @@ export class DurabilityTopology<
       string,
       TopologyChannel<unknown, Meta>
     > = config.states ?? {};
+
     const channels = Object.entries(states).map(([name, channel]) => {
       if (!name || typeof channel.deliver !== 'function') {
         throw new TopologyError(`Invalid topology channel "${name}"`);
       }
+
       return {
         name,
         channel,
@@ -365,6 +378,7 @@ export class DurabilityTopology<
     const onLifecycleEvent = config.onLifecycleEvent as
       | LifecycleHook
       | undefined;
+
     const lifecycle =
       onLifecycleEvent === undefined ? {} : { onLifecycleEvent };
 
@@ -434,21 +448,26 @@ export class DurabilityTopology<
     ) => TopologyDraft<Meta, States>
   ): Promise<{ snapshot: TopologySnapshot<Meta>; published: boolean }> {
     assertGroup(group);
+
     const snapshot = await this.#engine.transaction((sql) => {
       const row = readGroup(sql, this.#ownerChannel, group);
       const live = row?.deleted === 0 ? row : undefined;
       const before = live ? parseMembers<Meta>(live) : [];
       const stateRows = readStates(sql, this.#ownerChannel, group);
+
       const states = Object.fromEntries(
         stateRows.map((state) => [state.channel, deserialize(state.value)])
       ) as Partial<States>;
 
       // A copy, so an updater that mutates `current` cannot make a change look like a no-op.
       const draft: unknown = next({ members: structuredClone(before), states });
+
       if (isThenable(draft)) {
         throw new TopologyError('update must return its draft synchronously');
       }
+
       const { members, states: changes } = this.#parseDraft(draft);
+
       if (!live && members === undefined) {
         throw new TopologyError(
           `Group "${group}" does not exist; set members to create it`
@@ -456,18 +475,23 @@ export class DurabilityTopology<
       }
 
       const now = Date.now();
+
       const after =
         members === undefined ? before : this.#normalize(members, before, now);
+
       const changed =
         !live ||
         canonical(JSON.stringify(after)) !== canonical(JSON.stringify(before));
+
       const version = changed ? (row?.version ?? 0) + 1 : live.version;
+
       const current: TopologySnapshot<Meta> = {
         group,
         version,
         coordinator: this.#coordinator,
         members: after,
       };
+
       if (changed) {
         sql.exec(
           `INSERT INTO durability_topology_groups
@@ -496,6 +520,7 @@ export class DurabilityTopology<
         after,
         changedChannels
       );
+
       return current;
     });
 
@@ -512,9 +537,11 @@ export class DurabilityTopology<
     assertGroup(group);
     await this.#engine.transaction((sql) => {
       const row = readGroup(sql, this.#ownerChannel, group);
+
       if (row?.deleted !== 0) {
         return;
       }
+
       const version = row.version + 1;
       sql.exec(
         `UPDATE durability_topology_groups
@@ -531,13 +558,16 @@ export class DurabilityTopology<
         this.#ownerChannel,
         group
       );
+
       for (const member of parseMembers<Meta>(row)) {
         for (const channel of this.#channels.values()) {
           discardWithin(channel.outbox, sql, deliveryKey(group, member.id));
         }
       }
+
       this.#stagePublication(sql, group, { deleted: { group, version } });
     });
+
     return { published: await this.#publishNow(group) };
   }
 
@@ -545,9 +575,11 @@ export class DurabilityTopology<
   snapshot(group: string): TopologySnapshot<Meta> | undefined {
     assertGroup(group);
     const row = readGroup(this.#engine.sql, this.#ownerChannel, group);
+
     if (row?.deleted !== 0) {
       return undefined;
     }
+
     return {
       group,
       version: row.version,
@@ -585,10 +617,12 @@ export class DurabilityTopology<
     timeoutMs: number
   ): Promise<void> {
     const landBy = Date.now() + timeoutMs + landingWindowMs;
+
     const writes = entries.map((entry) => ({
       entry,
       id: crypto.randomUUID(),
     }));
+
     await this.#engine.transaction((sql) => {
       for (const { entry, id } of writes) {
         sql.exec(
@@ -606,6 +640,7 @@ export class DurabilityTopology<
     await Promise.all(
       writes.map(async ({ entry, id }) => {
         const publication = entry.value;
+
         const write = Promise.resolve().then(() =>
           'deleted' in publication
             ? publisher.delete(
@@ -617,6 +652,7 @@ export class DurabilityTopology<
                 encodeSnapshot(publication.snapshot)
               )
         );
+
         try {
           await this.#engine.timer.withTimeout(
             write,
@@ -632,17 +668,20 @@ export class DurabilityTopology<
               forgetWrite(sql, this.#ownerChannel, id)
             );
           }
+
           reportFailure(
             'durability.topology.publish_failed',
             { group: entry.key, attempt: entry.attempt },
             error
           );
           entry.retry();
+
           return;
         }
 
         const outstandingUntil = await this.#engine.transaction((sql) => {
           forgetWrite(sql, this.#ownerChannel, id);
+
           return outstandingWritesUntil(
             sql,
             this.#ownerChannel,
@@ -650,6 +689,7 @@ export class DurabilityTopology<
             Date.now()
           );
         });
+
         if (outstandingUntil !== undefined) {
           entry.retry(Math.min(outstandingUntil - Date.now(), maxTimeoutMs));
         }
@@ -665,6 +705,7 @@ export class DurabilityTopology<
   #settleLate(group: string, id: string, write: Promise<unknown>): void {
     const onError = (error: unknown) =>
       reportFailure('durability.topology.restage_failed', { group }, error);
+
     const settled = write
       .then(
         () => undefined,
@@ -677,15 +718,18 @@ export class DurabilityTopology<
         })
       )
       .catch(onError);
+
     this.#engine.waitUntil(settled, onError);
   }
 
   /** A fresh version fences any in-flight publication, so the latest snapshot is written again. */
   #stageLatest(sql: SqlStorage, group: string): void {
     const row = readGroup(sql, this.#ownerChannel, group);
+
     if (!row) {
       return;
     }
+
     this.#stagePublication(
       sql,
       group,
@@ -711,6 +755,7 @@ export class DurabilityTopology<
     await Promise.all(
       entries.map(async (entry) => {
         const { group, member, topologyVersion, value } = entry.value;
+
         const update: TopologyStateUpdate<unknown> = {
           group,
           channel: name,
@@ -718,6 +763,7 @@ export class DurabilityTopology<
           topologyVersion,
           value,
         };
+
         try {
           // Members ignore versions they have passed, so an abandoned delivery landing late is harmless.
           await this.#engine.timer.withTimeout(
@@ -744,11 +790,14 @@ export class DurabilityTopology<
     if (draft === null || typeof draft !== 'object') {
       throw new TopologyError('update must return a draft object');
     }
+
     const members: unknown = Reflect.get(draft, 'members');
     const states: unknown = Reflect.get(draft, 'states') ?? {};
+
     if (members !== undefined && !Array.isArray(members)) {
       throw new TopologyError('Draft members must be an array');
     }
+
     if (
       states === null ||
       typeof states !== 'object' ||
@@ -756,6 +805,7 @@ export class DurabilityTopology<
     ) {
       throw new TopologyError('Draft states must be an object');
     }
+
     return {
       members: members as readonly TopologyMemberInput<Meta>[] | undefined,
       states: states as Record<string, unknown>,
@@ -772,22 +822,30 @@ export class DurabilityTopology<
         'A group needs at least one member; use delete() to remove it'
       );
     }
+
     const joinedAt = new Map(
       before.map((member) => [member.id, member.joinedAt])
     );
+
     const seen = new Set<string>();
+
     const members = inputs.map((input) => {
       const parsed = v.safeParse(memberInputSchema, input);
+
       if (!parsed.success) {
         throw new TopologyError(
           `Invalid member: ${v.summarize(parsed.issues)}`
         );
       }
+
       const { id, state, locationHint, meta } = parsed.output;
+
       if (seen.has(id)) {
         throw new TopologyError(`Duplicate member "${id}"`);
       }
+
       seen.add(id);
+
       return {
         id,
         state,
@@ -796,6 +854,7 @@ export class DurabilityTopology<
         joinedAt: joinedAt.get(id) ?? now,
       } as unknown as TopologyMember<Meta>;
     });
+
     return members.sort((a, b) => (a.id < b.id ? -1 : 1));
   }
 
@@ -808,18 +867,23 @@ export class DurabilityTopology<
   ): Set<string> {
     const existing = new Map(current.map((row) => [row.channel, row.value]));
     const changed = new Set<string>();
+
     for (const [channel, value] of Object.entries(changes)) {
       if (value === undefined) {
         continue;
       }
+
       if (!this.#channels.has(channel)) {
         throw new TopologyError(`Unknown topology channel "${channel}"`);
       }
+
       const stored = serialize(value);
       const previous = existing.get(channel);
+
       if (previous !== undefined && canonical(previous) === canonical(stored)) {
         continue;
       }
+
       sql.exec(
         `INSERT INTO durability_topology_states
            (owner_channel, group_id, channel, value)
@@ -833,6 +897,7 @@ export class DurabilityTopology<
       );
       changed.add(channel);
     }
+
     return changed;
   }
 
@@ -855,14 +920,17 @@ export class DurabilityTopology<
         row.value,
       ])
     );
+
     for (const [name, channel] of this.#channels) {
       const previous = new Set(
         before
           .filter((member) => inRole(member, channel.role))
           .map(({ id }) => id)
       );
+
       const targets = after.filter((member) => inRole(member, channel.role));
       const kept = new Set(targets.map(({ id }) => id));
+
       for (const id of previous) {
         if (!kept.has(id)) {
           discardWithin(channel.outbox, sql, deliveryKey(group, id));
@@ -870,13 +938,16 @@ export class DurabilityTopology<
       }
 
       const value = values.get(name);
+
       if (value === undefined) {
         continue;
       }
+
       for (const member of targets) {
         if (!changed.has(name) && previous.has(member.id)) {
           continue;
         }
+
         stageWithin(channel.outbox, sql, deliveryKey(group, member.id), {
           group,
           member,

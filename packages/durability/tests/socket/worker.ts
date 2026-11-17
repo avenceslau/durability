@@ -19,6 +19,7 @@ const todoSchema = v.object({
 type Env = { SOCKET_TEST: DurableObjectNamespace<SocketTestObject> };
 
 const libraryChannel = 'library';
+
 // Real SQLite keeps NUL bytes, so this channel must stay apart from `library`.
 const nulChannel = 'library\0nul';
 const detachLibraryKey = 'detach-library';
@@ -35,6 +36,7 @@ const createLibrarySocket = (context: DurableObjectState, channel: string) => {
         input: v.string(),
         handle: (id: string) => {
           socket.updated(id);
+
           return id;
         },
       },
@@ -45,6 +47,7 @@ const createLibrarySocket = (context: DurableObjectState, channel: string) => {
     }),
     retention: 5,
   });
+
   return socket;
 };
 
@@ -56,6 +59,7 @@ export class SocketTestObject extends DurableObject<Env> {
     handlers: {
       create: async ({ payload }: DurableCall<Todo>) => {
         this.todos.set(payload.id, payload);
+
         return payload;
       },
     },
@@ -81,11 +85,14 @@ export class SocketTestObject extends DurableObject<Env> {
         input: v.string(),
         handle: (id: string) => {
           const todo = this.todos.get(id);
+
           if (!todo) {
             throw new RangeError(`No todo "${id}"`);
           }
+
           todo.done = !todo.done;
           this.socket.updated(todo);
+
           return todo;
         },
       },
@@ -125,15 +132,18 @@ export class SocketTestObject extends DurableObject<Env> {
 
   override fetch(request: Request) {
     const channel = new URL(request.url).searchParams.get('channel');
+
     if (channel === libraryChannel) {
       return (
         this.librarySocket?.fetch(request) ??
         new Response('Channel removed', { status: 404 })
       );
     }
+
     if (channel === nulChannel) {
       return this.nulSocket.fetch(request);
     }
+
     return this.socket.fetch(request);
   }
 
@@ -154,6 +164,7 @@ export class SocketTestObject extends DurableObject<Env> {
 export default {
   fetch(request: Request, env: Env) {
     const id = new URL(request.url).pathname.split('/').pop() ?? '';
+
     return env.SOCKET_TEST.getByName(id).fetch(request);
   },
 };

@@ -35,11 +35,14 @@ export function initSearch(config: SearchConfig): SearchInstance {
 
   function updateActive(newIndex: number): void {
     const options = getOptions();
+
     if (options.length === 0) {
       activeIndex = -1;
       input.removeAttribute('aria-activedescendant');
+
       return;
     }
+
     activeIndex = Math.max(-1, Math.min(newIndex, options.length - 1));
     options.forEach((option, index) => {
       if (index === activeIndex) {
@@ -50,6 +53,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
         option.removeAttribute('data-highlighted');
       }
     });
+
     if (activeIndex < 0) input.removeAttribute('aria-activedescendant');
   }
 
@@ -71,6 +75,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
     link.className = className;
     link.textContent = title;
     link.addEventListener('click', () => onNavigate?.());
+
     return link;
   }
 
@@ -86,6 +91,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
       result.url,
       'block truncate text-sm font-medium text-foreground no-underline focus-visible:outline-none'
     );
+
     option.appendChild(link);
 
     if (result.snippet) {
@@ -99,6 +105,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
     if (result.subResults?.length) {
       const subList = document.createElement('div');
       subList.className = 'mt-2 border-s border-border ps-3';
+
       for (const sub of result.subResults.slice(0, 3)) {
         subList.appendChild(
           resultLink(
@@ -108,6 +115,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
           )
         );
       }
+
       option.appendChild(subList);
     }
 
@@ -121,14 +129,17 @@ export function initSearch(config: SearchConfig): SearchInstance {
 
   async function ensureInitialized(): Promise<boolean> {
     if (initialized) return true;
+
     try {
       await provider.init?.();
       initialized = true;
+
       return true;
     } catch {
       emptyState.textContent = import.meta.env.DEV
         ? 'Search is available after a production build.'
         : 'Search could not load. Check your connection and reload the page. If it persists, ask the site owner to rebuild and deploy the search index.';
+
       return false;
     }
   }
@@ -146,6 +157,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
 
     try {
       const results = await provider.search(query, { signal });
+
       if (signal.aborted) return;
 
       clearResults();
@@ -154,11 +166,13 @@ export function initSearch(config: SearchConfig): SearchInstance {
       if (results.length === 0) {
         emptyState.style.display = '';
         emptyState.textContent = 'No results found.';
+
         return;
       }
 
       emptyState.style.display = 'none';
       input.setAttribute('aria-expanded', 'true');
+
       for (const result of results)
         resultsContainer.appendChild(buildResult(result));
       resultsContainer.hidden = false;
@@ -174,19 +188,23 @@ export function initSearch(config: SearchConfig): SearchInstance {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       const query = input.value.trim();
+
       if (!query) {
         activeController?.abort();
         clearResults();
         emptyState.style.display = '';
         emptyState.textContent = 'Type to search…';
+
         return;
       }
+
       void runSearch(query);
     }, 150);
   }
 
   function handleKeydown(event: KeyboardEvent): void {
     const options = getOptions();
+
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       updateActive(activeIndex + 1);
@@ -211,6 +229,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
   return {
     async reset() {
       activeController?.abort();
+
       if (debounceTimer) clearTimeout(debounceTimer);
       input.value = '';
       input.focus();
@@ -222,6 +241,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
     },
     destroy() {
       activeController?.abort();
+
       if (debounceTimer) clearTimeout(debounceTimer);
       input.removeEventListener('input', handleInput);
       input.removeEventListener('keydown', handleKeydown);
@@ -261,6 +281,7 @@ function bindGlobals() {
     const trigger = (event.target as Element | null)?.closest(
       '[data-search-trigger]'
     );
+
     if (!trigger) return;
     primaryDialog()?.__openSearchDialog?.();
   });
@@ -269,8 +290,10 @@ function bindGlobals() {
     if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k')
       return;
     const dialog = primaryDialog();
+
     if (!dialog) return;
     event.preventDefault();
+
     if (dialog.open) dialog.close();
     else dialog.__openSearchDialog?.();
   });
@@ -284,10 +307,13 @@ mount('[data-search-dialog]', (root) => {
   dialog.setAttribute('data-search-ready', 'true');
 
   const input = dialog.querySelector<HTMLInputElement>('[data-search-input]');
+
   const resultsContainer = dialog.querySelector<HTMLElement>(
     '[data-search-results]'
   );
+
   const emptyState = dialog.querySelector<HTMLElement>('[data-search-empty]');
+
   if (!input || !resultsContainer || !emptyState) return () => {};
 
   const search = initSearch({

@@ -144,6 +144,7 @@ function currentStub<TTarget extends object>(
     source.stub = source.reopen();
     source.broken = false;
   }
+
   return source.stub;
 }
 
@@ -161,16 +162,20 @@ function pipelined(node: PipelineNode): unknown {
         property === 'finally'
       ) {
         const promise = node.resolve();
+
         const method = Reflect.get(promise, property) as (
           ...args: unknown[]
         ) => unknown;
+
         return method.bind(promise);
       }
+
       if (typeof property === 'symbol') {
         return undefined;
       }
 
       let member: Promise<unknown> | undefined;
+
       return pipelined({
         resolve: () =>
           (member ??= node
@@ -179,6 +184,7 @@ function pipelined(node: PipelineNode): unknown {
         call: (args) =>
           node.resolve().then((value) => {
             const target = value as Record<string, unknown>;
+
             return Reflect.apply(
               target[property] as (...args: unknown[]) => unknown,
               target,
@@ -265,12 +271,14 @@ export function createRestorableStubFactory(
   }
 
   const get: unknown = Reflect.get(namespace, method);
+
   if (typeof get !== 'function') {
     return undefined;
   }
 
   return (...args) => {
     const reopen = () => Reflect.apply(get, namespace, args) as object;
+
     return createSourceStub({ stub: reopen(), broken: false, reopen }, []);
   };
 }
@@ -304,6 +312,7 @@ function createSourceStub<TTarget extends object>(
           }
 
           const configured = transform.callerFactory(options);
+
           if (typeof configured !== 'function') {
             throw new TypeError(
               'Caller transform factory must return a function'
@@ -321,6 +330,7 @@ function createSourceStub<TTarget extends object>(
       const accessedStub = currentStub(source);
       // Native bindings expose accessors that reject a Proxy receiver.
       const value: unknown = Reflect.get(accessedStub, property);
+
       if (typeof value !== 'function' || typeof property !== 'string') {
         return value;
       }
@@ -338,23 +348,27 @@ function createSourceStub<TTarget extends object>(
         initialArgs: unknown[]
       ): unknown => {
         let result: unknown;
+
         try {
           result = Reflect.apply(method, accessedStub, initialArgs);
         } catch (error) {
           markBroken(accessedStub);
           throw error;
         }
+
         const then: unknown =
           (typeof result === 'object' || typeof result === 'function') &&
           result !== null
             ? Reflect.get(result, 'then')
             : undefined;
+
         if (typeof then === 'function') {
           Reflect.apply(then, result, [
             () => undefined,
             () => markBroken(accessedStub),
           ]);
         }
+
         return result;
       };
 
@@ -378,6 +392,7 @@ function createSourceStub<TTarget extends object>(
           }
 
           const setContext = Reflect.get(stub, 'setContext');
+
           if (typeof setContext !== 'function') {
             throw new TypeError(
               'Cannot send transform context to a target without setContext'
@@ -387,6 +402,7 @@ function createSourceStub<TTarget extends object>(
           const contextualTarget: unknown = Reflect.apply(setContext, stub, [
             context,
           ]);
+
           if (
             (typeof contextualTarget !== 'object' &&
               typeof contextualTarget !== 'function') ||
@@ -396,12 +412,15 @@ function createSourceStub<TTarget extends object>(
               'setContext must return a transform context target'
             );
           }
+
           const invoke = Reflect.get(contextualTarget, 'invoke');
+
           if (typeof invoke !== 'function') {
             throw new TypeError(
               'setContext must return a target with an invoke method'
             );
           }
+
           return Reflect.apply(invoke, contextualTarget, [
             property,
             initialArgs,
@@ -412,6 +431,7 @@ function createSourceStub<TTarget extends object>(
           context: TransformContext
         ): Promise<unknown> => {
           const stub = currentStub(source);
+
           try {
             return await call(stub, context);
           } catch (error) {
@@ -428,6 +448,7 @@ function createSourceStub<TTarget extends object>(
           context: TransformContext
         ): Promise<unknown> => {
           const transform = transforms[index];
+
           if (!transform) {
             return source.reopen
               ? callRestorable(context)
@@ -455,6 +476,7 @@ function createSourceStub<TTarget extends object>(
         // native `then` with the stub itself as the receiver.
         get: (method, key) => {
           const member: unknown = Reflect.get(method, key);
+
           return typeof member === 'function' &&
             (key === 'then' || key === 'catch' || key === 'finally')
             ? member.bind(method)
@@ -464,12 +486,14 @@ function createSourceStub<TTarget extends object>(
           if (transforms.length > 0) {
             return pipelinedPromise(callWithTransforms(initialArgs));
           }
+
           if (source.reopen) {
             return callObserved(
               method as (...args: unknown[]) => unknown,
               initialArgs
             );
           }
+
           return Reflect.apply(method, accessedStub, initialArgs);
         },
       });
@@ -497,6 +521,7 @@ export function withTransforms<TNamespace extends NamespaceLike<object>>(
     get(target, property, receiver) {
       if (property !== 'get') {
         const value = Reflect.get(target, property, receiver);
+
         return typeof value === 'function' ? value.bind(target) : value;
       }
 

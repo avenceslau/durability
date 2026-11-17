@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+
 const packages = [
   ['storage', 'Storage'],
   ['transforms', 'RPC transforms'],
@@ -17,14 +18,17 @@ await Promise.all(
     const sourcePath = `packages/${name}/README.md`;
     const source = await readFile(resolve(root, sourcePath), 'utf8');
     const base = `https://github.com/avenceslau/durability/blob/main/${sourcePath}`;
+
     const body = source
       .replace(/^# .+\r?\n(?:[ \t]*\r?\n)*/u, '')
       .replace(/\]\(([^\s)]+)\)/gu, (match, href) => {
         if (/^(?:[a-z][a-z\d+.-]*:|#|\/\/)/iu.test(href)) {
           return match;
         }
+
         return `](${new URL(href, base).href})`;
       });
+
     const target = resolve(root, `docs/src/content/docs/reference/${name}.md`);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(

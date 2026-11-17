@@ -84,6 +84,7 @@ export class JobShard extends DurableObject<Env> {
           body: JSON.stringify(payload.payload),
           signal,
         });
+
         if (!response.ok) {
           throw new Error(`Job API responded ${response.status}`);
         }
@@ -94,9 +95,11 @@ export class JobShard extends DurableObject<Env> {
       const finished =
         event.type === 'terminal' ||
         (event.type === 'attempt_settled' && event.outcome === 'completed');
+
       if (finished && 'id' in event) {
         return this.permits.release(event.id).then(() => undefined);
       }
+
       return undefined;
     },
   });
@@ -114,6 +117,7 @@ export class JobShard extends DurableObject<Env> {
       const results = await Promise.all(
         ids.map((id) => this.jobs.run.getResult(id))
       );
+
       return ids.filter((_, index) => results[index]?.status !== 'pending');
     },
   });
@@ -141,9 +145,11 @@ export class JobShard extends DurableObject<Env> {
 /** Spread one account's jobs over a few shards; any stable function works. */
 const shardFor = (accountId: string, width = 4): string => {
   let hash = 0;
+
   for (const char of accountId) {
     hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   }
+
   return `${accountId}-${hash % width}`;
 };
 
@@ -152,18 +158,22 @@ export default {
     if (request.method !== 'POST') {
       return new Response('POST a job array', { status: 405 });
     }
+
     // Demo input only: authenticate and validate untrusted payloads in an application.
     const jobs = await request.json<Job[]>();
     const byShard = new Map<string, Job[]>();
+
     for (const job of jobs) {
       const shard = shardFor(job.accountId);
       byShard.set(shard, [...(byShard.get(shard) ?? []), job]);
     }
+
     const results = await Promise.all(
       [...byShard].map(([shard, shardJobs]) =>
         env.JOB_SHARDS.getByName(shard).submit(shardJobs)
       )
     );
+
     return Response.json(results, { status: 202 });
   },
 } satisfies ExportedHandler<Env>;

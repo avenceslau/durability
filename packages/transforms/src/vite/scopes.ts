@@ -63,10 +63,12 @@ export function resolveBinding(
 ): Binding | undefined {
   for (let current = scope; current; current = current.parent) {
     const binding = current.bindings.get(name);
+
     if (binding) {
       return binding;
     }
   }
+
   return undefined;
 }
 
@@ -78,10 +80,12 @@ function declareLocal(scope: Scope, name: string | undefined): void {
 
 function declareParameters(node: SyntaxNode, functionScope: Scope): void {
   const params = Array.isArray(node.params) ? node.params : [];
+
   const handlerName =
     node.type === 'FunctionDeclaration'
       ? identifierName(syntaxNode(node.id))
       : identifierName(syntaxNode(node.key));
+
   const hasWorkerEnvParameter =
     handlerName !== undefined && workerHandlerNames.has(handlerName);
 
@@ -93,6 +97,7 @@ function declareParameters(node: SyntaxNode, functionScope: Scope): void {
 
     for (const identifier of bindingIdentifiers(param)) {
       const name = identifierName(identifier);
+
       if (name) {
         functionScope.bindings.set(name, {
           kind: isEnv ? 'env' : 'other',
@@ -112,20 +117,25 @@ function importedBindingKind(
   }
 
   const source = syntaxNode(declaration?.source);
+
   const sourceName =
     source?.type === 'StringLiteral' && typeof source.value === 'string'
       ? source.value
       : undefined;
+
   const importedName = identifierName(syntaxNode(specifier.imported));
+
   if (sourceName === undefined || importedName === undefined) {
     return 'other';
   }
 
   const isTypeOnly =
     declaration?.importKind === 'type' || specifier.importKind === 'type';
+
   if (!isTypeOnly && clientFactories.get(sourceName) === importedName) {
     return 'client';
   }
+
   return importedName === 'env' && sourceName === 'cloudflare:test'
     ? 'env'
     : 'other';
@@ -145,10 +155,13 @@ export function indexScopes(ast: unknown): ScopeIndex {
     key?: string
   ): void => {
     const node = syntaxNode(value);
+
     if (!node) {
       return;
     }
+
     nodeScopes.set(node, scope);
+
     if (parent && key) {
       relations.set(node, { parent, key });
     }
@@ -158,23 +171,27 @@ export function indexScopes(ast: unknown): ScopeIndex {
       forEachChild(node, (child, childKey) => {
         index(child, blockScope, node, childKey);
       });
+
       return;
     }
 
     if (node.type === 'ClassDeclaration' || node.type === 'ClassExpression') {
       declareLocal(scope, identifierName(syntaxNode(node.id)));
       const superName = identifierName(syntaxNode(node.superClass));
+
       const classScope: Scope = {
         parent: scope,
         bindings: new Map(),
         trustedThisEnv:
           superName !== undefined && platformEntrypointNames.has(superName),
       };
+
       forEachChild(node, (child, childKey) => {
         if (childKey !== 'id') {
           index(child, classScope, node, childKey);
         }
       });
+
       return;
     }
 
@@ -182,35 +199,44 @@ export function indexScopes(ast: unknown): ScopeIndex {
       if (node.type === 'FunctionDeclaration') {
         declareLocal(scope, identifierName(syntaxNode(node.id)));
       }
+
       const functionScope: Scope = {
         parent: scope,
         bindings: new Map(),
         trustedThisEnv: scope.trustedThisEnv ?? false,
       };
+
       if (node.type === 'FunctionExpression') {
         declareLocal(functionScope, identifierName(syntaxNode(node.id)));
       }
+
       declareParameters(node, functionScope);
 
       forEachChild(node, (child, childKey) => {
         if (childKey === 'id') {
           return;
         }
+
         const childScope =
           childKey === 'params' || childKey === 'body' ? functionScope : scope;
+
         index(child, childScope, node, childKey);
       });
+
       return;
     }
 
     if (node.type === 'CatchClause') {
       const catchScope: Scope = { parent: scope, bindings: new Map() };
+
       for (const identifier of bindingIdentifiers(node.param)) {
         declareLocal(catchScope, identifierName(identifier));
       }
+
       forEachChild(node, (child, childKey) => {
         index(child, catchScope, node, childKey);
       });
+
       return;
     }
 
@@ -220,12 +246,15 @@ export function indexScopes(ast: unknown): ScopeIndex {
     ) {
       for (const declarationValue of node.declarations) {
         const declaration = syntaxNode(declarationValue);
+
         if (!declaration) {
           continue;
         }
+
         for (const identifier of bindingIdentifiers(declaration.id)) {
           declareLocal(scope, identifierName(identifier));
         }
+
         if (node.kind === 'const') {
           declarators.push({ node: declaration, scope });
         }
@@ -236,6 +265,7 @@ export function indexScopes(ast: unknown): ScopeIndex {
       node.type === 'ImportSpecifier'
     ) {
       const localName = identifierName(syntaxNode(node.local));
+
       if (localName) {
         scope.bindings.set(localName, {
           kind: importedBindingKind(node, parent),
@@ -250,5 +280,6 @@ export function indexScopes(ast: unknown): ScopeIndex {
   };
 
   index(ast, rootScope);
+
   return { rootScope, nodeScopes, relations, declarators };
 }

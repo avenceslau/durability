@@ -112,10 +112,12 @@ describe('migrations', () => {
 
   it('reads the history once per capability when the schema is current', () => {
     const storage = new FakeStorage();
+
     const construct = () => {
       const scheduler = new DurabilityScheduler({
         context: contextFor(storage),
       });
+
       return [
         new Durability({ scheduler, handlers: { work: async () => 1 } }),
         new DurabilityAlarms({
@@ -124,6 +126,7 @@ describe('migrations', () => {
         }),
       ];
     };
+
     construct();
     const exec = vi.spyOn(storage.sql, 'exec');
 
@@ -176,12 +179,14 @@ describe('migrations', () => {
     );
 
     Durability.migrate(context);
+
     const migrated = storage.sql
       .exec<{ created_at: number; generation_id: string }>(
         'SELECT created_at, generation_id FROM durability_calls WHERE id = ?',
         'legacy'
       )
       .toArray()[0];
+
     expect(migrated?.created_at).toBeGreaterThan(0);
     expect(migrated?.generation_id).toBe('legacy:legacy');
 
@@ -206,6 +211,7 @@ describe('migrations', () => {
         applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
       )
     `);
+
     for (const migration of [
       ...durabilityOperationMigrations.filter(
         ({ name }) => name !== 'durability_0015_calls_channel'
@@ -216,6 +222,7 @@ describe('migrations', () => {
     ]) {
       storage.sql.exec(migration.up);
     }
+
     for (const name of [
       'durability_0001_create_calls',
       'durability_0002_pending_index',
@@ -227,6 +234,7 @@ describe('migrations', () => {
         name
       );
     }
+
     storage.sql.exec(
       `INSERT INTO durability_calls
         (id, operation, payload, status, attempt, next_attempt_at,
@@ -239,6 +247,7 @@ describe('migrations', () => {
       context,
       handlers: { work: async () => undefined },
     });
+
     void new DurabilityAlarms({
       context,
       handlers: { cleanup: async () => undefined },
@@ -359,6 +368,7 @@ describe('migrations', () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
     Durability.migrate(context);
+
     for (const version of [5, 6, 7]) {
       storage.sql.exec(
         `INSERT INTO durability_migrations (name, capability, down)
@@ -374,6 +384,7 @@ describe('migrations', () => {
 
   it('applies a batch of migrations atomically', () => {
     const storage = new FakeStorage();
+
     const migrations = [
       {
         name: 'test_0001',
@@ -438,14 +449,18 @@ describe('migrations', () => {
 
   it('refreshes stored down scripts only for migrations applied earlier', () => {
     const storage = new FakeStorage();
+
     const migration = {
       name: 'test_0001',
       up: 'CREATE TABLE test_one (id TEXT);',
       down: 'DROP TABLE test_one;',
     };
+
     const exec = vi.spyOn(storage.sql, 'exec');
+
     const refreshes = () =>
       exec.mock.calls.filter(([query]) => query.includes('SET down')).length;
+
     const migrateTest = (target: (typeof migration)[]) =>
       migrateCapability(
         contextFor(storage).storage,
@@ -485,6 +500,7 @@ describe('migrate', () => {
       down: 'ALTER TABLE jobs DROP COLUMN status;',
     },
   ];
+
   const asStorage = (storage: FakeStorage) =>
     storage as unknown as DurableObjectStorage;
 
@@ -551,16 +567,19 @@ describe('migrate', () => {
   it('leaves the schema unchanged when a batch after a downgrade fails', () => {
     const storage = new FakeStorage();
     const [createJobs] = jobsMigrations;
+
     const createRuns = {
       name: '0002_create_runs',
       up: 'CREATE TABLE runs (id TEXT);',
       down: 'DROP TABLE runs;',
     };
+
     const broken = {
       name: '0003_broken',
       up: 'NOT SQL;',
       down: 'SELECT 1;',
     };
+
     migrate(asStorage(storage), [createJobs!, createRuns]);
     storage.sql.exec("INSERT INTO runs (id) VALUES ('kept')");
 

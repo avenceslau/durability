@@ -31,6 +31,7 @@ beforeEach(() => {
   vi.setSystemTime(1_800_000_000_000);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -38,6 +39,7 @@ afterEach(() => {
 
 const settle = async (ms = 1_000) => {
   await vi.advanceTimersByTimeAsync(ms);
+
   for (let i = 0; i < 3; i += 1) {
     // eslint-disable-next-line no-await-in-loop
     await vi.advanceTimersByTimeAsync(5);
@@ -63,6 +65,7 @@ const round = async (
 ): Promise<PermitGrant[]> => {
   const replies = requests.map((message) => holder.handle(message));
   await vi.advanceTimersByTimeAsync(2_000);
+
   return Promise.all(replies) as Promise<PermitGrant[]>;
 };
 
@@ -110,6 +113,7 @@ describe('semaphore pools on one object', () => {
   it('keeps limits, grants, and leases of each pool apart', async () => {
     const storage = new FakeStorage();
     const scheduler = schedulerFor(storage);
+
     const pool = (channel: string | undefined, limit: number) =>
       new DurabilitySemaphoreServer({
         scheduler,
@@ -117,6 +121,7 @@ describe('semaphore pools on one object', () => {
         limit,
         leases: { provisioning: { mode: 'over', extra: 2 } },
       });
+
     const main = pool(undefined, 2);
     const batch = pool('batch', 3);
 
@@ -130,11 +135,13 @@ describe('semaphore pools on one object', () => {
     // The same client reporting one pool's grant and lease to the other frees nothing.
     const grantId = fromMain!.grants[0]!.grantId;
     const leaseId = fromMain!.leases![0]!.leaseId;
+
     const crossed = await sync(batch, {
       clientId: 'c',
       grants: [{ grantId, claimed: 2, released: 2 }],
       leases: [{ leaseId, drawn: 2, released: 2, retired: true }],
     });
+
     expect(crossed.grantResults).toEqual([
       {
         grantId,
@@ -196,6 +203,7 @@ describe('semaphore pools on one object', () => {
       channel: 'gone',
       limit: 5,
     });
+
     await gone.alarm();
     expect(
       storage.sql
@@ -216,11 +224,13 @@ describe('semaphore client channels', () => {
         permitsPerLease: 2,
       },
     });
+
     const [plain, side] = await round(
       holder,
       leasing('shard', 2),
       leasing('shard', 2, 'side')
     );
+
     expect(plain).not.toHaveProperty('clientChannel');
     expect(side!.clientChannel).toBe('side');
     expect(plain!.grants.map((grant) => grant.permits)).toEqual([2]);
@@ -232,12 +242,14 @@ describe('semaphore client channels', () => {
     // The side queue cannot claim, release, or settle the default queue's permits.
     const grantId = plain!.grants[0]!.grantId;
     const leaseId = plain!.leases![0]!.leaseId;
+
     const crossed = await sync(holder, {
       clientId: 'shard',
       clientChannel: 'side',
       grants: [{ grantId, claimed: 2, released: 2 }],
       leases: [{ leaseId, drawn: 0, released: 0, retired: true }],
     });
+
     expect(crossed.clientChannel).toBe('side');
     expect(crossed.grantResults).toEqual([
       {
@@ -281,20 +293,24 @@ describe('semaphore client channels', () => {
         ttlMs: 5_000,
       },
     });
+
     const [plain, side] = await round(
       holder,
       leasing('shard', 1),
       leasing('shard', 1, 'side')
     );
+
     const plainLease = plain!.leases![0]!.leaseId;
     const sideLease = side!.leases![0]!.leaseId;
 
     vi.setSystemTime(Date.now() + 6_000);
+
     const [plainLater, sideLater] = await round(
       holder,
       leasing('shard', 0),
       leasing('shard', 0, 'side')
     );
+
     expect(plainLater!.leases!.map((lease) => lease.leaseId)).toEqual([
       plainLease,
     ]);
@@ -355,12 +371,14 @@ describe('semaphore queue channels', () => {
     const scheduler = schedulerFor(new FakeStorage());
     const mainAdmitted: AdmittedItem<string>[] = [];
     const sideAdmitted: AdmittedItem<string>[] = [];
+
     const main = queueOn(
       scheduler,
       holderServer(holder),
       undefined,
       mainAdmitted
     );
+
     const side = queueOn(scheduler, holderServer(holder), 'side', sideAdmitted);
 
     const items = ['x', 'y'].map((id) => ({
@@ -368,6 +386,7 @@ describe('semaphore queue channels', () => {
       key: 'acct',
       body: id,
     }));
+
     await expect(main.enqueue(items)).resolves.toEqual({
       queued: ['x', 'y'],
       duplicates: [],
@@ -388,8 +407,10 @@ describe('semaphore queue channels', () => {
     // Releasing an ID in one queue leaves the same ID in the other admitted.
     const [full, partial] =
       mainAdmitted.length === 2 ? [main, side] : [side, main];
+
     const partialAdmitted =
       mainAdmitted.length === 2 ? sideAdmitted : mainAdmitted;
+
     const sharedId = partialAdmitted[0]!.id;
     expect(await partial.release(sharedId)).toBe(true);
     expect(await full.status(sharedId)).toMatchObject({ state: 'admitted' });
@@ -419,34 +440,44 @@ describe('semaphore queue channels', () => {
         permitsPerLease: 2,
       },
     });
+
     let legacy = true;
     const sent: SemaphoreRequest[] = [];
+
     const server: SemaphoreHolder = {
       request: async (_key, message) => {
         sent.push(message);
+
         if (legacy && message.v !== 1) {
           throw new Error('Unsupported semaphore protocol version');
         }
+
         const reply = (await holder.handle(
           legacy ? (withoutChannel(message) as PermitRequest) : message
         )) as PermitGrant;
+
         return legacy ? (withoutChannel(reply) as PermitGrant) : reply;
       },
       sync: async (_key, message) => {
         sent.push(message);
+
         if (legacy && message.v !== 1) {
           throw new Error('Unsupported semaphore protocol version');
         }
+
         const reply = (await holder.handle(
           legacy ? (withoutChannel(message) as PermitSync) : message
         )) as PermitSyncResult;
+
         return legacy ? (withoutChannel(reply) as PermitSyncResult) : reply;
       },
     };
+
     const scheduler = schedulerFor(new FakeStorage());
     const mainAdmitted: AdmittedItem<string>[] = [];
     const sideAdmitted: AdmittedItem<string>[] = [];
     const main = queueOn(scheduler, server, undefined, mainAdmitted);
+
     const side = queueOn(scheduler, server, 'side', sideAdmitted, {
       attemptTimeoutMs: 10_000,
     });
@@ -457,9 +488,11 @@ describe('semaphore queue channels', () => {
     expect(mainAdmitted.map((item) => item.id)).toEqual(['m']);
     expect(sideAdmitted).toEqual([]);
     expect(await side.status('s')).toMatchObject({ state: 'queued' });
+
     const sideRequests = sent.filter(
       (message) => message.clientChannel === 'side'
     );
+
     expect(sideRequests.length).toBeGreaterThan(0);
     // Old holders reject version 2 before granting or leasing to the wrong client.
     expect(sideRequests.every((message) => message.v === 2)).toBe(true);
@@ -479,6 +512,7 @@ describe('semaphore queue channels', () => {
   it('keeps claims pending while a holder answers syncs without the channel', async () => {
     let acknowledgeSync = false;
     const syncs: PermitSync[] = [];
+
     const server: SemaphoreHolder = {
       request: async (_key, message) =>
         grantReply(message, {
@@ -493,6 +527,7 @@ describe('semaphore queue channels', () => {
         }),
       sync: async (_key, message) => {
         syncs.push(message);
+
         return {
           type: 'synced',
           v: message.v,
@@ -505,13 +540,16 @@ describe('semaphore queue channels', () => {
         };
       },
     };
+
     const admitted: AdmittedItem<string>[] = [];
+
     const queue = queueOn(
       schedulerFor(new FakeStorage()),
       server,
       'side',
       admitted
     );
+
     await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
     await settle(3_000);
     expect(syncs.length).toBeGreaterThan(0);
@@ -529,6 +567,7 @@ describe('semaphore queue channels', () => {
   it('keeps the legacy outbox channel for the default queue and a tuple for named ones', async () => {
     const storage = new FakeStorage();
     const scheduler = schedulerFor(storage);
+
     const unavailable: SemaphoreHolder = {
       request: async (_key, message) =>
         grantReply(message, {
@@ -545,7 +584,9 @@ describe('semaphore queue channels', () => {
         throw new Error('holder unavailable');
       },
     };
+
     const published: string[] = [];
+
     // Under dot concatenation this user outbox would share the named queue's channel.
     const userOutbox = new DurabilityOutbox<string>({
       scheduler,
@@ -554,13 +595,16 @@ describe('semaphore queue channels', () => {
         published.push(...entries.map((entry) => entry.value));
       },
     });
+
     const main = queueOn(scheduler, unavailable, undefined);
     const named = queueOn(scheduler, unavailable, 'x');
+
     const lookalike = queueOn(
       scheduler,
       unavailable,
       'durability.semaphore-queue'
     );
+
     expect(
       () =>
         new DurabilityOutbox({
@@ -574,6 +618,7 @@ describe('semaphore queue channels', () => {
       // eslint-disable-next-line no-await-in-loop
       await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
     }
+
     await userOutbox.stage('k', 'user');
     await settle(2_000);
 
@@ -588,6 +633,7 @@ describe('semaphore queue channels', () => {
       '["durability.semaphore-queue","x"]',
       'durability.semaphore-queue',
     ]);
+
     for (const queue of [main, named, lookalike]) {
       // eslint-disable-next-line no-await-in-loop
       expect(await queue.status('a')).toMatchObject({ state: 'claiming' });
@@ -608,13 +654,16 @@ describe('semaphore queue channels', () => {
     const storage = new FakeStorage();
     const scheduler = schedulerFor(storage);
     const requested: string[] = [];
+
     const server: SemaphoreHolder = {
       request: async (key, message) => {
         requested.push(`${message.clientChannel ?? 'default'}:${key}`);
+
         return grantReply(message, { nextRequestAt: Date.now() + 60_000 });
       },
       sync: async () => ({ type: 'synced', v: 1, grantResults: [] }),
     };
+
     const main = queueOn(scheduler, server, undefined);
     storage.sql.exec(
       `INSERT INTO durability_semaphore_queue_items
@@ -691,11 +740,13 @@ describe('semaphore channel migrations', () => {
       { limit: 10, leases: { provisioning: { mode: 'over', extra: 4 } } },
       storage
     );
+
     const batch = new DurabilitySemaphoreServer({
       scheduler: schedulerFor(storage),
       channel: 'batch',
       limit: 10,
     });
+
     expect(await holder.usage()).toMatchObject({ granted: 2, leased: 2 });
     expect(await batch.usage()).toMatchObject({ granted: 0, leased: 0 });
 
@@ -727,6 +778,7 @@ describe('semaphore channel migrations', () => {
           released, created_at, expires_at)
        VALUES ('default', 'g1', 'shard', 'side', 'g', 1, 0, 0, 0, 1)`
     );
+
     const revert = () =>
       migrateCapability(
         storage,
@@ -734,6 +786,7 @@ describe('semaphore channel migrations', () => {
         durabilitySemaphoreMigrations,
         'durability_0009_create_semaphore_leases'
       );
+
     expect(revert).toThrow(/CHECK constraint/);
     expect(
       storage.sql
@@ -821,12 +874,14 @@ describe('semaphore channel migrations', () => {
     const requests: PermitRequest[] = [];
     const syncs: PermitSync[] = [];
     const admitted: AdmittedItem<string>[] = [];
+
     const queue = new DurabilitySemaphoreQueue<string>({
       scheduler: schedulerFor(storage),
       clientId: 'shard',
       server: {
         request: async (_key, message) => {
           requests.push(message);
+
           return {
             type: 'grant',
             v: 1,
@@ -838,6 +893,7 @@ describe('semaphore channel migrations', () => {
         },
         sync: async (_key, message) => {
           syncs.push(message);
+
           return {
             type: 'synced',
             v: 1,
@@ -853,6 +909,7 @@ describe('semaphore channel migrations', () => {
         admitted.push(...items);
       },
     });
+
     expect(await queue.usage()).toEqual({
       queued: 1,
       claiming: 1,
@@ -904,6 +961,7 @@ describe('semaphore channel migrations', () => {
       durabilitySemaphoreQueueMigrations,
       undefined
     );
+
     const revert = () =>
       migrateCapability(
         storage,
@@ -911,6 +969,7 @@ describe('semaphore channel migrations', () => {
         durabilitySemaphoreQueueMigrations,
         'durability_0011_renew_semaphore_queue_leases'
       );
+
     for (const table of [
       `durability_semaphore_queue_items
          (channel, id, key, grp, payload, status, created_at, next_attempt_at)
@@ -926,6 +985,7 @@ describe('semaphore channel migrations', () => {
     ]) {
       storage.sql.exec(`INSERT INTO ${table}`);
       expect(revert).toThrow(/CHECK constraint/);
+
       for (const name of ['items', 'grants', 'keys', 'leases']) {
         storage.sql.exec(
           `UPDATE durability_semaphore_queue_${name} SET channel = 'default'`

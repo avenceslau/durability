@@ -55,15 +55,19 @@ function dispatchWithContext(
 
   const states: InstalledTransforms[] = [];
   let currentPrototype: object | null = startPrototype;
+
   while (currentPrototype) {
     const state = installedTransforms.get(currentPrototype);
+
     if (state?.originals.has(method)) {
       states.push(state);
     }
+
     currentPrototype = Object.getPrototypeOf(currentPrototype);
   }
 
   const original = states[0]?.originals.get(method);
+
   if (!original) {
     throw new TypeError(`Unable to dispatch ${method}`);
   }
@@ -71,11 +75,13 @@ function dispatchWithContext(
   const transforms = [...states]
     .reverse()
     .flatMap((state) => [...state.all, ...(state.methods.get(method) ?? [])]);
+
   const run = (
     index: number,
     currentContext: TransformContext
   ): Promise<unknown> => {
     const transform = transforms[index];
+
     if (!transform) {
       return Promise.resolve(original.apply(instance, args));
     }
@@ -126,6 +132,7 @@ export class TransformContextTarget<
   /** Dispatches a pipelined method call with the context captured by this target. */
   invoke(method: string, args: unknown[]): Promise<unknown> {
     const target = transformContextTargets.get(this);
+
     if (!target) {
       throw new TypeError('Unable to resolve transform context target');
     }
@@ -253,14 +260,18 @@ export function applyTransforms<
         original: (...args: unknown[]) => unknown;
       }
     >();
+
     const seenMethods = new Set<string>();
     let currentPrototype: object | null = prototype;
+
     while (currentPrototype) {
       const constructorValue = Reflect.get(currentPrototype, 'constructor');
+
       const constructorName =
         typeof constructorValue === 'function'
           ? constructorValue.name
           : undefined;
+
       if (
         currentPrototype !== prototype &&
         constructorName !== undefined &&
@@ -270,11 +281,14 @@ export function applyTransforms<
       }
 
       const inheritedState = installedTransforms.get(currentPrototype);
+
       for (const method of Object.getOwnPropertyNames(currentPrototype)) {
         if (seenMethods.has(method)) {
           continue;
         }
+
         seenMethods.add(method);
+
         if (reservedRpcMethods.has(method)) {
           continue;
         }
@@ -283,8 +297,10 @@ export function applyTransforms<
           currentPrototype,
           method
         );
+
         const inheritedOriginal = inheritedState?.originals.get(method);
         const candidate = inheritedOriginal ?? descriptor?.value;
+
         if (
           !descriptor ||
           typeof candidate !== 'function' ||
@@ -294,8 +310,10 @@ export function applyTransforms<
         ) {
           continue;
         }
+
         methods.set(method, { descriptor, original: candidate });
       }
+
       currentPrototype = Object.getPrototypeOf(currentPrototype);
     }
 
@@ -314,20 +332,27 @@ export function applyTransforms<
     if (typeof registration !== 'object' || registration === null) {
       throw new TypeError('Invalid transform registration');
     }
+
     const transform = Reflect.get(registration, 'transform');
+
     if (typeof transform !== 'object' || transform === null) {
       throw new TypeError('Invalid transform registration');
     }
+
     const calleeFactory = Reflect.get(transform, 'calleeFactory');
+
     if (typeof calleeFactory !== 'function') {
       throw new TypeError('Transform does not define a callee');
     }
+
     const configured: unknown = Reflect.apply(calleeFactory, transform, [
       Reflect.get(registration, 'options'),
     ]);
+
     if (typeof configured !== 'function') {
       throw new TypeError('Callee transform factory must return a function');
     }
+
     return (context) =>
       Promise.resolve(Reflect.apply(configured, undefined, [context]));
   };
@@ -340,6 +365,7 @@ export function applyTransforms<
         `Cannot apply transforms to unknown method ${method}`
       );
     }
+
     const methodTransforms = installed.methods.get(method) ?? [];
     methodTransforms.push(...registrations.map(configure));
     installed.methods.set(method, methodTransforms);

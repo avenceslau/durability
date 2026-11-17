@@ -105,9 +105,11 @@ export class TopologyShard extends DurableObject<Env> {
   applyLimits(update: TopologyStateUpdate<Limits>) {
     this.ctx.storage.transactionSync(() => {
       const applied = this.ctx.storage.kv.get<number>('limits:version') ?? 0;
+
       if (update.version <= applied) {
         return;
       }
+
       this.ctx.storage.kv.put('limits', update.value);
       this.ctx.storage.kv.put('limits:version', update.version);
     });

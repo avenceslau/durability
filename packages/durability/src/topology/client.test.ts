@@ -21,6 +21,7 @@ const clientFor = (
 ) => {
   const reads = vi.fn(read);
   const fallbacks: Array<{ reason: string; source: string }> = [];
+
   const client = DurabilityTopology.client({
     ttlMs: 10_000,
     negativeTtlMs: 1_000,
@@ -28,6 +29,7 @@ const clientFor = (
     ...config,
     read: reads,
   });
+
   return { client, reads, fallbacks };
 };
 
@@ -36,7 +38,9 @@ const reasonOf = async (promise: Promise<unknown>): Promise<string> => {
     () => undefined,
     (caught: unknown) => caught
   );
+
   expect(error).toBeInstanceOf(TopologyUnavailableError);
+
   return (error as TopologyUnavailableError).reason;
 };
 
@@ -45,6 +49,7 @@ beforeEach(() => {
   vi.setSystemTime(1_800_000_000_000);
   vi.spyOn(Math, 'random').mockReturnValue(0.5);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -60,6 +65,7 @@ describe('topology client', () => {
       client.get('acme'),
       client.get('acme'),
     ]);
+
     expect(first).toMatchObject({ version: 1, source: 'published' });
     expect(second).toBe(first);
     expect(reads).toHaveBeenCalledTimes(1);
@@ -76,11 +82,14 @@ describe('topology client', () => {
     const { client, reads } = clientFor(async (group) =>
       encodeSnapshot(snapshot(1, { group }))
     );
+
     await client.get('hot');
+
     for (let index = 0; index < 1_023; index++) {
       // eslint-disable-next-line no-await-in-loop
       await client.get(`cold-${index}`);
     }
+
     await client.get('hot');
     await client.get('one-more');
     await client.get('hot');
@@ -115,6 +124,7 @@ describe('topology client', () => {
     const otherGroup = clientFor(async () =>
       encodeSnapshot(snapshot(1, { group: 'other' }))
     );
+
     expect(await reasonOf(otherGroup.client.get('acme'))).toBe('invalid');
   });
 
@@ -144,10 +154,13 @@ describe('topology client', () => {
       snapshot(1),
       snapshot(3),
     ];
+
     const { client, reads } = clientFor(async () => {
       const answer = answers.shift();
+
       return answer ? encodeSnapshot(answer) : null;
     });
+
     await client.get('acme');
     vi.advanceTimersByTime(10_000);
     expect(await reasonOf(client.get('acme'))).toBe('missing');
@@ -176,10 +189,12 @@ describe('topology client', () => {
 
   it('serves stale only when opted in, only after errors, and only within the window', async () => {
     let failure: 'error' | 'missing' | undefined;
+
     const read = async () => {
       if (failure === 'error') {
         throw new Error('kv down');
       }
+
       return failure === 'missing' ? null : encodeSnapshot(snapshot(1));
     };
 
@@ -213,10 +228,12 @@ describe('topology client', () => {
 
   it('tries seed, then the application fallback, and only calls the fallback when seed has nothing', async () => {
     const fallback = vi.fn(async () => snapshot(7));
+
     const seeded = clientFor(async () => null, {
       seed: () => [{ id: 'acme-1', state: 'active' }],
       fallback,
     });
+
     expect(await seeded.client.get('acme')).toMatchObject({
       version: 0,
       source: 'seed',
@@ -228,6 +245,7 @@ describe('topology client', () => {
       seed: () => undefined,
       fallback,
     });
+
     expect(await unseeded.client.get('acme')).toMatchObject({
       version: 7,
       source: 'fallback',

@@ -12,7 +12,9 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   if (value === null || typeof value !== 'object') {
     return false;
   }
+
   const prototype: unknown = Object.getPrototypeOf(value);
+
   return prototype === Object.prototype || prototype === null;
 };
 
@@ -24,9 +26,11 @@ const isJson = (value: unknown): value is Json => {
   ) {
     return true;
   }
+
   if (typeof value === 'number') {
     return Number.isFinite(value);
   }
+
   if (Array.isArray(value)) {
     // `every` would skip the holes of a sparse array, which are not JSON.
     for (const item of value) {
@@ -34,8 +38,10 @@ const isJson = (value: unknown): value is Json => {
         return false;
       }
     }
+
     return true;
   }
+
   return isPlainObject(value) && Object.values(value).every(isJson);
 };
 
@@ -57,10 +63,12 @@ const asJson = (value: unknown): unknown => {
   if (Array.isArray(value)) {
     return value.map((item) => (item === undefined ? null : asJson(item)));
   }
+
   // Only plain objects are rewritten; anything else must fail validation as is.
   if (!isPlainObject(value)) {
     return value;
   }
+
   return Object.fromEntries(
     Object.entries(value)
       .filter(([, item]) => item !== undefined)
@@ -78,6 +86,7 @@ export const serialize = (value: unknown): string =>
 
 export const deserialize = (value: string): unknown => {
   const stored = v.parse(storedValueSchema, JSON.parse(value));
+
   return stored.kind === 'undefined' ? undefined : stored.value;
 };
 
@@ -85,6 +94,7 @@ const canonicalize = (value: Json): Json => {
   if (Array.isArray(value)) {
     return value.map(canonicalize);
   }
+
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.keys(value)
@@ -92,6 +102,7 @@ const canonicalize = (value: Json): Json => {
         .map((key) => [key, canonicalize(value[key] as Json)])
     );
   }
+
   return value;
 };
 

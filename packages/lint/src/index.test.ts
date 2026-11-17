@@ -30,6 +30,7 @@ const lint = (source: string, rule: string) => {
       ['--config', configPath, '--format', 'unix', sourcePath],
       { encoding: 'utf8' }
     );
+
     return {
       status: result.status,
       output: `${result.stdout}${result.stderr}`,
@@ -99,6 +100,7 @@ describe('alarm-runner-only', () => {
       fanout = new DurabilityFanout({ context: this.ctx, targets: {} });
       alarm(info) { return this.fanout.alarm(info); }
     }`;
+
     expect(lint(source, 'alarm-runner-only').status).toBe(0);
     expect(
       lint(

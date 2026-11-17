@@ -41,12 +41,15 @@ const showSidebar = sidebar !== false && !isCustom;
 // Versioning: per-page status drives Pagefind faceting, deprecation
 // banner, and the data-pagefind-ignore exclusion for hidden versions.
 const versionStatus = collection ? await getVersionStatus(collection) : null;
+
 const versionAlternates = collection && entryId
   ? await getVersionAlternates(collection, entryId)
   : null;
+
 const currentSiblingUrl = versionAlternates?.canonical?.url
   ? withBase(versionAlternates.canonical.url, import.meta.env.BASE_URL)
   : null;
+
 const homeHref = withBase("/", import.meta.env.BASE_URL);
 
 // Page-body attribute resolution:
@@ -58,15 +61,18 @@ const homeHref = withBase("/", import.meta.env.BASE_URL);
 //   - Otherwise → mark as a Pagefind body, plus emit per-version and
 //     per-status filters so the search UI can scope by them.
 const pagefindAttrs: Record<string, string> = {};
+
 // The status filter rides its own element below: an inline `name:value` filter
 // captures to the end of the string, so a second inline filter can't share the
 // attribute (it would corrupt the version value to "v1, status:deprecated").
 const pagefindDeprecated =
   effectiveSearchable && !versionStatus?.isHidden && Boolean(versionStatus?.isDeprecated);
+
 if (!effectiveSearchable || versionStatus?.isHidden) {
   pagefindAttrs["data-pagefind-ignore"] = "";
 } else {
   pagefindAttrs["data-pagefind-body"] = "";
+
   if (versionStatus) {
     pagefindAttrs["data-pagefind-filter"] = `version:${versionStatus.version}`;
   }
@@ -77,6 +83,7 @@ const countLinks = (items: typeof sidebar): number =>
   Array.isArray(items)
     ? items.reduce((n, item) => n + (item.type === "group" ? countLinks(item.children) + (item.indexHref ? 1 : 0) : 1), 0)
     : 0;
+
 const showFilter = countLinks(sidebar) >= 12;
 
 // Below xl the On this page bar's own borders separate the header from the
@@ -144,15 +151,19 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
             function restore() {
               try {
                 const sidebar = document.querySelector("[data-nb-sidebar-tree]");
+
                 if (!sidebar) return;
                 const content = sidebar.querySelector("[data-nb-sidebar]");
+
                 if (!content) return;
 
                 // State saved for a different sidebar is ignored entirely.
                 const raw = JSON.parse(sessionStorage.getItem("sidebar-state") || "null");
                 const state = raw && content.dataset.nbSidebarHash === raw.hash ? raw : null;
+
                 if (state) {
                   const groups = content.querySelectorAll("details");
+
                   for (let i = 0; i < groups.length; i++) {
                     if (typeof state.open[i] === "boolean") {
                       setGroupOpen(groups[i], state.open[i]);
@@ -161,8 +172,10 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
                 }
 
                 const active = sidebar.querySelector("[aria-current='page']");
+
                 if (active) {
                   let d = active.closest("details");
+
                   while (d) {
                     setGroupOpen(d, true);
                     d = d.parentElement && d.parentElement.closest("details");
@@ -172,11 +185,14 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
                 // Scroll only applies while the tree is visible (the rail
                 // on desktop); the drawer restores it again when it opens.
                 if (sidebar.clientHeight === 0) return;
+
                 if (state && typeof state.scroll === "number") {
                   sidebar.scrollTop = state.scroll;
+
                   if (active) {
                     const sr = sidebar.getBoundingClientRect();
                     const ar = active.getBoundingClientRect();
+
                     if (ar.top < sr.top || ar.bottom > sr.bottom) centerActive(sidebar, active);
                   }
                 } else if (active) {
@@ -186,6 +202,7 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
             }
 
             restore();
+
             if (!window.__nbSidebarRestoreBound) {
               window.__nbSidebarRestoreBound = true;
               document.addEventListener("astro:after-swap", restore);
@@ -316,7 +333,9 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
     // astro:before-swap, so the hamburger survives client-side navigation.
     mount("[data-mobile-sidebar]", (root) => {
       const trigger = document.querySelector<HTMLElement>("[data-menu-btn]");
+
       if (!(root instanceof HTMLDialogElement) || !trigger) return () => {};
+
       const dialog = root;
 
       const controller = new AbortController();
@@ -329,6 +348,7 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
       if (!dialog.id) dialog.id = generateId("nb-mobile-sidebar");
       trigger.setAttribute("aria-controls", dialog.id);
       trigger.setAttribute("aria-expanded", "false");
+
       if (!trigger.hasAttribute("aria-haspopup")) trigger.setAttribute("aria-haspopup", "dialog");
 
       const clearTimer = () => {
@@ -345,18 +365,22 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
       const tree = document.querySelector<HTMLElement>("[data-nb-sidebar-tree]");
       const rail = tree?.parentElement ?? null;
       const drawerSlot = dialog.querySelector<HTMLElement>("[data-nb-sidebar-drawer-slot]");
+
       const moveTreeToDrawer = () => {
         if (tree && drawerSlot && tree.parentElement !== drawerSlot) drawerSlot.append(tree);
       };
+
       const moveTreeToRail = () => {
         if (tree && rail && tree.parentElement !== rail) rail.prepend(tree);
       };
 
       const openSidebar = () => {
         clearTimer();
+
         if (dialog.open) {
           // Reclaim a drawer caught mid-slide-out rather than stranding it open.
           if (dialog.dataset.state === "closing") dialog.dataset.state = "open";
+
           return;
         }
 
@@ -383,10 +407,13 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
 
       const closeSidebar = () => {
         if (!dialog.open || dialog.dataset.state === "closing") return;
+
         if (prefersReducedMotion()) {
           closeNow();
+
           return;
         }
+
         dialog.dataset.state = "closing";
         closeTimer = setTimeout(() => dialog.close(), CLOSE_DURATION_MS);
       };
@@ -421,6 +448,7 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
       mql.addEventListener("change", (event) => {
         if (event.matches) closeNow();
       }, { signal });
+
       if (mql.matches) closeNow();
 
       return () => {
@@ -428,6 +456,7 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
         clearTimer();
         moveTreeToRail();
         trigger.setAttribute("aria-expanded", "false");
+
         // A swap while open never fires `close`; balance the scroll lock.
         if (dialog.open) unlockScroll();
       };

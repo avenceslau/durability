@@ -20,7 +20,9 @@ const readConfig = vi.hoisted(() =>
     if (config.endsWith('invalid.jsonc')) {
       throw new Error('Expected services to be an array');
     }
+
     const migrationOnly = config.endsWith('migrations-only.jsonc');
+
     return {
       kv_namespaces: migrationOnly ? [] : [{ binding: 'CACHE', id: 'cache' }],
       vars: migrationOnly ? {} : { GREETING: 'hello' },
@@ -100,6 +102,7 @@ beforeAll(async () => {
 
 async function transform(code: string): Promise<string | null> {
   const result = await plugin.transform(code, join(packageRoot, 'worker.ts'));
+
   return result?.code ?? null;
 }
 
@@ -111,6 +114,7 @@ async function transformWith(
     code,
     join(packageRoot, 'worker.ts')
   );
+
   return result?.code ?? null;
 }
 
@@ -298,6 +302,7 @@ export default {
       types: false,
       restoreBrokenStubs: true,
     }) as unknown as TestPlugin;
+
     await restorePlugin.configResolved({ root: packageRoot } as ResolvedConfig);
 
     const result = await transformWith(
@@ -357,6 +362,7 @@ export default {
       types: false,
       restoreBrokenStubs: true,
     }) as unknown as TestPlugin;
+
     await restorePlugin.configResolved({ root: packageRoot } as ResolvedConfig);
 
     const result = await transformWith(
@@ -409,6 +415,7 @@ export default {
 
   it('reports invalid Wrangler configuration', async () => {
     const wranglerPath = join(packageRoot, 'invalid.jsonc');
+
     const invalidPlugin = doTransforms({
       wrangler: wranglerPath,
       types: false,
@@ -568,9 +575,11 @@ DurabilityRouting.client(config);
       wrangler: './migrations-only.jsonc',
       types: false,
     }) as unknown as TestPlugin;
+
     await migrationOnlyPlugin.configResolved({
       root: packageRoot,
     } as ResolvedConfig);
+
     const result = await transformWith(
       migrationOnlyPlugin,
       `

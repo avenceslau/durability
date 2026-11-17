@@ -91,6 +91,7 @@ function assertRegistrationTypes() {
       async ({ next }) =>
         next()
   );
+
   const otherRegistration = registerTransform(otherTransform, {
     enabled: true,
   });
@@ -108,10 +109,12 @@ function assertRegistrationTypes() {
       async ({ next }) =>
         next()
   );
+
   const incompatibleContextRegistration = registerTransform(
     incompatibleContext,
     { enabled: true }
   );
+
   applyTransforms(TestDO, {
     // @ts-expect-error transform context is incompatible with setContext
     all: [incompatibleContextRegistration],
@@ -131,9 +134,11 @@ function assertRegistrationTypes() {
       return 'hello';
     }
   }
+
   const invalidStub = withTransforms({
     get: () => new InvalidContextTarget(),
   }).get();
+
   invalidStub.with(
     // @ts-expect-error setContext must return an invokable context target
     observability,
@@ -149,9 +154,11 @@ function assertRegistrationTypes() {
       return 'hello';
     }
   }
+
   const asyncContextStub = withTransforms({
     get: () => new AsyncContextTarget(),
   }).get();
+
   asyncContextStub.with(
     // @ts-expect-error native Promises do not support RPC promise pipelining
     observability,
@@ -161,6 +168,7 @@ function assertRegistrationTypes() {
   class LifecycleTarget {
     async alarm() {}
   }
+
   applyTransforms(LifecycleTarget, {
     methods: {
       // @ts-expect-error lifecycle methods cannot be transformed
@@ -168,12 +176,14 @@ function assertRegistrationTypes() {
     },
   });
 }
+
 void assertRegistrationTypes;
 
 describe('DO transforms', () => {
   it('applies class and method transforms declaratively', async () => {
     const increment = vi.fn();
     const instance = new TestDO({ metrics: { increment } });
+
     const namespace = withTransforms({
       get: () => ({
         setContext: (context: ObservabilityContext) =>
@@ -202,7 +212,9 @@ describe('DO transforms', () => {
         greet: async (name: string) => `Hello, ${name}`,
       }),
     });
+
     const stub = namespace.get();
+
     // @ts-expect-error context transforms require a setContext method
     const transformedStub = stub.with(observability, {
       requestId: 'request-1',
@@ -215,6 +227,7 @@ describe('DO transforms', () => {
 
   it('leaves synchronous helpers and lifecycle methods untouched', async () => {
     const calls: string[] = [];
+
     class Service {
       helper(name: string) {
         return name.toUpperCase();
@@ -228,13 +241,16 @@ describe('DO transforms', () => {
         return 'alarm';
       }
     }
+
     const tracking = defineTransform<Service, Record<never, never>>().callee(
       (_options: void) =>
         async ({ method, next }) => {
           calls.push(method);
+
           return next();
         }
     );
+
     applyTransforms(Service, {
       all: [registerTransform(tracking)],
     });
@@ -248,30 +264,37 @@ describe('DO transforms', () => {
 
   it('applies inherited transforms in base-to-derived order', async () => {
     const calls: string[] = [];
+
     class BaseService {
       async greet() {
         return 'hello';
       }
     }
+
     const baseTracking = defineTransform<
       BaseService,
       Record<never, never>
     >().callee((_options: void) => async ({ next }) => {
       calls.push('base');
+
       return next();
     });
+
     applyTransforms(BaseService, {
       all: [registerTransform(baseTracking)],
     });
 
     class DerivedService extends BaseService {}
+
     const derivedTracking = defineTransform<
       DerivedService,
       Record<never, never>
     >().callee((_options: void) => async ({ next }) => {
       calls.push('derived');
+
       return next();
     });
+
     applyTransforms(DerivedService, {
       all: [registerTransform(derivedTracking)],
     });
@@ -282,18 +305,22 @@ describe('DO transforms', () => {
 
   it('supports explicitly registered Promise-returning methods', async () => {
     const calls: string[] = [];
+
     class PromiseService {
       greet(): Promise<string> {
         return Promise.resolve('hello');
       }
     }
+
     const tracking = defineTransform<PromiseService>().callee(
       (_options: void) =>
         async ({ next }) => {
           calls.push('greet');
+
           return next();
         }
     );
+
     applyTransforms(PromiseService, {
       methods: { greet: [registerTransform(tracking)] },
     });
@@ -308,16 +335,19 @@ describe('DO transforms', () => {
         return 'base';
       }
     }
+
     class DerivedService extends BaseService {
       override greet(): Promise<string> {
         return Promise.resolve('derived');
       }
     }
+
     const tracking = defineTransform<DerivedService>().callee(
       (_options: void) =>
         async ({ next }) =>
           next()
     );
+
     applyTransforms(DerivedService, {
       all: [registerTransform(tracking)],
     });
@@ -331,6 +361,7 @@ describe('DO transforms', () => {
         (options: { label: string }) =>
           async ({ next }) => {
             calls.push(options.label);
+
             return next();
           }
       );
@@ -338,16 +369,19 @@ describe('DO transforms', () => {
     it('runs the base method and its transforms when both classes are transformed', async () => {
       const calls: string[] = [];
       const tracking = labelled(calls);
+
       class BaseService {
         async greet() {
           return 'base';
         }
       }
+
       class DerivedService extends BaseService {
         override async greet() {
           return `derived>${await super.greet()}`;
         }
       }
+
       applyTransforms(BaseService, {
         all: [registerTransform(tracking, { label: 'base' })],
       });
@@ -361,16 +395,19 @@ describe('DO transforms', () => {
 
     it('runs the base transforms once when only the base class is transformed', async () => {
       const calls: string[] = [];
+
       class BaseService {
         async greet() {
           return 'base';
         }
       }
+
       class DerivedService extends BaseService {
         override async greet() {
           return `derived>${await super.greet()}`;
         }
       }
+
       applyTransforms(BaseService, {
         all: [registerTransform(labelled(calls), { label: 'base' })],
       });
@@ -382,21 +419,25 @@ describe('DO transforms', () => {
     it('walks three transformed levels down to the root method', async () => {
       const calls: string[] = [];
       const tracking = labelled(calls);
+
       class RootService {
         async greet() {
           return 'root';
         }
       }
+
       class MiddleService extends RootService {
         override async greet() {
           return `middle>${await super.greet()}`;
         }
       }
+
       class LeafService extends MiddleService {
         override async greet() {
           return `leaf>${await super.greet()}`;
         }
       }
+
       applyTransforms(RootService, {
         all: [registerTransform(tracking, { label: 'root' })],
       });
@@ -421,6 +462,7 @@ describe('DO transforms', () => {
     it('resolves a context-target call the same way as a direct call', async () => {
       const calls: string[] = [];
       const tracking = labelled(calls);
+
       class BaseService {
         setContext(context: ObservabilityContext) {
           return createTransformContextTarget(this, context);
@@ -430,11 +472,13 @@ describe('DO transforms', () => {
           return 'base';
         }
       }
+
       class DerivedService extends BaseService {
         override async greet() {
           return `derived>${await super.greet()}`;
         }
       }
+
       applyTransforms(BaseService, {
         all: [registerTransform(tracking, { label: 'base' })],
       });
@@ -456,7 +500,9 @@ describe('DO transforms', () => {
       setContext: () => ({}),
       greet: async () => 'hello',
     };
+
     const stub = createTransformStub(target);
+
     const unsafeStub = stub.with(
       // @ts-expect-error malformed setContext target is rejected at compile time
       observability,
@@ -486,16 +532,19 @@ describe('DO transforms', () => {
 
   it('restores a broken stub for later calls without retrying the failed call', async () => {
     let opened = 0;
+
     const namespace = {
       getByName(name: string) {
         opened += 1;
         const generation = opened;
+
         return {
           name,
           async read() {
             if (generation === 1) {
               throw new Error('broken');
             }
+
             return `${name}:${generation}`;
           },
         };
@@ -517,15 +566,18 @@ describe('DO transforms', () => {
 
   it('retries on a restored stub and shares restoration across with views', async () => {
     let opened = 0;
+
     const namespace = {
       get(id: string) {
         opened += 1;
         const generation = opened;
+
         return {
           read: async () => {
             if (generation === 1) {
               throw new Error('broken');
             }
+
             return `${id}:${generation}`;
           },
         };
@@ -536,6 +588,7 @@ describe('DO transforms', () => {
       namespace,
       'get'
     )?.('id') as unknown as TransformStub<{ read(): Promise<string> }>;
+
     const retried = base.with(retry, { retries: 1, delay: () => 0 });
 
     await expect(retried.read()).resolves.toBe('id:2');
@@ -545,15 +598,18 @@ describe('DO transforms', () => {
 
   it('replaces a broken stub once when concurrent calls fail', async () => {
     let opened = 0;
+
     const namespace = {
       get() {
         opened += 1;
         const generation = opened;
+
         return {
           read: async () => {
             if (generation === 1) {
               throw new Error('broken');
             }
+
             return generation;
           },
         };

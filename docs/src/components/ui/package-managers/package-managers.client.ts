@@ -13,9 +13,11 @@ function initPackageManager(container: HTMLElement): () => void {
   const copyTpl = container.querySelector<HTMLTemplateElement>(
     '[data-nb-pm-icon-copy]'
   );
+
   const checkTpl = container.querySelector<HTMLTemplateElement>(
     '[data-nb-pm-icon-check]'
   );
+
   const failTpl = container.querySelector<HTMLTemplateElement>(
     '[data-nb-pm-icon-fail]'
   );
@@ -45,15 +47,18 @@ function initPackageManager(container: HTMLElement): () => void {
         btn,
         handler: async () => {
           let copied = true;
+
           try {
             await navigator.clipboard.writeText(btn.dataset.nbCommand ?? '');
           } catch {
             copied = false;
           }
+
           btn.replaceChildren(
             cloneIcon(copied ? checkTpl : (failTpl ?? copyTpl))
           );
           btn.setAttribute('aria-label', copied ? 'Copied' : "Couldn't copy");
+
           if (handlerInfo.timer) window.clearTimeout(handlerInfo.timer);
           handlerInfo.timer = window.setTimeout(() => {
             btn.replaceChildren(cloneIcon(copyTpl));
@@ -61,6 +66,7 @@ function initPackageManager(container: HTMLElement): () => void {
           }, 1500);
         },
       };
+
       btn.addEventListener('click', handlerInfo.handler);
       copyHandlers.push(handlerInfo);
     });
@@ -69,6 +75,7 @@ function initPackageManager(container: HTMLElement): () => void {
     tabs.destroy();
     copyHandlers.forEach(({ btn, handler, timer }) => {
       btn.removeEventListener('click', handler);
+
       if (timer) window.clearTimeout(timer);
     });
   };

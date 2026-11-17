@@ -24,6 +24,7 @@ const { title, icon, href, class: className, ...attrs } = Astro.props;
 const hasIcon = Boolean(icon) || Astro.slots.has("icon");
 const hasTitle = Boolean(title) || Astro.slots.has("title");
 const Tag = href ? "a" : "article";
+
 // A linked card is named by its link, so its title is not a heading: a row of
 // cards under the page title would otherwise skip a heading level.
 const Title = href ? "p" : "h3";

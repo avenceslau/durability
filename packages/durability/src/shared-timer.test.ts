@@ -33,6 +33,7 @@ describe('SharedTimer', () => {
     for (let index = 0; index < 50; index += 1) {
       timer.schedule(() => ran.push(index), 20);
     }
+
     vi.advanceTimersByTime(20);
 
     expect(ran).toEqual(Array.from({ length: 50 }, (_, index) => index));
@@ -40,6 +41,7 @@ describe('SharedTimer', () => {
 
   it('holds one native timer however many callbacks are pending', () => {
     const timer = new SharedTimer();
+
     const cancels = Array.from({ length: 25_000 }, (_, index) =>
       timer.schedule(() => undefined, 60_000 + index)
     );
@@ -58,6 +60,7 @@ describe('SharedTimer', () => {
   it('runs a short timeout on time behind many long ones', () => {
     const timer = new SharedTimer();
     const short = vi.fn();
+
     for (let index = 0; index < 15_000; index += 1) {
       timer.schedule(() => undefined, 3_600_000);
     }
@@ -90,10 +93,12 @@ describe('SharedTimer', () => {
   it('removes a cancelled callback from anywhere in the heap', () => {
     const timer = new SharedTimer();
     const ran: number[] = [];
+
     const delays = Array.from(
       { length: 200 },
       (_, index) => (index * 37) % 200
     );
+
     const cancels = delays.map((delayMs) =>
       timer.schedule(() => ran.push(delayMs), delayMs)
     );
@@ -103,6 +108,7 @@ describe('SharedTimer', () => {
         cancels[index]?.();
       }
     }
+
     vi.advanceTimersByTime(200);
 
     expect(ran).toEqual(
@@ -267,11 +273,13 @@ describe('SharedTimer', () => {
     // workerd drops the fraction of a delay, and its clock stands still while
     // code runs, so a timer set again for the remainder would fire forever.
     const fakeSetTimeout = globalThis.setTimeout;
+
     const setNative = vi
       .spyOn(globalThis, 'setTimeout')
       .mockImplementation((callback, delayMs) =>
         fakeSetTimeout(callback, Math.trunc(delayMs ?? 0))
       );
+
     const timer = new SharedTimer();
     const callback = vi.fn();
     timer.schedule(callback, 10.5);
@@ -311,6 +319,7 @@ describe('SharedTimer', () => {
   it('rejects withTimeout once the work is pending past the timeout', async () => {
     const timer = new SharedTimer();
     const work = new Promise<never>(() => {});
+
     const outcome = timer
       .withTimeout(work, 1_000, () => new Error('timed out'))
       .catch((error: unknown) => error);

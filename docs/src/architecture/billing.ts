@@ -22,6 +22,7 @@ const fetchHandler = sourceExcerpt(
   'export default {',
   '} satisfies ExportedHandler<Env>;'
 );
+
 const scheduler = sourceExcerpt(
   source,
   file,
@@ -30,6 +31,7 @@ const scheduler = sourceExcerpt(
   '  // One object uses both helpers, so they must share a scheduler: it owns the',
   '    alarmConcurrency: 5,\n  });'
 );
+
 const helpers = sourceExcerpt(
   source,
   file,
@@ -38,6 +40,7 @@ const helpers = sourceExcerpt(
   '  private readonly durability = new Durability({',
   '  private readonly alarms = new DurabilityAlarms({\n    scheduler: this.scheduler,'
 );
+
 const charge = sourceExcerpt(
   source,
   file,
@@ -46,6 +49,7 @@ const charge = sourceExcerpt(
   '      chargeInvoice: async ({ id, payload }',
   '    retries: { maxAttempts: 8 },\n  });'
 );
+
 const renew = sourceExcerpt(
   source,
   file,
@@ -54,6 +58,7 @@ const renew = sourceExcerpt(
   '      renew: async ({ idempotencyKey, scheduledTime })',
   '        await this.alarms.renew(scheduledTime + renewalPeriodMs);\n      },'
 );
+
 const subscribe = sourceExcerpt(
   source,
   file,
@@ -62,6 +67,7 @@ const subscribe = sourceExcerpt(
   '  async subscribe(customerId: string)',
   '    await this.alarms.renew(Date.now() + renewalPeriodMs);\n  }'
 );
+
 const cancel = sourceExcerpt(
   source,
   file,
@@ -70,6 +76,7 @@ const cancel = sourceExcerpt(
   '  async cancel() {',
   "    await this.ctx.storage.delete('customerId');\n  }"
 );
+
 const alarm = sourceExcerpt(
   source,
   file,
@@ -78,6 +85,7 @@ const alarm = sourceExcerpt(
   '  alarm(info?: AlarmInvocationInfo) {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const scheduleAlarm = sourceExcerpt(
   alarmsSource,
   alarmsFile,
@@ -86,6 +94,7 @@ const scheduleAlarm = sourceExcerpt(
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
   '      deleteMemos(sql, this.#table, key);\n    });'
 );
+
 const executeAlarm = sourceExcerpt(
   alarmsSource,
   alarmsFile,
@@ -94,6 +103,7 @@ const executeAlarm = sourceExcerpt(
   '  #execute(',
   '        return removed ? timestamp : undefined;\n      },'
 );
+
 const register = sourceExcerpt(
   durabilitySource,
   durabilityFile,
@@ -102,6 +112,7 @@ const register = sourceExcerpt(
   '  async #run(input: {',
   '    this.#engine.waitUntil(background, onError);\n  }'
 );
+
 const runDue = sourceExcerpt(
   durabilitySource,
   durabilityFile,
@@ -110,6 +121,7 @@ const runDue = sourceExcerpt(
   '  async #runDue(now: number): Promise<void> {',
   '    });\n  }'
 );
+
 const runAlarm = sourceExcerpt(
   schedulerSource,
   schedulerFile,

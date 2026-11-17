@@ -82,6 +82,7 @@ const diagram = defineArchitecture(definition)
 function stage(index: number, from: ArchitectureDiagram = diagram): StageState {
   const state = from.stages[index]
   assert.ok(state !== undefined)
+
   return state
 }
 
@@ -236,6 +237,7 @@ test("an edge alone on a side attaches at its centre, and slides aside before a 
     ],
     stages: [["client", "api"], []],
   })
+
   const alone = stage(0, sharing).layout.edges.get("client->api")
   const shared = stage(1, sharing).layout.edges.get("client->api")
   assert.ok(alone !== undefined && shared !== undefined)
@@ -303,6 +305,7 @@ const limiter = defineArchitecture({
 function rectOfFrame(frame: Frame, id: string) {
   const node = frame.nodes.get(id)
   assert.ok(node !== undefined, `${id} is drawn`)
+
   return nodeRect({ ...node.view, size: node.size }, node.center, node.scale)
 }
 

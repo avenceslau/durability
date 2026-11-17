@@ -45,30 +45,37 @@ export class SemaphoreClient {
   async request(key: string, message: PermitRequest): Promise<PermitGrant> {
     const response = await this.#config.invoke(this.#address(key), message);
     const parsed = v.safeParse(permitGrantSchema, response);
+
     if (!parsed.success) {
       throw new SemaphoreProtocolError(
         `Unexpected response to a permit request for "${key}"`
       );
     }
+
     this.#nextRequestAt.set(key, parsed.output.nextRequestAt);
+
     // Advisory state must stay bounded for high-cardinality keys.
     if (this.#nextRequestAt.size > 1_024) {
       const oldest = this.#nextRequestAt.keys().next().value;
+
       if (oldest !== undefined) {
         this.#nextRequestAt.delete(oldest);
       }
     }
+
     return parsed.output;
   }
 
   async sync(key: string, message: PermitSync): Promise<PermitSyncResult> {
     const response = await this.#config.invoke(this.#address(key), message);
     const parsed = v.safeParse(permitSyncResultSchema, response);
+
     if (!parsed.success) {
       throw new SemaphoreProtocolError(
         `Unexpected response to a permit sync for "${key}"`
       );
     }
+
     return parsed.output;
   }
 
@@ -78,7 +85,9 @@ export class SemaphoreClient {
         'Semaphore keys must be non-empty strings'
       );
     }
+
     const locationHint = this.#config.locationHint?.(key);
+
     return locationHint === undefined ? { key } : { key, locationHint };
   }
 }

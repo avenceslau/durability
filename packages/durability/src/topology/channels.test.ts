@@ -25,6 +25,7 @@ class Store {
       if (this.hang) {
         await new Promise(() => undefined);
       }
+
       this.writes.push({ group: snapshot.group, version: snapshot.version });
       this.values.set(snapshot.group, encoded);
     },
@@ -46,6 +47,7 @@ class Members {
     if (this.hang) {
       await new Promise(() => undefined);
     }
+
     this.applied.push({ member: member.id, value: update.value });
   };
 }
@@ -93,6 +95,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -182,6 +185,7 @@ describe('topology instance channels', () => {
     const recreated = await library.topology.update('acme', () => ({
       members: [active('c')],
     }));
+
     expect(recreated.snapshot.version).toBe(3);
     expect(app.topology.snapshot('acme')?.version).toBe(1);
   });
@@ -193,21 +197,26 @@ describe('topology instance channels', () => {
     const library = instance(context, 'library');
 
     app.store.hang = true;
+
     const first = app.topology.update('acme', () => ({
       members: [active('a')],
     }));
+
     await vi.advanceTimersByTimeAsync(100);
     expect((await first).published).toBe(false);
 
     const other = await library.topology.update('acme', () => ({
       members: [active('b')],
     }));
+
     expect(other.published).toBe(true);
 
     app.store.hang = false;
+
     const blocked = await app.topology.update('acme', ({ members }) => ({
       members: [...members, active('c')],
     }));
+
     expect(blocked.published).toBe(false);
     expect(
       storage.sql
@@ -247,6 +256,7 @@ describe('topology instance channels', () => {
     const context = contextOf(storage);
     const dotted = new Members();
     const nested = new Members();
+
     const createTopology = (channel: string, state: string, members: Members) =>
       new DurabilityTopology<undefined, Record<string, unknown>>({
         context,
@@ -258,6 +268,7 @@ describe('topology instance channels', () => {
           },
         },
       });
+
     const first = createTopology('a', 'b.c', dotted);
     const second = createTopology('a.b', 'c', nested);
     const legacy = instance(context, undefined);
@@ -288,10 +299,12 @@ describe('topology instance channels', () => {
     const context = contextOf(storage);
     const app = instance(context, undefined);
     const library = instance(context, 'library');
+
     for (const { store, members } of [app, library]) {
       store.hang = true;
       members.hang = true;
     }
+
     void app.topology.update('acme', () => ({
       members: [active('a')],
       states: { limits: { max: 1 } },
@@ -314,6 +327,7 @@ describe('topology instance channels', () => {
     const storage = new FakeStorage();
     const evicted = new Store();
     evicted.hang = true;
+
     // A retry delay past alarmMinDelayMs leaves retries to the physical
     // alarm, which nothing fires, as if this object had been evicted.
     const library = new DurabilityTopology<undefined, States>({
@@ -322,6 +336,7 @@ describe('topology instance channels', () => {
       retries: { delay: () => 60_000 },
       publish: { ...evicted.publisher, attemptTimeoutMs: 100 },
     });
+
     void library.update('acme', () => ({ members: [active('a')] }));
     await vi.advanceTimersByTimeAsync(100);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -350,12 +365,14 @@ describe('topology instance channels', () => {
     DurabilityTopology.migrate(context, beforeChannels);
     DurabilityOutbox.migrate(context);
     const member = { id: 'a', state: 'active', joinedAt: 1 };
+
     const snapshot = {
       group: 'acme',
       version: 4,
       coordinator: coordinatorId,
       members: [member],
     };
+
     storage.sql.exec(
       `INSERT INTO durability_topology_groups VALUES ('acme', 4, ?, 0, 1)`,
       JSON.stringify([member])
@@ -367,6 +384,7 @@ describe('topology instance channels', () => {
     storage.sql.exec(
       `INSERT INTO durability_topology_writes VALUES ('w', 'acme', 0)`
     );
+
     const pending = [
       ['durability.topology', 'acme', { snapshot }],
       [
@@ -380,6 +398,7 @@ describe('topology instance channels', () => {
         },
       ],
     ] as const;
+
     for (const [index, [channel, key, value]] of pending.entries()) {
       storage.sql.exec(
         `INSERT INTO durability_outbox
@@ -394,6 +413,7 @@ describe('topology instance channels', () => {
         String(index + 1)
       );
     }
+
     storage.sql.exec('UPDATE durability_outbox_seq SET next_version = 3');
 
     const app = instance(contextOf(storage), undefined);
@@ -408,10 +428,12 @@ describe('topology instance channels', () => {
         .exec('SELECT owner_channel, id FROM durability_topology_writes')
         .toArray()
     ).toEqual([]);
+
     const grown = await app.topology.update('acme', ({ members }) => ({
       members: [...members, active('b')],
       states: { limits: { max: 7 } },
     }));
+
     expect(grown.snapshot.version).toBe(5);
     await settle();
     expect(app.members.applied).toEqual([

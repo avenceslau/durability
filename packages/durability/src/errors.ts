@@ -47,6 +47,7 @@ export class DurableRetryPolicyError extends Error {
       `Retry policy for ${entity} must produce a non-negative safe-integer timestamp`
     );
     this.name = 'DurableRetryPolicyError';
+
     if (reason !== undefined) {
       Object.defineProperty(this, 'cause', { value: reason });
     }
@@ -60,6 +61,7 @@ export class DurableResultSerializationError extends Error {
       `Result for durable operation "${operation}" is not JSON-serializable`
     );
     this.name = 'DurableResultSerializationError';
+
     if (reason !== undefined) {
       Object.defineProperty(this, 'cause', { value: reason });
     }
@@ -76,6 +78,7 @@ export class DurableMemoSerializationError extends NonRetryableError {
       `Memoized result for key ${JSON.stringify(key)} is not JSON-serializable`
     );
     this.name = 'DurableMemoSerializationError';
+
     if (reason !== undefined) {
       Object.defineProperty(this, 'cause', { value: reason });
     }
@@ -257,6 +260,7 @@ export type SerializedError = { name: string; message: string };
 const readString = (value: object, property: string): string | undefined => {
   try {
     const candidate = Reflect.get(value, property);
+
     return typeof candidate === 'string' && candidate.length > 0
       ? candidate
       : undefined;
@@ -270,9 +274,11 @@ export const serializeError = (error: unknown): SerializedError => {
   if (error === null) {
     return { name: 'Error', message: 'null' };
   }
+
   if (typeof error !== 'object' && typeof error !== 'function') {
     return { name: 'Error', message: String(error) };
   }
+
   return {
     name: readString(error, 'name') ?? 'Error',
     message: readString(error, 'message') ?? 'Unknown thrown value',
@@ -295,17 +301,21 @@ export const isNonRetryable = (error: unknown): boolean => {
   if (isErrorInstance(error, NonRetryableError)) {
     return true;
   }
+
   if (
     (typeof error !== 'object' && typeof error !== 'function') ||
     error === null
   ) {
     return false;
   }
+
   if (readString(error, 'name') === 'NonRetryableError') {
     return true;
   }
+
   try {
     const constructor = Reflect.get(error, 'constructor');
+
     return (
       constructor !== null &&
       (typeof constructor === 'object' || typeof constructor === 'function') &&
@@ -327,6 +337,7 @@ export const reportFailure = (
       (typeof error === 'object' || typeof error === 'function')
         ? readString(error, 'stack')
         : undefined;
+
     console.error({
       event,
       ...details,
@@ -364,6 +375,7 @@ export class TopologyUnavailableError extends Error {
   ) {
     super(`Topology for group "${group}" is unavailable: ${reason}`);
     this.name = 'TopologyUnavailableError';
+
     if (options?.cause !== undefined) {
       Object.defineProperty(this, 'cause', { value: options.cause });
     }
