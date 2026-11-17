@@ -146,12 +146,12 @@ const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
   }
 };
 
-const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
+const readAttachment = (ws: WebSocket): Attachment<unknown> => {
   const stored: unknown = ws.deserializeAttachment();
 
   if (!isObject(stored)) {
     return {
-      metadata: undefined as Metadata,
+      metadata: undefined,
       names: [],
       channel: defaultChannel,
     };
@@ -162,7 +162,7 @@ const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
   const channel = 'channel' in stored ? stored.channel : undefined;
 
   return {
-    metadata: ('metadata' in stored ? stored.metadata : undefined) as Metadata,
+    metadata: 'metadata' in stored ? stored.metadata : undefined,
     names: Array.isArray(names) ? names.filter(isString) : [],
     channel: isString(channel) ? channel : defaultChannel,
   };
@@ -366,10 +366,14 @@ class DurabilitySocketCore<
     }
 
     const call: SocketCall<never> = {
-      metadata: readAttachment<never>(ws).metadata,
+      // SAFETY: #inbound erases each handler's metadata type to never; fetch
+      // stored what config.metadata returned for this socket, if configured.
+      metadata: readAttachment(ws).metadata as never,
     };
 
     try {
+      // SAFETY: the input passed handler.input, and SocketValidatedInbound
+      // requires each handle to accept its own schema's output.
       const output = await handler.handle(
         (await this.#validate(frame, handler.input)) as never,
         call
@@ -424,11 +428,11 @@ class DurabilitySocketCore<
       return;
     }
 
-    const attachment = readAttachment<Metadata>(ws);
+    const attachment = readAttachment(ws);
     ws.serializeAttachment({
       ...attachment,
       names: frame.names,
-    } satisfies Attachment<Metadata>);
+    } satisfies Attachment<unknown>);
 
     const head = this.#headSeq();
     const replayed = this.#replay(ws, frame.names, frame.since, head);
@@ -631,9 +635,8 @@ export interface DurabilitySocketConstructor {
 
 traceMethods(DurabilitySocketCore.prototype, 'DurabilitySocket');
 
-// TypeScript cannot declare class members derived from a generic event map,
-// so the constructor is typed separately; the constructor installs and
-// reserves every outbound method at runtime.
+// SAFETY: the constructor defines a method for every outbound event name on the
+// instance, members TypeScript cannot declare from a generic event map.
 export const DurabilitySocket =
   DurabilitySocketCore as DurabilitySocketConstructor;
 

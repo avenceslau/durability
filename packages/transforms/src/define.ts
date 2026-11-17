@@ -326,6 +326,8 @@ export function registerTransform<TTransform extends TransformIdentity>(
   return {
     type: 'registered-do-transform',
     transform,
+    // SAFETY: TransformOptionsArguments makes the argument optional only when
+    // undefined is a valid CalleeOptions<TTransform>.
     options: options[0] as CalleeOptions<TTransform>,
   };
 }

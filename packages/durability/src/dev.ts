@@ -176,6 +176,8 @@ const proxyStorage = <Storage extends object>(
       const value: unknown = Reflect.get(target, key);
 
       if (key === 'sql' && value !== undefined) {
+        // SAFETY: proxyStorage wraps DurableObjectStorage, whose `sql` is a
+        // SqlStorage; a transaction has no `sql` and never reaches here.
         sql ??= traceSql(value as SqlStorage);
 
         return sql;
@@ -188,16 +190,14 @@ const proxyStorage = <Storage extends object>(
       const method = `${scope}.${String(key)}`;
 
       return (...args: unknown[]) => {
+        const [closure] = args;
+
         // Alarm writes inside `transaction` go through the transaction object.
         const forwarded =
-          key === 'transaction' && isFunction(args[0])
+          key === 'transaction' && isFunction(closure)
             ? [
                 (transaction: DurableObjectTransaction) =>
-                  (
-                    args[0] as (
-                      transaction: DurableObjectTransaction
-                    ) => unknown
-                  )(proxyStorage(transaction, 'transaction')),
+                  closure(proxyStorage(transaction, 'transaction')),
                 ...args.slice(1),
               ]
             : args;
@@ -229,6 +229,8 @@ export const traceStorage = <Storage extends object>(
   const existing = tracedStorage.get(storage);
 
   if (existing) {
+    // SAFETY: tracedStorage maps a storage only to the proxy of that same
+    // storage, set below.
     return existing as Storage;
   }
 

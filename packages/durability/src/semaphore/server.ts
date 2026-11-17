@@ -210,6 +210,7 @@ const blockedCounts = (
   }
 
   return [...counts].map(([key, count]) => {
+    // SAFETY: every key was built above by JSON.stringify([group, reason]).
     const [group, reason] = JSON.parse(key) as [string, SemaphoreBlockedReason];
 
     return [group, reason, count];

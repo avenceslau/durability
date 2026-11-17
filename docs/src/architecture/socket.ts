@@ -359,7 +359,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:websockets'],
           source: sourceFocus(
             subscribe,
-            'const attachment = readAttachment<Metadata>(ws);',
+            'const attachment = readAttachment(ws);',
             'replayed,'
           ),
           durable: 'Retained event rows are read, not changed.',
@@ -489,7 +489,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:websockets'],
           source: sourceFocus(
             call,
-            'metadata: readAttachment<never>(ws).metadata,'
+            'metadata: readAttachment(ws).metadata as never,'
           ),
           durable: 'Nothing is read from SQLite.',
           volatile: 'The attachment, which outlived the instance.',

@@ -1,6 +1,6 @@
 import { join, resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ResolvedConfig, Rolldown } from 'vite';
+import { resolveConfig, type ResolvedConfig, type Rolldown } from 'vite';
 import {
   unstable_convertConfigBindingsToStartWorkerBindings,
   unstable_readConfig,
@@ -51,13 +51,18 @@ function pluginHooks(options: DoTransformsPluginOptions): TestPlugin {
 
 const fixtureRoot = resolve(import.meta.dirname, 'fixtures/vite');
 let plugin: TestPlugin;
+let fixtureConfig: ResolvedConfig;
 
 beforeAll(async () => {
+  fixtureConfig = await resolveConfig(
+    { root: fixtureRoot, configFile: false },
+    'build'
+  );
   plugin = pluginHooks({
     wrangler: './wrangler.jsonc',
     types: false,
   });
-  await plugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
+  await plugin.configResolved(fixtureConfig);
 });
 
 function transform(code: string): Promise<string | null> {
@@ -277,7 +282,7 @@ export default {
       restoreBrokenStubs: true,
     });
 
-    await restorePlugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
+    await restorePlugin.configResolved(fixtureConfig);
 
     const result = await transformWith(
       restorePlugin,
@@ -337,7 +342,7 @@ export default {
       restoreBrokenStubs: true,
     });
 
-    await restorePlugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
+    await restorePlugin.configResolved(fixtureConfig);
 
     const result = await transformWith(
       restorePlugin,
@@ -395,9 +400,7 @@ export default {
       types: false,
     });
 
-    const loading = invalidPlugin.configResolved({
-      root: fixtureRoot,
-    } as ResolvedConfig);
+    const loading = invalidPlugin.configResolved(fixtureConfig);
 
     await expect(loading).rejects.toThrow(
       `do-transforms could not load a valid Wrangler configuration at ${wranglerPath}: Processing `
@@ -413,9 +416,9 @@ export default {
       types: './env.ts',
     });
 
-    await expect(
-      typesPlugin.configResolved({ root: fixtureRoot } as ResolvedConfig)
-    ).rejects.toThrow('do-transforms types path must end in .d.ts');
+    await expect(typesPlugin.configResolved(fixtureConfig)).rejects.toThrow(
+      'do-transforms types path must end in .d.ts'
+    );
   });
 });
 
@@ -555,9 +558,7 @@ DurabilityRouting.client(config);
       types: false,
     });
 
-    await migrationOnlyPlugin.configResolved({
-      root: fixtureRoot,
-    } as ResolvedConfig);
+    await migrationOnlyPlugin.configResolved(fixtureConfig);
 
     const result = await transformWith(
       migrationOnlyPlugin,

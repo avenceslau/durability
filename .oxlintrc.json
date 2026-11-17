@@ -58,6 +58,6 @@
     "anti-slop/no-unsafe-dictionary-type": "warn",
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-readable-spacing": "error",
-    "anti-slop/require-safety-comment-for-type-assertion": "warn"
+    "anti-slop/require-safety-comment-for-type-assertion": "error"
   }
 }

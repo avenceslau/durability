@@ -329,6 +329,8 @@ export class DurabilityFanout<Body = unknown> {
   lifecycle(
     hook: (event: DurabilityFanoutEvent) => void | Promise<void>
   ): () => void {
+    // SAFETY: every event this instance emits spreads entity(claim), so it is
+    // a fanout_delivery event.
     return this.#lifecycle.add(hook as LifecycleHook);
   }
 
@@ -909,6 +911,8 @@ export class DurabilityFanout<Body = unknown> {
     return {
       id: message.id,
       ...identity,
+      // SAFETY: enqueue is the only writer of message payloads, each
+      // serialized from a Body.
       body: deserialize(message.payload) as Body,
       enqueuedAt: message.created_at,
       attempt: row.attempt,
@@ -1111,6 +1115,8 @@ export class DurabilityFanout<Body = unknown> {
         id: deliveryIdentity(row),
         messageId: message.id,
         target: row.target_id,
+        // SAFETY: enqueue is the only writer of message payloads, each
+        // serialized from a Body.
         body: deserialize(message.payload) as Body,
         enqueuedAt: message.created_at,
         storedAt: timestamp,

@@ -554,6 +554,8 @@ describe('DO transforms', () => {
       },
     };
 
+    // SAFETY: `namespace` has getByName, so the factory exists, and its stub
+    // forwards the members of the object getByName returns.
     const stub = createRestorableStubFactory(
       namespace,
       'getByName'
@@ -587,6 +589,8 @@ describe('DO transforms', () => {
       },
     };
 
+    // SAFETY: `namespace` has get, so the factory exists, and its stub
+    // forwards the members of the object get returns.
     const base = createRestorableStubFactory(
       namespace,
       'get'
@@ -619,6 +623,8 @@ describe('DO transforms', () => {
       },
     };
 
+    // SAFETY: `namespace` has get, so the factory exists, and its stub
+    // forwards the members of the object get returns.
     const stub = createRestorableStubFactory(
       namespace,
       'get'

@@ -152,6 +152,8 @@ export const socketCollectionOptions = <
   const writeCounts = new Map<Key, number>();
   const waiters = new Set<() => void>();
 
+  // SAFETY: a DeleteKeyMessage always carries its key, so a change without
+  // one is a ChangeMessage, which carries `value`.
   const keyOf = (change: SocketChange<Row, Key>): Key =>
     change.type === 'delete' && 'key' in change && change.key !== undefined
       ? change.key
@@ -338,6 +340,8 @@ export const socketCollectionOptions = <
         };
 
         for (const event of Object.keys(on ?? {})) {
+          // SAFETY: `on` is typed as a map keyed by the socket's outbound
+          // event names, so its keys are those names.
           follow(event as keyof OutboundOf<Socket>);
         }
 

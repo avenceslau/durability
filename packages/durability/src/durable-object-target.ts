@@ -40,5 +40,7 @@ export const resolveNamespace = <Target extends Rpc.DurableObjectBranded>(
     );
   }
 
+  // SAFETY: exportName names the binding of the target class (set by the Vite
+  // plugin or the caller), and the check above found its getByName.
   return exported as DurableObjectNamespace<Target>;
 };

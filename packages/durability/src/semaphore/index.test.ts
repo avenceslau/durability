@@ -1,7 +1,14 @@
+import * as v from 'valibot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DurabilityScheduler } from '../index';
 import { SemaphoreClient } from './client';
-import type { PermitGrant, PermitRequest, SemaphoreRequest } from './protocol';
+import {
+  permitGrantSchema,
+  permitSyncResultSchema,
+  type PermitGrant,
+  type PermitRequest,
+  type SemaphoreResponse,
+} from './protocol';
 import {
   DurabilitySemaphoreServer,
   type DurabilitySemaphoreConfig,
@@ -74,18 +81,18 @@ describe('semaphore', () => {
         events.push(event);
       },
       ...options,
-    } as DurabilitySemaphoreConfig);
+    });
+
+    const grantOf = async (message: PermitRequest) =>
+      v.parse(permitGrantSchema, await semaphore.handle(message));
 
     /** Sends a request and runs the round it joins. */
     const round = async (...requests: PermitRequest[]) => {
-      const replies = requests.map((message) => semaphore.handle(message));
+      const replies = requests.map((message) => grantOf(message));
       await vi.advanceTimersByTimeAsync(2_000);
 
-      return Promise.all(replies) as Promise<PermitGrant[]>;
+      return Promise.all(replies);
     };
-
-    const grantOf = (message: PermitRequest) =>
-      semaphore.handle(message) as Promise<PermitGrant>;
 
     return { storage, scheduler, semaphore, events, round, grantOf };
   };
@@ -373,10 +380,13 @@ describe('semaphore', () => {
 
     const nonsense: PeerMessage = { type: 'nonsense' };
 
+    const peer: { handle(message: PeerMessage): Promise<SemaphoreResponse> } =
+      semaphore;
+
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    await expect(
-      semaphore.handle(nonsense as SemaphoreRequest)
-    ).rejects.toThrow('Malformed semaphore message');
+    await expect(peer.handle(nonsense)).rejects.toThrow(
+      'Malformed semaphore message'
+    );
     await expect(
       semaphore.handle(
         request(
@@ -513,13 +523,16 @@ describe('semaphore', () => {
       // A report within the TTL refreshes it (the lease was issued 1s ago).
       vi.setSystemTime(Date.now() + 3_000);
 
-      const refreshed = (await semaphore.handle({
-        type: 'sync',
-        v: 1,
-        clientId: 'a',
-        grants: [],
-        leases: [{ leaseId, drawn: 2, released: 0 }],
-      })) as { leases?: { expiresAt: number }[] };
+      const refreshed = v.parse(
+        permitSyncResultSchema,
+        await semaphore.handle({
+          type: 'sync',
+          v: 1,
+          clientId: 'a',
+          grants: [],
+          leases: [{ leaseId, drawn: 2, released: 0 }],
+        })
+      );
 
       expect(refreshed.leases![0]!.expiresAt).toBe(Date.now() + 5_000);
 

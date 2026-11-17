@@ -259,7 +259,7 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   // `toggle` doesn't bubble; capture on the root observes every group. A
   // group the filter opened is transient state and not saved.
   const handleToggle = (event: Event) => {
-    const group = event.target as HTMLElement | null;
+    const group = event.target;
 
     if (!(group instanceof HTMLDetailsElement)) {
       return;
@@ -318,10 +318,10 @@ function initPersistence(root: HTMLElement): (() => void) | null {
       return;
     }
 
-    const active = document.activeElement as HTMLElement | null;
+    const active = document.activeElement;
 
     if (
-      active &&
+      active instanceof HTMLElement &&
       (active.tagName === 'INPUT' ||
         active.tagName === 'TEXTAREA' ||
         active.isContentEditable)

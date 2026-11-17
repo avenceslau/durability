@@ -106,6 +106,8 @@ export const createMemoize = (
     }
 
     // Return what a replay would return, so later code sees one shape either way.
+    // SAFETY: `serialized` encodes `value`, and serialize rejects values JSON
+    // cannot round-trip, so this reads back as a T.
     return deserialize(serialized) as T;
   };
 
@@ -149,6 +151,8 @@ export const createMemoize = (
     );
 
     if (lookup.result !== null) {
+      // SAFETY: only save() writes memos, with the result of the callback
+      // memoized under this key, which has type T on every attempt.
       return deserialize(lookup.result) as T;
     }
 

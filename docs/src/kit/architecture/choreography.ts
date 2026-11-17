@@ -312,6 +312,7 @@ export function planTransition(
   }
 
   const phases: ReadonlyArray<Phase> = ["retract", "disappear", "move", "appear", "draw"]
+  // SAFETY: `phases` lists every Phase, and the loop below sets each window.
   const windows = {} as Record<Phase, PhaseWindow>
   let cursor = 0
 

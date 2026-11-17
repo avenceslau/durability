@@ -58,11 +58,13 @@ class Members {
 
 const active = (id: string) => ({ id, state: 'active' as const });
 
-const contextOf = (storage: FakeStorage) =>
-  ({ ...contextFor(storage), id: coordinatorId }) as never;
+const contextOf = (storage: FakeStorage) => ({
+  ...contextFor(storage),
+  id: coordinatorId,
+});
 
 const instance = (
-  context: never,
+  context: ReturnType<typeof contextOf>,
   channel: string | undefined,
   store = new Store(),
   members = new Members()
@@ -244,7 +246,7 @@ describe('topology instance channels', () => {
         new DurabilityTopology({
           context,
           channel: 'library',
-          states: { limits: { deliver: 'nope' } as never },
+          states: { '': { deliver: async () => undefined } },
         })
     ).toThrow(TopologyError);
     const library = new DurabilityTopology({ context, channel: 'library' });

@@ -1,3 +1,4 @@
+import * as v from 'valibot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DurabilityScheduler } from '../index';
 import { durabilityOutboxMigrations } from '../outbox/migrations';
@@ -13,12 +14,14 @@ import {
   type DurabilitySemaphoreQueueConfig,
   type SemaphoreHolder,
 } from './queue';
-import type {
-  PermitGrant,
-  PermitRequest,
-  PermitSync,
-  PermitSyncResult,
-  SemaphoreRequest,
+import {
+  permitGrantSchema,
+  permitSyncResultSchema,
+  type PermitGrant,
+  type PermitRequest,
+  type PermitSync,
+  type PermitSyncResult,
+  type SemaphoreRequest,
 } from './protocol';
 import {
   DurabilitySemaphoreServer,
@@ -51,23 +54,28 @@ const schedulerFor = (storage: FakeStorage) =>
   new DurabilityScheduler({ context: contextFor(storage) });
 
 const holderFor = (
-  options: Partial<DurabilitySemaphoreConfig> = {},
+  options: Partial<
+    Omit<DurabilitySemaphoreConfig, 'scheduler' | 'context'>
+  > = {},
   storage = new FakeStorage()
 ) =>
   new DurabilitySemaphoreServer({
     scheduler: schedulerFor(storage),
     limit: 2,
     ...options,
-  } as DurabilitySemaphoreConfig);
+  });
 
 const round = async (
   holder: DurabilitySemaphoreServer,
   ...requests: PermitRequest[]
 ): Promise<PermitGrant[]> => {
-  const replies = requests.map((message) => holder.handle(message));
+  const replies = requests.map(async (message) =>
+    v.parse(permitGrantSchema, await holder.handle(message))
+  );
+
   await vi.advanceTimersByTimeAsync(2_000);
 
-  return Promise.all(replies) as Promise<PermitGrant[]>;
+  return Promise.all(replies);
 };
 
 const leasing = (
@@ -100,15 +108,18 @@ const leasing = (
   return request;
 };
 
-const sync = (
+const sync = async (
   holder: DurabilitySemaphoreServer,
   message: Omit<PermitSync, 'type' | 'v'>
 ) =>
-  holder.handle({
-    type: 'sync',
-    v: message.clientChannel === undefined ? 1 : 2,
-    ...message,
-  }) as Promise<PermitSyncResult>;
+  v.parse(
+    permitSyncResultSchema,
+    await holder.handle({
+      type: 'sync',
+      v: message.clientChannel === undefined ? 1 : 2,
+      ...message,
+    })
+  );
 
 const withoutChannel = <
   Message extends { clientChannel?: string | undefined },
@@ -361,9 +372,10 @@ describe('semaphore queue channels', () => {
   const holderServer = (
     holder: DurabilitySemaphoreServer
   ): SemaphoreHolder => ({
-    request: (_key, message) => holder.handle(message) as Promise<PermitGrant>,
-    sync: (_key, message) =>
-      holder.handle(message) as Promise<PermitSyncResult>,
+    request: async (_key, message) =>
+      v.parse(permitGrantSchema, await holder.handle(message)),
+    sync: async (_key, message) =>
+      v.parse(permitSyncResultSchema, await holder.handle(message)),
   });
 
   const queueOn = (
@@ -477,11 +489,12 @@ describe('semaphore queue channels', () => {
           throw new Error('Unsupported semaphore protocol version');
         }
 
-        const reply = (await holder.handle(
-          legacy ? (withoutChannel(message) as PermitRequest) : message
-        )) as PermitGrant;
+        const reply = v.parse(
+          permitGrantSchema,
+          await holder.handle(legacy ? withoutChannel(message) : message)
+        );
 
-        return legacy ? (withoutChannel(reply) as PermitGrant) : reply;
+        return legacy ? withoutChannel(reply) : reply;
       },
       sync: async (_key, message) => {
         sent.push(message);
@@ -490,11 +503,12 @@ describe('semaphore queue channels', () => {
           throw new Error('Unsupported semaphore protocol version');
         }
 
-        const reply = (await holder.handle(
-          legacy ? (withoutChannel(message) as PermitSync) : message
-        )) as PermitSyncResult;
+        const reply = v.parse(
+          permitSyncResultSchema,
+          await holder.handle(legacy ? withoutChannel(message) : message)
+        );
 
-        return legacy ? (withoutChannel(reply) as PermitSyncResult) : reply;
+        return legacy ? withoutChannel(reply) : reply;
       },
     };
 

@@ -10,7 +10,7 @@ import { defaultCodeTransformers } from "@cloudflare/nimbus-docs/runtime";
 
 type Props = Parameters<typeof AstroCode>[0];
 
-const rawProps = Astro.props as Props;
+const rawProps = Astro.props;
 const usesNimbusDefaultThemes = !("theme" in rawProps) && !("themes" in rawProps);
 
 const themed = usesNimbusDefaultThemes
@@ -33,8 +33,8 @@ const props = {
 // runtime-valid; the only type friction is nominal — nimbus-docs and Astro
 // can resolve different `@shikijs/types` copies (e.g. 4.2.x vs 4.1.x), so the
 // `ShikiTransformer`/`ThemePresets` shapes differ on paper while matching at
-// runtime. `Astro.props` was already `as Props`; re-asserting here keeps the
-// component compiling regardless of which shiki types version dedupes in.
+// runtime. Re-asserting here keeps the component compiling regardless of which
+// shiki types version dedupes in.
 ---
 
 <AstroCode {...(props as Props)} />

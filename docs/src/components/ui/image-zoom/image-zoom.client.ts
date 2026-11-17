@@ -14,7 +14,11 @@ const MIN_GAIN = 1.2;
 const TRIGGER = '[data-nb-zoom-trigger]';
 
 mount('[data-nb-image-zoom]', (root) => {
-  const dialog = root as HTMLDialogElement;
+  if (!(root instanceof HTMLDialogElement)) {
+    return () => {};
+  }
+
+  const dialog = root;
   const content = document.querySelector<HTMLElement>('article.docs-content');
   const initial = dialog.querySelector<HTMLElement>('.nb-zoom-img');
 
@@ -119,6 +123,7 @@ mount('[data-nb-image-zoom]', (root) => {
     const source =
       img.parentElement instanceof HTMLPictureElement ? img.parentElement : img;
 
+    // SAFETY: a deep clone has the class of `source`, an <img> or <picture>.
     const clone = source.cloneNode(true) as HTMLElement;
 
     const view =
@@ -143,7 +148,10 @@ mount('[data-nb-image-zoom]', (root) => {
   };
 
   const onContentClick = (event: MouseEvent) => {
-    const trigger = (event.target as Element).closest<HTMLElement>(TRIGGER);
+    const trigger =
+      event.target instanceof Element
+        ? event.target.closest<HTMLElement>(TRIGGER)
+        : null;
 
     if (trigger && content.contains(trigger)) {
       open(trigger);

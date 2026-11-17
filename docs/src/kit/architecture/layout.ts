@@ -607,7 +607,7 @@ function rankedGraph(
   groups: ReadonlyArray<DiagramGroup>,
 ): RankedGraph {
   const byId = new Map(nodes.map((node) => [node.id, node]))
-  const neighbours = new Map(nodes.map((node) => [node.id, [] as string[]]))
+  const neighbours = new Map(nodes.map((node): [string, string[]] => [node.id, []]))
 
   for (const edge of edges) {
     if (edge.from !== edge.to && byId.has(edge.from) && byId.has(edge.to)) {
@@ -948,9 +948,10 @@ function assignPorts(
     }
   })
 
-  const ports = edges.map(() => [CENTRE_PORT, CENTRE_PORT] as [Port, Port])
+  const ports = edges.map((): [Port, Port] => [CENTRE_PORT, CENTRE_PORT])
 
   for (const [key, list] of ends) {
+    // SAFETY: keys are `${node id}|${side}`, built above, and node IDs never contain "|".
     const [id = "", side = "right"] = key.split("|") as [string, Side]
     const rect = rects.get(id)
 
@@ -1026,7 +1027,9 @@ function assignPorts(
 
     const [otherKey = ""] = otherKeys
     const leaders = ends.get(otherKey)
+    // SAFETY: both keys are `${node id}|${side}`, as built above, and node IDs never contain "|".
     const [id = "", side = "right"] = key.split("|") as [string, Side]
+    // SAFETY: as for `key`.
     const [otherId = "", otherSide = "left"] = otherKey.split("|") as [string, Side]
     const rect = rects.get(id)
     const other = rects.get(otherId)
@@ -1466,6 +1469,8 @@ function separateLanes(routable: ReadonlyArray<Routable>, routes: ReadonlyArray<
 
   type Run = (typeof runs)[number]
 
+  type Ordering = { crossed: number; order: ReadonlyArray<Run> }
+
   let groups: Run[][] = []
 
   for (const run of runs) {
@@ -1507,9 +1512,9 @@ function separateLanes(routable: ReadonlyArray<Routable>, routes: ReadonlyArray<
     const laneOf = (position: number): number => centre + (position - (group.length - 1) / 2) * LANE
     const orders = group.length <= 5 ? permutations(group) : [group]
 
-    let best = {
+    let best: Ordering = {
       crossed: Infinity,
-      order: group as ReadonlyArray<Run>,
+      order: group,
     }
 
     for (const order of orders) {
@@ -1777,9 +1782,15 @@ function placeLabels(
   const paths = placing.map(({ route, from, to }) => routePath(route, from, to))
   const lines = paths.map(polyline)
 
-  const sizes = placing.map(({ edge }) =>
-    edge.label === undefined ? undefined : (labelSize(edge.label).map((value) => value * scale) as [number, number]),
-  )
+  const sizes = placing.map(({ edge }): Point | undefined => {
+    if (edge.label === undefined) {
+      return undefined
+    }
+
+    const [width, height] = labelSize(edge.label)
+
+    return [width * scale, height * scale]
+  })
 
   const pairOf = ({ edge }: Placing): string => [edge.from, edge.to].sort().join("|")
   const labels: Rect[] = []
@@ -1806,18 +1817,18 @@ function placeLabels(
       const [dx, dy] = tangentOnPath(path, t)
       const covered = Math.abs(dx) * size[0] + Math.abs(dy) * size[1]
 
-      return length - covered >= LINE_SHOWING * scale ? [{ t, offset: [0, 0] as Point }] : []
+      return length - covered >= LINE_SHOWING * scale ? [{ t, offset: [0, 0] satisfies Point }] : []
     })
 
     const beside = stops.flatMap((t) => {
       const [dx, dy] = tangentOnPath(path, t)
       const away = (Math.abs(dy) * size[0]) / 2 + (Math.abs(dx) * size[1]) / 2 + 6 * scale
 
-      return [1, -1].map((sign) => ({ t, offset: [-dy * away * sign, dx * away * sign] as Point }))
+      return [1, -1].map((sign) => ({ t, offset: [-dy * away * sign, dx * away * sign] satisfies Point }))
     })
 
     // Twice as far out, past a label already beside a neighbouring edge.
-    const further = beside.map(({ t, offset }) => ({ t, offset: [offset[0] * 2, offset[1] * 2] as Point }))
+    const further = beside.map(({ t, offset }) => ({ t, offset: [offset[0] * 2, offset[1] * 2] satisfies Point }))
 
     const middle = pointOnPath(path, 0.5)
     const [tx, ty] = tangentOnPath(path, 0.5)
@@ -2020,11 +2031,11 @@ function gridCentres(
   })
 
   return new Map(
-    nodes.map((node) => {
+    nodes.map((node): [string, Point] => {
       const main = mainPositions[ranks.get(node.id) ?? 0] ?? 0
       const across = (rows.get(node.id) ?? 0) * halfRow
 
-      return [node.id, (direction === "right" ? [main, across] : [across, main]) as Point]
+      return [node.id, direction === "right" ? [main, across] : [across, main]]
     }),
   )
 }
@@ -2098,7 +2109,7 @@ export function layoutStage(request: LayoutRequest, everyNode: ReadonlyArray<Dia
       ? 1
       : Math.min(1, (canvas.width - MARGIN * 2) / box.width, (canvas.height - MARGIN * 2) / box.height)
 
-  const boxCentre = box === undefined ? ([0, 0] as Point) : rectCenter(box)
+  const boxCentre: Point = box === undefined ? [0, 0] : rectCenter(box)
 
   const toCanvas = ([x, y]: Point): Point => [
     canvas.width / 2 + (x - boxCentre[0]) * scale,

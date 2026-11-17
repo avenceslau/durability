@@ -1403,6 +1403,8 @@ type ObjectScheduler = { engine: unknown; installation: symbol };
 const installation = Symbol('durability installation');
 const registryKey: unique symbol = Symbol.for('durability.object-schedulers');
 
+// SAFETY: registryKey is this package's registered symbol, and every copy
+// stores only a WeakMap<object, ObjectScheduler> under it on globalThis.
 const globalRegistry = globalThis as {
   [registryKey]?: WeakMap<object, ObjectScheduler>;
 };
@@ -1430,6 +1432,8 @@ const engineForObject = (config: DurabilitySchedulerConfig): Engine => {
     );
   }
 
+  // SAFETY: the installation matches, so this copy of the module created the
+  // entry above with `new Engine`.
   const engine = existing.engine as Engine;
   engine.attach(context, config);
 
