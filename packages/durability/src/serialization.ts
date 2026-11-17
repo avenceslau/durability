@@ -1,12 +1,9 @@
 import * as v from 'valibot';
+import { isJsonObject } from './predicates.js';
 
-export type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | Json[]
-  | { [key: string]: Json };
+export type Json = string | number | boolean | null | Json[] | JsonObject;
+
+export type JsonObject = { [key: string]: Json };
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   if (value === null || typeof value !== 'object') {
@@ -99,7 +96,7 @@ const canonicalize = (value: Json): Json => {
     return value.map(canonicalize);
   }
 
-  if (value !== null && typeof value === 'object') {
+  if (isJsonObject(value)) {
     return Object.fromEntries(
       Object.keys(value)
         .sort()

@@ -3,6 +3,7 @@ import { dirname, extname, relative } from 'node:path';
 import { parse as parseJavaScript } from '@babel/parser';
 import {
   forEachChild,
+  hasRange,
   identifierName,
   syntaxNode,
   type SyntaxNode,
@@ -50,10 +51,8 @@ function wranglerBindingTypes(source: string): Map<string, string> {
       node.type === 'TSPropertySignature' &&
       name !== undefined &&
       !types.has(name) &&
-      typeof node.start === 'number' &&
-      typeof node.end === 'number' &&
-      typeof annotation?.start === 'number' &&
-      typeof annotation.end === 'number' &&
+      hasRange(node) &&
+      hasRange(annotation) &&
       !source.slice(node.start, node.end).includes('/*')
     ) {
       types.set(name, source.slice(annotation.start, annotation.end));

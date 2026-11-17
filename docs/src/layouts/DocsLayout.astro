@@ -170,7 +170,7 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
                   const groups = content.querySelectorAll("details");
 
                   for (let i = 0; i < groups.length; i++) {
-                    if (typeof state.open[i] === "boolean") {
+                    if (state.open[i] === true || state.open[i] === false) {
                       setGroupOpen(groups[i], state.open[i]);
                     }
                   }
@@ -193,7 +193,7 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
                   return;
                 }
 
-                if (state && typeof state.scroll === "number") {
+                if (state && Number.isFinite(state.scroll)) {
                   sidebar.scrollTop = state.scroll;
 
                   if (active) {

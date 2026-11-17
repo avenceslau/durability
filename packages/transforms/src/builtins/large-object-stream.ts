@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { defineTransform, type EmptyTransformContext } from '../define.js';
+import { isObject } from '../predicates.js';
 
 /** Callee configuration for {@link largeObjectStream}. */
 export type LargeObjectStreamOptions = {
@@ -190,11 +191,7 @@ export const largeObjectStream = defineTransform<
     return async ({ next }) => {
       const value = await next();
 
-      if (
-        typeof value !== 'object' ||
-        value === null ||
-        value instanceof ReadableStream
-      ) {
+      if (!isObject(value) || value instanceof ReadableStream) {
         return value;
       }
 

@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { SemaphoreProtocolError } from '../errors.js';
+import { isNonEmptyString } from '../predicates.js';
 import {
   permitGrantSchema,
   permitSyncResultSchema,
@@ -80,7 +81,7 @@ export class SemaphoreClient {
   }
 
   #address(key: string): SemaphoreAddress {
-    if (typeof key !== 'string' || key.length === 0) {
+    if (!isNonEmptyString(key)) {
       throw new SemaphoreProtocolError(
         'Semaphore keys must be non-empty strings'
       );

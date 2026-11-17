@@ -10,6 +10,7 @@ import type {
   TransformOptionsArguments,
   TransformTargetOf,
 } from './define.js';
+import { isFunction, isObjectOrFunction, isString } from './predicates.js';
 
 // A transform typed for a Durable Object reads `actorId`, so it may only be
 // attached to a stub that carries one. The tuple keeps a union target from
@@ -171,7 +172,7 @@ function pipelined(node: PipelineNode) {
         return promise[property].bind(promise);
       }
 
-      if (typeof property === 'symbol') {
+      if (!isString(property)) {
         return undefined;
       }
 
@@ -230,10 +231,7 @@ export function createTransformStub<TTarget extends object>(
   target: TTarget,
   transforms: ConfiguredCallerTransform[] = []
 ): TransformStub<TTarget> {
-  if (
-    (typeof target !== 'object' && typeof target !== 'function') ||
-    target === null
-  ) {
+  if (!isObjectOrFunction(target)) {
     return target;
   }
 
@@ -263,17 +261,14 @@ export function createRestorableStubFactory(
   namespace: unknown,
   method: string
 ): ((...args: unknown[]) => TransformStub<object>) | undefined {
-  if (
-    (typeof namespace !== 'object' && typeof namespace !== 'function') ||
-    namespace === null
-  ) {
+  if (!isObjectOrFunction(namespace)) {
     return undefined;
   }
 
   const members: Members<typeof method> = namespace;
   const get = members[method];
 
-  if (typeof get !== 'function') {
+  if (!isFunction(get)) {
     return undefined;
   }
 
@@ -322,7 +317,7 @@ function createSourceStub<TTarget extends object>(
 
           const configured = transform.callerFactory(options);
 
-          if (typeof configured !== 'function') {
+          if (!isFunction(configured)) {
             throw new TypeError(
               'Caller transform factory must return a function'
             );
@@ -339,7 +334,7 @@ function createSourceStub<TTarget extends object>(
       // Native bindings expose accessors that reject a Proxy receiver.
       const value: unknown = Reflect.get(accessedStub, property);
 
-      if (typeof value !== 'function' || typeof property !== 'string') {
+      if (!isFunction(value) || !isString(property)) {
         return value;
       }
 
@@ -366,7 +361,7 @@ function createSourceStub<TTarget extends object>(
 
           const contextSource: Members<'setContext'> = stub;
 
-          if (typeof contextSource.setContext !== 'function') {
+          if (!isFunction(contextSource.setContext)) {
             throw new TypeError(
               'Cannot send transform context to a target without setContext'
             );
@@ -374,11 +369,7 @@ function createSourceStub<TTarget extends object>(
 
           const contextualTarget: unknown = contextSource.setContext(context);
 
-          if (
-            (typeof contextualTarget !== 'object' &&
-              typeof contextualTarget !== 'function') ||
-            contextualTarget === null
-          ) {
+          if (!isObjectOrFunction(contextualTarget)) {
             throw new TypeError(
               'setContext must return a transform context target'
             );
@@ -386,7 +377,7 @@ function createSourceStub<TTarget extends object>(
 
           const invoker: Members<'invoke'> = contextualTarget;
 
-          if (typeof invoker.invoke !== 'function') {
+          if (!isFunction(invoker.invoke)) {
             throw new TypeError(
               'setContext must return a target with an invoke method'
             );
@@ -446,7 +437,7 @@ function createSourceStub<TTarget extends object>(
         get: (method, key) => {
           const member: unknown = Reflect.get(method, key);
 
-          return typeof member === 'function' &&
+          return isFunction(member) &&
             (key === 'then' || key === 'catch' || key === 'finally')
             ? member.bind(method)
             : member;
@@ -472,15 +463,12 @@ function createSourceStub<TTarget extends object>(
           // Observes failures without adopting the result, so pipelining survives.
           let then: unknown;
 
-          if (
-            (typeof result === 'object' || typeof result === 'function') &&
-            result !== null
-          ) {
+          if (isObjectOrFunction(result)) {
             const members: Members<'then'> = result;
             then = members.then;
           }
 
-          if (typeof then === 'function') {
+          if (isFunction(then)) {
             then.call(
               result,
               () => undefined,
@@ -516,7 +504,7 @@ export function withTransforms<TNamespace extends NamespaceLike<object>>(
       if (property !== 'get') {
         const value = Reflect.get(target, property, receiver);
 
-        return typeof value === 'function' ? value.bind(target) : value;
+        return isFunction(value) ? value.bind(target) : value;
       }
 
       return (...args: Parameters<TNamespace['get']>) =>

@@ -8,6 +8,7 @@ import {
   type DurableObjectTarget,
 } from '../durable-object-target.js';
 import { RoutingError } from '../errors.js';
+import { isObject } from '../predicates.js';
 import { RoutingLoad, type EnqueueResult } from './load.js';
 import {
   RoutingClient,
@@ -95,9 +96,7 @@ export class DurabilityRouting extends RoutingLoad {
 
           if (
             positional !== undefined &&
-            (positional === null ||
-              typeof positional !== 'object' ||
-              Array.isArray(positional))
+            (!isObject(positional) || Array.isArray(positional))
           ) {
             throw new TypeError(
               'Routing context must be an object when combined with transform context'

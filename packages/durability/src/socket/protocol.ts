@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { SerializedError } from '../errors.js';
-import type { Json } from '../serialization.js';
+import { isJsonObject, isString } from '../predicates.js';
+import type { Json, JsonObject } from '../serialization.js';
 
 export const socketProtocolVersion = 1;
 
@@ -22,13 +23,8 @@ export type SocketServerFrame =
   | { v: 1; type: 'subscribed'; id: string; seq: number; replayed: boolean }
   | { v: 1; type: 'event'; seq: number; name: string; payload?: unknown };
 
-type JsonObject = { [key: string]: Json };
-
-const isJsonObject = (value: Json | undefined): value is JsonObject =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const isStringArray = (value: unknown): value is string[] =>
-  Array.isArray(value) && value.every((item) => typeof item === 'string');
+  Array.isArray(value) && value.every(isString);
 
 const isSerializedError = (value: Json | undefined): value is SerializedError =>
   isJsonObject(value) &&
@@ -55,28 +51,58 @@ const parseFrame = (text: string): JsonObject | undefined => {
   return parsed;
 };
 
+// `parseFrame` has already checked the protocol version.
+const isClientFrame = (
+  frame: JsonObject
+): frame is JsonObject & SocketClientFrame => {
+  if (typeof frame['id'] !== 'string') {
+    return false;
+  }
+
+  if (frame['type'] === 'call') {
+    return typeof frame['method'] === 'string';
+  }
+
+  return (
+    frame['type'] === 'subscribe' &&
+    isStringArray(frame['names']) &&
+    (frame['since'] === undefined || Number.isSafeInteger(frame['since']))
+  );
+};
+
+const isServerFrame = (
+  frame: JsonObject
+): frame is JsonObject & SocketServerFrame => {
+  if (frame['type'] === 'event') {
+    return (
+      Number.isSafeInteger(frame['seq']) && typeof frame['name'] === 'string'
+    );
+  }
+
+  if (typeof frame['id'] !== 'string') {
+    return false;
+  }
+
+  if (frame['type'] === 'error') {
+    return isSerializedError(frame['error']);
+  }
+
+  if (frame['type'] === 'subscribed') {
+    return (
+      Number.isSafeInteger(frame['seq']) &&
+      typeof frame['replayed'] === 'boolean'
+    );
+  }
+
+  return frame['type'] === 'result';
+};
+
 export const parseClientFrame = (
   text: string
 ): SocketClientFrame | undefined => {
   const frame = parseFrame(text);
 
-  if (!frame || typeof frame['id'] !== 'string') {
-    return undefined;
-  }
-
-  if (frame['type'] === 'call' && typeof frame['method'] === 'string') {
-    return frame as SocketClientFrame;
-  }
-
-  if (
-    frame['type'] === 'subscribe' &&
-    isStringArray(frame['names']) &&
-    (frame['since'] === undefined || Number.isSafeInteger(frame['since']))
-  ) {
-    return frame as SocketClientFrame;
-  }
-
-  return undefined;
+  return frame && isClientFrame(frame) ? frame : undefined;
 };
 
 export const parseServerFrame = (
@@ -84,38 +110,7 @@ export const parseServerFrame = (
 ): SocketServerFrame | undefined => {
   const frame = parseFrame(text);
 
-  if (!frame) {
-    return undefined;
-  }
-
-  if (frame['type'] === 'event') {
-    return Number.isSafeInteger(frame['seq']) &&
-      typeof frame['name'] === 'string'
-      ? (frame as SocketServerFrame)
-      : undefined;
-  }
-
-  if (typeof frame['id'] !== 'string') {
-    return undefined;
-  }
-
-  if (frame['type'] === 'result') {
-    return frame as SocketServerFrame;
-  }
-
-  if (frame['type'] === 'error' && isSerializedError(frame['error'])) {
-    return frame as SocketServerFrame;
-  }
-
-  if (
-    frame['type'] === 'subscribed' &&
-    Number.isSafeInteger(frame['seq']) &&
-    typeof frame['replayed'] === 'boolean'
-  ) {
-    return frame as SocketServerFrame;
-  }
-
-  return undefined;
+  return frame && isServerFrame(frame) ? frame : undefined;
 };
 
 // ---------------------------------------------------------------------------

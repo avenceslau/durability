@@ -1,6 +1,7 @@
 import { resolveBinding, type Scope } from './scopes.js';
 import {
   forEachChild,
+  hasRange,
   identifierName,
   memberExpressionTypes,
   propertyName,
@@ -213,20 +214,16 @@ export function collectRoutingInjections(
                 durableObjectClassNames
               );
 
-              if (
-                typeof config.start === 'number' &&
-                typeof config.end === 'number'
-              ) {
+              if (hasRange(config)) {
                 const close = config.end - 1;
 
                 const lastProperty = syntaxNode(
                   properties[properties.length - 1]
                 );
 
-                const trailingText =
-                  lastProperty && typeof lastProperty.end === 'number'
-                    ? code.slice(lastProperty.end, close)
-                    : '';
+                const trailingText = hasRange(lastProperty)
+                  ? code.slice(lastProperty.end, close)
+                  : '';
 
                 const withoutComments = trailingText
                   .replace(/\/\*[\s\S]*?\*\//g, '')

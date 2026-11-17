@@ -18,6 +18,7 @@ import {
   assertPositiveInteger,
   type DurabilityRetryOptions,
 } from '../policy.js';
+import { isFunction, isNonEmptyString, isString } from '../predicates.js';
 import {
   DurabilityScheduler,
   assertChannel,
@@ -257,11 +258,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       config.channel ?? defaultChannel
     );
 
-    if (typeof config.clientId !== 'string' || config.clientId.length === 0) {
+    if (!isNonEmptyString(config.clientId)) {
       throw new TypeError('clientId must be a non-empty string');
     }
 
-    if (typeof config.admit !== 'function') {
+    if (!isFunction(config.admit)) {
       throw new TypeError('Semaphore queue requires an admit function');
     }
 
@@ -276,10 +277,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           };
     this.#admit = config.admit;
 
-    if (
-      config.finished !== undefined &&
-      typeof config.finished !== 'function'
-    ) {
+    if (config.finished !== undefined && !isFunction(config.finished)) {
       throw new TypeError('finished must be a function');
     }
 
@@ -379,11 +377,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       const id = item.id ?? crypto.randomUUID();
 
       if (
-        typeof id !== 'string' ||
-        id.length === 0 ||
-        typeof item.key !== 'string' ||
-        item.key.length === 0 ||
-        (item.group !== undefined && typeof item.group !== 'string')
+        !isNonEmptyString(id) ||
+        !isNonEmptyString(item.key) ||
+        (item.group !== undefined && !isString(item.group))
       ) {
         throw new TypeError(
           'Semaphore items need a non-empty id, a semaphore key, and a string group'

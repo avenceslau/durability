@@ -7,6 +7,7 @@ import {
   type DurabilityMigrationResult,
 } from '../migrations.js';
 import { assertPositiveInteger } from '../policy.js';
+import { isFunction, isNumber } from '../predicates.js';
 import {
   allocateLeases,
   applyLeaseReports,
@@ -249,12 +250,9 @@ export class DurabilitySemaphoreServer {
     );
 
     const limit = config.limit;
-    this.#limit = typeof limit === 'function' ? limit : () => limit;
+    this.#limit = isFunction(limit) ? limit : () => limit;
 
-    if (
-      typeof limit === 'number' &&
-      (!Number.isSafeInteger(limit) || limit < 0)
-    ) {
+    if (isNumber(limit) && (!Number.isSafeInteger(limit) || limit < 0)) {
       throw new RangeError('limit must be a non-negative safe integer');
     }
 

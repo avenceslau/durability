@@ -1,4 +1,5 @@
 import { defineTransform, type EmptyTransformContext } from '../define.js';
+import { isNumber } from '../predicates.js';
 
 /** Configuration for the caller-side {@link retry} transform. */
 export type RetryOptions = {
@@ -31,8 +32,9 @@ export type RetryOptions = {
 export const retry = defineTransform<object, EmptyTransformContext>().caller(
   (options: RetryOptions | number) =>
     async ({ next }) => {
-      const { retries, delay } =
-        typeof options === 'number' ? { retries: options } : options;
+      const { retries, delay } = isNumber(options)
+        ? { retries: options }
+        : options;
 
       if (!Number.isInteger(retries) || retries < 0) {
         throw new RangeError('retries must be a non-negative integer');

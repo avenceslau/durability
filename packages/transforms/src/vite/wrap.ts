@@ -8,6 +8,7 @@ import {
 import {
   forEachChild,
   functionTypes,
+  hasRange,
   identifierName,
   memberExpressionTypes,
   propertyName,
@@ -54,11 +55,7 @@ function namespaceCall(
 ): Wrapper['namespaceCall'] {
   const object = syntaxNode(callee.object);
 
-  if (
-    typeof callee.start !== 'number' ||
-    typeof callee.end !== 'number' ||
-    typeof object?.end !== 'number'
-  ) {
+  if (!hasRange(callee) || !hasRange(object)) {
     return undefined;
   }
 
@@ -203,8 +200,7 @@ function namespaceGetWrapper(
       syntaxNode(callee.object),
       scopes.nodeScopes.get(node) ?? scopes.rootScope
     ) !== 'namespace' ||
-    typeof node.start !== 'number' ||
-    typeof node.end !== 'number'
+    !hasRange(node)
   ) {
     return undefined;
   }
@@ -225,7 +221,7 @@ function stubReferenceWrapper(
 ): Wrapper | undefined {
   const { scopes, bindings } = search;
 
-  if (typeof node.start !== 'number' || typeof node.end !== 'number') {
+  if (!hasRange(node)) {
     return undefined;
   }
 

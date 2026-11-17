@@ -4,6 +4,7 @@ import {
   DurableMemoLimitError,
   DurableMemoSerializationError,
 } from '../errors.js';
+import { isNonEmptyString } from '../predicates.js';
 import { deserialize, serialize } from '../serialization.js';
 import {
   channelBindings,
@@ -114,7 +115,7 @@ export const createMemoize = (
     key: string,
     callback: () => T | Promise<T>
   ): Promise<T> => {
-    if (typeof key !== 'string' || key === '') {
+    if (!isNonEmptyString(key)) {
       throw new TypeError('Memoize keys must be non-empty strings');
     }
 
