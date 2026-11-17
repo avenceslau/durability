@@ -13,6 +13,7 @@ import {
   type OutboxEntry,
 } from '../outbox/index.js';
 import { assertPositiveInteger } from '../policy.js';
+import { isFunction, isNonEmptyString, isObject } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -255,7 +256,7 @@ const outstandingWritesUntil = (
 };
 
 const assertGroup = (group: string): void => {
-  if (typeof group !== 'string' || group.length === 0) {
+  if (!isNonEmptyString(group)) {
     throw new TopologyError('Group must be a non-empty string');
   }
 };
@@ -351,8 +352,7 @@ export class DurabilityTopology<
 
     if (
       publisher !== undefined &&
-      (typeof publisher.write !== 'function' ||
-        typeof publisher.delete !== 'function')
+      (!isFunction(publisher.write) || !isFunction(publisher.delete))
     ) {
       throw new TopologyError('publish needs write and delete functions');
     }
@@ -368,7 +368,7 @@ export class DurabilityTopology<
     > = config.states ?? {};
 
     const channels = Object.entries(states).map(([name, channel]) => {
-      if (!name || typeof channel.deliver !== 'function') {
+      if (!name || !isFunction(channel.deliver)) {
         throw new TopologyError(`Invalid topology channel "${name}"`);
       }
 
@@ -797,7 +797,7 @@ export class DurabilityTopology<
   }
 
   #parseDraft(draft: TopologyDraft<Meta, States>): ParsedDraft<Meta, States> {
-    if (draft === null || typeof draft !== 'object') {
+    if (!isObject(draft)) {
       throw new TopologyError('update must return a draft object');
     }
 
@@ -808,11 +808,7 @@ export class DurabilityTopology<
       throw new TopologyError('Draft members must be an array');
     }
 
-    if (
-      states === null ||
-      typeof states !== 'object' ||
-      Array.isArray(states)
-    ) {
+    if (!isObject(states) || Array.isArray(states)) {
       throw new TopologyError('Draft states must be an object');
     }
 

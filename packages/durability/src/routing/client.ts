@@ -1,4 +1,5 @@
 import { RoutingError } from '../errors.js';
+import { isNonEmptyString, isString } from '../predicates.js';
 import type { EnqueueResult, LoadSnapshot } from './load.js';
 
 export type RoutingTarget =
@@ -65,13 +66,9 @@ export class RoutingClient<Input, Value, Context = unknown> {
       ? await this.#config.sharding(input, context, observed)
       : this.#select(observed);
 
-    const address = typeof target === 'string' ? { shard: target } : target;
+    const address = isString(target) ? { shard: target } : target;
 
-    if (
-      !address ||
-      typeof address.shard !== 'string' ||
-      address.shard.length === 0
-    ) {
+    if (!address || !isNonEmptyString(address.shard)) {
       throw new RoutingError(
         'Sharding must return a non-empty shard key or { shard, locationHint }'
       );

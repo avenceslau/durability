@@ -12,6 +12,7 @@ import {
   engineFor,
   type Engine,
 } from '../scheduler/index.js';
+import { isFunction, isObject, isString } from '../predicates.js';
 import { deserialize, serialize } from '../serialization.js';
 import {
   parseClientFrame,
@@ -141,7 +142,7 @@ const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
 const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
   const stored: unknown = ws.deserializeAttachment();
 
-  if (typeof stored !== 'object' || stored === null) {
+  if (!isObject(stored)) {
     return {
       metadata: undefined as Metadata,
       names: [],
@@ -155,10 +156,8 @@ const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
 
   return {
     metadata: ('metadata' in stored ? stored.metadata : undefined) as Metadata,
-    names: Array.isArray(names)
-      ? names.filter((name): name is string => typeof name === 'string')
-      : [],
-    channel: typeof channel === 'string' ? channel : defaultChannel,
+    names: Array.isArray(names) ? names.filter(isString) : [],
+    channel: isString(channel) ? channel : defaultChannel,
   };
 };
 
@@ -285,8 +284,9 @@ class DurabilitySocketCore<
     ws: WebSocket,
     message: string | ArrayBuffer
   ): Promise<void> {
-    const text =
-      typeof message === 'string' ? message : new TextDecoder().decode(message);
+    const text = isString(message)
+      ? message
+      : new TextDecoder().decode(message);
 
     const frame = parseClientFrame(text);
 
@@ -363,17 +363,16 @@ class DurabilitySocketCore<
     };
 
     try {
-      const output =
-        typeof handler === 'function'
-          ? await handler(frame.input, call)
-          : await handler.handle(
-              (await this.#validate(
-                frame.method,
-                handler.input,
-                frame.input
-              )) as never,
-              call
-            );
+      const output = isFunction(handler)
+        ? await handler(frame.input, call)
+        : await handler.handle(
+            (await this.#validate(
+              frame.method,
+              handler.input,
+              frame.input
+            )) as never,
+            call
+          );
 
       sendFrame(ws, {
         v: socketProtocolVersion,

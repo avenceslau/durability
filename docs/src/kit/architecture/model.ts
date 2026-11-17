@@ -115,6 +115,10 @@ export type StageToken =
       readonly set: Readonly<Record<string, NodeChanges>>
     }
 
+export function isIdToken(token: StageToken): token is string {
+  return typeof token === "string"
+}
+
 export interface ArchitectureDefinition {
   /** The coordinate space of every position; the drawing scales to fit its container. */
   readonly canvas: {
@@ -294,8 +298,12 @@ function measureNode(
   return [Math.round(NODE.padding * 2 + iconWidth + text), NODE.height]
 }
 
+function isStringIcon(icon: NodeChanges["icon"]): icon is string {
+  return typeof icon === "string"
+}
+
 function checkContent(where: string, content: NodeChanges): void {
-  if (typeof content.icon === "string" && !isIconName(content.icon)) {
+  if (isStringIcon(content.icon) && !isIconName(content.icon)) {
     fail(`${where} uses unknown icon "${content.icon}"`)
   }
 
@@ -321,7 +329,7 @@ function checkNode(
     fail(`${where} has rank ${node.rank}; use a whole number from 0`)
   }
 
-  const replaces = node.replaces === undefined ? [] : typeof node.replaces === "string" ? [node.replaces] : node.replaces
+  const replaces = node.replaces === undefined ? [] : [node.replaces].flat()
 
   const references = [
     ["after", node.after],
@@ -681,7 +689,7 @@ function resolveStages(
     let spotlightToken: string | undefined
 
     for (const token of tokens) {
-      if (typeof token !== "string") {
+      if (!isIdToken(token)) {
         for (const [id, change] of Object.entries(token.set)) {
           if (!nodeIds.has(id)) {
             fail(`stage ${index} sets unknown node "${id}"`)

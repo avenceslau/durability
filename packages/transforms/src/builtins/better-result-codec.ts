@@ -4,6 +4,7 @@ import {
   type EmptyTransformContext,
   type Members,
 } from '../define.js';
+import { isObject } from '../predicates.js';
 
 const betterResultEnvelopeKey = '__durability_transforms_better_result_v1';
 
@@ -36,12 +37,12 @@ export const betterResultCodec = Object.assign(
         async ({ next }) => {
           const value = await next();
 
-          if (typeof value === 'object' && value !== null) {
+          if (isObject(value)) {
             const {
               [betterResultEnvelopeKey]: envelope,
             }: Members<typeof betterResultEnvelopeKey> = value;
 
-            if (typeof envelope === 'object' && envelope !== null) {
+            if (isObject(envelope)) {
               const envelopeMembers: Members<'version' | 'result'> = envelope;
 
               if (envelopeMembers.version !== 1) {

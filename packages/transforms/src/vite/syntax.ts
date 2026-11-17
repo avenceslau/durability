@@ -51,12 +51,30 @@ export const functionTypes = new Set([
   'ObjectMethod',
 ]);
 
-export function syntaxNode(value: unknown): SyntaxNode | undefined {
-  if (typeof value !== 'object' || value === null || !('type' in value)) {
-    return undefined;
-  }
+function isSyntaxNode(value: unknown): value is SyntaxNode {
+  return typeof value === 'object' && value !== null && 'type' in value;
+}
 
-  return value as SyntaxNode;
+export function syntaxNode(value: unknown): SyntaxNode | undefined {
+  return isSyntaxNode(value) ? value : undefined;
+}
+
+export function isIdentifier(
+  node: SyntaxNode | undefined
+): node is SyntaxNode & { name: string } {
+  return node?.type === 'Identifier' && typeof node.name === 'string';
+}
+
+export function isStringLiteral(
+  node: SyntaxNode | undefined
+): node is SyntaxNode & { value: string } {
+  return node?.type === 'StringLiteral' && typeof node.value === 'string';
+}
+
+export function hasRange(
+  node: SyntaxNode | undefined
+): node is SyntaxNode & { start: number; end: number } {
+  return typeof node?.start === 'number' && typeof node.end === 'number';
 }
 
 /**
@@ -110,23 +128,16 @@ export function propertyName(node: SyntaxNode): string | undefined {
   }
 
   if (node.computed === true) {
-    return property.type === 'StringLiteral' &&
-      typeof property.value === 'string'
-      ? property.value
-      : undefined;
+    return isStringLiteral(property) ? property.value : undefined;
   }
 
-  return property.type === 'Identifier' && typeof property.name === 'string'
-    ? property.name
-    : undefined;
+  return isIdentifier(property) ? property.name : undefined;
 }
 
 export function identifierName(
   node: SyntaxNode | undefined
 ): string | undefined {
-  return node?.type === 'Identifier' && typeof node.name === 'string'
-    ? node.name
-    : undefined;
+  return isIdentifier(node) ? node.name : undefined;
 }
 
 export function bindingIdentifiers(node: SyntaxNode | undefined): SyntaxNode[] {

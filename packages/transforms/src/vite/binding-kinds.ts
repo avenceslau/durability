@@ -7,6 +7,8 @@ import {
 import {
   bindingIdentifiers,
   identifierName,
+  isIdentifier,
+  isStringLiteral,
   memberExpressionTypes,
   propertyName,
   syntaxNode,
@@ -28,7 +30,7 @@ function isEnvRoot(
     return false;
   }
 
-  if (node.type === 'Identifier' && typeof node.name === 'string') {
+  if (isIdentifier(node)) {
     return (
       resolveBinding(scopes.nodeScopes.get(node) ?? scope, node.name)?.kind ===
       'env'
@@ -87,7 +89,7 @@ export function configuredBindingKind(
     return undefined;
   }
 
-  if (node.type === 'Identifier' && typeof node.name === 'string') {
+  if (isIdentifier(node)) {
     const binding = resolveBinding(
       scopes.nodeScopes.get(node) ?? scope,
       node.name
@@ -126,10 +128,7 @@ function setKind(
 function destructuredPropertyName(property: SyntaxNode): string | undefined {
   const key = syntaxNode(property.key);
 
-  const literal =
-    key?.type === 'StringLiteral' && typeof key.value === 'string'
-      ? key.value
-      : undefined;
+  const literal = isStringLiteral(key) ? key.value : undefined;
 
   return property.computed === true
     ? literal

@@ -186,7 +186,7 @@ function initPersistence(root: HTMLElement): (() => void) | null {
     try {
       const saved = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? 'null');
 
-      return saved?.hash === hash && typeof saved.scroll === 'number'
+      return saved?.hash === hash && Number.isFinite(saved.scroll)
         ? saved.scroll
         : null;
     } catch {

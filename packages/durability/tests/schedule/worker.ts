@@ -5,6 +5,7 @@ import {
   DurabilitySchedule,
   type ScheduleDefinition,
 } from '../../src/experimental';
+import { isFunction } from '../../src/predicates';
 
 type Cursor = SqlStorageCursor<Record<string, SqlStorageValue>>;
 
@@ -22,7 +23,7 @@ const bindAll = <Target extends object>(
 
       const value: unknown = Reflect.get(object, key);
 
-      return typeof value === 'function' ? value.bind(object) : value;
+      return isFunction(value) ? value.bind(object) : value;
     },
   });
 

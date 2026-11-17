@@ -17,6 +17,7 @@ import {
   retry,
   timeout,
 } from '../src/index';
+import { isObject } from '../src/predicates';
 
 const unknownSchema: StandardSchemaV1<unknown, unknown> = {
   '~standard': {
@@ -196,7 +197,7 @@ describe('built-in transforms', () => {
             version: 1,
             vendor: 'test',
             validate(value) {
-              return typeof value === 'object' && value !== null
+              return isObject(value)
                 ? { value }
                 : { issues: [{ message: 'Expected object' }] };
             },

@@ -3,6 +3,7 @@ import {
   forEachChild,
   functionTypes,
   identifierName,
+  isStringLiteral,
   syntaxNode,
   type SyntaxNode,
 } from './syntax.js';
@@ -118,10 +119,7 @@ function importedBindingKind(
 
   const source = syntaxNode(declaration?.source);
 
-  const sourceName =
-    source?.type === 'StringLiteral' && typeof source.value === 'string'
-      ? source.value
-      : undefined;
+  const sourceName = isStringLiteral(source) ? source.value : undefined;
 
   const importedName = identifierName(syntaxNode(specifier.imported));
 

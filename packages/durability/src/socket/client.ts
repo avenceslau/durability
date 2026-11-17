@@ -1,4 +1,5 @@
 import { reportFailure, type SerializedError } from '../errors.js';
+import { isString } from '../predicates.js';
 import {
   parseServerFrame,
   socketProtocolErrorCode,
@@ -380,7 +381,7 @@ class Connection {
         return;
       }
 
-      this.#receive(typeof message.data === 'string' ? message.data : '');
+      this.#receive(isString(message.data) ? message.data : '');
     });
     ws.addEventListener('close', (closed) => {
       if (!current()) {
@@ -613,7 +614,7 @@ export class DurabilitySocketClient<Socket extends AnySocketShape> {
 
     const rpc = new Proxy({} as RpcMethods<InboundOf<Socket>>, {
       get: (_target, method) =>
-        typeof method === 'string'
+        isString(method)
           ? (input?: unknown) => connection.call(method, input)
           : undefined,
     });
@@ -630,7 +631,7 @@ export class DurabilitySocketClient<Socket extends AnySocketShape> {
             connection.onResync(handler);
         }
 
-        return typeof name === 'string'
+        return isString(name)
           ? (handler: (payload: unknown) => void) =>
               connection.on(name, handler)
           : undefined;

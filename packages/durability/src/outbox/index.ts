@@ -20,6 +20,7 @@ import {
   assertPositiveInteger,
   type DurabilityRetryOptions,
 } from '../policy.js';
+import { isFunction, isNonEmptyString } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -225,7 +226,7 @@ export class DurabilityOutbox<Value = unknown> {
   constructor(config: DurabilityOutboxConfig<Value>) {
     this.#channel = assertChannel('Outbox', config.channel ?? defaultChannel);
 
-    if (typeof config.publish !== 'function') {
+    if (!isFunction(config.publish)) {
       throw new TypeError('Outbox requires a publish function');
     }
 
@@ -290,7 +291,7 @@ export class DurabilityOutbox<Value = unknown> {
   }
 
   #stageIn(sql: SqlStorage, key: string, value: Value): OutboxRow {
-    if (typeof key !== 'string' || key.length === 0) {
+    if (!isNonEmptyString(key)) {
       throw new TypeError('Outbox keys must be non-empty strings');
     }
 

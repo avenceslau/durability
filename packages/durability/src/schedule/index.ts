@@ -18,6 +18,12 @@ import {
   type DurabilityRetryOptions,
 } from '../policy.js';
 import {
+  isFunction,
+  isNonEmptyString,
+  isNumber,
+  isObject,
+} from '../predicates.js';
+import {
   assertChannel,
   defaultChannel,
   engineFor,
@@ -301,13 +307,13 @@ const assertJitter = (name: string, value: number): void => {
 };
 
 const pickJitter = (jitterMs: ScheduleDefinition['jitterMs'] = 0): number => {
-  if (typeof jitterMs === 'number') {
+  if (isNumber(jitterMs)) {
     assertJitter('Schedule jitterMs', jitterMs);
 
     return jitterMs;
   }
 
-  if (typeof jitterMs !== 'object' || jitterMs === null) {
+  if (!isObject(jitterMs)) {
     throw new TypeError('Schedule jitterMs must be a number or { maxMs }');
   }
 
@@ -362,7 +368,7 @@ export class DurabilitySchedule {
     );
 
     for (const name of ['nextOccurrence', 'run', 'onOutcome'] as const) {
-      if (typeof config[name] !== 'function') {
+      if (!isFunction(config[name])) {
         throw new TypeError(`Schedule requires a ${name} function`);
       }
     }
@@ -450,7 +456,7 @@ export class DurabilitySchedule {
   async set(definition: ScheduleDefinition): Promise<boolean> {
     const { expression, version } = definition;
 
-    if (typeof expression !== 'string' || expression.length === 0) {
+    if (!isNonEmptyString(expression)) {
       throw new TypeError('Schedule expression must be a non-empty string');
     }
 

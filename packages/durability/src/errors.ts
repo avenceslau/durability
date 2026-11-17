@@ -1,3 +1,4 @@
+import { isNonEmptyString, isObjectOrFunction } from './predicates.js';
 import type { Json } from './serialization.js';
 
 /**
@@ -268,9 +269,7 @@ const readString = (
   try {
     const candidate = value[property];
 
-    return typeof candidate === 'string' && candidate.length > 0
-      ? candidate
-      : undefined;
+    return isNonEmptyString(candidate) ? candidate : undefined;
   } catch {
     return undefined;
   }
@@ -282,7 +281,7 @@ export const serializeError = (error: unknown): SerializedError => {
     return { name: 'Error', message: 'null' };
   }
 
-  if (typeof error !== 'object' && typeof error !== 'function') {
+  if (!isObjectOrFunction(error)) {
     return { name: 'Error', message: String(error) };
   }
 
@@ -309,10 +308,7 @@ export const isNonRetryable = (error: unknown): boolean => {
     return true;
   }
 
-  if (
-    (typeof error !== 'object' && typeof error !== 'function') ||
-    error === null
-  ) {
+  if (!isObjectOrFunction(error)) {
     return false;
   }
 
@@ -324,8 +320,7 @@ export const isNonRetryable = (error: unknown): boolean => {
     const constructor = error.constructor;
 
     return (
-      constructor !== null &&
-      (typeof constructor === 'object' || typeof constructor === 'function') &&
+      isObjectOrFunction(constructor) &&
       readString(constructor, 'name') === 'NonRetryableError'
     );
   } catch {
@@ -342,11 +337,9 @@ export const reportFailure = (
   cause: unknown
 ): void => {
   try {
-    const stack =
-      cause !== null &&
-      (typeof cause === 'object' || typeof cause === 'function')
-        ? readString(cause, 'stack')
-        : undefined;
+    const stack = isObjectOrFunction(cause)
+      ? readString(cause, 'stack')
+      : undefined;
 
     const logged: SerializedError & { stack?: string } = {
       ...serializeError(cause),

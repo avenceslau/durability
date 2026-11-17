@@ -4,6 +4,7 @@ import type {
   unstable_readConfig,
 } from 'wrangler';
 import type { Members } from '../define.js';
+import { isObjectOrFunction, isString } from '../predicates.js';
 
 // Bindings whose runtime values are not RPC-capable objects. Proxying module
 // blobs would also break identity checks such as `WebAssembly.instantiate`.
@@ -74,16 +75,13 @@ export function loadWranglerProject(
       ),
       stubBindingNames: new Set(
         Object.entries(startWorkerBindings).flatMap(([name, binding]) => {
-          if (
-            (typeof binding !== 'object' && typeof binding !== 'function') ||
-            binding === null
-          ) {
+          if (!isObjectOrFunction(binding)) {
             return [];
           }
 
           const { type }: Members<'type'> = binding;
 
-          return typeof type !== 'string' ||
+          return !isString(type) ||
             unwrappedBindingTypes.has(type) ||
             type.startsWith('unsafe_')
             ? []

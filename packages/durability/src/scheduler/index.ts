@@ -20,6 +20,7 @@ import {
   type MigrationCapability,
 } from '../migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from '../policy.js';
+import { isFunction, isNonEmptyString } from '../predicates.js';
 import { deleteMemos, deleteStaleMemos } from '../memoize/index.js';
 import { SharedTimer } from '../shared-timer.js';
 import {
@@ -159,7 +160,7 @@ const activeKey = (channel: string | undefined, key: string): string =>
 
 /** Rejects a channel name a helper would otherwise store rows under. */
 export const assertChannel = (helper: string, channel: string): string => {
-  if (typeof channel !== 'string' || channel.length === 0) {
+  if (!isNonEmptyString(channel)) {
     throw new TypeError(`${helper} channel must be a non-empty string`);
   }
 
@@ -362,10 +363,7 @@ export class Engine {
     const alarmMinDelayMs = merged.alarmMinDelayMs ?? 15_000;
     const alarmHandoffMs = merged.alarmHandoffMs ?? 14 * 60_000;
 
-    if (
-      merged.onAlarmRetry !== undefined &&
-      typeof merged.onAlarmRetry !== 'function'
-    ) {
+    if (merged.onAlarmRetry !== undefined && !isFunction(merged.onAlarmRetry)) {
       throw new TypeError('onAlarmRetry must be a function');
     }
 
@@ -1489,7 +1487,7 @@ export class DurabilityScheduler {
    * reported as `durability.timer.callback_failed` instead of being thrown.
    */
   setTimeout(callback: () => void, delayMs: number): () => void {
-    if (typeof callback !== 'function') {
+    if (!isFunction(callback)) {
       throw new TypeError('callback must be a function');
     }
 

@@ -1,4 +1,5 @@
 import { exports as workerExports } from 'cloudflare:workers';
+import { isFunction, isObjectOrFunction } from './predicates.js';
 
 /** An application-owned Durable Object class a client-side helper routes to. */
 export type DurableObjectTarget<Target extends Rpc.DurableObjectBranded> = {
@@ -30,10 +31,9 @@ export const resolveNamespace = <Target extends Rpc.DurableObjectBranded>(
   const exported = exportsByName[config.exportName];
 
   if (
-    exported === null ||
-    (typeof exported !== 'object' && typeof exported !== 'function') ||
+    !isObjectOrFunction(exported) ||
     !('getByName' in exported) ||
-    typeof exported.getByName !== 'function'
+    !isFunction(exported.getByName)
   ) {
     throw error(
       `Export "${config.exportName}" is not a Durable Object namespace`

@@ -27,6 +27,7 @@ import {
   type ExecutionPolicyOptions,
   type PolicyResolver,
 } from '../policy.js';
+import { isFunction } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -103,9 +104,7 @@ export type DurableAlarmHandler = (
   info: DurableAlarmInfo
 ) => unknown | Promise<unknown>;
 
-const alarmHandlerSchema = v.custom<DurableAlarmHandler>(
-  (value) => typeof value === 'function'
-);
+const alarmHandlerSchema = v.custom<DurableAlarmHandler>(isFunction);
 
 /** Policy configuration for named alarms. */
 export type DurabilityAlarmsOptions<Names extends string = string> =

@@ -38,6 +38,7 @@ import {
   type AttemptPolicy,
   type ExecutionPolicyOptions,
 } from '../policy.js';
+import { isFunction, isNonEmptyString } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -273,11 +274,7 @@ export class DurabilityFanout<Body = unknown> {
     this.#policies = new Map();
 
     for (const [id, target] of this.#targets) {
-      if (
-        !id ||
-        (typeof target.deliver !== 'function' &&
-          typeof target.storage !== 'function')
-      ) {
+      if (!id || (!isFunction(target.deliver) && !isFunction(target.storage))) {
         throw new TypeError(`Invalid fanout target "${id}"`);
       }
 
@@ -371,12 +368,7 @@ export class DurabilityFanout<Body = unknown> {
           const id = message.id ?? crypto.randomUUID();
           const key = message.deduplicationKey ?? id;
 
-          if (
-            typeof id !== 'string' ||
-            !id ||
-            typeof key !== 'string' ||
-            !key
-          ) {
+          if (!isNonEmptyString(id) || !isNonEmptyString(key)) {
             throw new FanoutEnqueueError(
               'Message IDs and deduplication keys must be non-empty strings'
             );

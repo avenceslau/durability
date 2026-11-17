@@ -50,7 +50,7 @@
     "anti-slop/no-reduce-accumulator-copy": "error",
     "anti-slop/no-reflect-apply": "error",
     "anti-slop/no-reflect-get": "error",
-    "anti-slop/no-runtime-typeof": "warn",
+    "anti-slop/no-runtime-typeof": ["error", { "allowInTypeGuards": true }],
     "anti-slop/no-shape-in-symbol-names": "warn",
     "anti-slop/no-unknown-parameters": "warn",
     "anti-slop/no-unknown-returns": "warn",

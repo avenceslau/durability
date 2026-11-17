@@ -1,4 +1,5 @@
 import { serializeError } from './errors.js';
+import { isFunction } from './predicates.js';
 
 // Replaced by the consumer's bundler (`define`); see the README's "Dev mode" section.
 declare const __DURABILITY_DEV__: boolean | undefined;
@@ -8,7 +9,8 @@ declare const __DURABILITY_DEV__: boolean | undefined;
  * fold the check to a constant, so production builds pay one branch per
  * traced call and log nothing.
  */
-const devMode = typeof __DURABILITY_DEV__ === 'boolean' && __DURABILITY_DEV__;
+const devMode =
+  typeof __DURABILITY_DEV__ !== 'undefined' && __DURABILITY_DEV__ === true;
 
 let sequence = 0;
 
@@ -75,7 +77,7 @@ const traceCall = <Details extends object, T>(
 };
 
 const loggableArgs = (args: readonly unknown[]): unknown[] =>
-  args.filter((arg) => typeof arg !== 'function');
+  args.filter((arg) => !isFunction(arg));
 
 /**
  * Wraps a public function so dev mode logs its arguments and outcome. `details`
@@ -118,7 +120,7 @@ export const traceMethods = (
   for (const name of Object.getOwnPropertyNames(prototype)) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
 
-    if (name === 'constructor' || typeof descriptor?.value !== 'function') {
+    if (name === 'constructor' || !isFunction(descriptor?.value)) {
       continue;
     }
 
@@ -159,7 +161,7 @@ const traceSql = (sql: SqlStorage): SqlStorage =>
         };
       }
 
-      return typeof value === 'function' ? value.bind(target) : value;
+      return isFunction(value) ? value.bind(target) : value;
     },
   });
 
@@ -179,7 +181,7 @@ const proxyStorage = <Storage extends object>(
         return sql;
       }
 
-      if (typeof value !== 'function') {
+      if (!isFunction(value)) {
         return value;
       }
 
@@ -188,7 +190,7 @@ const proxyStorage = <Storage extends object>(
       return (...args: unknown[]) => {
         // Alarm writes inside `transaction` go through the transaction object.
         const forwarded =
-          key === 'transaction' && typeof args[0] === 'function'
+          key === 'transaction' && isFunction(args[0])
             ? [
                 (transaction: DurableObjectTransaction) =>
                   (
