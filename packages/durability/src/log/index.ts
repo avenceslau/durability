@@ -18,6 +18,7 @@ import {
 } from './migrations.js';
 import { migrateCapability } from '../migrations.js';
 import { assertPositiveInteger } from '../policy.js';
+import { isNonEmptyString } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -955,6 +956,8 @@ export class DurabilityLog<Body = unknown> {
     return {
       offset: row.offset,
       deduplicationKey: row.dedup_key,
+      // SAFETY: append is the only writer of this channel's payloads, each
+      // serialized from a Body.
       body: deserialize(row.payload) as Body,
       appendedAt: row.appended_at,
     };
@@ -1061,7 +1064,7 @@ export class DurabilityLog<Body = unknown> {
           records,
         });
 
-        if (typeof locator !== 'string' || locator.length === 0) {
+        if (!isNonEmptyString(locator)) {
           throw new TypeError('Cold storage must return a non-empty locator');
         }
 
@@ -1180,7 +1183,7 @@ export class DurabilityLog<Body = unknown> {
       });
 
       try {
-        await leases.onPoison!(lease as LogLease);
+        await leases.onPoison!(lease);
       } catch (error) {
         reportFailure(
           'durability.log.poison_handler.failed',
@@ -1440,7 +1443,7 @@ export class DurabilityLog<Body = unknown> {
 traceMethods(DurabilityLog.prototype, 'DurabilityLog');
 
 const assertConsumer = (consumer: string): void => {
-  if (typeof consumer !== 'string' || consumer.length === 0) {
+  if (!isNonEmptyString(consumer)) {
     throw new LogAppendError('Consumer must be a non-empty string');
   }
 };

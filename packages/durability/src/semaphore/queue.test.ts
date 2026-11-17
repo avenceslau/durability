@@ -1,3 +1,4 @@
+import * as v from 'valibot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DurabilityScheduler } from '../index';
 import {
@@ -10,7 +11,12 @@ import {
   DurabilitySemaphoreServer,
   type DurabilitySemaphoreConfig,
 } from './server';
-import type { PermitGrant, PermitSync } from './protocol';
+import {
+  permitGrantSchema,
+  permitSyncResultSchema,
+  type PermitGrant,
+  type PermitSync,
+} from './protocol';
 import { FakeStorage } from '../test-fakes';
 import { engineFor } from '../scheduler';
 
@@ -43,12 +49,16 @@ describe('semaphore queue', () => {
 
   const schedulerFor = (storage: FakeStorage) =>
     new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
     });
 
   const fixture = (
-    holder: Partial<DurabilitySemaphoreConfig> = {},
-    queue: Partial<DurabilitySemaphoreQueueConfig<string>> = {}
+    holder: Partial<
+      Omit<DurabilitySemaphoreConfig, 'scheduler' | 'context'>
+    > = {},
+    queue: Partial<
+      Omit<DurabilitySemaphoreQueueConfig<string>, 'scheduler' | 'context'>
+    > = {}
   ) => {
     const holders = new Map<string, DurabilitySemaphoreServer>();
 
@@ -60,7 +70,7 @@ describe('semaphore queue', () => {
           scheduler: schedulerFor(storageFor()),
           limit: 2,
           ...holder,
-        } as DurabilitySemaphoreConfig);
+        });
         holders.set(key, server);
       }
 
@@ -80,12 +90,18 @@ describe('semaphore queue', () => {
         request: async (key, message) => {
           calls.request += 1;
 
-          return holderFor(key).handle(message) as never;
+          return v.parse(
+            permitGrantSchema,
+            await holderFor(key).handle(message)
+          );
         },
         sync: async (key, message) => {
           calls.sync += 1;
 
-          return holderFor(key).handle(message) as never;
+          return v.parse(
+            permitSyncResultSchema,
+            await holderFor(key).handle(message)
+          );
         },
       },
       admit: (items) => {
@@ -95,7 +111,7 @@ describe('semaphore queue', () => {
         events.push(event);
       },
       ...queue,
-    } as DurabilitySemaphoreQueueConfig<string>);
+    });
 
     return {
       storage,
@@ -415,7 +431,9 @@ describe('semaphore queue', () => {
   /** A queue against a scripted holder, for protocol edge cases. */
   const scripted = (
     server: DurabilitySemaphoreQueueConfig<string>['server'],
-    options: Partial<DurabilitySemaphoreQueueConfig<string>> = {}
+    options: Partial<
+      Omit<DurabilitySemaphoreQueueConfig<string>, 'scheduler' | 'context'>
+    > = {}
   ) => {
     const admitted: AdmittedItem<string>[] = [];
     const storage = storageFor();
@@ -429,7 +447,7 @@ describe('semaphore queue', () => {
       },
       retries: { delay: () => 3_000 },
       ...options,
-    } as DurabilitySemaphoreQueueConfig<string>);
+    });
 
     return { queue, admitted, storage };
   };

@@ -48,7 +48,7 @@ const clientClass = sourceExcerpt(
   clientFile,
   'client',
   'One connection per object name',
-  'export class DurabilitySocketClient<Socket extends AnySocketShape> {',
+  'export class DurabilitySocketClient<Socket extends AnyDurabilitySocket> {',
   '      close: () => connection.close(),\n    };\n  }'
 );
 

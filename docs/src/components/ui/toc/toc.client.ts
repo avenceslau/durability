@@ -39,7 +39,7 @@ function initToc(root: HTMLElement): () => void {
     return () => {};
   }
 
-  const indexOfEl = new Map<HTMLElement, number>(
+  const indexOfEl = new Map<Element, number>(
     observed.map((o) => [o.el, o.index])
   );
 
@@ -206,7 +206,7 @@ function initToc(root: HTMLElement): () => void {
   const spy = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
-        const i = indexOfEl.get(entry.target as HTMLElement);
+        const i = indexOfEl.get(entry.target);
 
         if (i === undefined) {
           continue;
@@ -338,9 +338,10 @@ function initToc(root: HTMLElement): () => void {
         return;
       }
 
-      const link = (e.target as Element).closest<HTMLElement>(
-        '[data-nb-toc-link]'
-      );
+      const link =
+        e.target instanceof Element
+          ? e.target.closest<HTMLElement>('[data-nb-toc-link]')
+          : null;
 
       if (!link) {
         return;

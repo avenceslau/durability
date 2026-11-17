@@ -191,6 +191,8 @@ export class DurabilityTracker<Sources extends TrackerSources> {
   constructor(config: DurabilityTrackerConfig<Sources>) {
     this.#sources = Object.entries(config.sources).map(([key, input]) => [
       key,
+      // SAFETY: Durability and DurabilityAlarms register a source in their
+      // constructors, so an input without one is a custom UntypedSource.
       trackedSourceOf(input) ?? (input as UntypedSource),
     ]);
   }
@@ -203,7 +205,9 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const items = found.map(({ source, item }) => this.#handle(source, item));
     const page = cursor === undefined ? { items } : { items, cursor };
 
-    return page as unknown as TrackerPage<Sources, Key>;
+    // SAFETY: each item is a record of the source registered under its
+    // `source` key, so its name and result match Sources[source].
+    return page as TrackerPage<Sources, Key>;
   }
 
   /**
@@ -217,7 +221,9 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const records = found.map(({ item }) => item);
     const page = cursor === undefined ? { records } : { records, cursor };
 
-    return page as unknown as TrackerRecordPage<Sources, Key>;
+    // SAFETY: each record comes from the source registered under its
+    // `source` key, so its name and result match Sources[source].
+    return page as TrackerRecordPage<Sources, Key>;
   }
 
   /** Reacquires a handle by id, for example after an RPC disconnect. */
@@ -232,10 +238,10 @@ export class DurabilityTracker<Sources extends TrackerSources> {
       return undefined;
     }
 
-    return this.#handle(
-      resolved,
-      itemFor(key, record)
-    ) as unknown as TrackerHandle<Sources, Key>;
+    const handle = this.#handle(resolved, itemFor(key, record));
+
+    // SAFETY: `record` was read from the source registered under `source`.
+    return handle as TrackerHandle<Sources, Key>;
   }
 
   async #collect(
@@ -330,7 +336,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
         settle();
       };
 
-      const fail = (error: unknown) => finish(() => reject(error));
+      const fail = (cause: unknown) => finish(() => reject(cause));
 
       const resolveIfSettled = (result: AnyResult) => {
         if (result.status !== 'pending') {

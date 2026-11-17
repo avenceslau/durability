@@ -28,7 +28,7 @@ describe('outbox', () => {
     const storage = new FakeStorage();
 
     const scheduler = new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
     });
 
     return { storage, scheduler };
@@ -52,7 +52,7 @@ describe('outbox', () => {
     const storage = new FakeStorage();
 
     const scheduler = new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
     });
 
     const statements = vi.spyOn(storage.sql, 'exec');
@@ -358,7 +358,7 @@ describe('outbox', () => {
     const storage = new FakeStorage();
 
     const scheduler = new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
       alarmConcurrency: 1,
     });
 

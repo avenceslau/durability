@@ -18,6 +18,12 @@ import {
   type DurabilityRetryOptions,
 } from '../policy.js';
 import {
+  isFunction,
+  isNonEmptyString,
+  isNumber,
+  isObject,
+} from '../predicates.js';
+import {
   assertChannel,
   defaultChannel,
   engineFor,
@@ -197,7 +203,7 @@ export type DurabilityScheduleConfig = SchedulerAttachment & {
    */
   nextOccurrence(expression: string, after: number): number | undefined;
   /** The work of one tick. Throwing or timing out makes the run `errored`. */
-  run(run: ScheduledRunContext): unknown;
+  run(run: ScheduledRunContext): void | Promise<void>;
   /**
    * Receives each run's outcome at least once. Returning acknowledges it and
    * deletes the run's row; throwing retries it with `outcomeRetries`.
@@ -205,7 +211,7 @@ export type DurabilityScheduleConfig = SchedulerAttachment & {
   onOutcome(
     run: ScheduledOutcomeDelivery,
     outcome: ScheduledRunOutcome
-  ): unknown;
+  ): void | Promise<void>;
   /** Runs in flight at once; later runs wait durably in order. Defaults to 10. */
   maxConcurrentRuns?: number;
   /** Maximum duration of one run. Defaults to 15 minutes. */
@@ -301,13 +307,13 @@ const assertJitter = (name: string, value: number): void => {
 };
 
 const pickJitter = (jitterMs: ScheduleDefinition['jitterMs'] = 0): number => {
-  if (typeof jitterMs === 'number') {
+  if (isNumber(jitterMs)) {
     assertJitter('Schedule jitterMs', jitterMs);
 
     return jitterMs;
   }
 
-  if (typeof jitterMs !== 'object' || jitterMs === null) {
+  if (!isObject(jitterMs)) {
     throw new TypeError('Schedule jitterMs must be a number or { maxMs }');
   }
 
@@ -362,7 +368,7 @@ export class DurabilitySchedule {
     );
 
     for (const name of ['nextOccurrence', 'run', 'onOutcome'] as const) {
-      if (typeof config[name] !== 'function') {
+      if (!isFunction(config[name])) {
         throw new TypeError(`Schedule requires a ${name} function`);
       }
     }
@@ -450,7 +456,7 @@ export class DurabilitySchedule {
   async set(definition: ScheduleDefinition): Promise<boolean> {
     const { expression, version } = definition;
 
-    if (typeof expression !== 'string' || expression.length === 0) {
+    if (!isNonEmptyString(expression)) {
       throw new TypeError('Schedule expression must be a non-empty string');
     }
 
@@ -1004,9 +1010,9 @@ export class DurabilitySchedule {
       })
       .then(
         (): ScheduledRunOutcome => ({ status: 'complete' }),
-        (error: unknown): ScheduledRunOutcome => ({
+        (cause: unknown): ScheduledRunOutcome => ({
           status: 'errored',
-          error: serializeError(error),
+          error: serializeError(cause),
         })
       )
       .then((outcome) => this.#record(run, outcome, startedAt))
@@ -1157,9 +1163,9 @@ export class DurabilitySchedule {
   async #failDelivery(
     run: ScheduledRun,
     attempt: number,
-    failure: unknown
+    cause: unknown
   ): Promise<void> {
-    const error = serializeError(failure);
+    const error = serializeError(cause);
 
     if (attempt >= this.#maxOutcomeAttempts) {
       await this.#engine.transaction((sql) => {
@@ -1173,7 +1179,7 @@ export class DurabilitySchedule {
       reportFailure(
         'durability.schedule.outcome_dead_lettered',
         { scheduledTime: run.scheduledTime, attempt },
-        failure
+        cause
       );
       this.#emit({
         ...this.#entity(run.scheduledTime),

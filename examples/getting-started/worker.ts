@@ -30,6 +30,12 @@ export class Jobs extends DurableObject<Env> {
   }
 }
 
+const isCountWords = (body: unknown): body is CountWords =>
+  typeof body === 'object' &&
+  body !== null &&
+  'text' in body &&
+  typeof body.text === 'string';
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const match = /^\/jobs\/([^/]+)$/u.exec(new URL(request.url).pathname);
@@ -51,12 +57,7 @@ export default {
         return new Response('Expected JSON', { status: 400 });
       }
 
-      if (
-        typeof body !== 'object' ||
-        body === null ||
-        !('text' in body) ||
-        typeof body.text !== 'string'
-      ) {
+      if (!isCountWords(body)) {
         return new Response('Expected { "text": string }', { status: 400 });
       }
 

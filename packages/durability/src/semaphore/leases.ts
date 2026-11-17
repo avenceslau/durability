@@ -1,4 +1,5 @@
 import { assertPositiveInteger } from '../policy.js';
+import { isNumber } from '../predicates.js';
 import type {
   LeaseGrant,
   LeaseReport,
@@ -106,7 +107,7 @@ export const resolveLeasePolicy = (
         : undefined;
 
   if (amount !== undefined) {
-    const value = typeof amount === 'number' ? amount : amount.ratio;
+    const value = isNumber(amount) ? amount : amount.ratio;
 
     if (!Number.isFinite(value) || value < 0) {
       throw new RangeError('lease provisioning amounts must be non-negative');
@@ -117,13 +118,15 @@ export const resolveLeasePolicy = (
 };
 
 const scaled = (amount: number | { ratio: number }, limit: number): number =>
-  typeof amount === 'number' ? amount : Math.floor(limit * amount.ratio);
+  isNumber(amount) ? amount : Math.floor(limit * amount.ratio);
+
+type PermitBudget = { grants: number; leases: number; shared: boolean };
 
 /** Permits grants may use, and permits leases may hold, for one limit. */
 export const budgets = (
   provisioning: SemaphoreProvisioning,
   limit: number
-): { grants: number; leases: number; shared: boolean } => {
+): PermitBudget => {
   if (provisioning.mode === 'over') {
     return {
       grants: limit,

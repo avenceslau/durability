@@ -58,7 +58,7 @@ beforeEach(() => {
       readonly status: number;
       readonly webSocket: unknown;
       constructor(
-        _body: unknown,
+        _body: BodyInit | null,
         init: { status: number; webSocket?: unknown }
       ) {
         this.status = init.status;
@@ -80,8 +80,11 @@ const createSocket = (storage = new FakeStorage()) => {
   const socket = new DurabilitySocket({
     context,
     inbound: {
-      list: () => todos,
-      echo: (input) => input,
+      list: { input: v.undefined(), handle: () => todos },
+      echo: {
+        input: v.optional(v.array(v.union([v.number(), v.string()]))),
+        handle: (input) => input,
+      },
       create: {
         input: todoSchema,
         handle: (todo: Todo, call: SocketCall<{ userId: string }>) => {
@@ -115,7 +118,13 @@ const connect = async (
   const response = await socket.fetch(upgrade(user));
   expect(response.status).toBe(101);
 
-  return (response as Response & { webSocket: FakeWebSocket }).webSocket;
+  const { webSocket } = response;
+
+  if (!(webSocket instanceof FakeWebSocket)) {
+    throw new Error('Expected the client end of a WebSocketPair');
+  }
+
+  return webSocket;
 };
 
 const serverSide = (context: ReturnType<typeof socketContextFor>) =>
@@ -145,7 +154,7 @@ describe('DurabilitySocket', () => {
     ).toThrow('"fetch" is reserved by DurabilitySocket');
   });
 
-  it('exposes inbound and outbound types through the socket shape', () => {
+  it('exposes inbound and outbound types through the socket message maps', () => {
     const { socket } = createSocket();
 
     type Socket = typeof socket;
@@ -155,13 +164,13 @@ describe('DurabilitySocket', () => {
     >().toEqualTypeOf<Todo[]>();
     expectTypeOf<
       SocketInboundInput<InboundOf<Socket>['list']>
-    >().toEqualTypeOf<void>();
+    >().toEqualTypeOf<undefined>();
     expectTypeOf<
       SocketInboundInput<InboundOf<Socket>['create']>
     >().toEqualTypeOf<Todo>();
-    expectTypeOf<
-      SocketInboundInput<InboundOf<Socket>['echo']>
-    >().toEqualTypeOf<unknown>();
+    expectTypeOf<SocketInboundInput<InboundOf<Socket>['echo']>>().toEqualTypeOf<
+      (number | string)[] | undefined
+    >();
     expectTypeOf<OutboundOf<Socket>['removed']>().toEqualTypeOf<{
       readonly payload?: string;
     }>();
@@ -182,16 +191,17 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
     expect(ws.deserializeAttachment()).toEqual({
       metadata: { userId: 'bob' },
+      hasMetadata: true,
       names: [],
       channel: 'default',
     });
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's1', names: ['created'] })
     );
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({
         type: 'call',
         id: 'c1',
@@ -213,6 +223,157 @@ describe('DurabilitySocket', () => {
     ]);
   });
 
+  it('requires metadata only when a handler needs it', () => {
+    type User = { user: string };
+
+    type MetadataOption<Metadata> = Pick<
+      DurabilitySocketConfig<SocketInboundMap, SocketOutboundMap, Metadata>,
+      'metadata'
+    >;
+
+    expectTypeOf<MetadataOption<User>>().toEqualTypeOf<{
+      metadata: (request: Request) => User | Promise<User>;
+    }>();
+    expectTypeOf<MetadataOption<User | undefined>>().toEqualTypeOf<{
+      metadata?: (
+        request: Request
+      ) => User | undefined | Promise<User | undefined>;
+    }>();
+
+    // @ts-expect-error `metadata` is required because `whoami` needs a user
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<{ user: string }>) =>
+            call.metadata.user,
+        },
+      },
+      outbound: {},
+    });
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<{ user: string } | undefined>) =>
+            call.metadata?.user,
+        },
+        list: { input: v.undefined(), handle: () => [] },
+      },
+      outbound: {},
+    });
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<{ user: string } | undefined>) =>
+            call.metadata?.user,
+        },
+      },
+      outbound: {},
+      metadata: () => ({ user: 'alice' }),
+    });
+  });
+
+  it('closes connections accepted before metadata was captured, so the client reconnects', async () => {
+    const { context, socket, todos } = createSocket();
+    const beforeMetadata = new FakeWebSocket();
+    beforeMetadata.serializeAttachment({
+      metadata: undefined,
+      names: ['created'],
+      channel: 'default',
+    });
+    context.acceptWebSocket(beforeMetadata);
+
+    const withoutMetadata = new FakeWebSocket();
+    withoutMetadata.serializeAttachment({
+      metadata: undefined,
+      hasMetadata: false,
+      names: [],
+      channel: 'default',
+    });
+    context.acceptWebSocket(withoutMetadata);
+
+    await socket.webSocketMessage(
+      beforeMetadata,
+      frame({
+        type: 'call',
+        id: 'c1',
+        method: 'create',
+        input: { id: '1', title: 'x' },
+      })
+    );
+    await socket.webSocketMessage(
+      withoutMetadata,
+      frame({ type: 'subscribe', id: 's1', names: ['created'] })
+    );
+
+    for (const ws of [beforeMetadata, withoutMetadata]) {
+      expect(ws.closed).toEqual({
+        code: 1012,
+        reason: 'Socket metadata was not captured',
+      });
+      expect(ws.sent).toEqual([]);
+    }
+
+    expect(todos).toEqual([]);
+
+    await connect(socket, 'bob');
+    const reconnected = serverSide(context);
+    await socket.webSocketMessage(
+      reconnected,
+      frame({
+        type: 'call',
+        id: 'c2',
+        method: 'create',
+        input: { id: '1', title: 'x' },
+      })
+    );
+
+    expect(reconnected.closed).toBeUndefined();
+    expect(reconnected.frames()).toEqual([
+      { v: 1, type: 'result', id: 'c2', output: '1' },
+    ]);
+  });
+
+  it('records that a socket without metadata captured none and serves its connections', async () => {
+    const context = socketContextFor(new FakeStorage());
+
+    const socket = new DurabilitySocket({
+      context,
+      inbound: {
+        whoami: {
+          input: v.undefined(),
+          handle: (_input, call: SocketCall<string | undefined>) =>
+            call.metadata ?? 'anonymous',
+        },
+      },
+      outbound: {},
+    });
+
+    await connect(socket);
+    const ws = serverSide(context);
+    await socket.webSocketMessage(
+      ws,
+      frame({ type: 'call', id: 'w', method: 'whoami' })
+    );
+
+    expect(ws.deserializeAttachment()).toEqual({
+      metadata: undefined,
+      hasMetadata: false,
+      names: [],
+      channel: 'default',
+    });
+    expect(ws.frames()).toEqual([
+      { v: 1, type: 'result', id: 'w', output: 'anonymous' },
+    ]);
+  });
+
   it('only dispatches own inbound keys', async () => {
     const { context, socket } = createSocket();
     await connect(socket);
@@ -220,7 +381,7 @@ describe('DurabilitySocket', () => {
 
     for (const method of ['constructor', 'toString', '__proto__', 'missing']) {
       await socket.webSocketMessage(
-        ws as unknown as WebSocket,
+        ws,
         frame({ type: 'call', id: method, method })
       );
     }
@@ -244,32 +405,78 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'bad', method: 'create', input: { id: 1 } })
     );
 
-    const [reply] = ws.frames() as [
-      { error: { name: string; message: string } },
-    ];
-
-    expect(reply.error.name).toBe('SocketInputError');
-    expect(reply.error.message).toMatch(/^Invalid input for "create": /);
+    expect(ws.frames()).toMatchObject([
+      {
+        error: {
+          name: 'SocketInputError',
+          message: expect.stringMatching(/^Invalid input for "create": /),
+        },
+      },
+    ]);
     expect(new SocketInputError('x', [{ message: 'boom' }]).issues).toEqual([
       { message: 'boom' },
     ]);
   });
 
-  it('passes raw input to bare handlers and omits undefined output', async () => {
+  it('types handler input from its schema and rejects handlers without one', () => {
+    const context = socketContextFor(new FakeStorage());
+
+    const socket = new DurabilitySocket({
+      context,
+      inbound: {
+        rename: {
+          input: v.object({ id: v.string(), title: v.string() }),
+          handle: (todo) => {
+            expectTypeOf(todo).toEqualTypeOf<{ id: string; title: string }>();
+
+            return todo.title.length;
+          },
+        },
+      },
+      outbound: {},
+    });
+
+    expectTypeOf<
+      SocketInboundOutput<InboundOf<typeof socket>['rename']>
+    >().toEqualTypeOf<number>();
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        // @ts-expect-error every handler needs an input schema
+        bare: () => 'untyped',
+      },
+      outbound: {},
+    });
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        mismatched: {
+          input: v.string(),
+          // @ts-expect-error `handle` must accept the schema's output
+          handle: (count: number) => count,
+        },
+      },
+      outbound: {},
+    });
+  });
+
+  it('passes validated input to handlers and omits undefined output', async () => {
     const { context, socket } = createSocket();
     await connect(socket);
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'e1', method: 'echo', input: [1, 'two'] })
     );
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'e2', method: 'echo' })
     );
 
@@ -285,8 +492,11 @@ describe('DurabilitySocket', () => {
     const socket = new DurabilitySocket({
       context,
       inbound: {
-        fail: () => {
-          throw new RangeError('out of range');
+        fail: {
+          input: v.undefined(),
+          handle: () => {
+            throw new RangeError('out of range');
+          },
         },
       },
       outbound: {},
@@ -296,7 +506,7 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'call', id: 'f', method: 'fail' })
     );
 
@@ -315,7 +525,7 @@ describe('DurabilitySocket', () => {
     await connect(socket);
     const ws = serverSide(context);
 
-    await socket.webSocketMessage(ws as unknown as WebSocket, 'not json');
+    await socket.webSocketMessage(ws, 'not json');
 
     expect(ws.closed).toEqual({ code: 4002, reason: 'Invalid frame' });
     expect(ws.sent).toEqual([]);
@@ -324,21 +534,18 @@ describe('DurabilitySocket', () => {
   it('broadcasts outbound events only to subscribers of that name', async () => {
     const { context, socket } = createSocket();
     await connect(socket, 'a');
+    const a = serverSide(context);
     await connect(socket, 'b');
+    const b = serverSide(context);
     await connect(socket, 'c');
-
-    const [a, b, c] = context.sockets as [
-      FakeWebSocket,
-      FakeWebSocket,
-      FakeWebSocket,
-    ];
+    const c = serverSide(context);
 
     await socket.webSocketMessage(
-      a as unknown as WebSocket,
+      a,
       frame({ type: 'subscribe', id: 's', names: ['removed'] })
     );
     await socket.webSocketMessage(
-      b as unknown as WebSocket,
+      b,
       frame({ type: 'subscribe', id: 's', names: ['created', 'removed'] })
     );
     c.readyState = 3;
@@ -363,18 +570,20 @@ describe('DurabilitySocket', () => {
     await connect(socket);
     const ws = serverSide(context);
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's', names: ['created'] })
     );
 
     // A completed operation whose handler returned nothing looks like this.
-    socket.created({
+    const completed = {
       id: '1',
       title: 't',
       done: false,
       by: 'a',
       result: undefined,
-    } as Todo & { by: string });
+    };
+
+    socket.created(completed);
 
     expect(ws.frames()[ws.frames().length - 1]).toEqual({
       v: 1,
@@ -391,7 +600,7 @@ describe('DurabilitySocket', () => {
     const ws = serverSide(context);
 
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's', names: ['created', 'nope'] })
     );
 
@@ -406,9 +615,7 @@ describe('DurabilitySocket', () => {
         },
       },
     ]);
-    expect((ws.deserializeAttachment() as { names: string[] }).names).toEqual(
-      []
-    );
+    expect(ws.deserializeAttachment()).toMatchObject({ names: [] });
   });
 
   it('replays retained events after `since` and prunes beyond retention', async () => {
@@ -430,7 +637,7 @@ describe('DurabilitySocket', () => {
     await connect(socket);
     const ws = serverSide(context);
     await socket.webSocketMessage(
-      ws as unknown as WebSocket,
+      ws,
       frame({ type: 'subscribe', id: 's', names: ['removed'], since: 2 })
     );
 
@@ -459,7 +666,7 @@ describe('DurabilitySocket', () => {
       { id: 'current', since: 5 },
     ]) {
       await socket.webSocketMessage(
-        ws as unknown as WebSocket,
+        ws,
         frame({ type: 'subscribe', names: ['removed'], ...subscription })
       );
     }
@@ -518,10 +725,13 @@ const createChannelSocket = (
     context,
     ...channelOption,
     inbound: {
-      whoami: (_input: unknown, call: SocketCall<{ user: string }>) => {
-        calls.push(label);
+      whoami: {
+        input: v.undefined(),
+        handle: (_input, call: SocketCall<{ user: string }>) => {
+          calls.push(label);
 
-        return `${label}:${call.metadata.user}`;
+          return `${label}:${call.metadata.user}`;
+        },
       },
       publish: {
         input: v.string(),
@@ -547,7 +757,7 @@ const send = (
   socket: { webSocketMessage(ws: WebSocket, message: string): Promise<void> },
   ws: FakeWebSocket,
   value: Unversioned<SocketClientFrame>
-) => socket.webSocketMessage(ws as unknown as WebSocket, frame(value));
+) => socket.webSocketMessage(ws, frame(value));
 
 const connectServer = async (
   socket: { fetch(request: Request): Promise<Response> },
@@ -604,11 +814,13 @@ describe('DurabilitySocket channels', () => {
 
     expect(appWs.deserializeAttachment()).toEqual({
       metadata: { user: 'default/alice' },
+      hasMetadata: true,
       names: [],
       channel: 'default',
     });
     expect(libraryWs.deserializeAttachment()).toEqual({
       metadata: { user: 'library/alice' },
+      hasMetadata: true,
       names: [],
       channel: 'library',
     });
@@ -707,6 +919,7 @@ describe('DurabilitySocket channels', () => {
     ]);
     expect(libraryWs.deserializeAttachment()).toEqual({
       metadata: { user: 'library/alice' },
+      hasMetadata: true,
       names: ['changed'],
       channel: 'library',
     });
@@ -815,7 +1028,7 @@ describe('DurabilitySocket channels', () => {
     const library = createChannelSocket(context, 'library', calls);
     const legacy = new FakeWebSocket();
     legacy.serializeAttachment({ metadata: { user: 'old' }, names: [] });
-    context.acceptWebSocket(legacy as unknown as WebSocket);
+    context.acceptWebSocket(legacy);
 
     await send(library, legacy, {
       type: 'call',
@@ -855,6 +1068,7 @@ describe('DurabilitySocket channels', () => {
     ]);
     expect(legacy.deserializeAttachment()).toEqual({
       metadata: { user: 'old' },
+      hasMetadata: true,
       names: ['changed'],
       channel: 'default',
     });

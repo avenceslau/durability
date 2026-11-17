@@ -1,5 +1,6 @@
 import { Result } from 'better-result';
 import { defineTransform, type EmptyTransformContext } from '../define.js';
+import { isObject } from '../predicates.js';
 
 /**
  * Converts Cloudflare Durable Object reset errors into successful undefined
@@ -15,8 +16,7 @@ export const abortAsSuccess = Object.assign(
           return Result.ok(await next());
         } catch (error) {
           if (
-            typeof error === 'object' &&
-            error !== null &&
+            isObject(error) &&
             'durableObjectReset' in error &&
             error.durableObjectReset === true
           ) {

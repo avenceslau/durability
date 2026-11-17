@@ -1,3 +1,4 @@
+import { isNonEmptyString, isObjectOrFunction } from './predicates.js';
 import type { Json } from './serialization.js';
 
 /**
@@ -44,28 +45,28 @@ export class DurableAlarmTimeoutError extends Error {
 
 /** Error persisted when retry-delay evaluation fails or is unsafe. */
 export class DurableRetryPolicyError extends Error {
-  constructor(entity: string, reason?: unknown) {
+  constructor(entity: string, cause?: unknown) {
     super(
       `Retry policy for ${entity} must produce a non-negative safe-integer timestamp`
     );
     this.name = 'DurableRetryPolicyError';
 
-    if (reason !== undefined) {
-      Object.defineProperty(this, 'cause', { value: reason });
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause });
     }
   }
 }
 
 /** Error persisted when a successful result cannot be JSON-serialized. */
 export class DurableResultSerializationError extends Error {
-  constructor(operation: string, reason?: unknown) {
+  constructor(operation: string, cause?: unknown) {
     super(
       `Result for durable operation "${operation}" is not JSON-serializable`
     );
     this.name = 'DurableResultSerializationError';
 
-    if (reason !== undefined) {
-      Object.defineProperty(this, 'cause', { value: reason });
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause });
     }
   }
 }
@@ -75,14 +76,14 @@ export class DurableResultSerializationError extends Error {
  * terminal because every retry would fail the same way.
  */
 export class DurableMemoSerializationError extends NonRetryableError {
-  constructor(key: string, reason?: unknown) {
+  constructor(key: string, cause?: unknown) {
     super(
       `Memoized result for key ${JSON.stringify(key)} is not JSON-serializable`
     );
     this.name = 'DurableMemoSerializationError';
 
-    if (reason !== undefined) {
-      Object.defineProperty(this, 'cause', { value: reason });
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause });
     }
   }
 }
@@ -268,34 +269,32 @@ const readString = (
   try {
     const candidate = value[property];
 
-    return typeof candidate === 'string' && candidate.length > 0
-      ? candidate
-      : undefined;
+    return isNonEmptyString(candidate) ? candidate : undefined;
   } catch {
     return undefined;
   }
 };
 
 /** Reduces any thrown value to a persistable name and message, never throwing. */
-export const serializeError = (error: unknown): SerializedError => {
-  if (error === null) {
+export const serializeError = (cause: unknown): SerializedError => {
+  if (cause === null) {
     return { name: 'Error', message: 'null' };
   }
 
-  if (typeof error !== 'object' && typeof error !== 'function') {
-    return { name: 'Error', message: String(error) };
+  if (!isObjectOrFunction(cause)) {
+    return { name: 'Error', message: String(cause) };
   }
 
   return {
-    name: readString(error, 'name') ?? 'Error',
-    message: readString(error, 'message') ?? 'Unknown thrown value',
+    name: readString(cause, 'name') ?? 'Error',
+    message: readString(cause, 'message') ?? 'Unknown thrown value',
   };
 };
 
-export const isErrorInstance = (
+export const isErrorInstance = <Instance extends Error>(
   error: unknown,
-  constructor: new (...args: never[]) => Error
-): boolean => {
+  constructor: new (...args: never[]) => Instance
+): error is Instance => {
   try {
     return error instanceof constructor;
   } catch {
@@ -304,28 +303,24 @@ export const isErrorInstance = (
 };
 
 /** Recognizes this package's NonRetryableError and same-named errors from other packages. */
-export const isNonRetryable = (error: unknown): boolean => {
-  if (isErrorInstance(error, NonRetryableError)) {
+export const isNonRetryable = (cause: unknown): boolean => {
+  if (isErrorInstance(cause, NonRetryableError)) {
     return true;
   }
 
-  if (
-    (typeof error !== 'object' && typeof error !== 'function') ||
-    error === null
-  ) {
+  if (!isObjectOrFunction(cause)) {
     return false;
   }
 
-  if (readString(error, 'name') === 'NonRetryableError') {
+  if (readString(cause, 'name') === 'NonRetryableError') {
     return true;
   }
 
   try {
-    const constructor = error.constructor;
+    const constructor = cause.constructor;
 
     return (
-      constructor !== null &&
-      (typeof constructor === 'object' || typeof constructor === 'function') &&
+      isObjectOrFunction(constructor) &&
       readString(constructor, 'name') === 'NonRetryableError'
     );
   } catch {
@@ -339,17 +334,15 @@ type FailureDetails = { readonly [field: string]: Json };
 export const reportFailure = (
   event: string,
   details: FailureDetails,
-  error: unknown
+  cause: unknown
 ): void => {
   try {
-    const stack =
-      error !== null &&
-      (typeof error === 'object' || typeof error === 'function')
-        ? readString(error, 'stack')
-        : undefined;
+    const stack = isObjectOrFunction(cause)
+      ? readString(cause, 'stack')
+      : undefined;
 
     const logged: SerializedError & { stack?: string } = {
-      ...serializeError(error),
+      ...serializeError(cause),
     };
 
     if (stack) {

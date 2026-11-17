@@ -107,7 +107,7 @@ describe('DurabilityAlarms', () => {
 
       const alarms = new DurabilityAlarms({
         context: {
-          storage: storage as unknown as DurableObjectStorage,
+          storage,
         },
         handlers: { cleanup },
       });

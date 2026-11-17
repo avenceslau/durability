@@ -330,7 +330,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             push,
             'const observed = this.observations();',
-            'const address = typeof target === '
+            'const address = isString(target)'
           ),
           durable: 'Nothing.',
           volatile: 'The address for this push only.',

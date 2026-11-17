@@ -8,6 +8,7 @@ import {
   type DurableObjectTarget,
 } from '../durable-object-target.js';
 import { RoutingError } from '../errors.js';
+import { isObject } from '../predicates.js';
 import { RoutingLoad, type EnqueueResult } from './load.js';
 import {
   RoutingClient,
@@ -22,7 +23,7 @@ export type { RoutingAddress, RoutingTarget, Sharding } from './client.js';
 export type RoutingSession<Input, Value, Context = unknown> = {
   push(input: Input, context?: Context): Promise<EnqueueResult<Value>>;
   setContext(context: TransformContext): {
-    invoke(method: string, args: unknown[]): Promise<unknown>;
+    invoke(method: string, args: unknown[]): Promise<EnqueueResult<Value>>;
   };
 };
 
@@ -95,15 +96,15 @@ export class DurabilityRouting extends RoutingLoad {
 
           if (
             positional !== undefined &&
-            (positional === null ||
-              typeof positional !== 'object' ||
-              Array.isArray(positional))
+            (!isObject(positional) || Array.isArray(positional))
           ) {
             throw new TypeError(
               'Routing context must be an object when combined with transform context'
             );
           }
 
+          // SAFETY: the transform stub forwards the arguments of a typed `push`,
+          // so args are [Input, Context?]; transform context only adds keys.
           return client.push(
             args[0] as Input,
             { ...positional, ...context } as Context

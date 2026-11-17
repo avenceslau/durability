@@ -13,6 +13,7 @@ import {
   type OutboxEntry,
 } from '../outbox/index.js';
 import { assertPositiveInteger } from '../policy.js';
+import { isFunction, isNonEmptyString, isObject } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -21,7 +22,12 @@ import {
   type Engine,
   type SchedulerAttachment,
 } from '../scheduler/index.js';
-import { canonical, deserialize, serialize } from '../serialization.js';
+import {
+  canonical,
+  deserialize,
+  serialize,
+  type Json,
+} from '../serialization.js';
 import { TopologyClient, type TopologyClientConfig } from './client.js';
 import {
   encodeSnapshot,
@@ -56,8 +62,8 @@ export type TopologyStateUpdate<Value> = {
 
 export type TopologyPublisher<Meta> = TopologyRetryOptions & {
   /** Must be idempotent. Store `encoded` as is: it is what the client reads. */
-  write(snapshot: TopologySnapshot<Meta>, encoded: string): Promise<unknown>;
-  delete(group: string, version: number): Promise<unknown>;
+  write(snapshot: TopologySnapshot<Meta>, encoded: string): Promise<void>;
+  delete(group: string, version: number): Promise<void>;
 };
 
 export type TopologyChannel<Value, Meta> = TopologyRetryOptions & {
@@ -66,7 +72,7 @@ export type TopologyChannel<Value, Meta> = TopologyRetryOptions & {
   deliver(
     member: TopologyMember<Meta>,
     update: TopologyStateUpdate<Value>
-  ): unknown;
+  ): void | Promise<void>;
 };
 
 /**
@@ -106,6 +112,11 @@ export type TopologyDraft<Meta, States> = {
   members?: readonly TopologyMemberInput<Meta>[];
   /** Only the channels being set. */
   states?: Partial<States>;
+};
+
+type ParsedDraft<Meta, States> = {
+  members: readonly TopologyMemberInput<Meta>[] | undefined;
+  states: Partial<States>;
 };
 
 type Publication<Meta> =
@@ -249,8 +260,8 @@ const outstandingWritesUntil = (
   return until ?? undefined;
 };
 
-const assertGroup = (group: unknown): void => {
-  if (typeof group !== 'string' || group.length === 0) {
+const assertGroup = (group: string): void => {
+  if (!isNonEmptyString(group)) {
     throw new TopologyError('Group must be a non-empty string');
   }
 };
@@ -258,7 +269,7 @@ const assertGroup = (group: unknown): void => {
 const deliveryKey = (group: string, member: string): string =>
   JSON.stringify([group, member]);
 
-const isThenable = (value: unknown): boolean =>
+const isThenable = (value: unknown): value is PromiseLike<unknown> =>
   value !== null &&
   typeof value === 'object' &&
   'then' in value &&
@@ -295,11 +306,15 @@ const readStates = (sql: SqlStorage, ownerChannel: string, group: string) =>
       .toArray()
   );
 
-const parseMembers = <Meta>(row: GroupRow): TopologyMember<Meta>[] =>
-  v.parse(
+const parseMembers = <Meta>(row: GroupRow): TopologyMember<Meta>[] => {
+  const members: TopologyMember<Json | undefined>[] = v.parse(
     membersSchema,
     JSON.parse(row.members)
-  ) as unknown as TopologyMember<Meta>[];
+  );
+
+  // SAFETY: `meta` is validated only as JSON; this coordinator wrote it from a `TopologyMemberInput<Meta>`.
+  return members as TopologyMember<Meta>[];
+};
 
 const inRole = (member: TopologyMember<unknown>, role: TopologyRole): boolean =>
   role === 'read' || member.state === 'active';
@@ -346,8 +361,7 @@ export class DurabilityTopology<
 
     if (
       publisher !== undefined &&
-      (typeof publisher.write !== 'function' ||
-        typeof publisher.delete !== 'function')
+      (!isFunction(publisher.write) || !isFunction(publisher.delete))
     ) {
       throw new TopologyError('publish needs write and delete functions');
     }
@@ -363,7 +377,7 @@ export class DurabilityTopology<
     > = config.states ?? {};
 
     const channels = Object.entries(states).map(([name, channel]) => {
-      if (!name || typeof channel.deliver !== 'function') {
+      if (!name || !isFunction(channel.deliver)) {
         throw new TopologyError(`Invalid topology channel "${name}"`);
       }
 
@@ -382,7 +396,8 @@ export class DurabilityTopology<
       'DurabilityTopology'
     );
 
-    // The outbox only emits outbox events, which is all this hook accepts.
+    // SAFETY: the outbox only emits outbox events, which is all this hook
+    // accepts.
     const onLifecycleEvent = config.onLifecycleEvent as
       | LifecycleHook
       | undefined;
@@ -463,12 +478,14 @@ export class DurabilityTopology<
       const before = live ? parseMembers<Meta>(live) : [];
       const stateRows = readStates(sql, this.#ownerChannel, group);
 
+      // SAFETY: #writeStates is the only writer of state rows, storing each
+      // channel's value from a Partial<States>.
       const states = Object.fromEntries(
         stateRows.map((state) => [state.channel, deserialize(state.value)])
       ) as Partial<States>;
 
       // A copy, so an updater that mutates `current` cannot make a change look like a no-op.
-      const draft: unknown = next({ members: structuredClone(before), states });
+      const draft = next({ members: structuredClone(before), states });
 
       if (isThenable(draft)) {
         throw new TopologyError('update must return its draft synchronously');
@@ -711,8 +728,8 @@ export class DurabilityTopology<
    * the isolate dies first, its record makes the next publication wait instead.
    */
   #settleLate(group: string, id: string, write: Promise<unknown>): void {
-    const onError = (error: unknown) =>
-      reportFailure('durability.topology.restage_failed', { group }, error);
+    const onError = (cause: unknown) =>
+      reportFailure('durability.topology.restage_failed', { group }, cause);
 
     const settled = write
       .then(
@@ -791,11 +808,8 @@ export class DurabilityTopology<
     );
   }
 
-  #parseDraft(draft: unknown): {
-    members: readonly TopologyMemberInput<Meta>[] | undefined;
-    states: Partial<States>;
-  } {
-    if (draft === null || typeof draft !== 'object') {
+  #parseDraft(draft: TopologyDraft<Meta, States>): ParsedDraft<Meta, States> {
+    if (!isObject(draft)) {
       throw new TopologyError('update must return a draft object');
     }
 
@@ -806,18 +820,11 @@ export class DurabilityTopology<
       throw new TopologyError('Draft members must be an array');
     }
 
-    if (
-      states === null ||
-      typeof states !== 'object' ||
-      Array.isArray(states)
-    ) {
+    if (!isObject(states) || Array.isArray(states)) {
       throw new TopologyError('Draft states must be an object');
     }
 
-    return {
-      members: members as readonly TopologyMemberInput<Meta>[] | undefined,
-      states: states as Partial<States>,
-    };
+    return { members, states };
   }
 
   #normalize(
@@ -868,7 +875,8 @@ export class DurabilityTopology<
 
       member.joinedAt = joinedAt.get(id) ?? now;
 
-      return member as unknown as TopologyMember<Meta>;
+      // SAFETY: `meta` is the input's Meta, which passed jsonSchema unchanged.
+      return member as TopologyMember<Meta>;
     });
 
     return members.sort((a, b) => (a.id < b.id ? -1 : 1));

@@ -123,7 +123,7 @@ const execute = sourceExcerpt(
   schedulerFile,
   'execute',
   'Claim, run, and settle one attempt',
-  '  startExecution(spec: ExecutionSpec, eagerPermit?: () => void): Promise<void> {',
+  '  startExecution<Result>(\n    spec: ExecutionSpec<Result>,',
   '    return execution;\n  }'
 );
 
@@ -603,7 +603,10 @@ export const walkthrough = validateWalkthrough({
           description:
             'After the fallback alarm is set, the optional onAlarmRetry hook receives the error and the fallback alarm’s delay. It is best effort: a returned promise goes to waitUntil, and its own failure is only logged.',
           stage: ['focus:scheduler'],
-          source: sourceFocus(alarm, 'this.notifyAlarmRetry(error, info);'),
+          source: sourceFocus(
+            alarm,
+            'this.notifyAlarmRetry(serializeError(error), info);'
+          ),
           durable: 'Nothing beyond the fallback alarm.',
           volatile: 'The hook call and its promise.',
           status: 'normal',

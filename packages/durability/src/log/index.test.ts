@@ -33,7 +33,7 @@ describe('log', () => {
     const storage = new FakeStorage();
 
     const log = new DurabilityLog<string>({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
       ...options,
     });
 

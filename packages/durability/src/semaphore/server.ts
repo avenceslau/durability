@@ -7,6 +7,7 @@ import {
   type DurabilityMigrationResult,
 } from '../migrations.js';
 import { assertPositiveInteger } from '../policy.js';
+import { isFunction, isNumber } from '../predicates.js';
 import {
   allocateLeases,
   applyLeaseReports,
@@ -129,7 +130,7 @@ type Pending = {
   request: PermitRequest;
   client: SemaphoreClientIdentity;
   resolve: (grant: PermitGrant) => void;
-  reject: (error: unknown) => void;
+  reject: (cause: unknown) => void;
 };
 
 type GroupPolicy = { limit?: number; blocked?: SemaphoreBlockedReason };
@@ -140,6 +141,8 @@ type Allocation = {
   grantResults: GrantResult[];
   leases: LeaseGrant[];
 };
+
+type Reclaimed = { grants: GrantRow[]; events: DurabilitySemaphoreEvent[] };
 
 type RoundResult = {
   allocations: Map<Pending, Allocation>;
@@ -207,6 +210,7 @@ const blockedCounts = (
   }
 
   return [...counts].map(([key, count]) => {
+    // SAFETY: every key was built above by JSON.stringify([group, reason]).
     const [group, reason] = JSON.parse(key) as [string, SemaphoreBlockedReason];
 
     return [group, reason, count];
@@ -247,12 +251,9 @@ export class DurabilitySemaphoreServer {
     );
 
     const limit = config.limit;
-    this.#limit = typeof limit === 'function' ? limit : () => limit;
+    this.#limit = isFunction(limit) ? limit : () => limit;
 
-    if (
-      typeof limit === 'number' &&
-      (!Number.isSafeInteger(limit) || limit < 0)
-    ) {
+    if (isNumber(limit) && (!Number.isSafeInteger(limit) || limit < 0)) {
       throw new RangeError('limit must be a non-negative safe integer');
     }
 
@@ -404,8 +405,8 @@ export class DurabilitySemaphoreServer {
     this.#engine.timer.schedule(() => {
       this.#roundScheduled = false;
 
-      const onError = (error: unknown) =>
-        reportFailure('durability.semaphore.round_failed', {}, error);
+      const onError = (cause: unknown) =>
+        reportFailure('durability.semaphore.round_failed', {}, cause);
 
       this.#round = this.#runRound()
         .catch(onError)
@@ -848,10 +849,7 @@ export class DurabilitySemaphoreServer {
    * Returns every grant after reclaiming unclaimed permits past their window.
    * Events are returned, not emitted: the caller emits them after commit.
    */
-  #reclaim(
-    store: HolderStore,
-    now: number
-  ): { grants: GrantRow[]; events: DurabilitySemaphoreEvent[] } {
+  #reclaim(store: HolderStore, now: number): Reclaimed {
     const kept: GrantRow[] = [];
     const events: DurabilitySemaphoreEvent[] = [];
 

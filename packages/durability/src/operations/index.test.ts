@@ -539,16 +539,16 @@ describe('Durability', () => {
     });
     expect(calls).toHaveLength(1);
 
-    const error = await durability
-      .send({
-        id: 'nested',
-        payload: { meta: { a: 1, b: 2 }, token: 'leaky-secret' },
-      })
-      .catch((caught: unknown) => caught);
+    const sending = durability.send({
+      id: 'nested',
+      payload: { meta: { a: 1, b: 2 }, token: 'leaky-secret' },
+    });
 
-    expect(error).toBeInstanceOf(DuplicateDurablePayloadError);
-    const reported = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
-    expect(reported).not.toContain('leaky-secret');
+    await expect(sending).rejects.toBeInstanceOf(DuplicateDurablePayloadError);
+    await expect(sending).rejects.toMatchObject({
+      message: expect.not.stringContaining('leaky-secret'),
+      stack: expect.not.stringContaining('leaky-secret'),
+    });
     expect(calls).toHaveLength(1);
   });
 
@@ -575,9 +575,12 @@ describe('Durability', () => {
     const rejected = results.filter((result) => result.status === 'rejected');
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
-    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
-      DuplicateDurablePayloadError
-    );
+    expect(rejected).toEqual([
+      {
+        status: 'rejected',
+        reason: expect.any(DuplicateDurablePayloadError),
+      },
+    ]);
 
     await vi.waitFor(async () => {
       await expect(
@@ -586,7 +589,10 @@ describe('Durability', () => {
     });
     expect(calls).toHaveLength(1);
     const stored = await durability.send.getResult('transfer:42');
-    expect([100, 10_000]).toContain((stored as { result: number }).result);
+    expect([
+      { status: 'completed', result: 100 },
+      { status: 'completed', result: 10_000 },
+    ]).toContainEqual(stored);
   });
 
   it('keeps its alarm armed when a run cannot reconcile, instead of failing the alarm', async () => {

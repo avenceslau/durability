@@ -1,6 +1,40 @@
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
+import { isString } from './predicates.js';
 
-export class NodeSqlStorage {
+function unsupported(member: string): never {
+  throw new Error(`The test fake does not implement ${member}`);
+}
+
+const cursorOf = <T extends Record<string, SqlStorageValue>>(
+  rows: T[]
+): SqlStorageCursor<T> => {
+  const iterator = rows.values();
+
+  return {
+    next: () => {
+      const result = iterator.next();
+
+      return result.done ? { done: true } : { value: result.value };
+    },
+    toArray: () => rows,
+    one: () => {
+      if (rows.length !== 1) {
+        throw new Error(`Expected exactly one row, got ${rows.length}`);
+      }
+
+      return rows[0]!;
+    },
+    raw: () => unsupported('SqlStorageCursor.raw'),
+    get columnNames(): never {
+      return unsupported('SqlStorageCursor.columnNames');
+    },
+    rowsRead: rows.length,
+    rowsWritten: 0,
+    [Symbol.iterator]: () => iterator,
+  };
+};
+
+export class NodeSqlStorage implements SqlStorage {
   private readonly database = new DatabaseSync(':memory:');
 
   private depth = 0;
@@ -74,42 +108,74 @@ export class NodeSqlStorage {
     if (bindings.length === 0 && statements.length > 1) {
       this.database.exec(query);
 
-      return {
-        rowsRead: 0,
-        rowsWritten: 0,
-        toArray: () => [],
-      } as unknown as SqlStorageCursor<T>;
+      return cursorOf<T>([]);
     }
 
     const statement = this.database.prepare(query);
 
-    const rows = statement.all(
-      ...(bindings as SQLInputValue[])
-    ) as unknown as T[];
+    const values = bindings.map((value) =>
+      value instanceof ArrayBuffer ? new Uint8Array(value) : value
+    );
 
-    return {
-      rowsRead: rows.length,
-      rowsWritten: 0,
-      toArray: () => rows,
-      one: () => {
-        if (rows.length !== 1) {
-          throw new Error(`Expected exactly one row, got ${rows.length}`);
-        }
+    // SAFETY: as with workerd's SqlStorage, the caller names its query's row
+    // type; no table has BLOB columns and integers read as numbers.
+    return cursorOf(statement.all(...values) as T[]);
+  }
 
-        return rows[0];
-      },
-    } as unknown as SqlStorageCursor<T>;
+  get databaseSize(): never {
+    return unsupported('SqlStorage.databaseSize');
+  }
+
+  get Cursor(): never {
+    return unsupported('SqlStorage.Cursor');
+  }
+
+  get Statement(): never {
+    return unsupported('SqlStorage.Statement');
   }
 }
 
 /** A hibernatable WebSocket stand-in that records sent frames and its attachment. */
-export class FakeWebSocket {
-  readyState = 1;
+export class FakeWebSocket extends EventTarget implements WebSocket {
+  readonly CONNECTING = 0;
+  readonly OPEN = 1;
+  readonly CLOSING = 2;
+  readonly CLOSED = 3;
+  readyState: 0 | 1 | 2 | 3 = 1;
+  binaryType: 'blob' | 'arraybuffer' = 'blob';
+  onclose = null;
+  onerror = null;
+  onmessage = null;
+  onopen = null;
   readonly sent: string[] = [];
   closed: { code: number; reason: string } | undefined;
   private attachment: unknown = null;
 
-  send(message: string): void {
+  get url(): never {
+    return unsupported('WebSocket.url');
+  }
+
+  get protocol(): never {
+    return unsupported('WebSocket.protocol');
+  }
+
+  get extensions(): never {
+    return unsupported('WebSocket.extensions');
+  }
+
+  get bufferedAmount(): never {
+    return unsupported('WebSocket.bufferedAmount');
+  }
+
+  accept(): never {
+    return unsupported('WebSocket.accept');
+  }
+
+  send(message: string | ArrayBufferLike | ArrayBufferView | Blob): void {
+    if (!isString(message)) {
+      unsupported('binary WebSocket messages');
+    }
+
     this.sent.push(message);
   }
 
@@ -135,21 +201,27 @@ export const socketContextFor = (storage: FakeStorage) => {
   const sockets: FakeWebSocket[] = [];
 
   return {
-    storage: storage as unknown as DurableObjectStorage,
+    storage,
     sockets,
     acceptWebSocket(ws: WebSocket) {
-      sockets.push(ws as unknown as FakeWebSocket);
+      if (!(ws instanceof FakeWebSocket)) {
+        unsupported('accepting a WebSocket that is not a FakeWebSocket');
+      }
+
+      sockets.push(ws);
     },
-    getWebSockets() {
-      return sockets as unknown as WebSocket[];
+    getWebSockets(): WebSocket[] {
+      return sockets;
     },
     setWebSocketAutoResponse() {},
   };
 };
 
-export class FakeStorage {
+export class FakeStorage
+  implements DurableObjectStorage, DurableObjectTransaction
+{
   private readonly database = new NodeSqlStorage();
-  readonly sql = this.database as unknown as SqlStorage;
+  readonly sql: SqlStorage = this.database;
   alarmAt: number | null = null;
 
   transactionSync<T>(closure: () => T): T {
@@ -181,9 +253,7 @@ export class FakeStorage {
 
       try {
         return await this.database.transactionAsync(async () => {
-          const value = await closure(
-            this as unknown as DurableObjectTransaction
-          );
+          const value = await closure(this);
 
           await this.transactionCommitBarrier;
 
@@ -202,6 +272,50 @@ export class FakeStorage {
 
     return result;
   }
+
+  get(): never {
+    return unsupported('DurableObjectStorage.get');
+  }
+
+  list(): never {
+    return unsupported('DurableObjectStorage.list');
+  }
+
+  put(): never {
+    return unsupported('DurableObjectStorage.put');
+  }
+
+  delete(): never {
+    return unsupported('DurableObjectStorage.delete');
+  }
+
+  deleteAll(): never {
+    return unsupported('DurableObjectStorage.deleteAll');
+  }
+
+  sync(): never {
+    return unsupported('DurableObjectStorage.sync');
+  }
+
+  get kv(): never {
+    return unsupported('DurableObjectStorage.kv');
+  }
+
+  getCurrentBookmark(): never {
+    return unsupported('DurableObjectStorage.getCurrentBookmark');
+  }
+
+  getBookmarkForTime(): never {
+    return unsupported('DurableObjectStorage.getBookmarkForTime');
+  }
+
+  onNextSessionRestoreBookmark(): never {
+    return unsupported('DurableObjectStorage.onNextSessionRestoreBookmark');
+  }
+
+  rollback(): never {
+    return unsupported('DurableObjectTransaction.rollback');
+  }
 }
 
 /**
@@ -210,7 +324,7 @@ export class FakeStorage {
  * scheduler by it. Share one context between helpers of one instance.
  */
 export const contextFor = (storage: FakeStorage) => ({
-  storage: new Proxy(storage, {}) as unknown as DurableObjectStorage,
+  storage: new Proxy(storage, {}),
 });
 
 export const waitUntilContext = (

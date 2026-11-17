@@ -4,6 +4,7 @@ import {
   DurableMemoLimitError,
   DurableMemoSerializationError,
 } from '../errors.js';
+import { isNonEmptyString } from '../predicates.js';
 import { deserialize, serialize } from '../serialization.js';
 import {
   channelBindings,
@@ -105,6 +106,8 @@ export const createMemoize = (
     }
 
     // Return what a replay would return, so later code sees one shape either way.
+    // SAFETY: `serialized` encodes `value`, and serialize rejects values JSON
+    // cannot round-trip, so this reads back as a T.
     return deserialize(serialized) as T;
   };
 
@@ -114,7 +117,7 @@ export const createMemoize = (
     key: string,
     callback: () => T | Promise<T>
   ): Promise<T> => {
-    if (typeof key !== 'string' || key === '') {
+    if (!isNonEmptyString(key)) {
       throw new TypeError('Memoize keys must be non-empty strings');
     }
 
@@ -148,6 +151,8 @@ export const createMemoize = (
     );
 
     if (lookup.result !== null) {
+      // SAFETY: only save() writes memos, with the result of the callback
+      // memoized under this key, which has type T on every attempt.
       return deserialize(lookup.result) as T;
     }
 

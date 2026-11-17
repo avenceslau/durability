@@ -26,6 +26,8 @@ interface Config<V extends VariantMap> {
  */
 export function variants<V extends VariantMap>(config: Config<V>) {
   return (selection: Selection<V> = {}, className?: ClassValue): string => {
+    // SAFETY: defaults names an option of every variant, and a selection only
+    // replaces it with another; options are keys of Record<string, string>.
     const picked = {
       ...config.defaults,
       ...stripUndefined(selection),
@@ -34,12 +36,14 @@ export function variants<V extends VariantMap>(config: Config<V>) {
     const classes = Object.keys(config.variants).map((key) => {
       const table = config.variants[key];
 
+      // SAFETY: as for `picked`, every default is a string option key.
       return table[picked[key]] ?? table[config.defaults[key] as string];
     });
 
     const compound = (config.compound ?? [])
       .filter(({ class: _, ...when }) =>
         Object.entries(when).every(
+          // SAFETY: a compound entry is a Selection<V>, keyed by variant names.
           ([key, value]) => picked[key as keyof V] === value
         )
       )
@@ -50,6 +54,7 @@ export function variants<V extends VariantMap>(config: Config<V>) {
 }
 
 function stripUndefined<T extends object>(value: T): Partial<T> {
+  // SAFETY: the entries are a subset of `value`'s own entries.
   return Object.fromEntries(
     Object.entries(value).filter(([, v]) => v !== undefined)
   ) as Partial<T>;

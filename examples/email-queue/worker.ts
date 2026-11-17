@@ -171,8 +171,8 @@ export async function redrive(env: Env, after: number): Promise<number> {
         continue;
       }
 
-      // This Worker wrote the entry; an application reading foreign data should
-      // validate it instead of casting.
+      // SAFETY: this Worker wrote the entry as a StoredMessage<Email>; an
+      // application reading foreign data should validate it instead of casting.
       // eslint-disable-next-line no-await-in-loop
       const entry = (await stored.json()) as StoredMessage<Email>;
 

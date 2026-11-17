@@ -1,13 +1,9 @@
+type TemplateElementValue = { cooked?: string | null; raw?: string };
+
 type AstNode = {
   type: string;
   name?: string;
-  value?:
-    | string
-    | number
-    | boolean
-    | null
-    | AstNode
-    | { cooked?: string | null; raw?: string };
+  value?: string | number | boolean | null | AstNode | TemplateElementValue;
   argument?: AstNode;
   arguments?: AstNode[];
   body?: AstNode | AstNode[];
@@ -83,10 +79,20 @@ const bodyMembers = (node: AstNode | undefined): AstNode[] => {
   return Array.isArray(node.body.body) ? node.body.body : [];
 };
 
+const isAstNode = (value: AstNode['value']): value is AstNode =>
+  typeof value === 'object' && value !== null && 'type' in value;
+
+const isTemplateElementValue = (
+  value: AstNode['value']
+): value is TemplateElementValue =>
+  typeof value === 'object' && value !== null && !('type' in value);
+
+const isStringLiteral = (node: AstNode): node is AstNode & { value: string } =>
+  (node.type === 'Literal' || node.type === 'StringLiteral') &&
+  typeof node.value === 'string';
+
 const nodeValue = (value: AstNode['value']): AstNode | undefined =>
-  typeof value === 'object' && value !== null && 'type' in value
-    ? (value as AstNode)
-    : undefined;
+  isAstNode(value) ? value : undefined;
 
 const propertyName = (node: AstNode | undefined) => {
   if (!node) {
@@ -97,10 +103,7 @@ const propertyName = (node: AstNode | undefined) => {
     return node.name;
   }
 
-  if (
-    (node.type === 'Literal' || node.type === 'StringLiteral') &&
-    typeof node.value === 'string'
-  ) {
+  if (isStringLiteral(node)) {
     return node.value;
   }
 
@@ -338,10 +341,7 @@ const staticStringValue = (node: AstNode | undefined): string | undefined => {
     return undefined;
   }
 
-  if (
-    (node.type === 'Literal' || node.type === 'StringLiteral') &&
-    typeof node.value === 'string'
-  ) {
+  if (isStringLiteral(node)) {
     return node.value;
   }
 
@@ -378,11 +378,7 @@ const staticStringValue = (node: AstNode | undefined): string | undefined => {
   for (let index = 0; index < quasis.length; index += 1) {
     const quasiValue = quasis[index]?.value;
 
-    if (
-      typeof quasiValue !== 'object' ||
-      quasiValue === null ||
-      'type' in quasiValue
-    ) {
+    if (!isTemplateElementValue(quasiValue)) {
       return undefined;
     }
 

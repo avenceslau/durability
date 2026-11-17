@@ -1,12 +1,9 @@
 import * as v from 'valibot';
+import { isJsonObject } from './predicates.js';
 
-export type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | Json[]
-  | { [key: string]: Json };
+export type Json = string | number | boolean | null | Json[] | JsonObject;
+
+export type JsonObject = { [key: string]: Json };
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   if (value === null || typeof value !== 'object') {
@@ -54,25 +51,29 @@ const storedValueSchema = v.variant('kind', [
 ]);
 
 /**
- * What `JSON.stringify` would produce: `undefined` properties are dropped and
- * `undefined` array elements become `null`. `jsonSchema` rejects both as given,
- * although they are routine in values such as lifecycle events whose handler
- * returned nothing.
+ * Parses a value into what `JSON.stringify` would produce: `undefined`
+ * properties are dropped and `undefined` array elements become `null`.
+ * `jsonSchema` rejects both as given, although they are routine in values such
+ * as lifecycle events whose handler returned nothing.
  */
-const asJson = (value: unknown): unknown => {
+const toJson = (value: unknown): Json => {
   if (Array.isArray(value)) {
-    return value.map((item) => (item === undefined ? null : asJson(item)));
+    // `map` keeps the holes of a sparse array, which are not JSON.
+    return v.parse(
+      jsonSchema,
+      value.map((item) => (item === undefined ? null : toJson(item)))
+    );
   }
 
   // Only plain objects are rewritten; anything else must fail validation as is.
   if (!isPlainObject(value)) {
-    return value;
+    return v.parse(jsonSchema, value);
   }
 
   return Object.fromEntries(
     Object.entries(value)
       .filter(([, item]) => item !== undefined)
-      .map(([key, item]) => [key, asJson(item)])
+      .map(([key, item]) => [key, toJson(item)])
   );
 };
 
@@ -81,10 +82,10 @@ export const serialize = (value: unknown): string =>
   JSON.stringify(
     value === undefined
       ? { kind: 'undefined' }
-      : { kind: 'value', value: v.parse(jsonSchema, asJson(value)) }
+      : { kind: 'value', value: toJson(value) }
   );
 
-export const deserialize = (value: string): unknown => {
+export const deserialize = (value: string): Json | undefined => {
   const stored = v.parse(storedValueSchema, JSON.parse(value));
 
   return stored.kind === 'undefined' ? undefined : stored.value;
@@ -95,11 +96,11 @@ const canonicalize = (value: Json): Json => {
     return value.map(canonicalize);
   }
 
-  if (value !== null && typeof value === 'object') {
+  if (isJsonObject(value)) {
     return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalize(value[key] as Json)])
+      Object.entries(value)
+        .sort(([left], [right]) => (left < right ? -1 : 1))
+        .map(([key, item]) => [key, canonicalize(item)])
     );
   }
 
@@ -110,5 +111,6 @@ const canonicalize = (value: Json): Json => {
  * The stored form with object keys sorted at every depth, so two payloads
  * compare equal when they carry the same data regardless of key order.
  */
+// SAFETY: JSON.parse yields only JSON values.
 export const canonical = (stored: string): string =>
   JSON.stringify(canonicalize(JSON.parse(stored) as Json));

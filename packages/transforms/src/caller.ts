@@ -1,6 +1,7 @@
 import type { Result as BetterResult } from 'better-result';
 import type {
   CallerOptions,
+  CallerTransformHandler,
   Members,
   RuntimeTransformContext,
   TransformContext,
@@ -9,10 +10,7 @@ import type {
   TransformOptionsArguments,
   TransformTargetOf,
 } from './define.js';
-
-type TransformContextInvoker = {
-  invoke(method: string, args: unknown[]): Promise<unknown>;
-};
+import { isFunction, isObjectOrFunction, isString } from './predicates.js';
 
 // A transform typed for a Durable Object reads `actorId`, so it may only be
 // attached to a stub that carries one. The tuple keeps a union target from
@@ -31,7 +29,9 @@ type RequireSetContext<TTarget, TTransform> =
           setContext(context: infer AcceptedContext): infer ContextTarget;
         }
       ? TransformContextOf<TTransform> extends AcceptedContext
-        ? ContextTarget extends TransformContextInvoker
+        ? ContextTarget extends {
+            invoke(method: string, args: unknown[]): Promise<unknown>;
+          }
           ? unknown
           : { readonly setContextMustReturnTransformTarget: never }
         : { readonly setContextMustAcceptTransformContext: never }
@@ -90,7 +90,12 @@ export type TransformWith<TTarget extends object> = {
       TransformIdentity &
       RequireSetContext<TTarget, TTransform> &
       RequireDurableObjectStub<TTarget, TTransform> & {
-        callerFactory: (options: CallerOptions<TTransform>) => unknown;
+        callerFactory: (
+          options: CallerOptions<TTransform>
+        ) => CallerTransformHandler<
+          TransformTargetOf<TTransform>,
+          TransformContextOf<TTransform>
+        >;
       },
     ...options: TransformOptionsArguments<CallerOptions<TTransform>>
   ): TransformStub<ApplyCallerResult<TTarget, TTransform>>;
@@ -154,7 +159,7 @@ function currentStub<TTarget extends object>(
  * the settled result, so a pipelined member access or call waits for it and then
  * runs against the resolved value instead of sharing the original round trip.
  */
-function pipelined(node: PipelineNode): unknown {
+function pipelined(node: PipelineNode) {
   return new Proxy(() => {}, {
     get(_target, property) {
       if (
@@ -164,19 +169,17 @@ function pipelined(node: PipelineNode): unknown {
       ) {
         const promise = node.resolve();
 
-        const method = Reflect.get(promise, property) as (
-          ...args: unknown[]
-        ) => unknown;
-
-        return method.bind(promise);
+        return promise[property].bind(promise);
       }
 
-      if (typeof property === 'symbol') {
+      if (!isString(property)) {
         return undefined;
       }
 
       let member: Promise<unknown> | undefined;
 
+      // SAFETY: TransformStub types a pipelined member access or call only
+      // when the resolved value's type has that member, as RpcPromise does.
       return pipelined({
         resolve: () =>
           (member ??= node
@@ -184,6 +187,7 @@ function pipelined(node: PipelineNode): unknown {
             .then((value) => (value as Record<string, unknown>)[property])),
         call: (args) =>
           node.resolve().then((value) => {
+            // SAFETY: as above, the resolved value's type has this method.
             const target = value as Record<
               string,
               (...args: unknown[]) => unknown
@@ -200,6 +204,8 @@ function pipelined(node: PipelineNode): unknown {
 }
 
 function pipelinedPromise(promise: Promise<unknown>): unknown {
+  // SAFETY: TransformStub types a pipelined call only when the resolved
+  // value's type is callable, as RpcPromise does.
   return pipelined({
     resolve: () => promise,
     call: (args) =>
@@ -230,15 +236,18 @@ export function createTransformStub<TTarget extends object>(
   target: TTarget,
   transforms: ConfiguredCallerTransform[] = []
 ): TransformStub<TTarget> {
-  if (
-    (typeof target !== 'object' && typeof target !== 'function') ||
-    target === null
-  ) {
+  if (!isObjectOrFunction(target)) {
     return target;
   }
 
   return createSourceStub({ stub: target, broken: false }, transforms);
 }
+
+/** The namespace methods the Vite plugin rewrites into restorable stub factories. */
+export type RestorableNamespace = {
+  get?(...args: unknown[]): object;
+  getByName?(...args: unknown[]): object;
+};
 
 /**
  * Returns a `get`-like function whose transformable stubs replace themselves
@@ -260,24 +269,22 @@ export function createTransformStub<TTarget extends object>(
  * ```
  */
 export function createRestorableStubFactory(
-  namespace: unknown,
-  method: string
+  namespace: RestorableNamespace | undefined,
+  method: keyof RestorableNamespace
 ): ((...args: unknown[]) => TransformStub<object>) | undefined {
-  if (
-    (typeof namespace !== 'object' && typeof namespace !== 'function') ||
-    namespace === null
-  ) {
+  if (!isObjectOrFunction(namespace)) {
     return undefined;
   }
 
-  const members: Members<typeof method> = namespace;
-  const get = members[method];
+  const get = namespace[method];
 
-  if (typeof get !== 'function') {
+  if (!isFunction(get)) {
     return undefined;
   }
 
   return (...args) => {
+    // SAFETY: the Vite plugin rewrites only namespace `get` and `getByName`
+    // calls, which return a stub object.
     const reopen = () => get.apply(namespace, args) as object;
 
     return createSourceStub({ stub: reopen(), broken: false, reopen }, []);
@@ -286,12 +293,16 @@ export function createRestorableStubFactory(
 
 // Service binding stubs answer any property with a callable RPC stub, so only
 // an object exposing the DurableObjectId interface identifies a Durable Object.
-function isDurableObjectId(value: unknown): value is DurableObjectId {
-  if (typeof value !== 'object' || value === null) {
+function hasDurableObjectId(
+  stub: Members<'id'>
+): stub is { readonly id: DurableObjectId } {
+  const { id } = stub;
+
+  if (typeof id !== 'object' || id === null) {
     return false;
   }
 
-  const members: Members<'equals' | 'toString'> = value;
+  const members: Members<'equals' | 'toString'> = id;
 
   return (
     typeof members.equals === 'function' &&
@@ -303,6 +314,8 @@ function createSourceStub<TTarget extends object>(
   source: StubSource<TTarget>,
   transforms: ConfiguredCallerTransform[]
 ): TransformStub<TTarget> {
+  // SAFETY: the get trap adds `with` and returns every other member of the
+  // stub, wrapping only its methods, which is TransformStub<TTarget>.
   return new Proxy(source.stub, {
     get(_target, property) {
       if (property === 'with') {
@@ -318,7 +331,7 @@ function createSourceStub<TTarget extends object>(
 
           const configured = transform.callerFactory(options);
 
-          if (typeof configured !== 'function') {
+          if (!isFunction(configured)) {
             throw new TypeError(
               'Caller transform factory must return a function'
             );
@@ -335,7 +348,7 @@ function createSourceStub<TTarget extends object>(
       // Native bindings expose accessors that reject a Proxy receiver.
       const value: unknown = Reflect.get(accessedStub, property);
 
-      if (typeof value !== 'function' || typeof property !== 'string') {
+      if (!isFunction(value) || !isString(property)) {
         return value;
       }
 
@@ -352,6 +365,8 @@ function createSourceStub<TTarget extends object>(
           context: TransformContext
         ): Promise<unknown> => {
           if (Object.keys(context).length === 0) {
+            // SAFETY: `property` named a method of the stub above, and a
+            // reopened stub comes from the same namespace method.
             const methods = stub as Record<
               string,
               (...args: unknown[]) => unknown
@@ -362,7 +377,7 @@ function createSourceStub<TTarget extends object>(
 
           const contextSource: Members<'setContext'> = stub;
 
-          if (typeof contextSource.setContext !== 'function') {
+          if (!isFunction(contextSource.setContext)) {
             throw new TypeError(
               'Cannot send transform context to a target without setContext'
             );
@@ -370,11 +385,7 @@ function createSourceStub<TTarget extends object>(
 
           const contextualTarget: unknown = contextSource.setContext(context);
 
-          if (
-            (typeof contextualTarget !== 'object' &&
-              typeof contextualTarget !== 'function') ||
-            contextualTarget === null
-          ) {
+          if (!isObjectOrFunction(contextualTarget)) {
             throw new TypeError(
               'setContext must return a transform context target'
             );
@@ -382,7 +393,7 @@ function createSourceStub<TTarget extends object>(
 
           const invoker: Members<'invoke'> = contextualTarget;
 
-          if (typeof invoker.invoke !== 'function') {
+          if (!isFunction(invoker.invoke)) {
             throw new TypeError(
               'setContext must return a target with an invoke method'
             );
@@ -404,8 +415,9 @@ function createSourceStub<TTarget extends object>(
           }
         };
 
-        const { id }: Members<'id'> = accessedStub;
-        const actorId = isDurableObjectId(id) ? id : undefined;
+        const actorId = hasDurableObjectId(accessedStub)
+          ? accessedStub.id
+          : undefined;
 
         const run = (
           index: number,
@@ -441,7 +453,7 @@ function createSourceStub<TTarget extends object>(
         get: (method, key) => {
           const member: unknown = Reflect.get(method, key);
 
-          return typeof member === 'function' &&
+          return isFunction(member) &&
             (key === 'then' || key === 'catch' || key === 'finally')
             ? member.bind(method)
             : member;
@@ -467,15 +479,12 @@ function createSourceStub<TTarget extends object>(
           // Observes failures without adopting the result, so pipelining survives.
           let then: unknown;
 
-          if (
-            (typeof result === 'object' || typeof result === 'function') &&
-            result !== null
-          ) {
+          if (isObjectOrFunction(result)) {
             const members: Members<'then'> = result;
             then = members.then;
           }
 
-          if (typeof then === 'function') {
+          if (isFunction(then)) {
             then.call(
               result,
               () => undefined,
@@ -506,16 +515,18 @@ function createSourceStub<TTarget extends object>(
 export function withTransforms<TNamespace extends NamespaceLike<object>>(
   namespace: TNamespace
 ): TransformNamespace<TNamespace> {
+  // SAFETY: the get trap replaces only `get`, wrapping its stubs with
+  // createTransformStub, which is TransformNamespace<TNamespace>.
   return new Proxy(namespace, {
     get(target, property, receiver) {
       if (property !== 'get') {
         const value = Reflect.get(target, property, receiver);
 
-        return typeof value === 'function' ? value.bind(target) : value;
+        return isFunction(value) ? value.bind(target) : value;
       }
 
       return (...args: Parameters<TNamespace['get']>) =>
         createTransformStub(target.get(...args), []);
     },
-  }) as unknown as TransformNamespace<TNamespace>;
+  }) as TransformNamespace<TNamespace>;
 }

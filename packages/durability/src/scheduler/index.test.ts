@@ -269,6 +269,8 @@ describe('DurabilityScheduler', () => {
       'durability.object-schedulers'
     );
 
+    // SAFETY: the scheduler module keeps its WeakMap of object schedulers
+    // under this registered symbol on globalThis.
     const registry = (
       globalThis as { [registryKey]?: WeakMap<object, unknown> }
     )[registryKey];

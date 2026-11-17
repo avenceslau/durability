@@ -21,6 +21,7 @@ const tabs = getTabs(type, pkg, { args, dev, comment });
 // Prop hash + a per-page counter (on Astro.locals) so two blocks with
 // identical props still get distinct ids. Counter order is stable within a
 // render, so incremental/warm builds match cold — unlike crypto.randomUUID().
+// SAFETY: only this component writes __nbCounters, always a Map.
 const locals = Astro.locals as typeof Astro.locals & {
   __nbCounters?: Map<string, number>;
 };
@@ -81,7 +82,7 @@ const uid =
           tabs.forEach(function (t, i) {
             t.setAttribute("aria-selected", String(i === idx));
           });
-          (card.querySelectorAll("[data-nb-pm-panel]") as NodeListOf<HTMLElement>).forEach(function (p, i) {
+          card.querySelectorAll<HTMLElement>("[data-nb-pm-panel]").forEach(function (p, i) {
             p.hidden = i !== idx;
           });
         }

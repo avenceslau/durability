@@ -20,6 +20,7 @@ import {
   assertPositiveInteger,
   type DurabilityRetryOptions,
 } from '../policy.js';
+import { isFunction, isNonEmptyString } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -133,7 +134,7 @@ export type DurabilityOutboxConfig<Value> = SchedulerAttachment & {
    * every entry not marked with `retry()`; throwing retries the whole batch.
    * Sinks must be idempotent on `(key, version)` and keep the highest version.
    */
-  publish(entries: OutboxEntry<Value>[]): unknown | Promise<unknown>;
+  publish(entries: OutboxEntry<Value>[]): void | Promise<void>;
   /** Defaults to 50. */
   maxBatchSize?: number;
   /**
@@ -225,7 +226,7 @@ export class DurabilityOutbox<Value = unknown> {
   constructor(config: DurabilityOutboxConfig<Value>) {
     this.#channel = assertChannel('Outbox', config.channel ?? defaultChannel);
 
-    if (typeof config.publish !== 'function') {
+    if (!isFunction(config.publish)) {
       throw new TypeError('Outbox requires a publish function');
     }
 
@@ -290,7 +291,7 @@ export class DurabilityOutbox<Value = unknown> {
   }
 
   #stageIn(sql: SqlStorage, key: string, value: Value): OutboxRow {
-    if (typeof key !== 'string' || key.length === 0) {
+    if (!isNonEmptyString(key)) {
       throw new TypeError('Outbox keys must be non-empty strings');
     }
 
@@ -491,6 +492,8 @@ export class DurabilityOutbox<Value = unknown> {
       (row): OutboxEntry<Value> => ({
         key: row.entry_key,
         version: row.version,
+        // SAFETY: #stageIn is the only writer of payloads, each serialized
+        // from a Value.
         value: deserialize(row.payload) as Value,
         attempt: row.attempt,
         stagedAt: row.created_at,
@@ -625,8 +628,8 @@ export class DurabilityOutbox<Value = unknown> {
     return infrastructureRetryMs;
   }
 
-  async #deadline(run: () => unknown): Promise<void> {
-    await this.#engine.timer.withTimeout(
+  #deadline<Result>(run: () => Result | Promise<Result>): Promise<Result> {
+    return this.#engine.timer.withTimeout(
       Promise.resolve().then(run),
       this.#attemptTimeoutMs,
       () => new OutboxTimeoutError(this.#attemptTimeoutMs)

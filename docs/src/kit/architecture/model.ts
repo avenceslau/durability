@@ -12,7 +12,7 @@ export type { EdgeRoute, StageLayout } from "./layout.ts"
 export type FlowColor = "blue" | "red" | "green" | "orange" | "purple"
 
 /** How an edge runs: a smooth curve, a straight line, or horizontal and vertical runs joined by rounded corners. */
-export type EdgeShape = "curve" | "straight" | "orthogonal"
+export type EdgeRouting = "curve" | "straight" | "orthogonal"
 
 export interface FlowDefinition {
   /** Names the flow for screen readers while it is spotlit. */
@@ -78,7 +78,7 @@ export interface EdgeDefinition {
   /** Sideways bow from −1 to 1, as a fraction of the distance between the nodes; positive bows left of travel. */
   readonly bend?: number
   /** Overrides the diagram's `routing` for this edge. */
-  readonly route?: EdgeShape
+  readonly route?: EdgeRouting
   /** Arrowheads at both ends. */
   readonly both?: boolean
   /** Auto layout: a reply or loop that shouldn't push its target into a later rank. */
@@ -115,6 +115,10 @@ export type StageToken =
       readonly set: Readonly<Record<string, NodeChanges>>
     }
 
+export function isIdToken(token: StageToken): token is string {
+  return typeof token === "string"
+}
+
 export interface ArchitectureDefinition {
   /** The coordinate space of every position; the drawing scales to fit its container. */
   readonly canvas: {
@@ -129,7 +133,7 @@ export interface ArchitectureDefinition {
    * How edges run unless they set `route`. `auto` runs edges between nodes in different rows orthogonally, through
    * the gaps between rows and columns, and curves the rest. Defaults to `curve`.
    */
-  readonly routing?: "auto" | EdgeShape
+  readonly routing?: "auto" | EdgeRouting
   /**
    * Lines up hand-placed positions (`at` and `pin`): coordinates within `tolerance` canvas units share a row or
    * column, and nearly even gaps become even. On by default with 4% of the canvas's longer side; `false` turns it off.
@@ -181,7 +185,7 @@ export interface DiagramEdge {
   readonly flow: string | undefined
   readonly color: FlowColor | undefined
   readonly bend: number | undefined
-  readonly route: EdgeShape | undefined
+  readonly route: EdgeRouting | undefined
   readonly both: boolean
   readonly back: boolean
   readonly stage: number
@@ -278,7 +282,7 @@ function viewOf(node: DiagramNode, changes: NodeChanges | undefined): NodeView {
 function measureNode(
   label: string,
   sublabel: string | undefined,
-  icon: unknown,
+  icon: IconName | ReactNode,
   iconAt: "left" | "top" | undefined,
 ): readonly [number, number] {
   const text = Math.max(textWidth(label, NODE.labelSize), textWidth(sublabel ?? "", NODE.sublabelSize))
@@ -294,8 +298,12 @@ function measureNode(
   return [Math.round(NODE.padding * 2 + iconWidth + text), NODE.height]
 }
 
+function isStringIcon(icon: NodeChanges["icon"]): icon is string {
+  return typeof icon === "string"
+}
+
 function checkContent(where: string, content: NodeChanges): void {
-  if (typeof content.icon === "string" && !isIconName(content.icon)) {
+  if (isStringIcon(content.icon) && !isIconName(content.icon)) {
     fail(`${where} uses unknown icon "${content.icon}"`)
   }
 
@@ -321,7 +329,7 @@ function checkNode(
     fail(`${where} has rank ${node.rank}; use a whole number from 0`)
   }
 
-  const replaces = node.replaces === undefined ? [] : typeof node.replaces === "string" ? [node.replaces] : node.replaces
+  const replaces = node.replaces === undefined ? [] : [node.replaces].flat()
 
   const references = [
     ["after", node.after],
@@ -464,6 +472,11 @@ function matchIds(pattern: string, ids: ReadonlyArray<string>, where: string): R
   return matches
 }
 
+interface Spotlit {
+  readonly spotlight: Spotlight
+  readonly lit: ReadonlySet<string>
+}
+
 /** The ids a spotlight keeps lit: its edges and their ends, plus the focused node itself. */
 function lightUp(
   token: string,
@@ -471,10 +484,7 @@ function lightUp(
   visible: ReadonlySet<string>,
   shown: ReadonlyArray<DiagramEdge>,
   flows: Readonly<Record<string, FlowDefinition>>,
-): {
-  readonly spotlight: Spotlight
-  readonly lit: ReadonlySet<string>
-} {
+): Spotlit {
   const [kind, name = ""] = token.split(":")
   const lit = new Set<string>()
   let spotlight: Spotlight
@@ -527,7 +537,7 @@ interface Parts {
   readonly pins: ReadonlyMap<string, Point>
   readonly mode: "auto" | "manual"
   readonly direction: "right" | "down"
-  readonly routing: "auto" | EdgeShape
+  readonly routing: "auto" | EdgeRouting
   readonly nodes: ReadonlyArray<DiagramNode>
   readonly edges: ReadonlyArray<DiagramEdge>
   readonly notes: ReadonlyArray<DiagramNote>
@@ -679,7 +689,7 @@ function resolveStages(
     let spotlightToken: string | undefined
 
     for (const token of tokens) {
-      if (typeof token !== "string") {
+      if (!isIdToken(token)) {
         for (const [id, change] of Object.entries(token.set)) {
           if (!nodeIds.has(id)) {
             fail(`stage ${index} sets unknown node "${id}"`)

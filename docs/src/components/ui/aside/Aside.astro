@@ -22,12 +22,12 @@ interface Props extends HTMLAttributes<"aside"> {
 
 const { type = "note", title, icon, class: className, ...attrs } = Astro.props;
 
-const defaults: Record<string, { label: string; icon: string }> = {
+const defaults = {
   note:    { label: "Note",    icon: "ph:info" },
   tip:     { label: "Tip",     icon: "ph:lightbulb" },
   caution: { label: "Caution", icon: "ph:warning" },
   danger:  { label: "Danger",  icon: "ph:warning-circle" },
-};
+} satisfies Record<NonNullable<Props["type"]>, { label: string; icon: string }>;
 
 const d = defaults[type] ?? defaults.note;
 const hasTitleSlot = Astro.slots.has("title");

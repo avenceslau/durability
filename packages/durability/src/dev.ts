@@ -1,4 +1,5 @@
 import { serializeError } from './errors.js';
+import { isFunction } from './predicates.js';
 
 // Replaced by the consumer's bundler (`define`); see the README's "Dev mode" section.
 declare const __DURABILITY_DEV__: boolean | undefined;
@@ -8,7 +9,8 @@ declare const __DURABILITY_DEV__: boolean | undefined;
  * fold the check to a constant, so production builds pay one branch per
  * traced call and log nothing.
  */
-const devMode = typeof __DURABILITY_DEV__ === 'boolean' && __DURABILITY_DEV__;
+const devMode =
+  typeof __DURABILITY_DEV__ !== 'undefined' && __DURABILITY_DEV__ === true;
 
 let sequence = 0;
 
@@ -65,35 +67,37 @@ const traceCall = <Details extends object, T>(
 
   // Observes the promise without changing what the caller sees.
   void result.then(
-    (value: unknown) => trace(`${operation}.return`, { call, result: value }),
-    (error: unknown) =>
-      trace(`${operation}.throw`, { call, error: serializeError(error) })
+    (value: Awaited<T>) =>
+      trace(`${operation}.return`, { call, result: value }),
+    (cause: unknown) =>
+      trace(`${operation}.throw`, { call, error: serializeError(cause) })
   );
 
   return result;
 };
 
 const loggableArgs = (args: readonly unknown[]): unknown[] =>
-  args.filter((arg) => typeof arg !== 'function');
+  args.filter((arg) => !isFunction(arg));
 
 /**
  * Wraps a public function so dev mode logs its arguments and outcome. `details`
  * identifies the receiver when the arguments alone do not.
  */
 export const traceFunction = <
+  This,
   Args extends unknown[],
   Result,
   Details extends object,
 >(
   method: string,
-  fn: (...args: Args) => Result,
+  fn: (this: This, ...args: Args) => Result,
   details?: Details
-): ((...args: Args) => Result) => {
+): ((this: This, ...args: Args) => Result) => {
   if (!devMode) {
     return fn;
   }
 
-  return function (this: unknown, ...args: Args): Result {
+  return function (this: This, ...args: Args): Result {
     return traceCall(
       'call',
       { method, ...details, args: loggableArgs(args) },
@@ -116,7 +120,7 @@ export const traceMethods = (
   for (const name of Object.getOwnPropertyNames(prototype)) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
 
-    if (name === 'constructor' || typeof descriptor?.value !== 'function') {
+    if (name === 'constructor' || !isFunction(descriptor?.value)) {
       continue;
     }
 
@@ -157,7 +161,7 @@ const traceSql = (sql: SqlStorage): SqlStorage =>
         };
       }
 
-      return typeof value === 'function' ? value.bind(target) : value;
+      return isFunction(value) ? value.bind(target) : value;
     },
   });
 
@@ -172,28 +176,28 @@ const proxyStorage = <Storage extends object>(
       const value: unknown = Reflect.get(target, key);
 
       if (key === 'sql' && value !== undefined) {
+        // SAFETY: proxyStorage wraps DurableObjectStorage, whose `sql` is a
+        // SqlStorage; a transaction has no `sql` and never reaches here.
         sql ??= traceSql(value as SqlStorage);
 
         return sql;
       }
 
-      if (typeof value !== 'function') {
+      if (!isFunction(value)) {
         return value;
       }
 
       const method = `${scope}.${String(key)}`;
 
       return (...args: unknown[]) => {
+        const [closure] = args;
+
         // Alarm writes inside `transaction` go through the transaction object.
         const forwarded =
-          key === 'transaction' && typeof args[0] === 'function'
+          key === 'transaction' && isFunction(closure)
             ? [
                 (transaction: DurableObjectTransaction) =>
-                  (
-                    args[0] as (
-                      transaction: DurableObjectTransaction
-                    ) => unknown
-                  )(proxyStorage(transaction, 'transaction')),
+                  closure(proxyStorage(transaction, 'transaction')),
                 ...args.slice(1),
               ]
             : args;
@@ -225,6 +229,8 @@ export const traceStorage = <Storage extends object>(
   const existing = tracedStorage.get(storage);
 
   if (existing) {
+    // SAFETY: tracedStorage maps a storage only to the proxy of that same
+    // storage, set below.
     return existing as Storage;
   }
 

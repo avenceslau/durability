@@ -20,6 +20,7 @@ import {
   type MigrationCapability,
 } from '../migrations.js';
 import { assertPositiveInteger, type AttemptPolicy } from '../policy.js';
+import { isFunction, isNonEmptyString } from '../predicates.js';
 import { deleteMemos, deleteStaleMemos } from '../memoize/index.js';
 import { SharedTimer } from '../shared-timer.js';
 import {
@@ -158,8 +159,8 @@ const activeKey = (channel: string | undefined, key: string): string =>
   JSON.stringify([channel ?? null, key]);
 
 /** Rejects a channel name a helper would otherwise store rows under. */
-export const assertChannel = (helper: string, channel: unknown): string => {
-  if (typeof channel !== 'string' || channel.length === 0) {
+export const assertChannel = (helper: string, channel: string): string => {
+  if (!isNonEmptyString(channel)) {
     throw new TypeError(`${helper} channel must be a non-empty string`);
   }
 
@@ -171,7 +172,7 @@ export const assertChannel = (helper: string, channel: unknown): string => {
  * executed row because some tables delete it on success; other changes pass
  * nothing and listeners re-read storage.
  */
-export type SettlementListener = (completed?: ExecutionSpec['row']) => void;
+export type SettlementListener = (completed?: ExecutionRow) => void;
 
 export type ActiveExecution = {
   generation: string;
@@ -180,11 +181,13 @@ export type ActiveExecution = {
   controller?: AbortController;
 };
 
+type ExecutionRow = { generation_id: string; created_at: number };
+
 /** Everything that differs between running a durable operation and a named alarm attempt. */
-export type ExecutionSpec = {
+export type ExecutionSpec<Result> = {
   table: DurableTable;
   key: string;
-  row: { generation_id: string; created_at: number };
+  row: ExecutionRow;
   label: string;
   entity: LifecycleEntity;
   active: Map<string, ActiveExecution>;
@@ -194,15 +197,20 @@ export type ExecutionSpec = {
   includeResult?: boolean;
   exhaustedError: () => Error;
   timeoutError: () => Error;
-  invoke: (attempt: number, signal: AbortSignal) => unknown;
+  invoke: (attempt: number, signal: AbortSignal) => Result | Promise<Result>;
   /**
    * Persists a successful attempt and returns its settlement timestamp, or
    * undefined when a newer generation won. May throw to turn the success into
    * a failure.
    */
-  complete: (result: unknown, attempt: number) => number | undefined;
+  complete: (result: Result, attempt: number) => number | undefined;
   /** Kind-specific terminal rule beyond non-retryable errors and exhausted attempts. */
-  isTerminal: (error: unknown) => boolean;
+  isTerminal: (cause: unknown) => boolean;
+};
+
+type PendingTimes = {
+  physical?: number | undefined;
+  timer?: number | undefined;
 };
 
 type RetryDecision = {
@@ -212,20 +220,20 @@ type RetryDecision = {
   nextAttemptAt: number;
 };
 
-const decideRetry = (
-  spec: ExecutionSpec,
+const decideRetry = <Result>(
+  spec: ExecutionSpec<Result>,
   attempt: number,
-  error: unknown
+  cause: unknown
 ): RetryDecision => {
   const terminal =
-    isNonRetryable(error) ||
+    isNonRetryable(cause) ||
     attempt >= spec.policy.maxAttempts ||
-    spec.isTerminal(error);
+    spec.isTerminal(cause);
 
   if (terminal) {
     const timestamp = Date.now();
 
-    return { error, terminal, timestamp, nextAttemptAt: timestamp };
+    return { error: cause, terminal, timestamp, nextAttemptAt: timestamp };
   }
 
   try {
@@ -246,7 +254,7 @@ const decideRetry = (
     }
 
     return {
-      error,
+      error: cause,
       terminal: false,
       timestamp,
       nextAttemptAt: timestamp + delay,
@@ -355,10 +363,7 @@ export class Engine {
     const alarmMinDelayMs = merged.alarmMinDelayMs ?? 15_000;
     const alarmHandoffMs = merged.alarmHandoffMs ?? 14 * 60_000;
 
-    if (
-      merged.onAlarmRetry !== undefined &&
-      typeof merged.onAlarmRetry !== 'function'
-    ) {
+    if (merged.onAlarmRetry !== undefined && !isFunction(merged.onAlarmRetry)) {
       throw new TypeError('onAlarmRetry must be a function');
     }
 
@@ -449,11 +454,11 @@ export class Engine {
     if (participant.nextPendingAt !== undefined) {
       // Missing custom channels are dormant. Defer until construction finishes,
       // then restore their alarm without requiring a new application write.
-      const onError = (error: unknown) =>
+      const onError = (cause: unknown) =>
         reportFailure(
           'durability.channel_resume_failed',
           { table: table.name, channel },
-          error
+          cause
         );
 
       const resumed = Promise.resolve()
@@ -464,12 +469,12 @@ export class Engine {
 
           return undefined;
         })
-        .catch(async (error: unknown) => {
+        .catch(async (cause: unknown) => {
           if (await this.armFallbackAlarm()) {
             this.retryFailedRun();
           }
 
-          onError(error);
+          onError(cause);
         });
 
       this.waitUntil(resumed, onError);
@@ -555,7 +560,7 @@ export class Engine {
 
   waitUntil(
     promise: Promise<unknown>,
-    onError: (error: unknown) => void
+    onError: (cause: unknown) => void
   ): void {
     if (!this.context.waitUntil) {
       return;
@@ -662,10 +667,7 @@ export class Engine {
    * in-memory timer and skips work that is already executing
    * so a still-due active row cannot re-fire a zero-delay timer in a loop.
    */
-  private pendingTimes(participant: Participant): {
-    physical?: number | undefined;
-    timer?: number | undefined;
-  } {
+  private pendingTimes(participant: Participant): PendingTimes {
     const channels = this.channelsByTable.get(participant.table.name);
 
     if (
@@ -817,11 +819,11 @@ export class Engine {
       this.earlyAlarm = undefined;
       trace('scheduler.early_alarm', { scheduledTime: timestamp });
 
-      const onError = (error: unknown) =>
+      const onError = (cause: unknown) =>
         reportFailure(
           'durability.background_execution.failed',
           { scheduledTime: timestamp },
-          error
+          cause
         );
 
       const execution = this.alarm().catch(onError);
@@ -930,11 +932,7 @@ export class Engine {
   }
 
   /** Call only after the change has committed. */
-  notify(
-    table: DurableTable,
-    key: string,
-    completed?: ExecutionSpec['row']
-  ): void {
+  notify(table: DurableTable, key: string, completed?: ExecutionRow): void {
     for (const listener of this.watchers.get(tableOwner(table))?.get(key) ??
       []) {
       listener(completed);
@@ -1031,7 +1029,7 @@ export class Engine {
         { retryInMs: this.alarmMinDelayMs },
         error
       );
-      this.notifyAlarmRetry(error, info);
+      this.notifyAlarmRetry(serializeError(error), info);
       this.retryFailedRun();
     }
   }
@@ -1054,7 +1052,7 @@ export class Engine {
   }
 
   private notifyAlarmRetry(
-    failure: unknown,
+    error: SerializedError,
     invocation: AlarmInvocationInfo | undefined
   ): void {
     const hook = this.onAlarmRetry;
@@ -1066,7 +1064,7 @@ export class Engine {
     const objectId = this.objectId();
 
     const info: AlarmRetryInfo = {
-      error: serializeError(failure),
+      error,
       retryInMs: this.alarmMinDelayMs,
     };
 
@@ -1079,11 +1077,11 @@ export class Engine {
       info.objectId = objectId;
     }
 
-    const report = (hookError: unknown): void =>
+    const report = (cause: unknown): void =>
       reportFailure(
         'durability.alarm.retry_hook_failed',
         { retryInMs: info.retryInMs },
-        hookError
+        cause
       );
 
     try {
@@ -1170,7 +1168,10 @@ export class Engine {
    * settled: nothing can stop a handler, and one that never settles would
    * otherwise keep its retry from ever starting.
    */
-  startExecution(spec: ExecutionSpec, eagerPermit?: () => void): Promise<void> {
+  startExecution<Result>(
+    spec: ExecutionSpec<Result>,
+    eagerPermit?: () => void
+  ): Promise<void> {
     const { key, row, policy } = spec;
     let settleActive!: () => void;
 
@@ -1297,7 +1298,9 @@ export class Engine {
     return execution;
   }
 
-  private async failExhausted(spec: ExecutionSpec): Promise<void> {
+  private async failExhausted<Result>(
+    spec: ExecutionSpec<Result>
+  ): Promise<void> {
     const { key, row, policy } = spec;
     const exhausted = serializeError(spec.exhaustedError());
 
@@ -1333,14 +1336,14 @@ export class Engine {
     });
   }
 
-  private async settleFailure(
-    spec: ExecutionSpec,
+  private async settleFailure<Result>(
+    spec: ExecutionSpec<Result>,
     attempt: number,
     startedAt: number,
-    caught: unknown
+    cause: unknown
   ): Promise<void> {
     const { key, row } = spec;
-    const decision = decideRetry(spec, attempt, caught);
+    const decision = decideRetry(spec, attempt, cause);
     const serializedError = serializeError(decision.error);
 
     const updated = await this.transaction((sql) => {
@@ -1400,6 +1403,8 @@ type ObjectScheduler = { engine: unknown; installation: symbol };
 const installation = Symbol('durability installation');
 const registryKey: unique symbol = Symbol.for('durability.object-schedulers');
 
+// SAFETY: registryKey is this package's registered symbol, and every copy
+// stores only a WeakMap<object, ObjectScheduler> under it on globalThis.
 const globalRegistry = globalThis as {
   [registryKey]?: WeakMap<object, ObjectScheduler>;
 };
@@ -1427,6 +1432,8 @@ const engineForObject = (config: DurabilitySchedulerConfig): Engine => {
     );
   }
 
+  // SAFETY: the installation matches, so this copy of the module created the
+  // entry above with `new Engine`.
   const engine = existing.engine as Engine;
   engine.attach(context, config);
 
@@ -1484,7 +1491,7 @@ export class DurabilityScheduler {
    * reported as `durability.timer.callback_failed` instead of being thrown.
    */
   setTimeout(callback: () => void, delayMs: number): () => void {
-    if (typeof callback !== 'function') {
+    if (!isFunction(callback)) {
       throw new TypeError('callback must be a function');
     }
 

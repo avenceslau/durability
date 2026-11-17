@@ -21,8 +21,8 @@ function initTabContainer(container: HTMLElement): () => void {
   // Scope to this container so a nested <Tabs>'s triggers don't flip the
   // parent into manual mode (or vice-versa), independent of mount order.
   const existingTriggers = Array.from(
-    container.querySelectorAll('[data-nb-tabs-trigger]')
-  ).filter((t) => (t as HTMLElement).closest('[data-nb-tabs]') === container);
+    container.querySelectorAll<HTMLElement>('[data-nb-tabs-trigger]')
+  ).filter((t) => t.closest('[data-nb-tabs]') === container);
 
   const synthesize = existingTriggers.length === 0;
 
@@ -34,7 +34,7 @@ function initTabContainer(container: HTMLElement): () => void {
 
   if (!synthesize) {
     // Manual triggers name their panel by `value`; link each pair both ways.
-    (existingTriggers as HTMLElement[]).forEach((trigger, i) => {
+    existingTriggers.forEach((trigger, i) => {
       const panel = panels.find(
         (p) => p.dataset.nbValue === trigger.dataset.nbValue
       );

@@ -3,6 +3,7 @@ import {
   type TopologyFallbackReason,
 } from '../errors.js';
 import { assertPositiveInteger } from '../policy.js';
+import { isFunction } from '../predicates.js';
 import {
   decodeSnapshot,
   type TopologyMemberInput,
@@ -70,7 +71,7 @@ export class TopologyClient<Meta = undefined> {
   readonly #inflight = new Map<string, Promise<TopologyView<Meta>>>();
 
   constructor(config: TopologyClientConfig<Meta>) {
-    if (typeof config.read !== 'function') {
+    if (!isFunction(config.read)) {
       throw new TypeError('A topology client needs a read function');
     }
 

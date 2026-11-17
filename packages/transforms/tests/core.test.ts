@@ -72,6 +72,9 @@ function assertRegistrationTypes() {
     // @ts-expect-error callee options reject unknown properties
     extra: true,
   });
+  // @ts-expect-error context values must be structured-cloneable
+  defineTransform<TestDO, { onDone: () => void }>();
+  defineTransform<TestDO, { startedAt: Date; tags: Set<string> }>();
 
   class OtherDO {
     setContext(context: ObservabilityContext) {
@@ -551,10 +554,12 @@ describe('DO transforms', () => {
       },
     };
 
+    // SAFETY: `namespace` has getByName, so the factory exists, and its stub
+    // forwards the members of the object getByName returns.
     const stub = createRestorableStubFactory(
       namespace,
       'getByName'
-    )?.('room') as unknown as { name: string; read(): Promise<string> };
+    )?.('room') as TransformStub<{ name: string; read(): Promise<string> }>;
 
     await expect(stub.read()).rejects.toThrow('broken');
     expect(opened).toBe(1);
@@ -584,10 +589,12 @@ describe('DO transforms', () => {
       },
     };
 
+    // SAFETY: `namespace` has get, so the factory exists, and its stub
+    // forwards the members of the object get returns.
     const base = createRestorableStubFactory(
       namespace,
       'get'
-    )?.('id') as unknown as TransformStub<{ read(): Promise<string> }>;
+    )?.('id') as TransformStub<{ read(): Promise<string> }>;
 
     const retried = base.with(retry, { retries: 1, delay: () => 0 });
 
@@ -616,10 +623,12 @@ describe('DO transforms', () => {
       },
     };
 
+    // SAFETY: `namespace` has get, so the factory exists, and its stub
+    // forwards the members of the object get returns.
     const stub = createRestorableStubFactory(
       namespace,
       'get'
-    )?.() as unknown as { read(): Promise<number> };
+    )?.() as TransformStub<{ read(): Promise<number> }>;
 
     await Promise.allSettled([stub.read(), stub.read()]);
     await expect(Promise.all([stub.read(), stub.read()])).resolves.toEqual([

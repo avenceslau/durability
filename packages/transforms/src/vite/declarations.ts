@@ -1,7 +1,13 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, extname, relative } from 'node:path';
 import { parse as parseJavaScript } from '@babel/parser';
-import { forEachChild, identifierName, syntaxNode } from './syntax.js';
+import {
+  forEachChild,
+  hasRange,
+  identifierName,
+  syntaxNode,
+  type SyntaxNode,
+} from './syntax.js';
 import { generateEnvTypes, type WranglerProject } from './wrangler.js';
 
 const identifierPattern = /^[A-Z_$][\w$]*$/i;
@@ -34,13 +40,7 @@ function wranglerBindingTypes(source: string): Map<string, string> {
 
   const types = new Map<string, string>();
 
-  const visit = (value: unknown): void => {
-    const node = syntaxNode(value);
-
-    if (!node) {
-      return;
-    }
-
+  const visit = (node: SyntaxNode): void => {
     const annotation = syntaxNode(
       syntaxNode(node.typeAnnotation)?.typeAnnotation
     );
@@ -51,10 +51,8 @@ function wranglerBindingTypes(source: string): Map<string, string> {
       node.type === 'TSPropertySignature' &&
       name !== undefined &&
       !types.has(name) &&
-      typeof node.start === 'number' &&
-      typeof node.end === 'number' &&
-      typeof annotation?.start === 'number' &&
-      typeof annotation.end === 'number' &&
+      hasRange(node) &&
+      hasRange(annotation) &&
       !source.slice(node.start, node.end).includes('/*')
     ) {
       types.set(name, source.slice(annotation.start, annotation.end));

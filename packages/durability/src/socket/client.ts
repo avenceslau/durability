@@ -1,9 +1,10 @@
 import { reportFailure, type SerializedError } from '../errors.js';
+import { isString } from '../predicates.js';
 import {
   parseServerFrame,
   socketProtocolErrorCode,
   socketProtocolVersion,
-  type AnySocketShape,
+  type AnyDurabilitySocket,
   type InboundOf,
   type OutboundOf,
   type SocketClientFrame,
@@ -71,6 +72,12 @@ export type SocketTransform = (call: {
   next: (input?: unknown) => Promise<unknown>;
 }) => Promise<unknown>;
 
+/** The part of a `WebSocket` the client uses. */
+type SocketClientWebSocket = Pick<
+  WebSocket,
+  'addEventListener' | 'close' | 'send'
+>;
+
 export type DurabilitySocketClientConfig = {
   /** Builds the WebSocket URL for one Durable Object. */
   url: (id: string) => string;
@@ -79,14 +86,12 @@ export type DurabilitySocketClientConfig = {
   /** Interval between keep-alive pings; a silent connection is dropped after two. Defaults to 30 seconds. */
   pingIntervalMs?: number;
   /** WebSocket implementation. Defaults to the global `WebSocket`. */
-  webSocket?: new (url: string) => WebSocket;
+  webSocket?: new (url: string) => SocketClientWebSocket;
 };
 
 type RpcMethod<Input, Output> = [Input] extends [void]
   ? () => Promise<Output>
-  : unknown extends Input
-    ? (input?: unknown) => Promise<Output>
-    : (input: Input) => Promise<Output>;
+  : (input: Input) => Promise<Output>;
 
 type RpcMethods<Inbound> = {
   [Method in keyof Inbound]: RpcMethod<
@@ -113,7 +118,7 @@ type EventHandlers<Outbound> = {
 export type SocketResync = { names: string[] };
 
 /** One connection to one Durable Object. */
-export type SocketConnection<Socket extends AnySocketShape> = {
+export type SocketConnection<Socket extends AnyDurabilitySocket> = {
   rpc: RpcMethods<InboundOf<Socket>>;
   on: EventHandlers<OutboundOf<Socket>>;
   readonly status: SocketStatus;
@@ -126,7 +131,7 @@ type PendingCall = {
   text: string;
   sent: boolean;
   resolve: (output: unknown) => void;
-  reject: (error: unknown) => void;
+  reject: (error: Error) => void;
   cancelTimeout: () => void;
 };
 
@@ -145,7 +150,7 @@ class Connection {
   #acknowledged = new Set<string>();
 
   #status: SocketStatus = 'disconnected';
-  #ws: WebSocket | undefined;
+  #ws: SocketClientWebSocket | undefined;
   #generation = 0;
   #nextId = 0;
   #lastSeq: number | undefined;
@@ -380,7 +385,7 @@ class Connection {
         return;
       }
 
-      this.#receive(typeof message.data === 'string' ? message.data : '');
+      this.#receive(isString(message.data) ? message.data : '');
     });
     ws.addEventListener('close', (closed) => {
       if (!current()) {
@@ -583,7 +588,7 @@ const defaultWebSocket = (): (new (url: string) => WebSocket) => {
  * conn.on.resync(() => reload());
  * ```
  */
-export class DurabilitySocketClient<Socket extends AnySocketShape> {
+export class DurabilitySocketClient<Socket extends AnyDurabilitySocket> {
   readonly #config: Required<DurabilitySocketClientConfig>;
   readonly #transforms: readonly SocketTransform[];
 
@@ -611,13 +616,17 @@ export class DurabilitySocketClient<Socket extends AnySocketShape> {
   connect(id: string): SocketConnection<Socket> {
     const connection = new Connection(this.#config, id, this.#transforms);
 
+    // SAFETY: the get trap returns a method for every string key, so the
+    // empty target is never read.
     const rpc = new Proxy({} as RpcMethods<InboundOf<Socket>>, {
       get: (_target, method) =>
-        typeof method === 'string'
+        isString(method)
           ? (input?: unknown) => connection.call(method, input)
           : undefined,
     });
 
+    // SAFETY: the get trap returns a subscriber for every string key, so the
+    // empty target is never read.
     const on = new Proxy({} as EventHandlers<OutboundOf<Socket>>, {
       get: (_target, name) => {
         if (name === 'status') {
@@ -630,7 +639,7 @@ export class DurabilitySocketClient<Socket extends AnySocketShape> {
             connection.onResync(handler);
         }
 
-        return typeof name === 'string'
+        return isString(name)
           ? (handler: (payload: unknown) => void) =>
               connection.on(name, handler)
           : undefined;
@@ -681,12 +690,12 @@ export const logging =
   };
 
 export {
-  socketShape,
-  type AnySocketShape,
+  socketMessageMaps,
+  type AnyDurabilitySocket,
   type InboundOf,
   type OutboundOf,
   type SocketInboundInput,
   type SocketInboundOutput,
+  type SocketMessageMaps,
   type SocketOutboundPayload,
-  type SocketShape,
 } from './protocol.js';

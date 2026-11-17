@@ -1,5 +1,6 @@
 import {
   defineArchitecture,
+  isIdToken,
   type ArchitectureDefinition,
   type ArchitectureDiagram,
   type StageToken,
@@ -151,7 +152,7 @@ export function introducedNodes(
   step: ArchitectureStep
 ): string[] {
   return step.stage
-    .filter((token): token is string => typeof token === 'string')
+    .filter(isIdToken)
     .map((token) => token.replace(/^\+/u, ''))
     .filter((id) => id in model.diagram.nodes);
 }
@@ -169,7 +170,7 @@ export function scenarioDiagram(
     stages: scenario.steps.map((step, index) => {
       const spotlight = step.stage.find(
         (token) =>
-          typeof token === 'string' &&
+          isIdToken(token) &&
           (token.startsWith('focus:') || token.startsWith('flow:'))
       );
 

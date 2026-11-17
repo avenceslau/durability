@@ -171,7 +171,7 @@ const nextPendingAt = sourceExcerpt(
   'next-pending',
   'When the queue next needs the alarm',
   '  nextPendingAt({',
-  "    return typeof at === 'number' ? at : undefined;\n  }"
+  '    return isNumber(at) ? at : undefined;\n  }'
 );
 
 export const walkthrough = validateWalkthrough({

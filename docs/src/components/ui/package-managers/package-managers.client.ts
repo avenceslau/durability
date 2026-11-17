@@ -5,6 +5,12 @@
 
 import { mount, initTabs } from '@cloudflare/nimbus-docs/client';
 
+type CopyHandler = {
+  btn: HTMLButtonElement;
+  handler: () => void;
+  timer?: number;
+};
+
 function cloneIcon(tpl: HTMLTemplateElement | null): Node {
   return tpl ? tpl.content.cloneNode(true) : document.createTextNode('');
 }
@@ -30,20 +36,12 @@ function initPackageManager(container: HTMLElement): () => void {
     sync: { key: 'ui-pm-tab', storage: 'session' },
   });
 
-  const copyHandlers: Array<{
-    btn: HTMLButtonElement;
-    handler: () => void;
-    timer?: number;
-  }> = [];
+  const copyHandlers: CopyHandler[] = [];
 
   container
     .querySelectorAll<HTMLButtonElement>('[data-nb-pm-copy]')
     .forEach((btn) => {
-      const handlerInfo: {
-        btn: HTMLButtonElement;
-        handler: () => void;
-        timer?: number;
-      } = {
+      const handlerInfo: CopyHandler = {
         btn,
         handler: async () => {
           let copied = true;

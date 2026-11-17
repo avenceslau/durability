@@ -1,9 +1,10 @@
+import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { createCollection } from '@tanstack/db';
 import type {
   SocketConnection,
-  SocketShape,
+  SocketMessageMaps,
   SocketStatus,
-  socketShape,
+  socketMessageMaps,
 } from 'durability/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { socketCollectionOptions } from './index';
@@ -11,11 +12,11 @@ import { socketCollectionOptions } from './index';
 type Todo = { id: string; title: string; done: boolean };
 
 type TestSocket = {
-  readonly [socketShape]: SocketShape<
+  readonly [socketMessageMaps]: SocketMessageMaps<
     {
-      list: () => Todo[];
-      create: (input: unknown) => Todo;
-      remove: (input: unknown) => void;
+      list: { input: StandardSchemaV1<undefined>; handle: () => Todo[] };
+      create: { input: StandardSchemaV1<Todo>; handle: (todo: Todo) => Todo };
+      remove: { input: StandardSchemaV1<string>; handle: (id: string) => void };
     },
     {
       created: { readonly payload?: Todo };
@@ -25,7 +26,9 @@ type TestSocket = {
   >;
 };
 
-type Handler = (payload: unknown) => void;
+type TodoEvents = { created: Todo; updated: Todo; removed: string };
+
+type Handler = (payload: TodoEvents[keyof TodoEvents]) => void;
 
 /** A scripted stand-in for a `DurabilitySocketClient` connection. */
 const fakeConnection = () => {
@@ -46,6 +49,8 @@ const fakeConnection = () => {
     remove: vi.fn(async () => undefined),
   };
 
+  // SAFETY: the get trap returns a subscriber for every name, so the empty
+  // target is never read.
   const on = new Proxy({} as SocketConnection<TestSocket>['on'], {
     get: (_target, name: string) => {
       if (name === 'status') {
@@ -75,14 +80,14 @@ const fakeConnection = () => {
     },
   });
 
-  const connection = {
+  const connection: SocketConnection<TestSocket> = {
     rpc,
     on,
     get status() {
       return status;
     },
     close: () => undefined,
-  } as unknown as SocketConnection<TestSocket>;
+  };
 
   return {
     connection,
@@ -115,7 +120,10 @@ const fakeConnection = () => {
         handler({ names });
       }
     },
-    emit: (name: string, payload: unknown) => {
+    emit: <Name extends keyof TodoEvents>(
+      name: Name,
+      payload: TodoEvents[Name]
+    ) => {
       for (const handler of handlers.get(name) ?? []) {
         handler(payload);
       }

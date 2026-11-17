@@ -91,7 +91,7 @@ readonly socket = new DurabilitySocket({
   inbound: {
     work: {
       input: v.object({ cursor: v.optional(v.string()) }),
-      handle: (query: { cursor?: string }) => this.tracker.records(query),
+      handle: (query) => this.tracker.records(query),
     },
   },
   outbound: { settled: event<DurabilityOperationEvent<typeof handlers>>() },

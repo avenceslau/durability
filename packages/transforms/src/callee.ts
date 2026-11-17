@@ -9,6 +9,7 @@ import {
   type TransformContextOf,
   type TransformTargetOf,
 } from './define.js';
+import { isFunction, isObject } from './predicates.js';
 
 const platformPrototypeNames = new Set([
   'DurableObject',
@@ -271,10 +272,9 @@ export function applyTransforms<
     while (currentPrototype) {
       const constructorValue = currentPrototype.constructor;
 
-      const constructorName =
-        typeof constructorValue === 'function'
-          ? constructorValue.name
-          : undefined;
+      const constructorName = isFunction(constructorValue)
+        ? constructorValue.name
+        : undefined;
 
       if (
         currentPrototype !== prototype &&
@@ -307,7 +307,7 @@ export function applyTransforms<
 
         if (
           !descriptor ||
-          typeof candidate !== 'function' ||
+          !isFunction(candidate) ||
           (!explicitMethods.has(method) &&
             !inheritedOriginal &&
             candidate.constructor.name !== 'AsyncFunction')
@@ -333,20 +333,20 @@ export function applyTransforms<
   }
 
   const configure = (registration: unknown): ConfiguredCalleeTransform => {
-    if (typeof registration !== 'object' || registration === null) {
+    if (!isObject(registration)) {
       throw new TypeError('Invalid transform registration');
     }
 
     const registrationMembers: Members<'transform' | 'options'> = registration;
     const transform = registrationMembers.transform;
 
-    if (typeof transform !== 'object' || transform === null) {
+    if (!isObject(transform)) {
       throw new TypeError('Invalid transform registration');
     }
 
     const { calleeFactory }: Members<'calleeFactory'> = transform;
 
-    if (typeof calleeFactory !== 'function') {
+    if (!isFunction(calleeFactory)) {
       throw new TypeError('Transform does not define a callee');
     }
 
@@ -355,7 +355,7 @@ export function applyTransforms<
       registrationMembers.options
     );
 
-    if (typeof configured !== 'function') {
+    if (!isFunction(configured)) {
       throw new TypeError('Callee transform factory must return a function');
     }
 

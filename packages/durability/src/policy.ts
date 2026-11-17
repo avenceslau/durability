@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { isFunction } from './predicates.js';
 import { exponential, jitter } from './utils.js';
 
 /**
@@ -53,8 +54,7 @@ export type AttemptPolicy = {
   maxAttempts: number;
 };
 
-const functionSchema = <T>() =>
-  v.custom<T>((value) => typeof value === 'function');
+const functionSchema = <T>() => v.custom<T>(isFunction);
 
 const retryOptionsSchema = v.object({
   delay: v.optional(functionSchema<(attempt: number) => number>()),

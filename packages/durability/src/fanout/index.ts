@@ -38,6 +38,7 @@ import {
   type AttemptPolicy,
   type ExecutionPolicyOptions,
 } from '../policy.js';
+import { isFunction, isNonEmptyString } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -153,7 +154,7 @@ export type FanoutTarget<Body> = ExecutionPolicyOptions &
     | {
         deliver(
           messages: DurabilityFanoutMessage<Body>[]
-        ): unknown | Promise<unknown>;
+        ): void | Promise<void>;
         /**
          * Acks every message the consumer leaves unsettled when `deliver`
          * returns without throwing, in one transaction instead of one call
@@ -273,11 +274,7 @@ export class DurabilityFanout<Body = unknown> {
     this.#policies = new Map();
 
     for (const [id, target] of this.#targets) {
-      if (
-        !id ||
-        (typeof target.deliver !== 'function' &&
-          typeof target.storage !== 'function')
-      ) {
+      if (!id || (!isFunction(target.deliver) && !isFunction(target.storage))) {
         throw new TypeError(`Invalid fanout target "${id}"`);
       }
 
@@ -332,6 +329,8 @@ export class DurabilityFanout<Body = unknown> {
   lifecycle(
     hook: (event: DurabilityFanoutEvent) => void | Promise<void>
   ): () => void {
+    // SAFETY: every event this instance emits spreads entity(claim), so it is
+    // a fanout_delivery event.
     return this.#lifecycle.add(hook as LifecycleHook);
   }
 
@@ -371,12 +370,7 @@ export class DurabilityFanout<Body = unknown> {
           const id = message.id ?? crypto.randomUUID();
           const key = message.deduplicationKey ?? id;
 
-          if (
-            typeof id !== 'string' ||
-            !id ||
-            typeof key !== 'string' ||
-            !key
-          ) {
+          if (!isNonEmptyString(id) || !isNonEmptyString(key)) {
             throw new FanoutEnqueueError(
               'Message IDs and deduplication keys must be non-empty strings'
             );
@@ -533,8 +527,8 @@ export class DurabilityFanout<Body = unknown> {
 
     // Delayed first attempts are not due yet; the scheduler wakes for them.
     if (registered.length > 0 && this.#batchDelayMs === 0) {
-      const onError = (error: unknown) =>
-        reportFailure('durability.fanout.failed', {}, error);
+      const onError = (cause: unknown) =>
+        reportFailure('durability.fanout.failed', {}, cause);
 
       const work = this.#runDue()
         .then(() => this.#engine.scheduleNextAlarm())
@@ -712,8 +706,8 @@ export class DurabilityFanout<Body = unknown> {
       });
     }
 
-    let failure: unknown = new Error(
-      'Consumer returned without settling the message'
+    let failure = serializeError(
+      new Error('Consumer returned without settling the message')
     );
 
     try {
@@ -780,7 +774,7 @@ export class DurabilityFanout<Body = unknown> {
         }
       }, policy.attemptTimeoutMs);
     } catch (error) {
-      failure = error;
+      failure = serializeError(error);
     } finally {
       for (const state of states) {
         state.closed = true;
@@ -825,13 +819,7 @@ export class DurabilityFanout<Body = unknown> {
 
       state.outcome = 'retry';
       // eslint-disable-next-line no-await-in-loop
-      await this.#retry(
-        state.claim,
-        policy,
-        undefined,
-        serializeError(failure),
-        startedAt
-      );
+      await this.#retry(state.claim, policy, undefined, failure, startedAt);
     }
   }
 
@@ -923,6 +911,8 @@ export class DurabilityFanout<Body = unknown> {
     return {
       id: message.id,
       ...identity,
+      // SAFETY: enqueue is the only writer of message payloads, each
+      // serialized from a Body.
       body: deserialize(message.payload) as Body,
       enqueuedAt: message.created_at,
       attempt: row.attempt,
@@ -1125,6 +1115,8 @@ export class DurabilityFanout<Body = unknown> {
         id: deliveryIdentity(row),
         messageId: message.id,
         target: row.target_id,
+        // SAFETY: enqueue is the only writer of message payloads, each
+        // serialized from a Body.
         body: deserialize(message.payload) as Body,
         enqueuedAt: message.created_at,
         storedAt: timestamp,
@@ -1238,11 +1230,11 @@ export class DurabilityFanout<Body = unknown> {
     return [...first, ...retries];
   }
 
-  async #deadline(
-    run: () => Promise<unknown>,
+  #deadline<Result>(
+    run: () => Promise<Result>,
     timeoutMs: number
-  ): Promise<void> {
-    await this.#engine.timer.withTimeout(
+  ): Promise<Result> {
+    return this.#engine.timer.withTimeout(
       Promise.resolve().then(run),
       timeoutMs,
       () => new FanoutTimeoutError(timeoutMs)

@@ -5,12 +5,13 @@ import {
   DurabilitySchedule,
   type ScheduleDefinition,
 } from '../../src/experimental';
+import { isFunction } from '../../src/predicates';
 
 type Cursor = SqlStorageCursor<Record<string, SqlStorageValue>>;
 
 const bindAll = <Target extends object>(
   target: Target,
-  override: (key: string | symbol) => unknown
+  override: (key: string | symbol) => Partial<Target>[keyof Target]
 ): Target =>
   new Proxy(target, {
     get(object, key) {
@@ -22,7 +23,7 @@ const bindAll = <Target extends object>(
 
       const value: unknown = Reflect.get(object, key);
 
-      return typeof value === 'function' ? value.bind(object) : value;
+      return isFunction(value) ? value.bind(object) : value;
     },
   });
 
@@ -116,8 +117,11 @@ export class ScheduleObject extends DurableObject {
   private countingContext() {
     const sql = bindAll(this.ctx.storage.sql, (key) =>
       key === 'exec'
-        ? (query: string, ...bindings: SqlStorageValue[]) => {
-            const cursor = this.ctx.storage.sql.exec(query, ...bindings);
+        ? <Row extends Record<string, SqlStorageValue>>(
+            query: string,
+            ...bindings: SqlStorageValue[]
+          ) => {
+            const cursor = this.ctx.storage.sql.exec<Row>(query, ...bindings);
             this.cursors.push(cursor);
 
             return cursor;

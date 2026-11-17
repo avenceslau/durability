@@ -7,7 +7,7 @@ import type {
   UpdateMutationFnParams,
 } from '@tanstack/db';
 import type {
-  AnySocketShape,
+  AnyDurabilitySocket,
   OutboundOf,
   SocketConnection,
   SocketOutboundPayload,
@@ -32,9 +32,9 @@ export type SocketCollectionUtils<
   write: (changes: SocketChange<Row, Key> | SocketChange<Row, Key>[]) => void;
 };
 
-type Rpc<Socket extends AnySocketShape> = SocketConnection<Socket>['rpc'];
+type Rpc<Socket extends AnyDurabilitySocket> = SocketConnection<Socket>['rpc'];
 
-type MutationContext<Socket extends AnySocketShape> = {
+type MutationContext<Socket extends AnyDurabilitySocket> = {
   /** The connection's typed RPC methods. */
   rpc: Rpc<Socket>;
   /**
@@ -46,12 +46,12 @@ type MutationContext<Socket extends AnySocketShape> = {
   awaitSynced: (options?: { timeoutMs?: number }) => Promise<void>;
 };
 
-type MutationHandler<Params, Socket extends AnySocketShape> = (
+type MutationHandler<Params, Socket extends AnyDurabilitySocket> = (
   params: Params & MutationContext<Socket>
 ) => Promise<void>;
 
 export type SocketCollectionConfig<
-  Socket extends AnySocketShape,
+  Socket extends AnyDurabilitySocket,
   Row extends object,
   Key extends string | number,
   Schema extends StandardSchemaV1 = never,
@@ -81,6 +81,12 @@ export type SocketCollectionConfig<
     DeleteMutationFnParams<Row, Key, SocketCollectionUtils<Row, Key>>,
     Socket
   >;
+};
+
+type EventSubscribers<Socket extends AnyDurabilitySocket> = {
+  [Event in keyof OutboundOf<Socket>]: (
+    handler: (payload: SocketOutboundPayload<OutboundOf<Socket>[Event]>) => void
+  ) => () => void;
 };
 
 type SyncWriter<Row extends object, Key extends string | number> = (
@@ -121,7 +127,7 @@ type SyncWriter<Row extends object, Key extends string | number> = (
  * ```
  */
 export const socketCollectionOptions = <
-  Socket extends AnySocketShape,
+  Socket extends AnyDurabilitySocket,
   Row extends object,
   Key extends string | number,
   Schema extends StandardSchemaV1 = never,
@@ -146,6 +152,8 @@ export const socketCollectionOptions = <
   const writeCounts = new Map<Key, number>();
   const waiters = new Set<() => void>();
 
+  // SAFETY: a DeleteKeyMessage always carries its key, so a change without
+  // one is a ChangeMessage, which carries `value`.
   const keyOf = (change: SocketChange<Row, Key>): Key =>
     change.type === 'delete' && 'key' in change && change.key !== undefined
       ? change.key
@@ -303,25 +311,24 @@ export const socketCollectionOptions = <
           })
         );
 
-        for (const [event, map] of Object.entries(on ?? {})) {
+        const events: EventSubscribers<Socket> = connection.on;
+
+        const follow = <Event extends keyof OutboundOf<Socket>>(
+          event: Event
+        ) => {
+          const map = on?.[event];
+
           if (!map) {
-            continue;
+            return;
           }
 
-          const subscribe = connection.on[
-            event as keyof OutboundOf<Socket>
-          ] as (handler: (payload: unknown) => void) => () => void;
-
           unsubscribers.push(
-            subscribe((payload) => {
+            events[event]((payload) => {
               if (snapshotting) {
                 return;
               }
 
-              const changes = (map as (payload: unknown) => unknown)(payload) as
-                | SocketChange<Row, Key>
-                | SocketChange<Row, Key>[]
-                | void;
+              const changes = map(payload);
 
               if (!changes) {
                 return;
@@ -330,6 +337,12 @@ export const socketCollectionOptions = <
               apply(Array.isArray(changes) ? changes : [changes]);
             })
           );
+        };
+
+        for (const event of Object.keys(on ?? {})) {
+          // SAFETY: `on` is typed as a map keyed by the socket's outbound
+          // event names, so its keys are those names.
+          follow(event as keyof OutboundOf<Socket>);
         }
 
         return () => {

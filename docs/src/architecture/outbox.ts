@@ -107,7 +107,7 @@ const deadline = sourceExcerpt(
   outboxFile,
   'deadline',
   'Time out without cancelling',
-  '  async #deadline(run: () => unknown): Promise<void> {',
+  '  #deadline<Result>(run: () => Result | Promise<Result>): Promise<Result> {',
   '    );\n  }'
 );
 
@@ -535,7 +535,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             config,
             'Sinks must be idempotent on `(key, version)` and keep the highest version.',
-            'publish(entries: OutboxEntry<Value>[]): unknown | Promise<unknown>;'
+            'publish(entries: OutboxEntry<Value>[]): void | Promise<void>;'
           ),
           durable: 'Deduplication needs the sink’s own record of versions.',
           volatile: 'No in-memory state from the first attempt survived.',
@@ -631,7 +631,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sink'],
           source: sourceFocus(
             deadline,
-            'await this.#engine.timer.withTimeout(',
+            'return this.#engine.timer.withTimeout(',
             '() => new OutboxTimeoutError(this.#attemptTimeoutMs)'
           ),
           durable: 'Whatever the sink keeps.',

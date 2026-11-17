@@ -202,7 +202,7 @@ test("orthogonal edges run in straight lines through the gaps between nodes, nev
   const state = controlPlane.stages.at(-1)
   assert.ok(state !== undefined)
   const rects = stageRects(state)
-  const elbows = controlPlane.edges.filter((edge) => state.layout.edges.get(edge.id)?.shape === "orthogonal")
+  const elbows = controlPlane.edges.filter((edge) => state.layout.edges.get(edge.id)?.routing === "orthogonal")
   assert.ok(elbows.length >= 5)
 
   for (const edge of elbows) {
@@ -278,7 +278,7 @@ test("the list edge drops from the controller as an elbow into the SousChef's to
   const register = state.layout.edges.get("engineInstance->souschef")
   assert.ok(list !== undefined && register !== undefined)
 
-  assert.equal(list.shape, "orthogonal")
+  assert.equal(list.routing, "orthogonal")
   assert.deepEqual([list.from.ny, list.to.ny], [1, -1], "out of the bottom, into the top")
   assert.deepEqual(register.to.ny, -1)
   assert.ok(list.to.u < register.to.u, "left of register")
@@ -326,7 +326,9 @@ function labelBoxes(
     }
 
     const [x, y] = edgeGeometry(edge, route, from, to).labelPoint
-    const [width, height] = labelSize(edge.label).map((value) => value * state.layout.scale) as [number, number]
+    const [labelWidth, labelHeight] = labelSize(edge.label)
+    const width = labelWidth * state.layout.scale
+    const height = labelHeight * state.layout.scale
     const inner = [width * 0.82, height - 10 * state.layout.scale] as const
 
     return [
@@ -481,7 +483,8 @@ test("every build keeps labels clear of each other, of nodes and notes, and of o
 
       const notes = diagram.notes.flatMap((note) => {
         const centre = state.layout.notes.get(note.id)
-        const [width, height] = note.size.map((value) => value * state.layout.scale) as [number, number]
+        const width = note.size[0] * state.layout.scale
+        const height = note.size[1] * state.layout.scale
 
         return centre === undefined || !state.visible.has(note.id)
           ? []
@@ -522,7 +525,7 @@ test("every build keeps labels clear of each other, of nodes and notes, and of o
 test("elbows turn through rounded corners, with their middle runs inside the gap between their ends", () => {
   const state = controlPlane.stages.at(-1)
   assert.ok(state !== undefined)
-  const elbows = controlPlane.edges.filter((edge) => state.layout.edges.get(edge.id)?.shape === "orthogonal")
+  const elbows = controlPlane.edges.filter((edge) => state.layout.edges.get(edge.id)?.routing === "orthogonal")
 
   for (const edge of elbows) {
     const path = pathOf(controlPlane, state, edge.id)
@@ -555,7 +558,7 @@ test("elbows sharing a channel run in lanes of their own", () => {
   assert.ok(state !== undefined)
 
   const runs = controlPlane.edges
-    .filter((edge) => state.layout.edges.get(edge.id)?.shape === "orthogonal")
+    .filter((edge) => state.layout.edges.get(edge.id)?.routing === "orthogonal")
     .flatMap((edge) =>
       pathOf(controlPlane, state, edge.id)
         .filter((curve) => isStraight(curve) && Math.abs(curve.from[0] - curve.to[0]) < 0.01)

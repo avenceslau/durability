@@ -354,7 +354,7 @@ function NodeButton({ id, label, pressed, onSelect, children }: {
  * content fades in, so the two never overlap. A stack's back cards are drawn apart, beneath the edges, so an edge
  * reaching the front card over them stays in sight.
  */
-function NodeShape({ frame, part, holds }: {
+function NodeFigure({ frame, part, holds }: {
   readonly frame: NodeFrame
   readonly part: "backs" | "front"
   /** How many nodes a composite holds; 0 for a plain node. */
@@ -615,7 +615,7 @@ export function Architecture({
 
       const tone = nodeFrame.view.tone === undefined ? "" : `is-${nodeFrame.view.tone}`
       const holds = part === "front" ? node.contains.length : 0
-      const shape = <NodeShape frame={nodeFrame} holds={holds} part={part} />
+      const figure = <NodeFigure frame={nodeFrame} holds={holds} part={part} />
 
       return (
         <StageItem
@@ -633,10 +633,10 @@ export function Architecture({
               onSelect={onSelectNode}
               pressed={node.id === selectedNode}
             >
-              {shape}
+              {figure}
             </NodeButton>
           ) : holds === 0 ? (
-            shape
+            figure
           ) : (
             <CompositeToggle
               id={node.id}
@@ -644,7 +644,7 @@ export function Architecture({
               onToggle={(keyboard) => toggle(node.id, keyboard)}
               open={false}
             >
-              {shape}
+              {figure}
             </CompositeToggle>
           )}
         </StageItem>

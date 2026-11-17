@@ -7,6 +7,8 @@ import {
 import {
   bindingIdentifiers,
   identifierName,
+  isIdentifier,
+  isStringLiteral,
   memberExpressionTypes,
   propertyName,
   syntaxNode,
@@ -17,14 +19,18 @@ import type { WranglerBindings } from './wrangler.js';
 
 type ConfiguredBindingKind = 'namespace' | 'stub';
 
-function isEnvRoot(scopes: ScopeIndex, value: unknown, scope: Scope): boolean {
-  const node = unwrapExpression(value);
+function isEnvRoot(
+  scopes: ScopeIndex,
+  expression: SyntaxNode | undefined,
+  scope: Scope
+): boolean {
+  const node = unwrapExpression(expression);
 
   if (!node) {
     return false;
   }
 
-  if (node.type === 'Identifier' && typeof node.name === 'string') {
+  if (isIdentifier(node)) {
     return (
       resolveBinding(scopes.nodeScopes.get(node) ?? scope, node.name)?.kind ===
       'env'
@@ -48,7 +54,7 @@ function isEnvRoot(scopes: ScopeIndex, value: unknown, scope: Scope): boolean {
     trustsThisEnv &&
     memberExpressionTypes.has(node.type) &&
     propertyName(node) === 'env' &&
-    unwrapExpression(node.object)?.type === 'ThisExpression'
+    unwrapExpression(syntaxNode(node.object))?.type === 'ThisExpression'
   );
 }
 
@@ -74,16 +80,16 @@ function kindOfEnvProperty(
 export function configuredBindingKind(
   scopes: ScopeIndex,
   bindings: WranglerBindings,
-  value: unknown,
+  expression: SyntaxNode | undefined,
   scope: Scope
 ): ConfiguredBindingKind | undefined {
-  const node = unwrapExpression(value);
+  const node = unwrapExpression(expression);
 
   if (!node) {
     return undefined;
   }
 
-  if (node.type === 'Identifier' && typeof node.name === 'string') {
+  if (isIdentifier(node)) {
     const binding = resolveBinding(
       scopes.nodeScopes.get(node) ?? scope,
       node.name
@@ -96,7 +102,7 @@ export function configuredBindingKind(
 
   if (
     !memberExpressionTypes.has(node.type) ||
-    !isEnvRoot(scopes, node.object, scope)
+    !isEnvRoot(scopes, syntaxNode(node.object), scope)
   ) {
     return undefined;
   }
@@ -122,10 +128,7 @@ function setKind(
 function destructuredPropertyName(property: SyntaxNode): string | undefined {
   const key = syntaxNode(property.key);
 
-  const literal =
-    key?.type === 'StringLiteral' && typeof key.value === 'string'
-      ? key.value
-      : undefined;
+  const literal = isStringLiteral(key) ? key.value : undefined;
 
   return property.computed === true
     ? literal
@@ -156,7 +159,7 @@ function markDestructuredBindings(
       destructuredPropertyName(property)
     );
 
-    const locals = bindingIdentifiers(property.value);
+    const locals = bindingIdentifiers(syntaxNode(property.value));
 
     const localName =
       locals.length === 1 ? identifierName(locals[0]) : undefined;
@@ -190,7 +193,7 @@ function markDeclarator(
     const kind = configuredBindingKind(
       scopes,
       bindings,
-      declarator.init,
+      syntaxNode(declarator.init),
       scope
     );
 
@@ -199,7 +202,7 @@ function markDeclarator(
 
   if (
     pattern.type === 'ObjectPattern' &&
-    isEnvRoot(scopes, declarator.init, scope)
+    isEnvRoot(scopes, syntaxNode(declarator.init), scope)
   ) {
     return markDestructuredBindings(bindings, pattern, scope);
   }

@@ -16,7 +16,7 @@ import {
   subPath,
   tangentOnPath,
 } from "./geometry.ts"
-import type { DiagramEdge, DiagramGroup, DiagramNode, DiagramNote, EdgeShape, NodeView } from "./model.ts"
+import type { DiagramEdge, DiagramGroup, DiagramNode, DiagramNote, EdgeRouting, NodeView } from "./model.ts"
 
 /** Node metrics in canvas units, shared by layout and rendering. */
 export const NODE = {
@@ -91,7 +91,7 @@ export interface Port {
  * line, or an elbow whose middle run crosses the gap between them `mid` of the way from start to end.
  */
 export interface EdgeRoute {
-  readonly shape: EdgeShape
+  readonly routing: EdgeRouting
   readonly from: Port
   readonly to: Port
   readonly bend: number
@@ -129,7 +129,7 @@ export interface LayoutRequest {
   }
   readonly mode: "auto" | "manual"
   readonly direction: "right" | "down"
-  readonly routing: "auto" | EdgeShape
+  readonly routing: "auto" | EdgeRouting
   /** Shown nodes, in definition order. */
   readonly nodes: ReadonlyArray<DiagramNode>
   /** What every node shows in this stage. */
@@ -370,11 +370,11 @@ function routePath(route: EdgeRoute, fromRect: Rect, toRect: Rect): Path {
   const from = attach(fromRect, route.from)
   const to = attach(toRect, route.to)
 
-  if (route.shape === "straight") {
+  if (route.routing === "straight") {
     return [lineCurve(from, to)]
   }
 
-  if (route.shape === "orthogonal") {
+  if (route.routing === "orthogonal") {
     return elbowPath(elbowPoints(route, from, to))
   }
 
@@ -607,7 +607,7 @@ function rankedGraph(
   groups: ReadonlyArray<DiagramGroup>,
 ): RankedGraph {
   const byId = new Map(nodes.map((node) => [node.id, node]))
-  const neighbours = new Map(nodes.map((node) => [node.id, [] as string[]]))
+  const neighbours = new Map(nodes.map((node): [string, string[]] => [node.id, []]))
 
   for (const edge of edges) {
     if (edge.from !== edge.to && byId.has(edge.from) && byId.has(edge.to)) {
@@ -948,9 +948,10 @@ function assignPorts(
     }
   })
 
-  const ports = edges.map(() => [CENTRE_PORT, CENTRE_PORT] as [Port, Port])
+  const ports = edges.map((): [Port, Port] => [CENTRE_PORT, CENTRE_PORT])
 
   for (const [key, list] of ends) {
+    // SAFETY: keys are `${node id}|${side}`, built above, and node IDs never contain "|".
     const [id = "", side = "right"] = key.split("|") as [string, Side]
     const rect = rects.get(id)
 
@@ -1026,7 +1027,9 @@ function assignPorts(
 
     const [otherKey = ""] = otherKeys
     const leaders = ends.get(otherKey)
+    // SAFETY: both keys are `${node id}|${side}`, as built above, and node IDs never contain "|".
     const [id = "", side = "right"] = key.split("|") as [string, Side]
+    // SAFETY: as for `key`.
     const [otherId = "", otherSide = "left"] = otherKey.split("|") as [string, Side]
     const rect = rects.get(id)
     const other = rects.get(otherId)
@@ -1313,17 +1316,17 @@ interface Routable {
   readonly edge: DiagramEdge
   readonly from: Rect
   readonly to: Rect
-  readonly shape: EdgeShape
+  readonly routing: EdgeRouting
 }
 
 /** `auto` runs an edge orthogonally when its ends sit in different rows, and curves it between neighbours in one. */
-function shapeFor(
+function routingFor(
   edge: DiagramEdge,
   from: Rect,
   to: Rect,
   direction: "right" | "down",
-  routing: "auto" | EdgeShape,
-): EdgeShape {
+  routing: "auto" | EdgeRouting,
+): EdgeRouting {
   if (edge.route !== undefined) {
     return edge.route
   }
@@ -1438,7 +1441,7 @@ function separateLanes(routable: ReadonlyArray<Routable>, routes: ReadonlyArray<
     const ends = routable[index]
     const vertical = leavesVertically(route.from)
 
-    if (ends === undefined || route.shape !== "orthogonal" || vertical !== leavesVertically(route.to)) {
+    if (ends === undefined || route.routing !== "orthogonal" || vertical !== leavesVertically(route.to)) {
       return []
     }
 
@@ -1465,6 +1468,8 @@ function separateLanes(routable: ReadonlyArray<Routable>, routes: ReadonlyArray<
   })
 
   type Run = (typeof runs)[number]
+
+  type Ordering = { crossed: number; order: ReadonlyArray<Run> }
 
   let groups: Run[][] = []
 
@@ -1507,9 +1512,9 @@ function separateLanes(routable: ReadonlyArray<Routable>, routes: ReadonlyArray<
     const laneOf = (position: number): number => centre + (position - (group.length - 1) / 2) * LANE
     const orders = group.length <= 5 ? permutations(group) : [group]
 
-    let best = {
+    let best: Ordering = {
       crossed: Infinity,
-      order: group as ReadonlyArray<Run>,
+      order: group,
     }
 
     for (const order of orders) {
@@ -1563,7 +1568,7 @@ function chooseRoutes(
   })
 
   const sides = [...primary]
-  const bends = routable.map(({ edge, shape }) => (shape === "curve" ? (edge.bend ?? 0) : 0))
+  const bends = routable.map(({ edge, routing }) => (routing === "curve" ? (edge.bend ?? 0) : 0))
   const mids = routable.map(() => 0.5)
 
   const obstacles = routable.map(({ edge }) =>
@@ -1571,7 +1576,7 @@ function chooseRoutes(
   )
 
   const routeOf = (index: number, ports: readonly [Port, Port] | undefined, bend: number, mid: number): EdgeRoute => ({
-    shape: routable[index]?.shape ?? "curve",
+    routing: routable[index]?.routing ?? "curve",
     from: ports?.[0] ?? CENTRE_PORT,
     to: ports?.[1] ?? CENTRE_PORT,
     bend,
@@ -1593,7 +1598,7 @@ function chooseRoutes(
   }
 
   for (let pass = 0; pass < 2; pass += 1) {
-    routable.forEach(({ edge, shape }, index) => {
+    routable.forEach(({ edge, routing }, index) => {
       const ends = routable[index]
       const plain = primary[index]
 
@@ -1601,7 +1606,7 @@ function chooseRoutes(
         return
       }
 
-      const options = shape === "curve" && edge.bend !== undefined ? [plain] : sideOptions(ends.from, ends.to, plain)
+      const options = routing === "curve" && edge.bend !== undefined ? [plain] : sideOptions(ends.from, ends.to, plain)
 
       let best = {
         cost: Infinity,
@@ -1621,13 +1626,13 @@ function chooseRoutes(
         const portPair = ports[index] ?? [CENTRE_PORT, CENTRE_PORT]
 
         const variants =
-          shape === "orthogonal"
+          routing === "orthogonal"
             ? channelMids(ends.from, ends.to, portPair, obstacles[index] ?? []).map(({ mid, lane }) => ({
                 bend: 0,
                 mid,
                 lane,
               }))
-            : shape === "straight"
+            : routing === "straight"
               ? [{ bend: 0, mid: 0.5, lane: 0 }]
               : (edge.bend === undefined ? BENDS : [edge.bend]).map((bend) => ({ bend, mid: 0.5, lane: 0 }))
 
@@ -1643,7 +1648,7 @@ function chooseRoutes(
             pathLength(path) * 0.05 +
             (option === plain ? 0 : 15) +
             lane * 2 +
-            Math.abs(bend - (shape === "curve" ? (edge.bend ?? 0) : 0)) * 40
+            Math.abs(bend - (routing === "curve" ? (edge.bend ?? 0) : 0)) * 40
 
           if (cost < best.cost) {
             best = {
@@ -1688,7 +1693,7 @@ function labelStretch(route: EdgeRoute, path: Path): readonly [number, number] {
   let longest = 0
   let before = 0
 
-  if (route.shape !== "orthogonal" || total === 0) {
+  if (route.routing !== "orthogonal" || total === 0) {
     return best
   }
 
@@ -1713,7 +1718,7 @@ function routeEdges(
   footprints: ReadonlyMap<string, Rect>,
   noteRects: ReadonlyArray<Rect>,
   direction: "right" | "down",
-  routing: "auto" | EdgeShape,
+  routing: "auto" | EdgeRouting,
   scale: number,
 ): Map<string, EdgeRoute> {
   const routable = edges.flatMap((edge) => {
@@ -1729,7 +1734,7 @@ function routeEdges(
         edge,
         from,
         to,
-        shape: shapeFor(edge, from, to, direction, routing),
+        routing: routingFor(edge, from, to, direction, routing),
       },
     ]
   })
@@ -1777,9 +1782,15 @@ function placeLabels(
   const paths = placing.map(({ route, from, to }) => routePath(route, from, to))
   const lines = paths.map(polyline)
 
-  const sizes = placing.map(({ edge }) =>
-    edge.label === undefined ? undefined : (labelSize(edge.label).map((value) => value * scale) as [number, number]),
-  )
+  const sizes = placing.map(({ edge }): Point | undefined => {
+    if (edge.label === undefined) {
+      return undefined
+    }
+
+    const [width, height] = labelSize(edge.label)
+
+    return [width * scale, height * scale]
+  })
 
   const pairOf = ({ edge }: Placing): string => [edge.from, edge.to].sort().join("|")
   const labels: Rect[] = []
@@ -1806,18 +1817,18 @@ function placeLabels(
       const [dx, dy] = tangentOnPath(path, t)
       const covered = Math.abs(dx) * size[0] + Math.abs(dy) * size[1]
 
-      return length - covered >= LINE_SHOWING * scale ? [{ t, offset: [0, 0] as Point }] : []
+      return length - covered >= LINE_SHOWING * scale ? [{ t, offset: [0, 0] satisfies Point }] : []
     })
 
     const beside = stops.flatMap((t) => {
       const [dx, dy] = tangentOnPath(path, t)
       const away = (Math.abs(dy) * size[0]) / 2 + (Math.abs(dx) * size[1]) / 2 + 6 * scale
 
-      return [1, -1].map((sign) => ({ t, offset: [-dy * away * sign, dx * away * sign] as Point }))
+      return [1, -1].map((sign) => ({ t, offset: [-dy * away * sign, dx * away * sign] satisfies Point }))
     })
 
     // Twice as far out, past a label already beside a neighbouring edge.
-    const further = beside.map(({ t, offset }) => ({ t, offset: [offset[0] * 2, offset[1] * 2] as Point }))
+    const further = beside.map(({ t, offset }) => ({ t, offset: [offset[0] * 2, offset[1] * 2] satisfies Point }))
 
     const middle = pointOnPath(path, 0.5)
     const [tx, ty] = tangentOnPath(path, 0.5)
@@ -2020,11 +2031,11 @@ function gridCentres(
   })
 
   return new Map(
-    nodes.map((node) => {
+    nodes.map((node): [string, Point] => {
       const main = mainPositions[ranks.get(node.id) ?? 0] ?? 0
       const across = (rows.get(node.id) ?? 0) * halfRow
 
-      return [node.id, (direction === "right" ? [main, across] : [across, main]) as Point]
+      return [node.id, direction === "right" ? [main, across] : [across, main]]
     }),
   )
 }
@@ -2098,7 +2109,7 @@ export function layoutStage(request: LayoutRequest, everyNode: ReadonlyArray<Dia
       ? 1
       : Math.min(1, (canvas.width - MARGIN * 2) / box.width, (canvas.height - MARGIN * 2) / box.height)
 
-  const boxCentre = box === undefined ? ([0, 0] as Point) : rectCenter(box)
+  const boxCentre: Point = box === undefined ? [0, 0] : rectCenter(box)
 
   const toCanvas = ([x, y]: Point): Point => [
     canvas.width / 2 + (x - boxCentre[0]) * scale,

@@ -3,6 +3,7 @@ import {
   forEachChild,
   functionTypes,
   identifierName,
+  isStringLiteral,
   syntaxNode,
   type SyntaxNode,
 } from './syntax.js';
@@ -95,7 +96,7 @@ function declareParameters(node: SyntaxNode, functionScope: Scope): void {
       parameterIndex === 1 &&
       syntaxNode(param)?.type === 'Identifier';
 
-    for (const identifier of bindingIdentifiers(param)) {
+    for (const identifier of bindingIdentifiers(syntaxNode(param))) {
       const name = identifierName(identifier);
 
       if (name) {
@@ -118,10 +119,7 @@ function importedBindingKind(
 
   const source = syntaxNode(declaration?.source);
 
-  const sourceName =
-    source?.type === 'StringLiteral' && typeof source.value === 'string'
-      ? source.value
-      : undefined;
+  const sourceName = isStringLiteral(source) ? source.value : undefined;
 
   const importedName = identifierName(syntaxNode(specifier.imported));
 
@@ -142,24 +140,18 @@ function importedBindingKind(
 }
 
 /** Records the scope of every node and the names each scope declares. */
-export function indexScopes(ast: unknown): ScopeIndex {
+export function indexScopes(ast: SyntaxNode): ScopeIndex {
   const rootScope: Scope = { bindings: new Map() };
   const nodeScopes = new WeakMap<object, Scope>();
   const relations = new WeakMap<object, NodeRelation>();
   const declarators: ScopeIndex['declarators'] = [];
 
   const index = (
-    value: unknown,
+    node: SyntaxNode,
     scope: Scope,
     parent?: SyntaxNode,
     key?: string
   ): void => {
-    const node = syntaxNode(value);
-
-    if (!node) {
-      return;
-    }
-
     nodeScopes.set(node, scope);
 
     if (parent && key) {
@@ -229,7 +221,7 @@ export function indexScopes(ast: unknown): ScopeIndex {
     if (node.type === 'CatchClause') {
       const catchScope: Scope = { parent: scope, bindings: new Map() };
 
-      for (const identifier of bindingIdentifiers(node.param)) {
+      for (const identifier of bindingIdentifiers(syntaxNode(node.param))) {
         declareLocal(catchScope, identifierName(identifier));
       }
 
@@ -251,7 +243,9 @@ export function indexScopes(ast: unknown): ScopeIndex {
           continue;
         }
 
-        for (const identifier of bindingIdentifiers(declaration.id)) {
+        for (const identifier of bindingIdentifiers(
+          syntaxNode(declaration.id)
+        )) {
           declareLocal(scope, identifierName(identifier));
         }
 

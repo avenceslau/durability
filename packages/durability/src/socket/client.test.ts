@@ -21,9 +21,9 @@ import {
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type {
   SocketClientFrame,
+  SocketMessageMaps,
   SocketServerFrame,
-  SocketShape,
-  socketShape,
+  socketMessageMaps,
 } from './protocol';
 
 /** A frame without `v`, which `receive` adds. */
@@ -43,17 +43,20 @@ if (typeof CloseEvent === 'undefined') {
     }
   }
 
-  globalThis.CloseEvent = NodeCloseEvent as typeof CloseEvent;
+  globalThis.CloseEvent = NodeCloseEvent;
 }
 
 type Todo = { id: string; title: string };
 
 type TestSocket = {
-  readonly [socketShape]: SocketShape<
+  readonly [socketMessageMaps]: SocketMessageMaps<
     {
-      list: () => Todo[];
+      list: { input: StandardSchemaV1<undefined>; handle: () => Todo[] };
       create: { input: StandardSchemaV1<Todo>; handle: (todo: Todo) => string };
-      echo: (input: unknown) => unknown;
+      echo: {
+        input: StandardSchemaV1<string>;
+        handle: (text: string) => string;
+      };
     },
     {
       created: { readonly payload?: Todo };
@@ -110,7 +113,7 @@ class FakeSocket extends EventTarget {
 const createClient = (overrides: { timeoutMs?: number } = {}) =>
   new DurabilitySocketClient<TestSocket>({
     url: (id) => `wss://example.test/${id}`,
-    webSocket: FakeSocket as unknown as new (url: string) => WebSocket,
+    webSocket: FakeSocket,
     ...overrides,
   });
 
@@ -125,14 +128,14 @@ afterEach(() => {
 });
 
 describe('DurabilitySocketClient', () => {
-  it('types rpc and on from the socket shape', () => {
+  it('types rpc and on from the socket message maps', () => {
     const conn = createClient().connect('a');
     expectTypeOf(conn.rpc.list).toEqualTypeOf<() => Promise<Todo[]>>();
     expectTypeOf(conn.rpc.create).toEqualTypeOf<
       (input: Todo) => Promise<string>
     >();
     expectTypeOf(conn.rpc.echo).toEqualTypeOf<
-      (input?: unknown) => Promise<unknown>
+      (input: string) => Promise<string>
     >();
     expectTypeOf(conn.on.created)
       .parameter(0)
@@ -177,9 +180,11 @@ describe('DurabilitySocketClient', () => {
       error: { name: 'RangeError', message: 'nope' },
     });
     await expect(listed).resolves.toEqual([]);
-    const error = await created.catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(SocketRemoteError);
-    expect(error).toMatchObject({ name: 'RangeError', message: 'nope' });
+    await expect(created).rejects.toBeInstanceOf(SocketRemoteError);
+    await expect(created).rejects.toMatchObject({
+      name: 'RangeError',
+      message: 'nope',
+    });
     expect(ws.sent).toHaveLength(2);
   });
 
@@ -225,19 +230,20 @@ describe('DurabilitySocketClient', () => {
 
   it('times out unanswered calls', async () => {
     const conn = createClient({ timeoutMs: 1_000 }).connect('a');
-    const call = conn.rpc.list().catch((error: unknown) => error);
+
+    const call = conn.rpc.list();
+    // Handled before the timeout rejects it; the assertion below awaits it.
+    call.catch(() => undefined);
     FakeSocket.latest().open();
 
     await vi.advanceTimersByTimeAsync(1_000);
-    await expect(call).resolves.toBeInstanceOf(SocketTimeoutError);
+    await expect(call).rejects.toBeInstanceOf(SocketTimeoutError);
   });
 
   it('holds one native timer for the ping and every pending call', async () => {
     const conn = createClient().connect('a');
 
-    const calls = Array.from({ length: 12_000 }, () =>
-      conn.rpc.list().catch((error: unknown) => error)
-    );
+    const calls = Array.from({ length: 12_000 }, () => conn.rpc.list());
 
     FakeSocket.latest().open();
 
@@ -245,9 +251,13 @@ describe('DurabilitySocketClient', () => {
 
     conn.close();
     expect(vi.getTimerCount()).toBe(0);
-    const outcomes = await Promise.all(calls);
+    const outcomes = await Promise.allSettled(calls);
     expect(
-      outcomes.every((outcome) => outcome instanceof SocketClosedError)
+      outcomes.every(
+        (outcome) =>
+          outcome.status === 'rejected' &&
+          outcome.reason instanceof SocketClosedError
+      )
     ).toBe(true);
   });
 

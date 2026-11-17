@@ -464,6 +464,9 @@ class DurabilityCore<Handlers extends HandlerMap> {
   lifecycle(
     hook: (event: DurabilityOperationEvent<Handlers>) => void | Promise<void>
   ): () => void {
+    // SAFETY: this instance emits only its purge event and events for its own
+    // calls, whose `operation` is a key of Handlers and whose result is that
+    // handler's return value.
     return this.#lifecycle.add(hook as LifecycleHook);
   }
 
@@ -629,11 +632,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
       return;
     }
 
-    const onError = (error: unknown) =>
+    const onError = (cause: unknown) =>
       reportFailure(
         'durability.background_execution.failed',
         { operation: input.operation, id: input.id },
-        error
+        cause
       );
 
     const background = this.#execute(key, eagerPermit)
@@ -697,6 +700,8 @@ class DurabilityCore<Handlers extends HandlerMap> {
   #start(call: CallRow, eagerPermit: (() => void) | undefined): Promise<void> {
     const policy = this.#policy(call.operation);
 
+    // SAFETY: the row was stored by the method for `call.operation`, which
+    // takes that handler's payload; rows of removed handlers find undefined.
     const handler = this.#handlers[call.operation] as
       | ((durableCall: DurableCall<unknown>) => unknown)
       | undefined;
@@ -825,7 +830,6 @@ export interface DurabilityConstructor {
 
 traceMethods(DurabilityCore.prototype, 'Durability');
 
-// TypeScript cannot declare class members derived from a generic handler map,
-// so the constructor is typed separately; the constructor installs and reserves
-// every operation method at runtime.
-export const Durability = DurabilityCore as unknown as DurabilityConstructor;
+// SAFETY: the constructor defines a method for every handler name on the
+// instance, members TypeScript cannot declare from a generic handler map.
+export const Durability = DurabilityCore as DurabilityConstructor;

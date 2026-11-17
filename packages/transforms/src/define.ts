@@ -1,5 +1,3 @@
-type AsyncMethod = (...args: never[]) => Promise<unknown>;
-
 /** Members of a stub, namespace, or registration, read by name before their type is checked. */
 export type Members<Name extends string> = { readonly [Key in Name]?: unknown };
 
@@ -38,21 +36,43 @@ export const reservedRpcMethods = new Set<string>([
 
 export type AsyncMethodKey<TTarget extends object> = Exclude<
   {
-    [TKey in keyof TTarget]-?: TTarget[TKey] extends AsyncMethod ? TKey : never;
+    [TKey in keyof TTarget]-?: TTarget[TKey] extends (
+      ...args: never[]
+    ) => Promise<unknown>
+      ? TKey
+      : never;
   }[keyof TTarget] &
     string,
   ReservedRpcMethod
 >;
 
+/** A structured-cloneable value that Cloudflare RPC can pass to `setContext`. */
+export type TransformContextValue =
+  | string
+  | number
+  | bigint
+  | boolean
+  | null
+  | undefined
+  | Date
+  | RegExp
+  | Error
+  | ArrayBuffer
+  | ArrayBufferView
+  | readonly TransformContextValue[]
+  | ReadonlyMap<TransformContextValue, TransformContextValue>
+  | ReadonlySet<TransformContextValue>
+  | { readonly [key: string]: TransformContextValue };
+
 /**
  * Metadata accumulated by caller transforms and optionally sent across RPC.
  *
  * Context is shallow-merged as each transform calls `next`. If the final context
- * is non-empty, the target must expose `setContext` and every value must be
- * supported by Cloudflare RPC serialization. Context is untrusted caller input;
- * never use it directly as proof of identity, tenancy, roles, or authorization.
+ * is non-empty, the target must expose `setContext`, which receives it as a
+ * structured clone. Context is untrusted caller input; never use it directly as
+ * proof of identity, tenancy, roles, or authorization.
  */
-export type TransformContext = Record<string, unknown>;
+export type TransformContext = Record<string, TransformContextValue>;
 
 export type EmptyTransformContext = Record<never, never>;
 
@@ -290,7 +310,12 @@ export type RegisteredTransform<TTransform extends TransformIdentity> = {
  */
 export function registerTransform<TTransform extends TransformIdentity>(
   transform: TTransform & {
-    calleeFactory: (options: CalleeOptions<TTransform>) => unknown;
+    calleeFactory: (
+      options: CalleeOptions<TTransform>
+    ) => CalleeTransformHandler<
+      TransformTargetOf<TTransform>,
+      TransformContextOf<TTransform>
+    >;
   },
   ...options: TransformOptionsArguments<CalleeOptions<TTransform>>
 ): RegisteredTransform<TTransform> {
@@ -301,6 +326,8 @@ export function registerTransform<TTransform extends TransformIdentity>(
   return {
     type: 'registered-do-transform',
     transform,
+    // SAFETY: TransformOptionsArguments makes the argument optional only when
+    // undefined is a valid CalleeOptions<TTransform>.
     options: options[0] as CalleeOptions<TTransform>,
   };
 }

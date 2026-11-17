@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { isNumber } from '../predicates.js';
 
 export const queueItemRowSchema = v.object({
   id: v.string(),
@@ -462,7 +463,7 @@ export class QueueStore {
       )
       .toArray()[0]?.['at'];
 
-    return typeof at === 'number' ? at : undefined;
+    return isNumber(at) ? at : undefined;
   }
 
   private items(query: string, ...bindings: SqlStorageValue[]): QueueItemRow[] {

@@ -12,6 +12,7 @@ import {
   engineFor,
   type Engine,
 } from '../scheduler/index.js';
+import { isObject, isString } from '../predicates.js';
 import { deserialize, serialize } from '../serialization.js';
 import {
   parseClientFrame,
@@ -22,12 +23,14 @@ import {
   type SocketClientFrame,
   type SocketInboundHandler,
   type SocketInboundMap,
+  type SocketInboundSchemas,
   type SocketOutboundMap,
   type SocketOutboundPayload,
   type SocketServerFrame,
   type SocketInboundMetadata,
-  type SocketShape,
-  socketShape,
+  type SocketMessageMaps,
+  type SocketValidatedInbound,
+  socketMessageMaps,
 } from './protocol.js';
 
 /** The Durable Object state a socket needs: SQLite storage and hibernatable WebSockets. */
@@ -40,17 +43,17 @@ export type DurabilitySocketConfig<
   Inbound extends SocketInboundMap,
   Outbound extends SocketOutboundMap,
   Metadata extends SocketInboundMetadata<Inbound>,
+  Schemas extends Record<keyof Inbound, StandardSchemaV1> =
+    SocketInboundSchemas<Inbound>,
 > = {
   context: DurabilitySocketContext;
-  /** Methods clients may call, keyed by the names they become on the client. */
-  inbound: Inbound;
+  /**
+   * Methods clients may call, keyed by the names they become on the client.
+   * Each validates its input with a Standard Schema before `handle` runs.
+   */
+  inbound: Inbound & SocketValidatedInbound<Inbound, Schemas>;
   /** Events the object may push, keyed by the methods they become on this instance. */
   outbound: Outbound;
-  /**
-   * Captures trusted per-connection data from the upgrade request. Stored in
-   * the WebSocket attachment, so it survives hibernation without re-auth.
-   */
-  metadata?: (request: Request) => Metadata | Promise<Metadata>;
   /** Outbound events kept for replay to reconnecting clients. Defaults to 1000. */
   retention?: number;
   /**
@@ -60,7 +63,20 @@ export type DurabilitySocketConfig<
    * whichever instance `webSocketMessage` delegates to.
    */
   channel?: string;
+} & SocketMetadataOption<Metadata>;
+
+type SocketMetadataConfig<Metadata> = {
+  /**
+   * Captures trusted per-connection data from the upgrade request. Stored in
+   * the WebSocket attachment, so it survives hibernation without re-auth.
+   * Required when a handler's `SocketCall<…>` metadata excludes `undefined`.
+   */
+  metadata: (request: Request) => Metadata | Promise<Metadata>;
 };
+
+type SocketMetadataOption<Metadata> = undefined extends Metadata
+  ? Partial<SocketMetadataConfig<Metadata>>
+  : SocketMetadataConfig<Metadata>;
 
 /** Thrown to the caller when an inbound payload fails its schema. */
 export class SocketInputError extends Error {
@@ -77,6 +93,7 @@ export class SocketInputError extends Error {
 
 type Attachment<Metadata> = {
   metadata: Metadata;
+  hasMetadata: boolean;
   names: string[];
   channel: string;
 };
@@ -88,6 +105,9 @@ const frameHandlersByObject = new WeakMap<Engine, Map<string, FrameHandler>>();
 
 // A configuration problem rather than a protocol violation, so clients reconnect.
 const channelMissingCloseCode = 1011;
+
+// Service Restart: the client reconnects, and the new upgrade captures metadata.
+const metadataMissingCloseCode = 1012;
 
 type EventRow = {
   seq: number;
@@ -138,27 +158,32 @@ const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
   }
 };
 
-const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
+const readAttachment = (ws: WebSocket): Attachment<unknown> => {
   const stored: unknown = ws.deserializeAttachment();
 
-  if (typeof stored !== 'object' || stored === null) {
+  if (!isObject(stored)) {
     return {
-      metadata: undefined as Metadata,
+      metadata: undefined,
+      hasMetadata: false,
       names: [],
       channel: defaultChannel,
     };
   }
 
+  const metadata = 'metadata' in stored ? stored.metadata : undefined;
   const names = 'names' in stored ? stored.names : undefined;
   // Connections accepted before channels existed carry no channel.
   const channel = 'channel' in stored ? stored.channel : undefined;
 
   return {
-    metadata: ('metadata' in stored ? stored.metadata : undefined) as Metadata,
-    names: Array.isArray(names)
-      ? names.filter((name): name is string => typeof name === 'string')
-      : [],
-    channel: typeof channel === 'string' ? channel : defaultChannel,
+    metadata,
+    // Attachments written before `hasMetadata` existed captured metadata if they hold any.
+    hasMetadata:
+      'hasMetadata' in stored
+        ? stored.hasMetadata === true
+        : metadata !== undefined,
+    names: Array.isArray(names) ? names.filter(isString) : [],
+    channel: isString(channel) ? channel : defaultChannel,
   };
 };
 
@@ -167,17 +192,13 @@ class DurabilitySocketCore<
   Outbound extends SocketOutboundMap,
   Metadata extends SocketInboundMetadata<Inbound>,
 > {
-  declare readonly [socketShape]: SocketShape<Inbound, Outbound>;
+  declare readonly [socketMessageMaps]: SocketMessageMaps<Inbound, Outbound>;
 
   readonly #context: DurabilitySocketContext;
   readonly #storage: DurableObjectStorage;
   readonly #inbound: Map<string, SocketInboundHandler<never>>;
   readonly #outboundNames: Set<string>;
-  readonly #metadata: DurabilitySocketConfig<
-    Inbound,
-    Outbound,
-    Metadata
-  >['metadata'];
+  readonly #metadata: SocketMetadataConfig<Metadata>['metadata'] | undefined;
   readonly #retention: number;
   readonly #channel: string;
   readonly #frameHandlers: Map<string, FrameHandler>;
@@ -269,6 +290,7 @@ class DurabilitySocketCore<
     this.#context.acceptWebSocket(server);
     server.serializeAttachment({
       metadata,
+      hasMetadata: this.#metadata !== undefined,
       names: [],
       channel: this.#channel,
     } satisfies Attachment<Metadata | undefined>);
@@ -285,8 +307,9 @@ class DurabilitySocketCore<
     ws: WebSocket,
     message: string | ArrayBuffer
   ): Promise<void> {
-    const text =
-      typeof message === 'string' ? message : new TextDecoder().decode(message);
+    const text = isString(message)
+      ? message
+      : new TextDecoder().decode(message);
 
     const frame = parseClientFrame(text);
 
@@ -329,6 +352,18 @@ class DurabilitySocketCore<
   webSocketClose(_ws: WebSocket): void {}
 
   async #handle(ws: WebSocket, frame: SocketClientFrame): Promise<void> {
+    // A connection accepted before this socket captured metadata, such as
+    // before a deploy added it, must not reach a handler without it.
+    if (this.#metadata !== undefined && !readAttachment(ws).hasMetadata) {
+      trace('socket.close', {
+        code: metadataMissingCloseCode,
+        reason: 'Socket metadata was not captured',
+      });
+      ws.close(metadataMissingCloseCode, 'Socket metadata was not captured');
+
+      return;
+    }
+
     if (frame.type === 'subscribe') {
       this.#subscribe(ws, frame);
 
@@ -359,21 +394,19 @@ class DurabilitySocketCore<
     }
 
     const call: SocketCall<never> = {
-      metadata: readAttachment<never>(ws).metadata,
+      // SAFETY: #inbound erases each handler's metadata type to never. With
+      // config.metadata set, #handle closed every connection whose attachment
+      // lacks its result; without it, the handlers' metadata admits undefined.
+      metadata: readAttachment(ws).metadata as never,
     };
 
     try {
-      const output =
-        typeof handler === 'function'
-          ? await handler(frame.input, call)
-          : await handler.handle(
-              (await this.#validate(
-                frame.method,
-                handler.input,
-                frame.input
-              )) as never,
-              call
-            );
+      // SAFETY: the input passed handler.input, and SocketValidatedInbound
+      // requires each handle to accept its own schema's output.
+      const output = await handler.handle(
+        (await this.#validate(frame, handler.input)) as never,
+        call
+      );
 
       sendFrame(ws, {
         v: socketProtocolVersion,
@@ -391,15 +424,14 @@ class DurabilitySocketCore<
     }
   }
 
-  async #validate(
-    method: string,
-    schema: StandardSchemaV1,
-    input: unknown
-  ): Promise<unknown> {
-    const result = await schema['~standard'].validate(input);
+  async #validate<Output>(
+    frame: Extract<SocketClientFrame, { type: 'call' }>,
+    schema: StandardSchemaV1<unknown, Output>
+  ): Promise<Output> {
+    const result = await schema['~standard'].validate(frame.input);
 
     if (result.issues) {
-      throw new SocketInputError(method, result.issues);
+      throw new SocketInputError(frame.method, result.issues);
     }
 
     return result.value;
@@ -425,11 +457,11 @@ class DurabilitySocketCore<
       return;
     }
 
-    const attachment = readAttachment<Metadata>(ws);
+    const attachment = readAttachment(ws);
     ws.serializeAttachment({
       ...attachment,
       names: frame.names,
-    } satisfies Attachment<Metadata>);
+    } satisfies Attachment<unknown>);
 
     const head = this.#headSeq();
     const replayed = this.#replay(ws, frame.names, frame.since, head);
@@ -582,10 +614,10 @@ type OutboundMethods<Outbound extends SocketOutboundMap> = {
  *   readonly socket = new DurabilitySocket({
  *     context: this.ctx,
  *     inbound: {
- *       list: () => this.repo.list(),
+ *       list: { input: v.undefined(), handle: () => this.repo.list() },
  *       create: {
  *         input: TodoSchema,
- *         handle: async (todo: Todo) => {
+ *         handle: async (todo) => {
  *           await this.repo.insert(todo);
  *           this.socket.created(todo);
  *         },
@@ -622,19 +654,20 @@ export interface DurabilitySocketConstructor {
     Outbound extends SocketOutboundMap,
     Metadata extends SocketInboundMetadata<Inbound> =
       SocketInboundMetadata<Inbound>,
+    Schemas extends Record<keyof Inbound, StandardSchemaV1> =
+      SocketInboundSchemas<Inbound>,
   >(
-    config: DurabilitySocketConfig<Inbound, Outbound, Metadata>
+    config: DurabilitySocketConfig<Inbound, Outbound, Metadata, Schemas>
   ): DurabilitySocket<Inbound, Outbound, Metadata>;
   migrate: typeof DurabilitySocketCore.migrate;
 }
 
 traceMethods(DurabilitySocketCore.prototype, 'DurabilitySocket');
 
-// TypeScript cannot declare class members derived from a generic event map,
-// so the constructor is typed separately; the constructor installs and
-// reserves every outbound method at runtime.
+// SAFETY: the constructor defines a method for every outbound event name on the
+// instance, members TypeScript cannot declare from a generic event map.
 export const DurabilitySocket =
-  DurabilitySocketCore as unknown as DurabilitySocketConstructor;
+  DurabilitySocketCore as DurabilitySocketConstructor;
 
 export { durabilitySocketMigrations } from './migrations.js';
 

@@ -18,6 +18,7 @@ import {
   assertPositiveInteger,
   type DurabilityRetryOptions,
 } from '../policy.js';
+import { isFunction, isNonEmptyString, isString } from '../predicates.js';
 import {
   DurabilityScheduler,
   assertChannel,
@@ -103,7 +104,7 @@ export type DurabilitySemaphoreQueueConfig<Body> = SchedulerAttachment & {
    * Receives items once the holder has confirmed their permits, after the
    * admission commits. Retried until it returns; must be idempotent on item ID.
    */
-  admit(items: AdmittedItem<Body>[]): unknown | Promise<unknown>;
+  admit(items: AdmittedItem<Body>[]): void | Promise<void>;
   /**
    * Returns which of these admitted items are done. The queue asks on its own
    * alarm and releases them, so a permit whose `release()` was lost (a
@@ -176,6 +177,7 @@ const maxDelayMs = 2 ** 31 - 1;
 const pairKey = (key: string, second: string): string =>
   JSON.stringify([key, second]);
 
+// SAFETY: callers pass only outbox keys this queue staged, all built by pairKey.
 const parsePairKey = (value: string): [string, string] =>
   JSON.parse(value) as [string, string];
 
@@ -257,11 +259,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       config.channel ?? defaultChannel
     );
 
-    if (typeof config.clientId !== 'string' || config.clientId.length === 0) {
+    if (!isNonEmptyString(config.clientId)) {
       throw new TypeError('clientId must be a non-empty string');
     }
 
-    if (typeof config.admit !== 'function') {
+    if (!isFunction(config.admit)) {
       throw new TypeError('Semaphore queue requires an admit function');
     }
 
@@ -276,10 +278,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           };
     this.#admit = config.admit;
 
-    if (
-      config.finished !== undefined &&
-      typeof config.finished !== 'function'
-    ) {
+    if (config.finished !== undefined && !isFunction(config.finished)) {
       throw new TypeError('finished must be a function');
     }
 
@@ -379,11 +378,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       const id = item.id ?? crypto.randomUUID();
 
       if (
-        typeof id !== 'string' ||
-        id.length === 0 ||
-        typeof item.key !== 'string' ||
-        item.key.length === 0 ||
-        (item.group !== undefined && typeof item.group !== 'string')
+        !isNonEmptyString(id) ||
+        !isNonEmptyString(item.key) ||
+        (item.group !== undefined && !isString(item.group))
       ) {
         throw new TypeError(
           'Semaphore items need a non-empty id, a semaphore key, and a string group'
@@ -1180,8 +1177,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       })
     );
 
-    const onError = (error: unknown) =>
-      reportFailure('durability.semaphore_queue.notify_failed', {}, error);
+    const onError = (cause: unknown) =>
+      reportFailure('durability.semaphore_queue.notify_failed', {}, cause);
 
     this.#engine.waitUntil(this.#notify().catch(onError), onError);
   }
@@ -1313,6 +1310,8 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           id: row.id,
           key: row.key,
           group: row.grp,
+          // SAFETY: enqueue is the only writer of item payloads, each
+          // serialized from a Body.
           body: deserialize(row.payload) as Body,
           enqueuedAt: row.created_at,
           admittedAt: row.admitted_at ?? row.created_at,

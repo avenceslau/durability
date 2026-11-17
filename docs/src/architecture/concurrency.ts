@@ -134,7 +134,7 @@ const reclaim = sourceExcerpt(
   serverFile,
   'reclaim',
   'Reclaim unclaimed grants',
-  '  #reclaim(\n',
+  '  #reclaim(store: HolderStore',
   '    return { grants: kept, events };\n  }'
 );
 
