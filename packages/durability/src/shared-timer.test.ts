@@ -320,15 +320,20 @@ describe('SharedTimer', () => {
     const timer = new SharedTimer();
     const work = new Promise<never>(() => {});
 
-    const outcome = timer
-      .withTimeout(work, 1_000, () => new Error('timed out'))
-      .catch((error: unknown) => error);
+    const outcome = timer.withTimeout(
+      work,
+      1_000,
+      () => new Error('timed out')
+    );
+
+    // Handled before the timeout rejects it; the assertion below awaits it.
+    outcome.catch(() => undefined);
 
     await vi.advanceTimersByTimeAsync(999);
     expect(timer.pendingCount).toBe(1);
     await vi.advanceTimersByTimeAsync(1);
 
-    await expect(outcome).resolves.toEqual(new Error('timed out'));
+    await expect(outcome).rejects.toEqual(new Error('timed out'));
     expect(timer.pendingCount).toBe(0);
   });
 

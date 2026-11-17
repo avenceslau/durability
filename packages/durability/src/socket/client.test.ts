@@ -177,9 +177,11 @@ describe('DurabilitySocketClient', () => {
       error: { name: 'RangeError', message: 'nope' },
     });
     await expect(listed).resolves.toEqual([]);
-    const error = await created.catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(SocketRemoteError);
-    expect(error).toMatchObject({ name: 'RangeError', message: 'nope' });
+    await expect(created).rejects.toBeInstanceOf(SocketRemoteError);
+    await expect(created).rejects.toMatchObject({
+      name: 'RangeError',
+      message: 'nope',
+    });
     expect(ws.sent).toHaveLength(2);
   });
 
@@ -225,19 +227,20 @@ describe('DurabilitySocketClient', () => {
 
   it('times out unanswered calls', async () => {
     const conn = createClient({ timeoutMs: 1_000 }).connect('a');
-    const call = conn.rpc.list().catch((error: unknown) => error);
+
+    const call = conn.rpc.list();
+    // Handled before the timeout rejects it; the assertion below awaits it.
+    call.catch(() => undefined);
     FakeSocket.latest().open();
 
     await vi.advanceTimersByTimeAsync(1_000);
-    await expect(call).resolves.toBeInstanceOf(SocketTimeoutError);
+    await expect(call).rejects.toBeInstanceOf(SocketTimeoutError);
   });
 
   it('holds one native timer for the ping and every pending call', async () => {
     const conn = createClient().connect('a');
 
-    const calls = Array.from({ length: 12_000 }, () =>
-      conn.rpc.list().catch((error: unknown) => error)
-    );
+    const calls = Array.from({ length: 12_000 }, () => conn.rpc.list());
 
     FakeSocket.latest().open();
 
@@ -245,9 +248,13 @@ describe('DurabilitySocketClient', () => {
 
     conn.close();
     expect(vi.getTimerCount()).toBe(0);
-    const outcomes = await Promise.all(calls);
+    const outcomes = await Promise.allSettled(calls);
     expect(
-      outcomes.every((outcome) => outcome instanceof SocketClosedError)
+      outcomes.every(
+        (outcome) =>
+          outcome.status === 'rejected' &&
+          outcome.reason instanceof SocketClosedError
+      )
     ).toBe(true);
   });
 

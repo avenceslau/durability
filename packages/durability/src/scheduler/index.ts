@@ -158,7 +158,7 @@ const activeKey = (channel: string | undefined, key: string): string =>
   JSON.stringify([channel ?? null, key]);
 
 /** Rejects a channel name a helper would otherwise store rows under. */
-export const assertChannel = (helper: string, channel: unknown): string => {
+export const assertChannel = (helper: string, channel: string): string => {
   if (typeof channel !== 'string' || channel.length === 0) {
     throw new TypeError(`${helper} channel must be a non-empty string`);
   }
@@ -456,11 +456,11 @@ export class Engine {
     if (participant.nextPendingAt !== undefined) {
       // Missing custom channels are dormant. Defer until construction finishes,
       // then restore their alarm without requiring a new application write.
-      const onError = (error: unknown) =>
+      const onError = (cause: unknown) =>
         reportFailure(
           'durability.channel_resume_failed',
           { table: table.name, channel },
-          error
+          cause
         );
 
       const resumed = Promise.resolve()
@@ -471,12 +471,12 @@ export class Engine {
 
           return undefined;
         })
-        .catch(async (error: unknown) => {
+        .catch(async (cause: unknown) => {
           if (await this.armFallbackAlarm()) {
             this.retryFailedRun();
           }
 
-          onError(error);
+          onError(cause);
         });
 
       this.waitUntil(resumed, onError);
@@ -562,7 +562,7 @@ export class Engine {
 
   waitUntil(
     promise: Promise<unknown>,
-    onError: (error: unknown) => void
+    onError: (cause: unknown) => void
   ): void {
     if (!this.context.waitUntil) {
       return;
@@ -821,11 +821,11 @@ export class Engine {
       this.earlyAlarm = undefined;
       trace('scheduler.early_alarm', { scheduledTime: timestamp });
 
-      const onError = (error: unknown) =>
+      const onError = (cause: unknown) =>
         reportFailure(
           'durability.background_execution.failed',
           { scheduledTime: timestamp },
-          error
+          cause
         );
 
       const execution = this.alarm().catch(onError);
@@ -1031,7 +1031,7 @@ export class Engine {
         { retryInMs: this.alarmMinDelayMs },
         error
       );
-      this.notifyAlarmRetry(error, info);
+      this.notifyAlarmRetry(serializeError(error), info);
       this.retryFailedRun();
     }
   }
@@ -1054,7 +1054,7 @@ export class Engine {
   }
 
   private notifyAlarmRetry(
-    failure: unknown,
+    error: SerializedError,
     invocation: AlarmInvocationInfo | undefined
   ): void {
     const hook = this.onAlarmRetry;
@@ -1066,7 +1066,7 @@ export class Engine {
     const objectId = this.objectId();
 
     const info: AlarmRetryInfo = {
-      error: serializeError(failure),
+      error,
       retryInMs: this.alarmMinDelayMs,
     };
 
@@ -1079,11 +1079,11 @@ export class Engine {
       info.objectId = objectId;
     }
 
-    const report = (hookError: unknown): void =>
+    const report = (cause: unknown): void =>
       reportFailure(
         'durability.alarm.retry_hook_failed',
         { retryInMs: info.retryInMs },
-        hookError
+        cause
       );
 
     try {
@@ -1342,10 +1342,10 @@ export class Engine {
     spec: ExecutionSpec<Result>,
     attempt: number,
     startedAt: number,
-    caught: unknown
+    cause: unknown
   ): Promise<void> {
     const { key, row } = spec;
-    const decision = decideRetry(spec, attempt, caught);
+    const decision = decideRetry(spec, attempt, cause);
     const serializedError = serializeError(decision.error);
 
     const updated = await this.transaction((sql) => {

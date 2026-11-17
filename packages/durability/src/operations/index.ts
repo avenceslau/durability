@@ -629,11 +629,11 @@ class DurabilityCore<Handlers extends HandlerMap> {
       return;
     }
 
-    const onError = (error: unknown) =>
+    const onError = (cause: unknown) =>
       reportFailure(
         'durability.background_execution.failed',
         { operation: input.operation, id: input.id },
-        error
+        cause
       );
 
     const background = this.#execute(key, eagerPermit)

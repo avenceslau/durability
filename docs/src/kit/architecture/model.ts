@@ -278,7 +278,7 @@ function viewOf(node: DiagramNode, changes: NodeChanges | undefined): NodeView {
 function measureNode(
   label: string,
   sublabel: string | undefined,
-  icon: unknown,
+  icon: IconName | ReactNode,
   iconAt: "left" | "top" | undefined,
 ): readonly [number, number] {
   const text = Math.max(textWidth(label, NODE.labelSize), textWidth(sublabel ?? "", NODE.sublabelSize))

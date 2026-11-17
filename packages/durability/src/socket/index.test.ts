@@ -58,7 +58,7 @@ beforeEach(() => {
       readonly status: number;
       readonly webSocket: unknown;
       constructor(
-        _body: unknown,
+        _body: BodyInit | null,
         init: { status: number; webSocket?: unknown }
       ) {
         this.status = init.status;

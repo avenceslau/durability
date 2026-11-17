@@ -533,8 +533,8 @@ export class DurabilityFanout<Body = unknown> {
 
     // Delayed first attempts are not due yet; the scheduler wakes for them.
     if (registered.length > 0 && this.#batchDelayMs === 0) {
-      const onError = (error: unknown) =>
-        reportFailure('durability.fanout.failed', {}, error);
+      const onError = (cause: unknown) =>
+        reportFailure('durability.fanout.failed', {}, cause);
 
       const work = this.#runDue()
         .then(() => this.#engine.scheduleNextAlarm())

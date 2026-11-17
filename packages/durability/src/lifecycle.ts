@@ -157,7 +157,7 @@ export const createEmitter = <
   }
 
   return (event) => {
-    const report = (error: unknown): void =>
+    const report = (cause: unknown): void =>
       reportFailure(
         'durability.lifecycle_hook.failed',
         {
@@ -165,7 +165,7 @@ export const createEmitter = <
           lifecycleType: event.type,
           entityId: 'id' in event ? event.id : 'durability',
         },
-        error
+        cause
       );
 
     try {

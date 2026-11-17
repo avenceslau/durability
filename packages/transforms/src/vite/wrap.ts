@@ -187,7 +187,7 @@ function namespaceGetWrapper(
     return undefined;
   }
 
-  const callee = unwrapExpression(node.callee);
+  const callee = unwrapExpression(syntaxNode(node.callee));
 
   if (!callee || !memberExpressionTypes.has(callee.type)) {
     return undefined;
@@ -200,7 +200,7 @@ function namespaceGetWrapper(
     configuredBindingKind(
       scopes,
       bindings,
-      callee.object,
+      syntaxNode(callee.object),
       scopes.nodeScopes.get(node) ?? scopes.rootScope
     ) !== 'namespace' ||
     typeof node.start !== 'number' ||
@@ -263,16 +263,10 @@ function stubReferenceWrapper(
  * Finds every expression to wrap in a transformable stub. Where one wrapped
  * expression contains another, only the outer one is returned.
  */
-export function findWrappers(search: WrapSearch, ast: unknown): Wrapper[] {
+export function findWrappers(search: WrapSearch, ast: SyntaxNode): Wrapper[] {
   const wrappers: Wrapper[] = [];
 
-  const visit = (value: unknown): void => {
-    const node = syntaxNode(value);
-
-    if (!node) {
-      return;
-    }
-
+  const visit = (node: SyntaxNode): void => {
     const wrapper =
       namespaceGetWrapper(search, node) ?? stubReferenceWrapper(search, node);
 

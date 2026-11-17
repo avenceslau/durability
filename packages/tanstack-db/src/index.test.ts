@@ -1,3 +1,4 @@
+import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { createCollection } from '@tanstack/db';
 import type {
   SocketConnection,
@@ -14,8 +15,8 @@ type TestSocket = {
   readonly [socketShape]: SocketShape<
     {
       list: () => Todo[];
-      create: (input: unknown) => Todo;
-      remove: (input: unknown) => void;
+      create: { input: StandardSchemaV1<Todo>; handle: (todo: Todo) => Todo };
+      remove: { input: StandardSchemaV1<string>; handle: (id: string) => void };
     },
     {
       created: { readonly payload?: Todo };
@@ -25,7 +26,9 @@ type TestSocket = {
   >;
 };
 
-type Handler = (payload: unknown) => void;
+type TodoEvents = { created: Todo; updated: Todo; removed: string };
+
+type Handler = (payload: TodoEvents[keyof TodoEvents]) => void;
 
 /** A scripted stand-in for a `DurabilitySocketClient` connection. */
 const fakeConnection = () => {
@@ -115,7 +118,10 @@ const fakeConnection = () => {
         handler({ names });
       }
     },
-    emit: (name: string, payload: unknown) => {
+    emit: <Name extends keyof TodoEvents>(
+      name: Name,
+      payload: TodoEvents[Name]
+    ) => {
       for (const handler of handlers.get(name) ?? []) {
         handler(payload);
       }

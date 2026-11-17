@@ -1,7 +1,12 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, extname, relative } from 'node:path';
 import { parse as parseJavaScript } from '@babel/parser';
-import { forEachChild, identifierName, syntaxNode } from './syntax.js';
+import {
+  forEachChild,
+  identifierName,
+  syntaxNode,
+  type SyntaxNode,
+} from './syntax.js';
 import { generateEnvTypes, type WranglerProject } from './wrangler.js';
 
 const identifierPattern = /^[A-Z_$][\w$]*$/i;
@@ -34,13 +39,7 @@ function wranglerBindingTypes(source: string): Map<string, string> {
 
   const types = new Map<string, string>();
 
-  const visit = (value: unknown): void => {
-    const node = syntaxNode(value);
-
-    if (!node) {
-      return;
-    }
-
+  const visit = (node: SyntaxNode): void => {
     const annotation = syntaxNode(
       syntaxNode(node.typeAnnotation)?.typeAnnotation
     );

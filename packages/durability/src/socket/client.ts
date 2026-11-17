@@ -126,7 +126,7 @@ type PendingCall = {
   text: string;
   sent: boolean;
   resolve: (output: unknown) => void;
-  reject: (error: unknown) => void;
+  reject: (error: Error) => void;
   cancelTimeout: () => void;
 };
 

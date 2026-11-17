@@ -129,7 +129,7 @@ type Pending = {
   request: PermitRequest;
   client: SemaphoreClientIdentity;
   resolve: (grant: PermitGrant) => void;
-  reject: (error: unknown) => void;
+  reject: (cause: unknown) => void;
 };
 
 type GroupPolicy = { limit?: number; blocked?: SemaphoreBlockedReason };
@@ -406,8 +406,8 @@ export class DurabilitySemaphoreServer {
     this.#engine.timer.schedule(() => {
       this.#roundScheduled = false;
 
-      const onError = (error: unknown) =>
-        reportFailure('durability.semaphore.round_failed', {}, error);
+      const onError = (cause: unknown) =>
+        reportFailure('durability.semaphore.round_failed', {}, cause);
 
       this.#round = this.#runRound()
         .catch(onError)
