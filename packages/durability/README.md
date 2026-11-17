@@ -666,9 +666,9 @@ export class TodoList extends DurableObject<Env> {
   readonly socket = new DurabilitySocket({
     context: this.ctx,
     inbound: {
-      // Bare handlers take no input (or `unknown` input they validate themselves).
-      list: () => [...this.todos.values()],
-      // Typed input requires a Standard Schema; here the handler is a durable operation.
+      // Every handler validates its input; `list` takes none.
+      list: { input: v.undefined(), handle: () => [...this.todos.values()] },
+      // Here the handler is a durable operation.
       createTodo: {
         input: v.object({ id: v.string(), payload: TodoSchema }),
         handle: this.durability.createTodo,
@@ -744,7 +744,7 @@ export default {
 };
 ```
 
-An inbound handler is either a bare function, which receives no input or `unknown` input it validates itself, or `{ input, handle }`, where `input` is any [Standard Schema](https://standardschema.dev) validator (zod, Valibot, ArkType, …) and `handle` declares its parameter type. A bare function that claims a typed parameter does not compile. Handlers receive `call.metadata`, the value `metadata(request)` returned at upgrade time; it is stored in the WebSocket attachment, so it survives hibernation. The fronting Worker is responsible for authentication and for routing the upgrade to the right object; the socket does no authorization of its own. `metadata` must be assignable to every `SocketCall<…>` annotation the handlers declare.
+Every inbound handler is `{ input, handle }`, where `input` is any [Standard Schema](https://standardschema.dev) validator (zod, Valibot, ArkType, …) and `handle` receives the schema's output. A handler without a schema, or whose `handle` does not accept the schema's output, does not compile. A method that takes no input uses a schema for `undefined`, such as Valibot's `v.undefined()`, and the client calls it without arguments. Handlers receive `call.metadata`, the value `metadata(request)` returned at upgrade time; it is stored in the WebSocket attachment, so it survives hibernation. The fronting Worker is responsible for authentication and for routing the upgrade to the right object; the socket does no authorization of its own. `metadata` must be assignable to every `SocketCall<…>` annotation the handlers declare.
 
 Every outbound event is persisted to `durability_socket_events` with a sequence number before it is pushed. A reconnecting client subscribes from the last sequence it saw: events still within `retention` (default 1000) are replayed in order, otherwise the client is told to resync and should rebuild its state from an inbound snapshot call. Payloads must be JSON. Keep-alive pings are answered by the runtime through `setWebSocketAutoResponse`, so idle connections never wake the object. Frames over 1 MiB are rejected; malformed frames close the connection with code `4002`.
 
@@ -756,7 +756,9 @@ Like the other helpers, `DurabilitySocket` takes a `channel` option, `default` u
 readonly librarySocket = new DurabilitySocket({
   context: this.ctx,
   channel: 'durable-alerts',
-  inbound: { list: () => this.alerts.list() },
+  inbound: {
+    list: { input: v.undefined(), handle: () => this.alerts.list() },
+  },
   outbound: { updated: event<Alert>() },
 });
 
@@ -867,7 +869,7 @@ readonly socket = new DurabilitySocket({
   inbound: {
     work: {
       input: v.object({ cursor: v.optional(v.string()) }),
-      handle: (query: { cursor?: string }) => this.tracker.records(query),
+      handle: (query) => this.tracker.records(query),
     },
   },
   outbound: { settled: event<DurabilityOperationEvent<typeof handlers>>() },

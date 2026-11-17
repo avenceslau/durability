@@ -83,6 +83,12 @@ export type SocketCollectionConfig<
   >;
 };
 
+type EventSubscribers<Socket extends AnyDurabilitySocket> = {
+  [Event in keyof OutboundOf<Socket>]: (
+    handler: (payload: SocketOutboundPayload<OutboundOf<Socket>[Event]>) => void
+  ) => () => void;
+};
+
 type SyncWriter<Row extends object, Key extends string | number> = (
   changes: SocketChange<Row, Key>[]
 ) => void;
@@ -303,26 +309,24 @@ export const socketCollectionOptions = <
           })
         );
 
-        for (const [event, map] of Object.entries(on ?? {})) {
+        const events: EventSubscribers<Socket> = connection.on;
+
+        const follow = <Event extends keyof OutboundOf<Socket>>(
+          event: Event
+        ) => {
+          const map = on?.[event];
+
           if (!map) {
-            continue;
+            return;
           }
 
-          const subscribe = connection.on[
-            event as keyof OutboundOf<Socket>
-          ] as (handler: (payload: unknown) => void) => () => void;
-
           unsubscribers.push(
-            subscribe((payload) => {
+            events[event]((payload) => {
               if (snapshotting) {
                 return;
               }
 
-              const changes = (
-                map as (
-                  payload: unknown
-                ) => SocketChange<Row, Key> | SocketChange<Row, Key>[] | void
-              )(payload);
+              const changes = map(payload);
 
               if (!changes) {
                 return;
@@ -331,6 +335,10 @@ export const socketCollectionOptions = <
               apply(Array.isArray(changes) ? changes : [changes]);
             })
           );
+        };
+
+        for (const event of Object.keys(on ?? {})) {
+          follow(event as keyof OutboundOf<Socket>);
         }
 
         return () => {

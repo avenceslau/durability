@@ -12,7 +12,7 @@ import {
   engineFor,
   type Engine,
 } from '../scheduler/index.js';
-import { isFunction, isObject, isString } from '../predicates.js';
+import { isObject, isString } from '../predicates.js';
 import { deserialize, serialize } from '../serialization.js';
 import {
   parseClientFrame,
@@ -23,11 +23,13 @@ import {
   type SocketClientFrame,
   type SocketInboundHandler,
   type SocketInboundMap,
+  type SocketInboundSchemas,
   type SocketOutboundMap,
   type SocketOutboundPayload,
   type SocketServerFrame,
   type SocketInboundMetadata,
   type SocketMessageMaps,
+  type SocketValidatedInbound,
   socketMessageMaps,
 } from './protocol.js';
 
@@ -41,10 +43,15 @@ export type DurabilitySocketConfig<
   Inbound extends SocketInboundMap,
   Outbound extends SocketOutboundMap,
   Metadata extends SocketInboundMetadata<Inbound>,
+  Schemas extends Record<keyof Inbound, StandardSchemaV1> =
+    SocketInboundSchemas<Inbound>,
 > = {
   context: DurabilitySocketContext;
-  /** Methods clients may call, keyed by the names they become on the client. */
-  inbound: Inbound;
+  /**
+   * Methods clients may call, keyed by the names they become on the client.
+   * Each validates its input with a Standard Schema before `handle` runs.
+   */
+  inbound: Inbound & SocketValidatedInbound<Inbound, Schemas>;
   /** Events the object may push, keyed by the methods they become on this instance. */
   outbound: Outbound;
   /**
@@ -363,16 +370,10 @@ class DurabilitySocketCore<
     };
 
     try {
-      const output = isFunction(handler)
-        ? await handler(frame.input, call)
-        : await handler.handle(
-            (await this.#validate(
-              frame.method,
-              handler.input,
-              frame.input
-            )) as never,
-            call
-          );
+      const output = await handler.handle(
+        (await this.#validate(frame, handler.input)) as never,
+        call
+      );
 
       sendFrame(ws, {
         v: socketProtocolVersion,
@@ -391,14 +392,13 @@ class DurabilitySocketCore<
   }
 
   async #validate<Output>(
-    method: string,
-    schema: StandardSchemaV1<unknown, Output>,
-    input: unknown
+    frame: Extract<SocketClientFrame, { type: 'call' }>,
+    schema: StandardSchemaV1<unknown, Output>
   ): Promise<Output> {
-    const result = await schema['~standard'].validate(input);
+    const result = await schema['~standard'].validate(frame.input);
 
     if (result.issues) {
-      throw new SocketInputError(method, result.issues);
+      throw new SocketInputError(frame.method, result.issues);
     }
 
     return result.value;
@@ -581,10 +581,10 @@ type OutboundMethods<Outbound extends SocketOutboundMap> = {
  *   readonly socket = new DurabilitySocket({
  *     context: this.ctx,
  *     inbound: {
- *       list: () => this.repo.list(),
+ *       list: { input: v.undefined(), handle: () => this.repo.list() },
  *       create: {
  *         input: TodoSchema,
- *         handle: async (todo: Todo) => {
+ *         handle: async (todo) => {
  *           await this.repo.insert(todo);
  *           this.socket.created(todo);
  *         },
@@ -621,8 +621,10 @@ export interface DurabilitySocketConstructor {
     Outbound extends SocketOutboundMap,
     Metadata extends SocketInboundMetadata<Inbound> =
       SocketInboundMetadata<Inbound>,
+    Schemas extends Record<keyof Inbound, StandardSchemaV1> =
+      SocketInboundSchemas<Inbound>,
   >(
-    config: DurabilitySocketConfig<Inbound, Outbound, Metadata>
+    config: DurabilitySocketConfig<Inbound, Outbound, Metadata, Schemas>
   ): DurabilitySocket<Inbound, Outbound, Metadata>;
   migrate: typeof DurabilitySocketCore.migrate;
 }
