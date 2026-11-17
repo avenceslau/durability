@@ -197,8 +197,8 @@ describe('DurabilityTracker listing', () => {
 });
 
 describe('DurabilityTracker', () => {
-  const setup = (
-    handler: (call: DurableCall<null>) => Promise<unknown>,
+  const setup = <Result>(
+    handler: (call: DurableCall<null>) => Promise<Result>,
     options: { maxAttempts?: number } = {}
   ) => {
     const durability = new Durability({

@@ -127,7 +127,7 @@ const decideRetry = sourceExcerpt(
   schedulerFile,
   'decide-retry',
   'Decide whether a failure is final',
-  'const decideRetry = (',
+  'const decideRetry = <Result>(',
   '    return { error, terminal, timestamp, nextAttemptAt: timestamp };\n  }'
 );
 

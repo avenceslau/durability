@@ -54,25 +54,29 @@ const storedValueSchema = v.variant('kind', [
 ]);
 
 /**
- * What `JSON.stringify` would produce: `undefined` properties are dropped and
- * `undefined` array elements become `null`. `jsonSchema` rejects both as given,
- * although they are routine in values such as lifecycle events whose handler
- * returned nothing.
+ * Parses a value into what `JSON.stringify` would produce: `undefined`
+ * properties are dropped and `undefined` array elements become `null`.
+ * `jsonSchema` rejects both as given, although they are routine in values such
+ * as lifecycle events whose handler returned nothing.
  */
-const asJson = (value: unknown): unknown => {
+const toJson = (value: unknown): Json => {
   if (Array.isArray(value)) {
-    return value.map((item) => (item === undefined ? null : asJson(item)));
+    // `map` keeps the holes of a sparse array, which are not JSON.
+    return v.parse(
+      jsonSchema,
+      value.map((item) => (item === undefined ? null : toJson(item)))
+    );
   }
 
   // Only plain objects are rewritten; anything else must fail validation as is.
   if (!isPlainObject(value)) {
-    return value;
+    return v.parse(jsonSchema, value);
   }
 
   return Object.fromEntries(
     Object.entries(value)
       .filter(([, item]) => item !== undefined)
-      .map(([key, item]) => [key, asJson(item)])
+      .map(([key, item]) => [key, toJson(item)])
   );
 };
 
@@ -81,10 +85,10 @@ export const serialize = (value: unknown): string =>
   JSON.stringify(
     value === undefined
       ? { kind: 'undefined' }
-      : { kind: 'value', value: v.parse(jsonSchema, asJson(value)) }
+      : { kind: 'value', value: toJson(value) }
   );
 
-export const deserialize = (value: string): unknown => {
+export const deserialize = (value: string): Json | undefined => {
   const stored = v.parse(storedValueSchema, JSON.parse(value));
 
   return stored.kind === 'undefined' ? undefined : stored.value;

@@ -318,10 +318,11 @@ export const socketCollectionOptions = <
                 return;
               }
 
-              const changes = (map as (payload: unknown) => unknown)(payload) as
-                | SocketChange<Row, Key>
-                | SocketChange<Row, Key>[]
-                | void;
+              const changes = (
+                map as (
+                  payload: unknown
+                ) => SocketChange<Row, Key> | SocketChange<Row, Key>[] | void
+              )(payload);
 
               if (!changes) {
                 return;

@@ -107,7 +107,7 @@ const deadline = sourceExcerpt(
   outboxFile,
   'deadline',
   'Time out without cancelling',
-  '  async #deadline(run: () => unknown): Promise<void> {',
+  '  #deadline<Result>(run: () => Result | Promise<Result>): Promise<Result> {',
   '    );\n  }'
 );
 
@@ -631,7 +631,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sink'],
           source: sourceFocus(
             deadline,
-            'await this.#engine.timer.withTimeout(',
+            'return this.#engine.timer.withTimeout(',
             '() => new OutboxTimeoutError(this.#attemptTimeoutMs)'
           ),
           durable: 'Whatever the sink keeps.',

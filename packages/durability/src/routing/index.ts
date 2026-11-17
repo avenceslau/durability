@@ -22,7 +22,7 @@ export type { RoutingAddress, RoutingTarget, Sharding } from './client.js';
 export type RoutingSession<Input, Value, Context = unknown> = {
   push(input: Input, context?: Context): Promise<EnqueueResult<Value>>;
   setContext(context: TransformContext): {
-    invoke(method: string, args: unknown[]): Promise<unknown>;
+    invoke(method: string, args: unknown[]): Promise<EnqueueResult<Value>>;
   };
 };
 

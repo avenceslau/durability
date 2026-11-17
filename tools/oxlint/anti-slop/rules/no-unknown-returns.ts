@@ -17,6 +17,18 @@ type FunctionWithReturnType =
   | ESTree.TSFunctionType
   | ESTree.TSMethodSignature;
 
+/** Reports whether a type sits in the `extends` clause of a conditional type, which matches types rather than declaring a contract. */
+const isInConditionalTypePattern = (node: ESTree.Node): boolean => {
+  let child: ESTree.Node = node;
+  let parent = node.parent;
+  while (parent !== null && parent !== undefined) {
+    if (parent.type === "TSConditionalType" && parent.extendsType === child) return true;
+    child = parent;
+    parent = parent.parent;
+  }
+  return false;
+};
+
 /** Ban function contracts that return unknown instead of a parsed domain type. */
 export const noUnknownReturnsRule = defineRule({
   meta: {
@@ -57,6 +69,7 @@ export const noUnknownReturnsRule = defineRule({
       const annotation = node.returnType;
       if (annotation === null || annotation === undefined) return;
       if (!resolvesToUnknown(annotation.typeAnnotation)) return;
+      if (isInConditionalTypePattern(node)) return;
       context.report({ node: annotation.typeAnnotation, messageId: "unknownReturn" });
     };
 
