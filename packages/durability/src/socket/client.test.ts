@@ -110,7 +110,7 @@ class FakeSocket extends EventTarget {
 const createClient = (overrides: { timeoutMs?: number } = {}) =>
   new DurabilitySocketClient<TestSocket>({
     url: (id) => `wss://example.test/${id}`,
-    webSocket: FakeSocket as unknown as new (url: string) => WebSocket,
+    webSocket: FakeSocket,
     ...overrides,
   });
 

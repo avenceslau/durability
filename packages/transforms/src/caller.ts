@@ -510,5 +510,5 @@ export function withTransforms<TNamespace extends NamespaceLike<object>>(
       return (...args: Parameters<TNamespace['get']>) =>
         createTransformStub(target.get(...args), []);
     },
-  }) as unknown as TransformNamespace<TNamespace>;
+  }) as TransformNamespace<TNamespace>;
 }

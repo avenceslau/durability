@@ -43,7 +43,7 @@ describe('semaphore queue', () => {
 
   const schedulerFor = (storage: FakeStorage) =>
     new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
     });
 
   const fixture = (

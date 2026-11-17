@@ -17,11 +17,11 @@ import { serialize } from '../serialization';
 import { contextFor, FakeStorage } from '../test-fakes';
 
 /** A destination is just a write function; this one records what it received. */
-class Sink {
-  readonly entries = new Map<string, StoredMessage<string>>();
+class Sink<Body = string> {
+  readonly entries = new Map<string, StoredMessage<Body>>();
   fail = false;
 
-  readonly write = async (entry: StoredMessage<string>): Promise<void> => {
+  readonly write = async (entry: StoredMessage<Body>): Promise<void> => {
     if (this.fail) {
       throw new Error('sink unavailable');
     }
@@ -45,9 +45,9 @@ afterEach(() => {
 });
 
 describe('fanout', () => {
-  const fixture = (
-    targets: Record<string, FanoutTarget<string>>,
-    sink = new Sink()
+  const fixture = <Body = string>(
+    targets: Record<string, FanoutTarget<Body>>,
+    sink = new Sink<Body>()
   ) => {
     const storage = new FakeStorage();
     const routing = new RoutingLoad();
@@ -534,11 +534,14 @@ describe('fanout', () => {
 
   it('returns rejection before writing any unserializable batch', async () => {
     const deliver = vi.fn(async () => undefined);
-    const { fanout } = fixture({ target: { deliver } });
+
+    const { fanout } = fixture<string | (() => undefined)>({
+      target: { deliver },
+    });
 
     const invalid = {
       id: 'bad',
-      body: (() => undefined) as unknown as string,
+      body: () => undefined,
     };
 
     expect(
@@ -843,7 +846,7 @@ describe('fanout', () => {
     const storage = new FakeStorage();
 
     const scheduler = new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
     });
 
     const fanout = new DurabilityFanout<string>({

@@ -10,6 +10,9 @@ import {
 import type { SemaphoreProvisioning } from './leases';
 import { FakeStorage } from '../test-fakes';
 
+/** What an RPC peer can send without following the protocol. */
+type PeerMessage = { type: string };
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
@@ -59,7 +62,7 @@ describe('semaphore', () => {
     const storage = new FakeStorage();
 
     const scheduler = new DurabilityScheduler({
-      context: { storage: storage as unknown as DurableObjectStorage },
+      context: { storage },
     });
 
     const events: DurabilitySemaphoreEvent[] = [];
@@ -368,9 +371,11 @@ describe('semaphore', () => {
       },
     });
 
+    const nonsense: PeerMessage = { type: 'nonsense' };
+
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expect(
-      semaphore.handle({ type: 'nonsense' } as unknown as SemaphoreRequest)
+      semaphore.handle(nonsense as SemaphoreRequest)
     ).rejects.toThrow('Malformed semaphore message');
     await expect(
       semaphore.handle(
@@ -1107,9 +1112,7 @@ describe('semaphore schema upgrades', () => {
       'durability_0008_create_semaphore_queue'
     );
 
-    expect(
-      Server.migrate({ storage: storage as unknown as DurableObjectStorage })
-    ).toMatchObject({
+    expect(Server.migrate({ storage })).toMatchObject({
       applied: [
         'durability_0009_create_semaphore_leases',
         'durability_0020_semaphore_channels',

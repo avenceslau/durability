@@ -618,4 +618,4 @@ traceMethods(DurabilityAlarmsCore.prototype, 'DurabilityAlarms');
 // See Durability: members derived from the handler names cannot be declared on
 // the class, so the constructor is typed separately.
 export const DurabilityAlarms =
-  DurabilityAlarmsCore as unknown as DurabilityAlarmsConstructor;
+  DurabilityAlarmsCore as DurabilityAlarmsConstructor;

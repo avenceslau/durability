@@ -633,7 +633,7 @@ traceMethods(DurabilitySocketCore.prototype, 'DurabilitySocket');
 // so the constructor is typed separately; the constructor installs and
 // reserves every outbound method at runtime.
 export const DurabilitySocket =
-  DurabilitySocketCore as unknown as DurabilitySocketConstructor;
+  DurabilitySocketCore as DurabilitySocketConstructor;
 
 export { durabilitySocketMigrations } from './migrations.js';
 

@@ -828,4 +828,4 @@ traceMethods(DurabilityCore.prototype, 'Durability');
 // TypeScript cannot declare class members derived from a generic handler map,
 // so the constructor is typed separately; the constructor installs and reserves
 // every operation method at runtime.
-export const Durability = DurabilityCore as unknown as DurabilityConstructor;
+export const Durability = DurabilityCore as DurabilityConstructor;
