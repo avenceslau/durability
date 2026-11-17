@@ -573,7 +573,7 @@ export class Engine {
    * `DurableObjectState` applications pass at runtime carries it.
    */
   objectId(): string | undefined {
-    const id: unknown = Reflect.get(this.context, 'id');
+    const id = 'id' in this.context ? this.context.id : undefined;
 
     return id === undefined || id === null ? undefined : String(id);
   }

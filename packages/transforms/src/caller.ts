@@ -1,6 +1,7 @@
 import type { Result as BetterResult } from 'better-result';
 import type {
   CallerOptions,
+  Members,
   RuntimeTransformContext,
   TransformContext,
   TransformContextOf,
@@ -270,7 +271,8 @@ export function createRestorableStubFactory(
     return undefined;
   }
 
-  const get: unknown = Reflect.get(namespace, method);
+  const members: Members<typeof method> = namespace;
+  const get = members[method];
 
   if (typeof get !== 'function') {
     return undefined;
@@ -286,11 +288,15 @@ export function createRestorableStubFactory(
 // Service binding stubs answer any property with a callable RPC stub, so only
 // an object exposing the DurableObjectId interface identifies a Durable Object.
 function isDurableObjectId(value: unknown): value is DurableObjectId {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const members: Members<'equals' | 'toString'> = value;
+
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof Reflect.get(value, 'equals') === 'function' &&
-    typeof Reflect.get(value, 'toString') === 'function'
+    typeof members.equals === 'function' &&
+    typeof members.toString === 'function'
   );
 }
 
@@ -356,11 +362,15 @@ function createSourceStub<TTarget extends object>(
           throw error;
         }
 
-        const then: unknown =
+        let then: unknown;
+
+        if (
           (typeof result === 'object' || typeof result === 'function') &&
           result !== null
-            ? Reflect.get(result, 'then')
-            : undefined;
+        ) {
+          const members: Members<'then'> = result;
+          then = members.then;
+        }
 
         if (typeof then === 'function') {
           Reflect.apply(then, result, [
@@ -378,11 +388,11 @@ function createSourceStub<TTarget extends object>(
           context: TransformContext
         ): Promise<unknown> => {
           if (Object.keys(context).length === 0) {
+            const members: Members<typeof property> = stub;
+
             return Promise.resolve(
               Reflect.apply(
-                (stub === accessedStub
-                  ? value
-                  : Reflect.get(stub, property)) as (
+                (stub === accessedStub ? value : members[property]) as (
                   ...args: unknown[]
                 ) => unknown,
                 stub,
@@ -391,7 +401,7 @@ function createSourceStub<TTarget extends object>(
             );
           }
 
-          const setContext = Reflect.get(stub, 'setContext');
+          const { setContext }: Members<'setContext'> = stub;
 
           if (typeof setContext !== 'function') {
             throw new TypeError(
@@ -413,7 +423,7 @@ function createSourceStub<TTarget extends object>(
             );
           }
 
-          const invoke = Reflect.get(contextualTarget, 'invoke');
+          const { invoke }: Members<'invoke'> = contextualTarget;
 
           if (typeof invoke !== 'function') {
             throw new TypeError(
@@ -440,7 +450,7 @@ function createSourceStub<TTarget extends object>(
           }
         };
 
-        const id: unknown = Reflect.get(accessedStub, 'id');
+        const { id }: Members<'id'> = accessedStub;
         const actorId = isDurableObjectId(id) ? id : undefined;
 
         const run = (

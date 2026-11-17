@@ -1,5 +1,8 @@
 type AsyncMethod = (...args: never[]) => Promise<unknown>;
 
+/** Members of a stub, namespace, or registration, read by name before their type is checked. */
+export type Members<Name extends string> = { readonly [Key in Name]?: unknown };
+
 type ReservedRpcMethod =
   | 'alarm'
   | 'connect'

@@ -9,3 +9,6 @@ Local deviations:
 - `effect/` is not vendored; no package depends on Effect.
 - `package.json` marks the directory as an ES module so Node loads the
   TypeScript sources without a module-type warning.
+- `rules/no-reflect-get.ts` allows `Reflect.get` directly inside the `get`
+  trap of a `new Proxy(target, { get })` handler literal, where forwarding the
+  trapped read is what `Reflect.get` is for.

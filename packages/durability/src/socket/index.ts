@@ -149,12 +149,12 @@ const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
     };
   }
 
-  const names = Reflect.get(stored, 'names');
+  const names = 'names' in stored ? stored.names : undefined;
   // Connections accepted before channels existed carry no channel.
-  const channel = Reflect.get(stored, 'channel');
+  const channel = 'channel' in stored ? stored.channel : undefined;
 
   return {
-    metadata: Reflect.get(stored, 'metadata') as Metadata,
+    metadata: ('metadata' in stored ? stored.metadata : undefined) as Metadata,
     names: Array.isArray(names)
       ? names.filter((name): name is string => typeof name === 'string')
       : [],

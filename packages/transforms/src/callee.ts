@@ -2,6 +2,7 @@ import { RpcTarget } from 'cloudflare:workers';
 import {
   reservedRpcMethods,
   type AsyncMethodKey,
+  type Members,
   type RegisteredTransform,
   type RuntimeTransformContext,
   type TransformContext,
@@ -86,13 +87,15 @@ function dispatchWithContext(
       return Promise.resolve(original.apply(instance, args));
     }
 
+    const instanceMembers: Members<'env' | 'ctx'> = instance;
+
     return transform({
       instance,
       method,
       args,
       context: currentContext,
-      env: Reflect.get(instance, 'env'),
-      state: Reflect.get(instance, 'ctx'),
+      env: instanceMembers.env,
+      state: instanceMembers.ctx,
       next: (input) =>
         run(
           index + 1,
@@ -265,7 +268,7 @@ export function applyTransforms<
     let currentPrototype: object | null = prototype;
 
     while (currentPrototype) {
-      const constructorValue = Reflect.get(currentPrototype, 'constructor');
+      const constructorValue = currentPrototype.constructor;
 
       const constructorName =
         typeof constructorValue === 'function'
@@ -333,20 +336,21 @@ export function applyTransforms<
       throw new TypeError('Invalid transform registration');
     }
 
-    const transform = Reflect.get(registration, 'transform');
+    const registrationMembers: Members<'transform' | 'options'> = registration;
+    const transform = registrationMembers.transform;
 
     if (typeof transform !== 'object' || transform === null) {
       throw new TypeError('Invalid transform registration');
     }
 
-    const calleeFactory = Reflect.get(transform, 'calleeFactory');
+    const { calleeFactory }: Members<'calleeFactory'> = transform;
 
     if (typeof calleeFactory !== 'function') {
       throw new TypeError('Transform does not define a callee');
     }
 
     const configured: unknown = Reflect.apply(calleeFactory, transform, [
-      Reflect.get(registration, 'options'),
+      registrationMembers.options,
     ]);
 
     if (typeof configured !== 'function') {

@@ -49,7 +49,7 @@
     "anti-slop/no-object-parameters": "warn",
     "anti-slop/no-reduce-accumulator-copy": "error",
     "anti-slop/no-reflect-apply": "warn",
-    "anti-slop/no-reflect-get": "warn",
+    "anti-slop/no-reflect-get": "error",
     "anti-slop/no-runtime-typeof": "warn",
     "anti-slop/no-shape-in-symbol-names": "warn",
     "anti-slop/no-unknown-parameters": "warn",

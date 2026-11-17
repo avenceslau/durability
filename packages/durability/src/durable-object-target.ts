@@ -26,12 +26,14 @@ export const resolveNamespace = <Target extends Rpc.DurableObjectBranded>(
     );
   }
 
-  const exported: unknown = Reflect.get(workerExports, config.exportName);
+  const exportsByName: Record<string, unknown> = workerExports;
+  const exported = exportsByName[config.exportName];
 
   if (
     exported === null ||
     (typeof exported !== 'object' && typeof exported !== 'function') ||
-    typeof Reflect.get(exported, 'getByName') !== 'function'
+    !('getByName' in exported) ||
+    typeof exported.getByName !== 'function'
   ) {
     throw error(
       `Export "${config.exportName}" is not a Durable Object namespace`
