@@ -184,13 +184,12 @@ function pipelined(node: PipelineNode): unknown {
             .then((value) => (value as Record<string, unknown>)[property])),
         call: (args) =>
           node.resolve().then((value) => {
-            const target = value as Record<string, unknown>;
+            const target = value as Record<
+              string,
+              (...args: unknown[]) => unknown
+            >;
 
-            return Reflect.apply(
-              target[property] as (...args: unknown[]) => unknown,
-              target,
-              args
-            );
+            return target[property]!(...args);
           }),
       });
     },
@@ -205,7 +204,7 @@ function pipelinedPromise(promise: Promise<unknown>): unknown {
     resolve: () => promise,
     call: (args) =>
       promise.then((value) =>
-        Reflect.apply(value as (...args: unknown[]) => unknown, undefined, args)
+        (value as (...args: unknown[]) => unknown)(...args)
       ),
   });
 }
@@ -279,7 +278,7 @@ export function createRestorableStubFactory(
   }
 
   return (...args) => {
-    const reopen = () => Reflect.apply(get, namespace, args) as object;
+    const reopen = () => get.apply(namespace, args) as object;
 
     return createSourceStub({ stub: reopen(), broken: false, reopen }, []);
   };
@@ -327,8 +326,7 @@ function createSourceStub<TTarget extends object>(
 
           return createSourceStub(source, [
             ...transforms,
-            (context) =>
-              Promise.resolve(Reflect.apply(configured, undefined, [context])),
+            (context) => Promise.resolve(configured(context)),
           ]);
         };
       }
@@ -348,70 +346,29 @@ function createSourceStub<TTarget extends object>(
         }
       };
 
-      // Observes failures without adopting the result, so pipelining survives.
-      const callObserved = (
-        method: (...args: unknown[]) => unknown,
-        initialArgs: unknown[]
-      ): unknown => {
-        let result: unknown;
-
-        try {
-          result = Reflect.apply(method, accessedStub, initialArgs);
-        } catch (error) {
-          markBroken(accessedStub);
-          throw error;
-        }
-
-        let then: unknown;
-
-        if (
-          (typeof result === 'object' || typeof result === 'function') &&
-          result !== null
-        ) {
-          const members: Members<'then'> = result;
-          then = members.then;
-        }
-
-        if (typeof then === 'function') {
-          Reflect.apply(then, result, [
-            () => undefined,
-            () => markBroken(accessedStub),
-          ]);
-        }
-
-        return result;
-      };
-
       const callWithTransforms = (initialArgs: unknown[]): Promise<unknown> => {
         const call = (
           stub: TTarget,
           context: TransformContext
         ): Promise<unknown> => {
           if (Object.keys(context).length === 0) {
-            const members: Members<typeof property> = stub;
+            const methods = stub as Record<
+              string,
+              (...args: unknown[]) => unknown
+            >;
 
-            return Promise.resolve(
-              Reflect.apply(
-                (stub === accessedStub ? value : members[property]) as (
-                  ...args: unknown[]
-                ) => unknown,
-                stub,
-                initialArgs
-              )
-            );
+            return Promise.resolve(methods[property]!(...initialArgs));
           }
 
-          const { setContext }: Members<'setContext'> = stub;
+          const contextSource: Members<'setContext'> = stub;
 
-          if (typeof setContext !== 'function') {
+          if (typeof contextSource.setContext !== 'function') {
             throw new TypeError(
               'Cannot send transform context to a target without setContext'
             );
           }
 
-          const contextualTarget: unknown = Reflect.apply(setContext, stub, [
-            context,
-          ]);
+          const contextualTarget: unknown = contextSource.setContext(context);
 
           if (
             (typeof contextualTarget !== 'object' &&
@@ -423,18 +380,15 @@ function createSourceStub<TTarget extends object>(
             );
           }
 
-          const { invoke }: Members<'invoke'> = contextualTarget;
+          const invoker: Members<'invoke'> = contextualTarget;
 
-          if (typeof invoke !== 'function') {
+          if (typeof invoker.invoke !== 'function') {
             throw new TypeError(
               'setContext must return a target with an invoke method'
             );
           }
 
-          return Reflect.apply(invoke, contextualTarget, [
-            property,
-            initialArgs,
-          ]);
+          return invoker.invoke(property, initialArgs);
         };
 
         const callRestorable = async (
@@ -497,14 +451,39 @@ function createSourceStub<TTarget extends object>(
             return pipelinedPromise(callWithTransforms(initialArgs));
           }
 
-          if (source.reopen) {
-            return callObserved(
-              method as (...args: unknown[]) => unknown,
-              initialArgs
+          if (!source.reopen) {
+            return Reflect.apply(method, accessedStub, initialArgs);
+          }
+
+          let result: unknown;
+
+          try {
+            result = Reflect.apply(method, accessedStub, initialArgs);
+          } catch (error) {
+            markBroken(accessedStub);
+            throw error;
+          }
+
+          // Observes failures without adopting the result, so pipelining survives.
+          let then: unknown;
+
+          if (
+            (typeof result === 'object' || typeof result === 'function') &&
+            result !== null
+          ) {
+            const members: Members<'then'> = result;
+            then = members.then;
+          }
+
+          if (typeof then === 'function') {
+            then.call(
+              result,
+              () => undefined,
+              () => markBroken(accessedStub)
             );
           }
 
-          return Reflect.apply(method, accessedStub, initialArgs);
+          return result;
         },
       });
     },

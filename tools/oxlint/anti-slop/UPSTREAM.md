@@ -12,3 +12,6 @@ Local deviations:
 - `rules/no-reflect-get.ts` allows `Reflect.get` directly inside the `get`
   trap of a `new Proxy(target, { get })` handler literal, where forwarding the
   trapped read is what `Reflect.get` is for.
+- `rules/no-reflect-apply.ts` likewise allows `Reflect.apply` directly inside
+  the `apply` trap of a `new Proxy(target, { apply })` handler literal. Both
+  rules share the check in `shared/proxy-trap.ts`.

@@ -188,7 +188,7 @@ const proxyStorage = <Storage extends object>(
             : args;
 
         return traceCall('storage', { method, args: loggableArgs(args) }, () =>
-          Reflect.apply(value, target, forwarded)
+          value.apply(target, forwarded)
         );
       };
     },

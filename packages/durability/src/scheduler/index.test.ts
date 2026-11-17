@@ -568,7 +568,8 @@ describe('DurabilityScheduler', () => {
     });
 
     expect(() =>
-      Reflect.apply(scheduler.setTimeout, scheduler, [undefined, 10])
+      // @ts-expect-error untyped callers can pass a non-function callback
+      scheduler.setTimeout(undefined, 10)
     ).toThrow('callback must be a function');
   });
 

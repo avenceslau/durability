@@ -349,16 +349,16 @@ export function applyTransforms<
       throw new TypeError('Transform does not define a callee');
     }
 
-    const configured: unknown = Reflect.apply(calleeFactory, transform, [
-      registrationMembers.options,
-    ]);
+    const configured: unknown = calleeFactory.call(
+      transform,
+      registrationMembers.options
+    );
 
     if (typeof configured !== 'function') {
       throw new TypeError('Callee transform factory must return a function');
     }
 
-    return (context) =>
-      Promise.resolve(Reflect.apply(configured, undefined, [context]));
+    return (context) => Promise.resolve(configured(context));
   };
 
   installed.all.push(...(config.all ?? []).map(configure));
