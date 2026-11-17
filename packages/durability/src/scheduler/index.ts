@@ -205,7 +205,7 @@ export type ExecutionSpec<Result> = {
    */
   complete: (result: Result, attempt: number) => number | undefined;
   /** Kind-specific terminal rule beyond non-retryable errors and exhausted attempts. */
-  isTerminal: (error: unknown) => boolean;
+  isTerminal: (cause: unknown) => boolean;
 };
 
 type PendingTimes = {
@@ -223,17 +223,17 @@ type RetryDecision = {
 const decideRetry = <Result>(
   spec: ExecutionSpec<Result>,
   attempt: number,
-  error: unknown
+  cause: unknown
 ): RetryDecision => {
   const terminal =
-    isNonRetryable(error) ||
+    isNonRetryable(cause) ||
     attempt >= spec.policy.maxAttempts ||
-    spec.isTerminal(error);
+    spec.isTerminal(cause);
 
   if (terminal) {
     const timestamp = Date.now();
 
-    return { error, terminal, timestamp, nextAttemptAt: timestamp };
+    return { error: cause, terminal, timestamp, nextAttemptAt: timestamp };
   }
 
   try {
@@ -254,7 +254,7 @@ const decideRetry = <Result>(
     }
 
     return {
-      error,
+      error: cause,
       terminal: false,
       timestamp,
       nextAttemptAt: timestamp + delay,

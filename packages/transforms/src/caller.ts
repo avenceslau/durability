@@ -243,6 +243,12 @@ export function createTransformStub<TTarget extends object>(
   return createSourceStub({ stub: target, broken: false }, transforms);
 }
 
+/** The namespace methods the Vite plugin rewrites into restorable stub factories. */
+export type RestorableNamespace = {
+  get?(...args: unknown[]): object;
+  getByName?(...args: unknown[]): object;
+};
+
 /**
  * Returns a `get`-like function whose transformable stubs replace themselves
  * after a call throws, because many Durable Object errors leave a stub broken.
@@ -263,15 +269,14 @@ export function createTransformStub<TTarget extends object>(
  * ```
  */
 export function createRestorableStubFactory(
-  namespace: unknown,
-  method: string
+  namespace: RestorableNamespace | undefined,
+  method: keyof RestorableNamespace
 ): ((...args: unknown[]) => TransformStub<object>) | undefined {
   if (!isObjectOrFunction(namespace)) {
     return undefined;
   }
 
-  const members: Members<typeof method> = namespace;
-  const get = members[method];
+  const get = namespace[method];
 
   if (!isFunction(get)) {
     return undefined;
