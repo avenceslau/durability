@@ -24,6 +24,7 @@ const accountLimit = sourceExcerpt(
   'export class AccountLimit extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const route = sourceExcerpt(
   semaphore,
   semaphoreFile,
@@ -32,6 +33,7 @@ const route = sourceExcerpt(
   '    const client = new SemaphoreClient({',
   '        return config.invoke(stub, message);'
 );
+
 const outstanding = sourceExcerpt(
   server,
   serverFile,
@@ -40,6 +42,7 @@ const outstanding = sourceExcerpt(
   '/** Unclaimed permits are reclaimed once the claim window passes. */',
   '  Math.max(0, effectivePermits(grant, now) - grant.released);'
 );
+
 const construct = sourceExcerpt(
   server,
   serverFile,
@@ -48,6 +51,7 @@ const construct = sourceExcerpt(
   '    this.#engine = engineFor(config);',
   '      nextPendingAt: () => this.#store.nextPendingAt(),\n    });'
 );
+
 const handle = sourceExcerpt(
   server,
   serverFile,
@@ -56,6 +60,7 @@ const handle = sourceExcerpt(
   '   * The single entry point the application exposes over RPC. A `request` is',
   '      this.#scheduleRound();\n    });\n  }'
 );
+
 const scheduleRound = sourceExcerpt(
   server,
   serverFile,
@@ -64,6 +69,7 @@ const scheduleRound = sourceExcerpt(
   '  #scheduleRound(): void {',
   '    }, delay);\n  }'
 );
+
 const runRound = sourceExcerpt(
   server,
   serverFile,
@@ -72,6 +78,7 @@ const runRound = sourceExcerpt(
   '  async #runRound(): Promise<void> {',
   '          : { leases, ...(round.contended ? { contended: true } : {}) }),\n      });\n    }'
 );
+
 const allocate = sourceExcerpt(
   server,
   serverFile,
@@ -80,6 +87,7 @@ const allocate = sourceExcerpt(
   '  #allocate(',
   '      leaseEvents = outcome.events;'
 );
+
 const applyReports = sourceExcerpt(
   server,
   serverFile,
@@ -88,6 +96,7 @@ const applyReports = sourceExcerpt(
   '  #applyReports(',
   '    return results;\n  }'
 );
+
 const reclaim = sourceExcerpt(
   server,
   serverFile,
@@ -96,6 +105,7 @@ const reclaim = sourceExcerpt(
   '  #reclaim(',
   '      this.#emit(event);\n    }\n  }'
 );
+
 const nextPendingAt = sourceExcerpt(
   store,
   storeFile,
@@ -104,6 +114,7 @@ const nextPendingAt = sourceExcerpt(
   '  nextPendingAt(): number | undefined {',
   '    )?.expires_at;\n  }'
 );
+
 const leaseReports = sourceExcerpt(
   leases,
   leasesFile,
@@ -112,6 +123,7 @@ const leaseReports = sourceExcerpt(
   'export const applyLeaseReports = (',
   '  return outcome;\n};'
 );
+
 const allocateLeases = sourceExcerpt(
   leases,
   leasesFile,

@@ -23,14 +23,17 @@ export function mountWalkthrough(element: Element): () => void {
   if (!(element instanceof HTMLElement)) {
     return () => {};
   }
+
   const root = element;
   const model = JSON.parse(root.dataset.model!) as WalkthroughState;
   const controller = new AbortController();
   const { signal } = controller;
   let scenarioIndex = 0;
   let stepIndex = 0;
+
   const query = <T extends Element = HTMLElement>(selector: string) =>
     root.querySelector<T>(selector)!;
+
   const scenarioSelect = query<HTMLSelectElement>('[data-scenario]');
   const sourceSelect = query<HTMLSelectElement>('[data-source-select]');
   const previous = query<HTMLButtonElement>('[data-previous]');
@@ -38,6 +41,7 @@ export function mountWalkthrough(element: Element): () => void {
   const dialog = query<HTMLDialogElement>('[data-dialog]');
   const openButton = query<HTMLButtonElement>('[data-open]');
   let scrollLocked = false;
+
   const releaseScroll = () => {
     if (scrollLocked) {
       unlockScroll();
@@ -52,14 +56,18 @@ export function mountWalkthrough(element: Element): () => void {
 
   const currentScenario = () => model.scenarios[scenarioIndex]!;
   const currentStep = () => currentScenario().steps[stepIndex]!;
+
   const diagramOf = (index: number) => {
     let diagram = diagrams.get(index);
+
     if (!diagram) {
       diagram = scenarioDiagram(model, model.scenarios[index]!);
       diagrams.set(index, diagram);
     }
+
     return diagram;
   };
+
   const nodesOf = (scenario: number, step: number) =>
     stepNodes(
       diagramOf(scenario),
@@ -78,6 +86,7 @@ export function mountWalkthrough(element: Element): () => void {
       })
     );
   }
+
   const text = (selector: string, value: string) => {
     query(selector).textContent = value;
   };
@@ -91,6 +100,7 @@ export function mountWalkthrough(element: Element): () => void {
    */
   function placeCard() {
     const svg = column.querySelector('[data-graph] svg');
+
     if (!svg || getComputedStyle(card).position !== 'absolute') {
       return;
     }
@@ -101,42 +111,51 @@ export function mountWalkthrough(element: Element): () => void {
     const canvas = model.diagram.canvas;
     const bounds = column.getBoundingClientRect();
     const drawing = svg.getBoundingClientRect();
+
     const scale = Math.min(
       drawing.width / canvas.width,
       drawing.height / canvas.height
     );
+
     const originX =
       drawing.left - bounds.left + (drawing.width - canvas.width * scale) / 2;
+
     const originY =
       drawing.top - bounds.top + (drawing.height - canvas.height * scale) / 2;
+
     const toScreen = (rect: Box): Box => ({
       x: originX + rect.x * scale,
       y: originY + rect.y * scale,
       width: rect.width * scale,
       height: rect.height * scale,
     });
+
     const canvasRect = (id: string) =>
       nodeRect(
         state.nodes.get(id)!,
         state.layout.nodes.get(id)!,
         state.layout.scale
       );
+
     const onScreen = (id: string) => toScreen(canvasRect(id));
 
     const target = onScreen(anchor);
     const width = card.offsetWidth;
     const height = card.offsetHeight;
+
     // Centred on the node, or flush with one of its ends, on each side.
     const across = [
       target.x + target.width / 2 - width / 2,
       target.x,
       target.x + target.width - width,
     ];
+
     const along = [
       target.y + target.height / 2 - height / 2,
       target.y,
       target.y + target.height - height,
     ];
+
     const candidates = [
       ...across.map((x) => ({
         side: 'above',
@@ -165,23 +184,30 @@ export function mountWalkthrough(element: Element): () => void {
     const shown = [...state.layout.nodes.keys()].filter((id) =>
       state.visible.has(id)
     );
+
     const obstacles = shown.map((id) => ({
       rect: onScreen(id),
       weight: id === anchor ? 100 : state.lit.has(id) ? 10 : 1,
     }));
+
     for (const edge of diagram.edges) {
       const route = state.layout.edges.get(edge.id);
+
       if (!state.visible.has(edge.id) || !route) {
         continue;
       }
+
       const [from, to] = state.ends.get(edge.id) ?? [edge.from, edge.to];
+
       const geometry = edgeGeometry(
         edge,
         route,
         canvasRect(from),
         canvasRect(to)
       );
+
       const weight = state.lit.has(edge.id) ? 10 : 1;
+
       for (let index = 0; index <= edgeSamples; index += 1) {
         const [x, y] = pointOnPath(geometry.path, index / edgeSamples);
         obstacles.push({
@@ -189,10 +215,12 @@ export function mountWalkthrough(element: Element): () => void {
           weight,
         });
       }
+
       if (edge.label !== undefined) {
         const [labelWidth, labelHeight] = labelSize(edge.label).map(
           (size) => size * state.layout.scale
         ) as [number, number];
+
         const [x, y] = geometry.labelPoint;
         obstacles.push({
           rect: toScreen({
@@ -205,20 +233,24 @@ export function mountWalkthrough(element: Element): () => void {
         });
       }
     }
+
     const cost = (position: { x: number; y: number }) =>
       obstacles.reduce(
         (sum, { rect, weight }) =>
           sum + overlap({ ...position, width, height }, rect) * weight,
         0
       );
+
     const best = candidates.reduce((chosen, candidate) =>
       cost(candidate) < cost(chosen) ? candidate : chosen
     );
 
     const pointsAcross = best.side === 'above' || best.side === 'below';
+
     const caret = pointsAcross
       ? target.x + target.width / 2 - best.x
       : target.y + target.height / 2 - best.y;
+
     card.dataset.side = best.side;
     card.style.left = `${best.x}px`;
     card.style.top = `${best.y}px`;
@@ -231,9 +263,11 @@ export function mountWalkthrough(element: Element): () => void {
   function render(scrollCode = false) {
     const scenario = currentScenario();
     const step = currentStep();
+
     const excerpt = model.excerpts.find(
       (entry) => entry.id === step.source.excerpt
     )!;
+
     scenarioSelect.value = scenario.id;
     sourceSelect.value = excerpt.file;
     previous.disabled = stepIndex === 0;
@@ -267,15 +301,18 @@ export function mountWalkthrough(element: Element): () => void {
               number <= step.source.to
           );
         });
+
       if (!panel.hidden && scrollCode) {
         const line = panel.querySelector<HTMLElement>('[data-highlighted]');
         const pre = panel.querySelector('pre');
+
         if (line && pre && pre.clientHeight > 0) {
           // Scroll only the code pane, not the entire page or focused control.
           const offset =
             line.getBoundingClientRect().top -
             pre.getBoundingClientRect().top +
             pre.scrollTop;
+
           pre.scrollTop = Math.max(0, offset - pre.clientHeight / 3);
         }
       }
@@ -293,11 +330,14 @@ export function mountWalkthrough(element: Element): () => void {
 
   function moveStep(direction: number) {
     const index = stepIndex + direction;
+
     if (index < 0 || index >= currentScenario().steps.length) {
       return;
     }
+
     const focused = document.activeElement;
     goTo(scenarioIndex, index);
+
     // File changes can hide a focused source line; boundary buttons can also
     // become disabled. Keep focus in the explorer so the next arrow still works.
     if (
@@ -319,27 +359,34 @@ export function mountWalkthrough(element: Element): () => void {
     if (predicate(currentStep(), scenarioIndex, stepIndex)) {
       return [scenarioIndex, stepIndex];
     }
+
     const local = currentScenario().steps.findIndex((step, index) =>
       predicate(step, scenarioIndex, index)
     );
+
     if (local >= 0) {
       return [scenarioIndex, local];
     }
+
     for (const [index, scenario] of model.scenarios.entries()) {
       const step = scenario.steps.findIndex((entry, stepAt) =>
         predicate(entry, index, stepAt)
       );
+
       if (step >= 0) {
         return [index, step];
       }
     }
+
     return undefined;
   }
 
   function selectNode(nodeId: string) {
     const source = model.details[nodeId]!.source;
+
     const shows = (scenario: number, step: number) =>
       nodesOf(scenario, step).includes(nodeId);
+
     const destination =
       (source &&
         findStep(
@@ -347,9 +394,11 @@ export function mountWalkthrough(element: Element): () => void {
             entry.source.excerpt === source && shows(scenario, step)
         )) ||
       findStep((_entry, scenario, step) => shows(scenario, step));
+
     if (destination) {
       goTo(...destination);
     }
+
     selectedNode = nodeId;
     draw();
   }
@@ -360,12 +409,16 @@ export function mountWalkthrough(element: Element): () => void {
       if (!(event.target instanceof Element)) {
         return;
       }
+
       const line = event.target.closest<HTMLElement>('[data-linked-line]');
+
       if (!line) {
         return;
       }
+
       const file = line.closest<HTMLElement>('[data-file-panel]')!.dataset.file;
       const number = Number(line.dataset.sourceLine);
+
       const destination = findStep(
         (entry) =>
           model.excerpts.find((excerpt) => excerpt.id === entry.source.excerpt)!
@@ -373,6 +426,7 @@ export function mountWalkthrough(element: Element): () => void {
           number >= entry.source.from &&
           number <= entry.source.to
       );
+
       if (destination) {
         goTo(...destination, false);
       }
@@ -389,12 +443,16 @@ export function mountWalkthrough(element: Element): () => void {
       ) {
         return;
       }
+
       const line = event.target.closest<HTMLElement>('[data-linked-line]');
+
       if (line && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault();
         line.click();
+
         return;
       }
+
       if (
         !dialog.open ||
         event.defaultPrevented ||
@@ -409,7 +467,9 @@ export function mountWalkthrough(element: Element): () => void {
       ) {
         return;
       }
+
       const selection = window.getSelection();
+
       if (
         selection &&
         !selection.isCollapsed &&
@@ -418,6 +478,7 @@ export function mountWalkthrough(element: Element): () => void {
       ) {
         return;
       }
+
       event.preventDefault();
       moveStep(event.key === 'ArrowRight' ? 1 : -1);
     },
@@ -429,6 +490,7 @@ export function mountWalkthrough(element: Element): () => void {
       const index = model.scenarios.findIndex(
         (entry) => entry.id === scenarioSelect.value
       );
+
       goTo(index, 0);
     },
     { signal }
@@ -441,6 +503,7 @@ export function mountWalkthrough(element: Element): () => void {
           model.excerpts.find((excerpt) => excerpt.id === entry.source.excerpt)!
             .file === sourceSelect.value
       );
+
       if (destination) {
         goTo(...destination);
       }
@@ -455,6 +518,7 @@ export function mountWalkthrough(element: Element): () => void {
       if (dialog.open) {
         return;
       }
+
       dialog.showModal();
       lockScroll();
       scrollLocked = true;
@@ -471,6 +535,7 @@ export function mountWalkthrough(element: Element): () => void {
     () => {
       releaseScroll();
       openButton.setAttribute('aria-expanded', 'false');
+
       if (openButton.isConnected) {
         openButton.focus({ preventScroll: true });
       }
@@ -480,15 +545,18 @@ export function mountWalkthrough(element: Element): () => void {
   render();
   const resize = new ResizeObserver(() => placeCard());
   resize.observe(column);
+
   const stopPreview = animatePreview(
     query('.aw-preview-graph'),
     model,
     () => dialog.open
   );
+
   return () => {
     if (dialog.open) {
       dialog.close();
     }
+
     releaseScroll();
     controller.abort();
     graph.unmount();
@@ -512,6 +580,7 @@ type Box = { x: number; y: number; width: number; height: number };
 function overlap(a: Box, b: Box): number {
   const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
   const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+
   return width > 0 && height > 0 ? width * height : 0;
 }
 
@@ -527,7 +596,9 @@ function animatePreview(
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     return () => {};
   }
+
   const diagram = previewDiagram(model);
+
   if (diagram.stages.length < 2) {
     return () => {};
   }
@@ -535,25 +606,30 @@ function animatePreview(
   const preview = createRoot(container);
   let stage = 0;
   let timer: ReturnType<typeof setInterval> | undefined;
+
   const draw = () =>
     preview.render(
       createElement(Architecture, { diagram, stage, label: model.title })
     );
+
   const advance = () => {
     if (paused()) {
       return;
     }
+
     stage = (stage + 1) % diagram.stages.length;
     draw();
   };
 
   draw();
+
   const observer = new IntersectionObserver(([entry]) => {
     clearInterval(timer);
     timer = entry?.isIntersecting
       ? setInterval(advance, previewStageMs)
       : undefined;
   });
+
   observer.observe(container);
 
   return () => {

@@ -20,6 +20,7 @@ const todoList = sourceExcerpt(
   'export class TodoList extends DurableObject<Env> {',
   '    return this.durability.alarm(info);\n  }'
 );
+
 const upgrade = sourceExcerpt(
   example,
   exampleFile,
@@ -28,6 +29,7 @@ const upgrade = sourceExcerpt(
   'export default {',
   '};'
 );
+
 const schema = sourceExcerpt(
   migrations,
   migrationsFile,
@@ -36,6 +38,7 @@ const schema = sourceExcerpt(
   "    name: 'durability_0006_create_socket_events',",
   '      DROP TABLE durability_socket_events_before_channels;\n    `,'
 );
+
 const construct = sourceExcerpt(
   socket,
   socketFile,
@@ -44,6 +47,7 @@ const construct = sourceExcerpt(
   '  constructor(config: DurabilitySocketConfig<Inbound, Outbound, Metadata>) {',
   '      )\n    );\n  }'
 );
+
 const accept = sourceExcerpt(
   socket,
   socketFile,
@@ -52,6 +56,7 @@ const accept = sourceExcerpt(
   '  async fetch(request: Request): Promise<Response> {',
   '    return new Response(null, { status: 101, webSocket: client });\n  }'
 );
+
 const message = sourceExcerpt(
   socket,
   socketFile,
@@ -60,6 +65,7 @@ const message = sourceExcerpt(
   '  async webSocketMessage(',
   '  webSocketClose(_ws: WebSocket): void {}'
 );
+
 const call = sourceExcerpt(
   socket,
   socketFile,
@@ -68,6 +74,7 @@ const call = sourceExcerpt(
   '  async #call(',
   '        error: serializeError(error),\n      });\n    }\n  }'
 );
+
 const subscribe = sourceExcerpt(
   socket,
   socketFile,
@@ -76,6 +83,7 @@ const subscribe = sourceExcerpt(
   '  #subscribe(',
   '    return true;\n  }'
 );
+
 const publish = sourceExcerpt(
   socket,
   socketFile,

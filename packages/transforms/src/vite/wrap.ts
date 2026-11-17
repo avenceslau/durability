@@ -33,9 +33,11 @@ type Wrapper = {
 
 function unusedName(code: string, name: string): string {
   let candidate = name;
+
   while (new RegExp(`\\b${candidate}\\b`).test(code)) {
     candidate += '_';
   }
+
   return candidate;
 }
 
@@ -51,6 +53,7 @@ function namespaceCall(
   method: string
 ): Wrapper['namespaceCall'] {
   const object = syntaxNode(callee.object);
+
   if (
     typeof callee.start !== 'number' ||
     typeof callee.end !== 'number' ||
@@ -62,6 +65,7 @@ function namespaceCall(
   // Babel excludes wrapping parentheses from node ranges; keep them, and any
   // comments among them, with the object.
   let objectEnd = object.end;
+
   for (;;) {
     if (/[\s)]/.test(code[objectEnd] ?? '')) {
       objectEnd += 1;
@@ -90,12 +94,14 @@ type Relations = WeakMap<object, NodeRelation>;
 /** Whether the node is being assigned to, declared, or deleted, not read. */
 function isUnsafePosition(relations: Relations, node: SyntaxNode): boolean {
   let current = node;
+
   for (
     let relation = relations.get(current);
     relation;
     relation = relations.get(current)
   ) {
     const { parent, key } = relation;
+
     if (
       (parent.type === 'AssignmentExpression' && key === 'left') ||
       (parent.type === 'AssignmentPattern' && key === 'left') ||
@@ -111,8 +117,10 @@ function isUnsafePosition(relations: Relations, node: SyntaxNode): boolean {
     ) {
       return true;
     }
+
     current = parent;
   }
+
   return false;
 }
 
@@ -124,11 +132,15 @@ function isReferenceIdentifier(
   if (isUnsafePosition(relations, node)) {
     return false;
   }
+
   const relation = relations.get(node);
+
   if (!relation) {
     return false;
   }
+
   const { parent, key } = relation;
+
   if (
     (memberExpressionTypes.has(parent.type) && key === 'property') ||
     ((parent.type === 'ObjectProperty' ||
@@ -149,6 +161,7 @@ function isReferenceIdentifier(
   ) {
     return false;
   }
+
   return true;
 }
 
@@ -165,6 +178,7 @@ function namespaceGetWrapper(
   node: SyntaxNode
 ): Wrapper | undefined {
   const { code, scopes, bindings, restoreBrokenStubs } = search;
+
   if (
     (node.type !== 'CallExpression' &&
       node.type !== 'OptionalCallExpression') ||
@@ -174,11 +188,13 @@ function namespaceGetWrapper(
   }
 
   const callee = unwrapExpression(node.callee);
+
   if (!callee || !memberExpressionTypes.has(callee.type)) {
     return undefined;
   }
 
   const method = propertyName(callee);
+
   if (
     (method !== 'get' && method !== 'getByName') ||
     configuredBindingKind(
@@ -208,6 +224,7 @@ function stubReferenceWrapper(
   node: SyntaxNode
 ): Wrapper | undefined {
   const { scopes, bindings } = search;
+
   if (typeof node.start !== 'number' || typeof node.end !== 'number') {
     return undefined;
   }
@@ -220,6 +237,7 @@ function stubReferenceWrapper(
         node,
         scopes.nodeScopes.get(node) ?? scopes.rootScope
       ) === 'stub' && !isUnsafePosition(scopes.relations, node);
+
     return isStub ? { start: node.start, end: node.end } : undefined;
   }
 
@@ -229,10 +247,13 @@ function stubReferenceWrapper(
   ) {
     return undefined;
   }
+
   const name = identifierName(node);
+
   const binding = name
     ? resolveBinding(scopes.nodeScopes.get(node), name)
     : undefined;
+
   return binding?.kind === 'stub' && binding.wrapReferences
     ? { start: node.start, end: node.end }
     : undefined;
@@ -244,32 +265,40 @@ function stubReferenceWrapper(
  */
 export function findWrappers(search: WrapSearch, ast: unknown): Wrapper[] {
   const wrappers: Wrapper[] = [];
+
   const visit = (value: unknown): void => {
     const node = syntaxNode(value);
+
     if (!node) {
       return;
     }
 
     const wrapper =
       namespaceGetWrapper(search, node) ?? stubReferenceWrapper(search, node);
+
     if (wrapper) {
       wrappers.push(wrapper);
     }
+
     forEachChild(node, visit);
   };
+
   visit(ast);
 
   const outermost: Wrapper[] = [];
   let coveredUntil = -1;
+
   for (const wrapper of wrappers.sort(
     (left, right) => left.start - right.start || right.end - left.end
   )) {
     if (wrapper.end <= coveredUntil) {
       continue;
     }
+
     outermost.push(wrapper);
     coveredUntil = wrapper.end;
   }
+
   return outermost;
 }
 
@@ -285,6 +314,7 @@ export function applyWrappers(
 
   for (const wrapper of wrappers) {
     const call = wrapper.namespaceCall;
+
     if (!call) {
       imports.add(`createTransformStub as ${helperName}`);
       transformed.prependLeft(wrapper.start, `${helperName}(`);

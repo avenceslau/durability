@@ -12,9 +12,12 @@ import {
 import './walkthrough.css';
 
 interface Props { example: WalkthroughExample; }
+
 const { example } = Astro.props;
 const model = walkthroughs[example];
+
 if (!model) { throw new Error(`Unknown architecture walkthrough: ${example}`); }
+
 const state = publicState(model);
 const files = sourceFiles(model);
 const initialScenario = model.scenarios[0]!;
@@ -104,5 +107,6 @@ const titleId = `architecture-title-${instance}`;
 <script>
   import { mount } from '@cloudflare/nimbus-docs/client';
   import { mountWalkthrough } from './walkthrough.client';
+
   mount('[data-architecture]', mountWalkthrough);
 </script>

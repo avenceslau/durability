@@ -44,6 +44,7 @@ export class Subscription extends DurableObject<Env> {
             body: JSON.stringify(payload),
           }
         );
+
         if (!response.ok) {
           throw new Error(`Charge failed with ${response.status}`);
         }
@@ -57,9 +58,11 @@ export class Subscription extends DurableObject<Env> {
     handlers: {
       renew: async ({ idempotencyKey, scheduledTime }) => {
         const customerId = await this.ctx.storage.get<string>('customerId');
+
         if (customerId === undefined) {
           return; // Cancelled; let this occurrence complete without renewing.
         }
+
         // The alarm's idempotencyKey is stable across its retries, so a
         // retried occurrence cannot double-charge.
         await this.durability.chargeInvoice({
@@ -83,6 +86,7 @@ export class Subscription extends DurableObject<Env> {
   /** Destructive retention cleanup for settled records older than 90 days. */
   async purgeHistory() {
     const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+
     return {
       operations: await this.durability.purgeBefore(cutoff),
       alarms: await this.alarms.purgeBefore(cutoff),
@@ -98,21 +102,27 @@ export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     const [, customerId, action] = url.pathname.split('/');
+
     if (!customerId || request.method !== 'POST') {
       return new Response('Expected POST /:customerId/(subscribe|cancel)', {
         status: 404,
       });
     }
+
     const subscription = env.SUBSCRIPTIONS.getByName(customerId);
 
     if (action === 'subscribe') {
       await subscription.subscribe(customerId);
+
       return new Response('subscribed', { status: 201 });
     }
+
     if (action === 'cancel') {
       await subscription.cancel();
+
       return new Response('cancelled');
     }
+
     return new Response('Not found', { status: 404 });
   },
 } satisfies ExportedHandler<Env>;

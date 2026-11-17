@@ -10,17 +10,20 @@ afterEach(() => {
 const fixture = () => {
   const storage = new FakeStorage();
   DurabilitySemaphoreQueue.migrate(contextFor(storage));
+
   return { storage, store: new QueueStore(storage.sql, 'default') };
 };
 
 describe('queue storage', () => {
   it('does not rewrite an unchanged key but still persists count and pacing changes', () => {
     const { storage, store } = fixture();
+
     const key = {
       key: 'account',
       next_request_at: 20,
       queued: 1,
     };
+
     store.upsertKey(key);
     expect(storage.sql.exec('SELECT changes() AS changed').one()).toEqual({
       changed: 1,
@@ -43,6 +46,7 @@ describe('queue storage', () => {
       queued: 2,
       next_request_at: 25,
     };
+
     store.upsertKey(rescheduled);
     expect(storage.sql.exec('SELECT changes() AS changed').one()).toEqual({
       changed: 1,
@@ -158,6 +162,7 @@ describe('queue storage', () => {
   it('scopes items, grants, keys, leases, and due times to one channel', () => {
     const { storage, store } = fixture();
     const side = new QueueStore(storage.sql, 'side');
+
     for (const [target, at] of [
       [store, 50],
       [side, 10],

@@ -169,16 +169,19 @@ function locate(path: Path, t: number): readonly [Curve, number, number] {
     c2: [0, 0],
     to: [0, 0],
   }
+
   return [empty, 0, 0]
 }
 
 export function pointOnPath(path: Path, t: number): Point {
   const [curve, , local] = locate(path, t)
+
   return pointOnCurve(curve, local)
 }
 
 export function tangentOnPath(path: Path, t: number): Point {
   const [curve, , local] = locate(path, t)
+
   return tangentAt(curve, local)
 }
 
@@ -201,6 +204,7 @@ function round(value: number): number {
 export function pathData(path: Path): string {
   const start = path[0]?.from ?? [0, 0]
   const curves = path.map(({ c1, c2, to }) => `C${[c1, c2, to].map(([x, y]) => `${round(x)} ${round(y)}`).join(" ")}`)
+
   return `M${round(start[0])} ${round(start[1])}${curves.join("")}`
 }
 

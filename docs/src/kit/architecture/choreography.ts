@@ -114,6 +114,7 @@ export interface Frame {
 type Diagram = Pick<ArchitectureDiagram, "canvas" | "nodes" | "edges" | "notes" | "groups">
 
 const STAGGER = 70
+
 const HIDDEN_PORT: Port = {
   u: 0,
   v: 0,
@@ -180,6 +181,7 @@ function sameRoute(a: EdgeRoute | undefined, b: EdgeRoute | undefined): boolean 
 
 function isShown(scene: Scene, id: string): boolean {
   const { layout } = scene
+
   return scene.visible.has(id) && (layout.nodes.has(id) || layout.notes.has(id) || layout.groups.has(id))
 }
 
@@ -206,8 +208,10 @@ export function planTransition(
   const composites = diagram.nodes.filter((node) => node.contains.length > 0)
   const expand = composites.filter(({ id }) => asBox(from, id) && asGroup(to, id)).map(({ id }) => id)
   const collapse = composites.filter(({ id }) => asGroup(from, id) && asBox(to, id)).map(({ id }) => id)
+
   const contents = (id: string): ReadonlyArray<string> =>
     diagram.nodes.find((node) => node.id === id)?.contains.flatMap((child) => [child, ...contents(child)]) ?? []
+
   const members = new Map(
     [...expand, ...collapse].flatMap((id) =>
       contents(id)
@@ -215,8 +219,10 @@ export function planTransition(
         .map((child) => [child, id] as const),
     ),
   )
+
   const opening = new Set([...expand, ...collapse, ...members.keys()])
   const nodeIds = new Set(diagram.nodes.map((node) => node.id))
+
   // A composite's id names both its box and its group.
   const items = [
     ...new Set([
@@ -225,6 +231,7 @@ export function planTransition(
       ...diagram.groups.map((group) => group.id),
     ]),
   ].filter((id) => !opening.has(id))
+
   const leaving = items.filter((id) => isShown(from, id) && !isShown(to, id))
   const arriving = items.filter((id) => !isShown(from, id) && isShown(to, id))
   const staying = items.filter((id) => isShown(from, id) && isShown(to, id))
@@ -242,17 +249,20 @@ export function planTransition(
       return []
     }),
   )
+
   const morphing = new Set(morph.flatMap((pair) => [pair.from, pair.to]))
 
   const move = staying.filter((id) => {
     if (!to.layout.nodes.has(id)) {
       const noteMoved = to.layout.notes.has(id) && !samePoint(from.layout.notes.get(id), to.layout.notes.get(id))
       const groupMoved = to.layout.groups.has(id) && !sameRect(from.layout.groups.get(id), to.layout.groups.get(id))
+
       return noteMoved || groupMoved
     }
 
     const a = from.nodes.get(id)
     const b = to.nodes.get(id)
+
     return (
       !samePoint(from.layout.nodes.get(id), to.layout.nodes.get(id)) ||
       !near(from.layout.scale, to.layout.scale) ||
@@ -262,11 +272,14 @@ export function planTransition(
       !near(a.size[1], b.size[1])
     )
   })
+
   const change = staying.filter((id) => {
     const a = from.nodes.get(id)
     const b = to.nodes.get(id)
+
     return nodeIds.has(id) && a !== undefined && b !== undefined && !sameContent(a, b)
   })
+
   const disappear = leaving.filter((id) => !morphing.has(id))
   const appear = arriving.filter((id) => !morphing.has(id))
   const edgeIds = diagram.edges.map((edge) => edge.id)
@@ -277,6 +290,7 @@ export function planTransition(
 
   const xOf = (id: string): number | undefined =>
     to.layout.nodes.get(id)?.[0] ?? to.layout.notes.get(id)?.[0] ?? to.layout.groups.get(id)?.x
+
   const edgeFrom = new Map(diagram.edges.map((edge) => [edge.id, edge.from]))
   const appearDelays = stagger(appear, xOf, timing.appear)
   const drawDelays = stagger(draw, (id) => xOf(edgeFrom.get(id) ?? ""), timing.draw)
@@ -296,6 +310,7 @@ export function planTransition(
     appear: appear.length > 0 || expand.length > 0 ? timing.appear + longest(appearDelays) : 0,
     draw: draw.length > 0 ? timing.draw + longest(drawDelays) : 0,
   }
+
   const phases: ReadonlyArray<Phase> = ["retract", "disappear", "move", "appear", "draw"]
   const windows = {} as Record<Phase, PhaseWindow>
   let cursor = 0
@@ -375,6 +390,7 @@ export function frameOf(diagram: Diagram, scene: Scene): Frame {
       diagram.notes.map((note) => {
         const center = layout.notes.get(note.id)
         const shown = center !== undefined && scene.visible.has(note.id)
+
         return [
           note.id,
           {
@@ -389,6 +405,7 @@ export function frameOf(diagram: Diagram, scene: Scene): Frame {
       diagram.groups.map((group) => {
         const rect = layout.groups.get(group.id)
         const shown = rect !== undefined && scene.visible.has(group.id)
+
         return [
           group.id,
           {
@@ -410,6 +427,7 @@ export function frameOf(diagram: Diagram, scene: Scene): Frame {
         const route = layout.edges.get(edge.id)
         const shown = route !== undefined && scene.visible.has(edge.id)
         const [from, to] = scene.ends.get(edge.id) ?? [edge.from, edge.to]
+
         return [
           edge.id,
           {
@@ -564,6 +582,7 @@ export function frameAt(start: Frame, target: Scene, plan: TransitionPlan, t: nu
   const morphTo = (id: string): ReadonlyArray<string> => plan.morph.filter((pair) => pair.from === id).map((pair) => pair.to)
 
   const unfold = progress(windows.appear.start, timing.appear, t)
+
   const boxAt = (center: Point, size: readonly [number, number], scale: number): Rect => ({
     x: center[0] - (size[0] * scale) / 2,
     y: center[1] - (size[1] * scale) / 2,
@@ -571,9 +590,11 @@ export function frameAt(start: Frame, target: Scene, plan: TransitionPlan, t: nu
     height: size[1] * scale,
     radius: NODE.radius * scale,
   })
+
   // Where an opening composite's box ends its move, and where a closing one's group starts.
   const openAt = (id: string): Point => rectCenter(layout.groups.get(id) ?? boxAt([0, 0], [0, 0], 1))
   const closeFrom = (id: string): GroupFrame | undefined => start.groups.get(id)
+
   const boxSize = (id: string): readonly [number, number] =>
     start.nodes.get(id)?.size ?? target.nodes.get(id)?.size ?? [0, 0]
 
@@ -583,6 +604,7 @@ export function frameAt(start: Frame, target: Scene, plan: TransitionPlan, t: nu
     const view = target.nodes.get(id) ?? s.view
     const center = target.visible.has(id) ? layout.nodes.get(id) : undefined
     const owner = plan.members.get(id) ?? ""
+
     const settled = {
       view,
       previous: undefined,

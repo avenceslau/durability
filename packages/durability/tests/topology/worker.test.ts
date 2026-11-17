@@ -32,6 +32,7 @@ const waitFor = async (
     if (remaining === 0) {
       throw error;
     }
+
     await scheduler.wait(10);
     await waitFor(assertion, remaining - 1);
   }
@@ -98,11 +99,13 @@ describe('topology in workerd', () => {
     const group = crypto.randomUUID();
     const coordinator = coordinators.getByName(group);
     await coordinator.create(group, 1, { max: 1 });
+
     const secondary = await coordinator.createSecondary(
       group,
       `${group}-secondary`,
       { max: 2 }
     );
+
     expect(secondary).toMatchObject({
       published: true,
       snapshot: { group, version: 1 },

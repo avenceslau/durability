@@ -7,6 +7,7 @@ import { limits, type JobShard, type LimitObject } from './worker';
 const namespace = (workerExports as Record<string, unknown>)[
   'LimitObject'
 ] as DurableObjectNamespace<LimitObject>;
+
 const shards = (workerExports as Record<string, unknown>)[
   'JobShard'
 ] as DurableObjectNamespace<JobShard>;
@@ -15,6 +16,7 @@ describe('semaphore in workerd', () => {
   it('routes requests to the holder by key through caller transforms', async () => {
     const key = crypto.randomUUID();
     const client = limits.with(timeout, 5_000);
+
     const [a, b] = await Promise.all([
       client.request(key, {
         type: 'request',
@@ -37,6 +39,7 @@ describe('semaphore in workerd', () => {
 
     const permits = (grant: PermitGrant) =>
       grant.grants.map(({ group, permits: count }) => ({ group, count }));
+
     expect(permits(a)).toEqual([
       { group: 'capped', count: 1 },
       { group: 'open', count: 1 },
@@ -114,6 +117,7 @@ describe('semaphore in workerd', () => {
       ...((await shard.admitted()) ?? []),
       ...((await shard.admitted('side')) ?? []),
     ];
+
     // Limit 3 for four items: one waits, whichever queue it is in.
     await expect.poll(both, { timeout: 5_000 }).toHaveLength(3);
     expect(await namespace.getByName(account).usage()).toMatchObject({
@@ -122,10 +126,12 @@ describe('semaphore in workerd', () => {
 
     const main = (await shard.admitted()) ?? [];
     const side = (await shard.admitted('side')) ?? [];
+
     const [partial, other] =
       main.length === 1
         ? (['main', 'side'] as const)
         : (['side', 'main'] as const);
+
     const id = (main.length === 1 ? main : side)[0]!;
     expect(ids).toContain(id);
     expect(await shard.finish(id, partial)).toBe(true);

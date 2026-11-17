@@ -79,6 +79,7 @@ const bodyMembers = (node: AstNode | undefined): AstNode[] => {
   if (!node?.body || Array.isArray(node.body)) {
     return [];
   }
+
   return Array.isArray(node.body.body) ? node.body.body : [];
 };
 
@@ -91,15 +92,18 @@ const propertyName = (node: AstNode | undefined) => {
   if (!node) {
     return undefined;
   }
+
   if (node.type === 'Identifier' || node.type === 'PrivateIdentifier') {
     return node.name;
   }
+
   if (
     (node.type === 'Literal' || node.type === 'StringLiteral') &&
     typeof node.value === 'string'
   ) {
     return node.value;
   }
+
   return undefined;
 };
 
@@ -107,14 +111,19 @@ const resolveVariable = (context: RuleContext, node: AstNode | undefined) => {
   if (node?.type !== 'Identifier' || !node.name) {
     return undefined;
   }
+
   let scope: Scope | null = context.sourceCode.getScope(node);
+
   while (scope) {
     const variable = scope.set.get(node.name);
+
     if (variable) {
       return variable;
     }
+
     scope = scope.upper;
   }
+
   return undefined;
 };
 
@@ -135,22 +144,27 @@ const durabilityImportName = (
   callee: AstNode
 ): string | undefined => {
   const namespaced = callee.type === 'MemberExpression';
+
   const variable = resolveVariable(
     context,
     namespaced ? callee.object : callee
   );
+
   const definition = variable?.defs[0];
+
   if (
     definition?.type !== 'ImportBinding' ||
     propertyName(definition.node.parent?.source) !== 'durability'
   ) {
     return undefined;
   }
+
   if (namespaced) {
     return definition.node.type === 'ImportNamespaceSpecifier'
       ? propertyName(callee.property)
       : undefined;
   }
+
   return definition.node.type === 'ImportSpecifier'
     ? propertyName(definition.node.imported)
     : undefined;
@@ -162,23 +176,29 @@ const durabilityFields = (
   members: AstNode[]
 ): Set<string> => {
   const fields = new Set<string>();
+
   for (const member of members) {
     if (member.type !== 'PropertyDefinition') {
       continue;
     }
+
     const name = propertyName(member.key);
     const value = nodeValue(member.value);
     const callee = value?.type === 'NewExpression' ? value.callee : undefined;
+
     // An unimported bare name, or one imported through a local re-export, is
     // still recognized by its spelling.
     const constructorName =
       callee &&
       (durabilityImportName(context, callee) ??
         (callee.type === 'Identifier' ? callee.name : undefined));
+
     const constructed = durabilityConstructors.has(constructorName ?? '');
+
     const created =
       value?.type === 'CallExpression' &&
       propertyName(value.callee) === 'createDurability';
+
     if (
       name !== undefined &&
       (name === 'durability' || constructed || created)
@@ -186,6 +206,7 @@ const durabilityFields = (
       fields.add(name);
     }
   }
+
   return fields;
 };
 
@@ -194,20 +215,25 @@ const isDurabilityAlarmCall = (
   fields: Set<string>
 ) => {
   const value = node?.type === 'AwaitExpression' ? node.argument : node;
+
   if (value?.type !== 'CallExpression') {
     return false;
   }
+
   if (value.callee?.type !== 'MemberExpression') {
     return false;
   }
+
   if (propertyName(value.callee.property) !== 'alarm') {
     return false;
   }
 
   const receiver = value.callee.object;
+
   if (receiver?.type === 'Identifier') {
     return receiver.name === 'durability';
   }
+
   return (
     receiver?.type === 'MemberExpression' &&
     receiver.object?.type === 'ThisExpression' &&
@@ -230,15 +256,19 @@ const alarmRunnerRule = {
   },
   create(context: RuleContext) {
     const durabilityClasses = new WeakSet<AstNode>();
+
     const checkClass = (node: AstNode) => {
       const members = bodyMembers(node);
+
       const alarm = members.find(
         (member) =>
           member.type === 'MethodDefinition' &&
           propertyName(member.key) === 'alarm'
       );
+
       const fields = durabilityFields(context, members);
       const statements = bodyMembers(nodeValue(alarm?.value));
+
       const usesDurability =
         fields.size > 0 ||
         statements.some(
@@ -246,21 +276,26 @@ const alarmRunnerRule = {
             statement.type === 'ReturnStatement' &&
             isDurabilityAlarmCall(statement.argument, fields)
         );
+
       if (!usesDurability) {
         return;
       }
 
       durabilityClasses.add(node);
+
       if (!alarm) {
         context.report({ node, messageId: 'missingAlarm' });
+
         return;
       }
 
       const statement = statements[0];
+
       const valid =
         statements.length === 1 &&
         statement?.type === 'ReturnStatement' &&
         isDurabilityAlarmCall(statement.argument, fields);
+
       if (!valid) {
         context.report({ node: alarm, messageId: 'delegateOnly' });
       }
@@ -273,12 +308,15 @@ const alarmRunnerRule = {
         if (node.callee?.type !== 'MemberExpression') {
           return;
         }
+
         const method = propertyName(node.callee.property);
+
         if (method !== 'setAlarm' && method !== 'deleteAlarm') {
           return;
         }
 
         let parent = node.parent;
+
         while (
           parent &&
           parent.type !== 'ClassDeclaration' &&
@@ -286,6 +324,7 @@ const alarmRunnerRule = {
         ) {
           parent = parent.parent;
         }
+
         if (parent && durabilityClasses.has(parent)) {
           context.report({ node, messageId: 'physicalAlarm' });
         }
@@ -298,12 +337,14 @@ const staticStringValue = (node: AstNode | undefined): string | undefined => {
   if (!node) {
     return undefined;
   }
+
   if (
     (node.type === 'Literal' || node.type === 'StringLiteral') &&
     typeof node.value === 'string'
   ) {
     return node.value;
   }
+
   if (
     node.type === 'ParenthesizedExpression' ||
     node.type === 'TSAsExpression' ||
@@ -313,24 +354,30 @@ const staticStringValue = (node: AstNode | undefined): string | undefined => {
   ) {
     return staticStringValue(node.expression);
   }
+
   if (node.type === 'BinaryExpression' && node.operator === '+') {
     const left = staticStringValue(node.left);
     const right = staticStringValue(node.right);
+
     return left === undefined || right === undefined ? undefined : left + right;
   }
+
   if (node.type !== 'TemplateLiteral') {
     return undefined;
   }
 
   const quasis = node.quasis ?? [];
   const expressions = node.expressions ?? [];
+
   if (quasis.length !== expressions.length + 1) {
     return undefined;
   }
 
   let value = '';
+
   for (let index = 0; index < quasis.length; index += 1) {
     const quasiValue = quasis[index]?.value;
+
     if (
       typeof quasiValue !== 'object' ||
       quasiValue === null ||
@@ -338,20 +385,26 @@ const staticStringValue = (node: AstNode | undefined): string | undefined => {
     ) {
       return undefined;
     }
+
     const text = quasiValue.cooked ?? quasiValue.raw;
+
     if (text === undefined) {
       return undefined;
     }
+
     value += text;
 
     if (index < expressions.length) {
       const expression = staticStringValue(expressions[index]);
+
       if (expression === undefined) {
         return undefined;
       }
+
       value += expression;
     }
   }
+
   return value;
 };
 
@@ -380,6 +433,7 @@ const transformNextOnceRule = {
     const isInlineTransformHandler = (node: AstNode) => {
       const parent = node.parent;
       let factory: AstNode | undefined;
+
       if (
         parent?.type === 'ArrowFunctionExpression' ||
         parent?.type === 'FunctionExpression'
@@ -387,6 +441,7 @@ const transformNextOnceRule = {
         factory = parent;
       } else {
         const candidate = parent?.parent?.parent;
+
         if (
           parent?.type === 'ReturnStatement' &&
           parent.parent?.type === 'BlockStatement' &&
@@ -402,6 +457,7 @@ const transformNextOnceRule = {
       }
 
       const call = factory.parent;
+
       return (
         call?.type === 'CallExpression' &&
         call.arguments?.includes(factory) === true &&
@@ -413,17 +469,22 @@ const transformNextOnceRule = {
 
     const registerNextBinding = (node: AstNode) => {
       const parameter = node.params?.[0];
+
       const pattern =
         parameter?.type === 'AssignmentPattern' ? parameter.left : parameter;
+
       if (pattern?.type === 'Identifier') {
         const variable = isInlineTransformHandler(node)
           ? declaredVariable(node, pattern.name)
           : undefined;
+
         if (variable) {
           contextBindingRoots.set(variable, variable);
         }
+
         return;
       }
+
       if (pattern?.type !== 'ObjectPattern') {
         return;
       }
@@ -432,13 +493,16 @@ const transformNextOnceRule = {
         (property) =>
           property.type === 'Property' && propertyName(property.key) === 'next'
       );
+
       const value = nodeValue(nextProperty?.value);
       const binding = value?.type === 'AssignmentPattern' ? value.left : value;
+
       if (binding?.type !== 'Identifier') {
         return;
       }
 
       const variable = declaredVariable(node, binding.name);
+
       if (variable) {
         nextBindingRoots.set(variable, variable);
       }
@@ -446,9 +510,11 @@ const transformNextOnceRule = {
 
     const nextBindingRoot = (node: AstNode | undefined) => {
       const directBinding = resolveVariable(context, node);
+
       if (directBinding) {
         return nextBindingRoots.get(directBinding);
       }
+
       if (
         node?.type !== 'MemberExpression' ||
         propertyName(node.property) !== 'next'
@@ -457,6 +523,7 @@ const transformNextOnceRule = {
       }
 
       const contextBinding = resolveVariable(context, node.object);
+
       return contextBinding
         ? contextBindingRoots.get(contextBinding)
         : undefined;
@@ -472,22 +539,28 @@ const transformNextOnceRule = {
         }
 
         const root = nextBindingRoot(node.init);
+
         const alias = context.sourceCode
           .getDeclaredVariables(node)
           .find((variable) => variable.name === node.id?.name);
+
         if (root && alias) {
           nextBindingRoots.set(alias, root);
         }
       },
       CallExpression(node: AstNode) {
         const root = nextBindingRoot(node.callee);
+
         if (!root) {
           return;
         }
+
         if (calledBindings.has(root)) {
           context.report({ node, messageId: 'nextOnce' });
+
           return;
         }
+
         calledBindings.add(root);
       },
     };
@@ -514,6 +587,7 @@ const durabilityMigrationsRule = {
 
     const classForThis = (node: AstNode) => {
       let current = node.parent;
+
       while (current) {
         if (
           current.type === 'ClassDeclaration' ||
@@ -521,11 +595,13 @@ const durabilityMigrationsRule = {
         ) {
           return current;
         }
+
         if (
           current.type === 'FunctionDeclaration' ||
           current.type === 'FunctionExpression'
         ) {
           const method = current.parent;
+
           if (
             method?.type !== 'MethodDefinition' ||
             nodeValue(method.value) !== current ||
@@ -534,8 +610,10 @@ const durabilityMigrationsRule = {
             return undefined;
           }
         }
+
         current = current.parent;
       }
+
       return undefined;
     };
 
@@ -546,46 +624,59 @@ const durabilityMigrationsRule = {
       if (!node) {
         return false;
       }
+
       if (node.type === 'NewExpression') {
         const constructor = resolveVariable(context, node.callee);
+
         if (constructor && queryBuilderConstructors.has(constructor)) {
           return true;
         }
       }
+
       if (node.type === 'Identifier') {
         const variable = resolveVariable(context, node);
+
         if (!variable || seenVariables.has(variable)) {
           return false;
         }
+
         const definitions = variable.defs.filter(
           (definition) => definition.type === 'Variable'
         );
+
         if (definitions.length !== 1 || variable.defs.length !== 1) {
           return false;
         }
 
         const declarator = definitions[0]?.node;
         const sources: AstNode[] = [];
+
         if (declarator?.init) {
           sources.push(declarator.init);
         }
+
         for (const reference of variable.references) {
           if (!reference.isWrite() || reference.init) {
             continue;
           }
+
           if (reference.isReadWrite() || !reference.writeExpr) {
             return false;
           }
+
           sources.push(reference.writeExpr);
         }
+
         if (sources.length === 0) {
           return false;
         }
 
         const nextSeen = new Set(seenVariables);
         nextSeen.add(variable);
+
         return sources.every((source) => isQueryBuilder(source, nextSeen));
       }
+
       if (
         node.type !== 'MemberExpression' ||
         node.object?.type !== 'ThisExpression'
@@ -595,6 +686,7 @@ const durabilityMigrationsRule = {
 
       const name = propertyName(node.property);
       const classNode = name ? classForThis(node.object) : undefined;
+
       if (!name || !classNode) {
         return false;
       }
@@ -605,21 +697,26 @@ const durabilityMigrationsRule = {
           !member.static &&
           propertyName(member.key) === name
       );
+
       if (definitions.length > 1) {
         return false;
       }
 
       const sources: AstNode[] = [];
       const initializer = nodeValue(definitions[0]?.value);
+
       if (initializer) {
         sources.push(initializer);
       }
+
       for (const write of fieldWrites.get(classNode)?.get(name) ?? []) {
         if (!write.safe || !write.value) {
           return false;
         }
+
         sources.push(write.value);
       }
+
       return (
         sources.length > 0 &&
         sources.every((source) => isQueryBuilder(source, seenVariables))
@@ -628,6 +725,7 @@ const durabilityMigrationsRule = {
 
     const checkStaticExpression = (node: AstNode) => {
       const value = staticStringValue(node);
+
       if (
         value === undefined ||
         !/\bCREATE\s+(?:(?:TEMP|TEMPORARY)\s+)?TABLE\b/i.test(value)
@@ -636,6 +734,7 @@ const durabilityMigrationsRule = {
       }
 
       const parentValue = staticStringValue(node.parent);
+
       if (
         parentValue !== undefined &&
         (node.parent?.type === 'BinaryExpression' ||
@@ -646,11 +745,13 @@ const durabilityMigrationsRule = {
       }
 
       const range = node.range;
+
       const insideDurableMigrations =
         range !== undefined &&
         durableMigrationRanges.some(
           ([start, end]) => start <= range[0] && range[1] <= end
         );
+
       if (!insideDurableMigrations) {
         context.report({ node, messageId: 'tableCreation' });
       }
@@ -659,6 +760,7 @@ const durabilityMigrationsRule = {
     return {
       ImportDeclaration(node: AstNode) {
         const source = propertyName(node.source);
+
         for (const specifier of node.specifiers ?? []) {
           if (specifier.type !== 'ImportSpecifier') {
             continue;
@@ -666,11 +768,13 @@ const durabilityMigrationsRule = {
 
           const importedName = propertyName(specifier.imported);
           const variables = context.sourceCode.getDeclaredVariables(specifier);
+
           if (source === 'workers-qb' && importedName === 'DOQB') {
             for (const variable of variables) {
               queryBuilderConstructors.add(variable);
             }
           }
+
           if (
             (source === '@durability/storage' || source === 'durability') &&
             importedName === 'DurableMigrations'
@@ -686,10 +790,12 @@ const durabilityMigrationsRule = {
           node.init?.type === 'TSSatisfiesExpression'
             ? resolveVariable(context, node.init.typeAnnotation?.typeName)
             : undefined;
+
         const declaredType = resolveVariable(
           context,
           node.id?.typeAnnotation?.typeAnnotation?.typeName
         );
+
         if (
           node.init?.range &&
           ((satisfiesType && durableMigrationTypes.has(satisfiesType)) ||
@@ -705,14 +811,17 @@ const durabilityMigrationsRule = {
         ) {
           return;
         }
+
         const name = propertyName(node.left.property);
         const classNode = name ? classForThis(node.left.object) : undefined;
+
         if (!name || !classNode) {
           return;
         }
 
         let current = node.parent;
         let method: AstNode | undefined;
+
         while (current && current !== classNode) {
           if (
             current.type === 'FunctionDeclaration' ||
@@ -720,6 +829,7 @@ const durabilityMigrationsRule = {
             current.type === 'ArrowFunctionExpression'
           ) {
             const parent = current.parent;
+
             if (
               current.type === 'FunctionExpression' &&
               parent?.type === 'MethodDefinition' &&
@@ -727,16 +837,20 @@ const durabilityMigrationsRule = {
             ) {
               method = parent;
             }
+
             break;
           }
+
           current = current.parent;
         }
 
         let classFieldWrites = fieldWrites.get(classNode);
+
         if (!classFieldWrites) {
           classFieldWrites = new Map();
           fieldWrites.set(classNode, classFieldWrites);
         }
+
         const writes = classFieldWrites.get(name) ?? [];
         writes.push({
           safe:
@@ -764,11 +878,13 @@ const durabilityMigrationsRule = {
           if (node.callee?.type !== 'MemberExpression') {
             continue;
           }
+
           if (!isQueryBuilder(node.callee.object)) {
             continue;
           }
 
           const options = node.arguments?.[0];
+
           const tableName =
             options?.type === 'ObjectExpression'
               ? options.properties?.find(
@@ -777,6 +893,7 @@ const durabilityMigrationsRule = {
                     propertyName(property.key) === 'tableName'
                 )
               : undefined;
+
           if (
             !tableName ||
             propertyName(nodeValue(tableName.value)) !== 'durability_migrations'

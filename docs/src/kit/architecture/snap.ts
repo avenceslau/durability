@@ -15,6 +15,7 @@ const EVEN_RATIO = 1.25
 function median(values: ReadonlyArray<number>): number {
   const sorted = [...values].sort((a, b) => a - b)
   const middle = Math.floor(sorted.length / 2)
+
   return sorted.length % 2 === 1 ? (sorted[middle] ?? 0) : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
 }
 
@@ -70,8 +71,10 @@ function snapAxis(items: ReadonlyArray<SnapItem>, axis: 0 | 1, tolerance: number
 
   const centres = clusters.map((members) => {
     const anchors = members.filter((index) => items[index]?.anchor)
+
     return median((anchors.length > 0 ? anchors : members).map((index) => items[index]?.point[axis] ?? 0))
   })
+
   evenOut(centres)
 
   const snapped = items.map((item) => item.point[axis])

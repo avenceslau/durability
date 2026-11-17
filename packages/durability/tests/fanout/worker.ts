@@ -14,10 +14,12 @@ export type TestMessage = {
   action: 'ack' | 'retry' | 'deadLetter' | 'ignore';
   shard: string;
 };
+
 export type BatchRequest = {
   messages: FanoutInput<TestMessage>[];
   options?: FanoutEnqueueOptions;
 };
+
 export type RouteContext = { shard?: string };
 
 export const archivePrefix = 'archive/';
@@ -45,6 +47,7 @@ export class FanoutConsumer extends WorkerEntrypoint<Env> {
           `received/${message.id}/${message.attempt}`,
           JSON.stringify({ target: message.target, attempt: message.attempt })
         );
+
         if (message.body.action === 'ack') {
           await message.ack();
         } else if (message.body.action === 'retry') {
@@ -90,6 +93,7 @@ export class DeliveryObject extends DurableObject<Env> {
                WHERE channel != 'default'`
             )
             .toArray();
+
           await this.ctx.storage.put('libraryChannels', channels);
           await Promise.all(
             messages.map((message) =>
@@ -108,9 +112,11 @@ export class DeliveryObject extends DurableObject<Env> {
 
   async enqueue(request: BatchRequest) {
     const result = await this.fanout.enqueue(request.messages, request.options);
+
     if (!result.success) {
       return result;
     }
+
     return {
       ...result,
       value: { ids: result.value, shardId: this.ctx.id.toString() },

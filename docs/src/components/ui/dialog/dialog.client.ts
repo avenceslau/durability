@@ -6,6 +6,7 @@ import {
 
 mount('[data-dialog]', (root) => {
   if (!(root instanceof HTMLDialogElement)) return () => {};
+
   const dialog = root;
 
   const sync = () => (dialog.open ? lockScroll() : unlockScroll());
@@ -15,11 +16,13 @@ mount('[data-dialog]', (root) => {
   const onBackdrop = (e: MouseEvent) => {
     if (e.target === dialog) dialog.close();
   };
+
   dialog.addEventListener('click', onBackdrop);
 
   return () => {
     observer.disconnect();
     dialog.removeEventListener('click', onBackdrop);
+
     // A swap while open never fires `close`; balance the scroll lock.
     if (dialog.open) unlockScroll();
   };

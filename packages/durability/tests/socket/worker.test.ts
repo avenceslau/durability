@@ -17,6 +17,7 @@ declare global {
 }
 
 type Socket = SocketTestObject['socket'];
+
 type LibrarySocket = SocketTestObject['nulSocket'];
 
 const nulChannel = 'library\0nul';
@@ -35,10 +36,13 @@ class TestWebSocket extends EventTarget {
       headers: { Upgrade: 'websocket', 'x-user': 'alice' },
     }).then((response) => {
       const ws = response.webSocket;
+
       if (!ws) {
         this.dispatchEvent(new CloseEvent('close', { code: 1006 }));
+
         return;
       }
+
       ws.accept();
       ws.addEventListener('message', (message) => {
         this.dispatchEvent(new MessageEvent('message', { data: message.data }));
@@ -52,6 +56,7 @@ class TestWebSocket extends EventTarget {
       this.#ws = ws;
       this.readyState = 1;
       this.dispatchEvent(new Event('open'));
+
       return undefined;
     });
   }
@@ -103,10 +108,13 @@ const openRaw = async (id: string, query = '') => {
   const response = await SELF.fetch(`http://example.com/socket/${id}${query}`, {
     headers: { Upgrade: 'websocket', 'x-user': 'alice' },
   });
+
   const ws = response.webSocket;
+
   if (!ws) {
     throw new Error(`Upgrade failed with status ${response.status}`);
   }
+
   ws.accept();
   const frames: unknown[] = [];
   let closed: { code: number; reason: string } | undefined;
@@ -116,6 +124,7 @@ const openRaw = async (id: string, query = '') => {
   ws.addEventListener('close', (event) => {
     closed = { code: event.code, reason: event.reason };
   });
+
   return {
     frames,
     closed: () => closed,
@@ -134,6 +143,7 @@ const waitFor = async (
     if (remaining === 0) {
       throw error;
     }
+
     await scheduler.wait(10);
     await waitFor(assertion, remaining - 1);
   }
@@ -531,6 +541,7 @@ describe('DurabilitySocket channels in workerd', () => {
         applied: [],
         rolledBack: ['durability_0023_socket_channels'],
       });
+
       return state.storage.sql
         .exec<{ seq: number }>(
           `INSERT INTO durability_socket_events (name, payload, created_at)
@@ -538,21 +549,25 @@ describe('DurabilitySocket channels in workerd', () => {
         )
         .one().seq;
     });
+
     expect(sequences).toBe(3);
 
     await evictDurableObject(stub);
+
     const rows = await runInDurableObject(stub, (instance, state) => {
       instance.socket.updated({
         id: 't1',
         title: 'four',
         done: false,
       });
+
       return state.storage.sql
         .exec<{ channel: string; seq: number }>(
           'SELECT channel, seq FROM durability_socket_events ORDER BY seq'
         )
         .toArray();
     });
+
     expect(rows).toEqual([
       { channel: 'default', seq: 3 },
       { channel: 'default', seq: 4 },

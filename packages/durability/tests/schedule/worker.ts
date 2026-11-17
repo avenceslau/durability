@@ -15,10 +15,13 @@ const bindAll = <Target extends object>(
   new Proxy(target, {
     get(object, key) {
       const replaced = override(key);
+
       if (replaced !== undefined) {
         return replaced;
       }
+
       const value: unknown = Reflect.get(object, key);
+
       return typeof value === 'function' ? value.bind(object) : value;
     },
   });
@@ -54,6 +57,7 @@ export class ScheduleObject extends DurableObject {
     nextOccurrence: (expression, after) => {
       const { every, until } = v.parse(windowSchema, JSON.parse(expression));
       const next = (Math.floor(after / every) + 1) * every;
+
       return next <= until ? next : undefined;
     },
     run: async ({ scheduledTime, dueAt, idempotencyKey }) => {
@@ -72,9 +76,11 @@ export class ScheduleObject extends DurableObject {
       );
       const runMs = (await this.ctx.storage.get<number>('run-ms')) ?? 0;
       const hangAt = await this.ctx.storage.get<number>('hang-at');
+
       if (runMs < 0 || scheduledTime === hangAt) {
         await new Promise(() => undefined);
       }
+
       this.active += 1;
       this.maxActive = Math.max(this.maxActive, this.active);
       await scheduler.wait(runMs);
@@ -113,25 +119,31 @@ export class ScheduleObject extends DurableObject {
         ? (query: string, ...bindings: SqlStorageValue[]) => {
             const cursor = this.ctx.storage.sql.exec(query, ...bindings);
             this.cursors.push(cursor);
+
             return cursor;
           }
         : undefined
     );
+
     const setAlarm = (
       target: Pick<DurableObjectStorage, 'setAlarm'>,
       scheduledTime: number | Date
     ) => {
       this.setAlarmCount += 1;
+
       return target.setAlarm(scheduledTime);
     };
+
     const storage = bindAll(this.ctx.storage, (key) => {
       if (key === 'sql') {
         return sql;
       }
+
       if (key === 'setAlarm') {
         return (scheduledTime: number | Date) =>
           setAlarm(this.ctx.storage, scheduledTime);
       }
+
       if (key === 'transaction') {
         return <T>(
           closure: (transaction: DurableObjectTransaction) => Promise<T>
@@ -147,8 +159,10 @@ export class ScheduleObject extends DurableObject {
             )
           );
       }
+
       return undefined;
     });
+
     return {
       storage,
       waitUntil: (promise: Promise<unknown>) => this.ctx.waitUntil(promise),
@@ -170,9 +184,11 @@ export class ScheduleObject extends DurableObject {
   ): Promise<number> {
     await this.ctx.storage.put('run-ms', runMs);
     const first = (Math.floor(Date.now() / every) + 1) * every;
+
     if (hangFirst) {
       await this.ctx.storage.put('hang-at', first);
     }
+
     const until = first + (count - 1) * every;
     await this.schedule.set({
       expression: JSON.stringify({ every, until } satisfies Window),
@@ -182,11 +198,13 @@ export class ScheduleObject extends DurableObject {
     // Counting starts after `set`, before the first tick can fire.
     this.cursors.length = 0;
     this.setAlarmCount = 0;
+
     return first;
   }
 
   async configure(definition: ScheduleDefinition) {
     const applied = await this.schedule.set(definition);
+
     return { applied, state: this.schedule.get() };
   }
 

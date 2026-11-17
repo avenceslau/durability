@@ -33,6 +33,7 @@ export class Counter extends DurableObject<Env> {
   async increment(by: number): Promise<number> {
     const value = ((await this.ctx.storage.get<number>('value')) ?? 0) + by;
     await this.ctx.storage.put('value', value);
+
     return value;
   }
 
@@ -53,6 +54,7 @@ const observability = defineTransform<Counter, RequestContext>()
   )
   .callee((metric: string) => async ({ method, context, next }) => {
     const startedAt = Date.now();
+
     try {
       return await next();
     } finally {

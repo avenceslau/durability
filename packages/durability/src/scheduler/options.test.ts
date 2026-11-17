@@ -12,10 +12,12 @@ describe('liveTimers scheduler option', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const handler = vi
       .fn<() => Promise<string>>()
       .mockRejectedValueOnce(new Error('retry'))
       .mockResolvedValue('done');
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
@@ -47,10 +49,12 @@ describe('liveTimers scheduler option', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const handler = vi
       .fn<() => Promise<string>>()
       .mockRejectedValueOnce(new Error('retry'))
       .mockResolvedValue('done');
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
@@ -77,11 +81,14 @@ describe('liveTimers scheduler option', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
     let releaseLong: (() => void) | undefined;
+
     const long = new Promise<void>((resolve) => {
       releaseLong = resolve;
     });
+
     const longHandler = vi.fn(async (_call: DurableCall<null>) => long);
     const quickHandler = vi.fn(async (_call: DurableCall<null>) => 'quick');
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { long: longHandler, quick: quickHandler },
@@ -115,11 +122,13 @@ describe('onAlarmRetry scheduler option', () => {
     const storage = new FakeStorage();
     const background: Promise<unknown>[] = [];
     const onAlarmRetry = vi.fn();
+
     const scheduler = new DurabilityScheduler({
       context: waitUntilContext(storage, background),
       alarmMinDelayMs: 1_000,
       onAlarmRetry,
     });
+
     failingRun(storage);
 
     await expect(
@@ -140,6 +149,7 @@ describe('onAlarmRetry scheduler option', () => {
   it('never lets the hook change scheduling', async () => {
     const storage = new FakeStorage();
     const background: Promise<unknown>[] = [];
+
     const scheduler = new DurabilityScheduler({
       context: waitUntilContext(storage, background),
       alarmMinDelayMs: 1_000,
@@ -147,11 +157,13 @@ describe('onAlarmRetry scheduler option', () => {
         throw new Error('hook broke');
       },
     });
+
     const rejecting = new DurabilityScheduler({
       context: waitUntilContext(storage, background),
       alarmMinDelayMs: 1_000,
       onAlarmRetry: () => Promise.reject(new Error('hook rejected')),
     });
+
     failingRun(storage);
     const before = Date.now();
 
@@ -169,10 +181,12 @@ describe('onAlarmRetry scheduler option', () => {
   it('is not called when the fallback cannot be armed', async () => {
     const storage = new FakeStorage();
     const onAlarmRetry = vi.fn();
+
     const scheduler = new DurabilityScheduler({
       context: contextFor(storage),
       onAlarmRetry,
     });
+
     failingRun(storage);
     storage.setAlarm = () => Promise.reject(new Error('storage unavailable'));
 
@@ -183,11 +197,13 @@ describe('onAlarmRetry scheduler option', () => {
   it('reaches the private scheduler of a helper configured with context', async () => {
     const storage = new FakeStorage();
     const onAlarmRetry = vi.fn();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: async (_call: DurableCall<null>) => undefined },
       onAlarmRetry,
     });
+
     failingRun(storage);
 
     await durability.alarm();

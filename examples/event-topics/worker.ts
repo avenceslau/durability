@@ -31,16 +31,19 @@ type Append = {
 /** Partitions per topic. Adding one is a routing decision, not a deploy. */
 const partitionCount = 8;
 const coldPrefix = 'segments/';
+
 // Retention deletes by age and count. It is not Kafka-style key compaction,
 // which keeps the latest record per key and is not implemented here.
 const retentionSweepMs = 60_000;
 
 const partitionFor = (key: string): number => {
   let hash = 2_166_136_261;
+
   for (let index = 0; index < key.length; index += 1) {
     hash ^= key.charCodeAt(index);
     hash = Math.imul(hash, 16_777_619);
   }
+
   return Math.abs(hash) % partitionCount;
 };
 
@@ -69,10 +72,12 @@ export class Partition extends DurableObject<Env> {
         await this.env.COLD.put(locator, JSON.stringify(records), {
           onlyIf: { etagDoesNotMatch: '*' },
         });
+
         return locator;
       },
       read: async (locator) => {
         const stored = await this.env.COLD.get(locator);
+
         return stored ? await stored.json<LogRecord<Event>[]>() : undefined;
       },
     },
@@ -87,10 +92,13 @@ export class Partition extends DurableObject<Env> {
         // Compare the hot window, not the oldest readable offset: flushed
         // segments keep that one low forever, which would sweep forever.
         const { hotOffset, nextOffset } = await this.log.bounds();
+
         if (hotOffset < nextOffset) {
           await this.alarms.enforceRetention(Date.now() + retentionSweepMs);
+
           return;
         }
+
         // Nothing left to expire, so stop re-arming and let the partition
         // hibernate until the next append schedules another sweep.
         await this.ctx.storage.delete('sweeping');
@@ -101,12 +109,14 @@ export class Partition extends DurableObject<Env> {
   /** Producers reach this through routing; the result carries acceptance + load. */
   async append(batch: Append) {
     const result = await this.log.append(batch.events);
+
     // Scheduling a named alarm replaces its pending time, so re-arming on
     // every append would postpone retention for as long as traffic continues.
     if (result.success && !(await this.ctx.storage.get<boolean>('sweeping'))) {
       await this.ctx.storage.put('sweeping', true);
       await this.alarms.enforceRetention(Date.now() + retentionSweepMs);
     }
+
     return result;
   }
 
@@ -118,6 +128,7 @@ export class Partition extends DurableObject<Env> {
     // A new group starts at the oldest readable record, flushed or not.
     const from =
       (await this.log.cursor(group)) ?? (await this.log.bounds()).oldestOffset;
+
     return this.log.read({ from, limit });
   }
 
@@ -173,10 +184,13 @@ const topics = DurabilityRouting.client({
   invoke: (stub, input: Append) => stub.append(input),
   sharding: (input) => {
     const first = input.events[0]?.body;
+
     if (!first) {
       throw new Error('An append must carry at least one event');
     }
+
     const shard = `${first.topic}:${partitionFor(first.partitionKey)}`;
+
     return input.region === undefined
       ? shard
       : { shard, locationHint: input.region };
@@ -193,15 +207,19 @@ export default {
       const events = await request.json<
         Array<{ partitionKey: string; payload: string; key?: string }>
       >();
+
       // A batch must share a partition, so group by key before pushing.
       const byPartition = new Map<string, LogAppendInput<Event>[]>();
+
       for (const event of events) {
         const shard = `${topic}:${partitionFor(event.partitionKey)}`;
+
         const body: Event = {
           topic,
           partitionKey: event.partitionKey,
           payload: event.payload,
         };
+
         byPartition.set(shard, [
           ...(byPartition.get(shard) ?? []),
           event.key === undefined
@@ -209,11 +227,13 @@ export default {
             : { deduplicationKey: event.key, body },
         ]);
       }
+
       const accepted = await Promise.all(
         [...byPartition.values()].map((group) =>
           topics.with(timeout, 5_000).push({ events: group })
         )
       );
+
       // A rejected push is definite; a thrown one is uncertain and may retry.
       return Response.json(accepted, {
         status: accepted.every((result) => result.success) ? 202 : 409,
@@ -226,20 +246,25 @@ export default {
 
     // Each partition is polled independently: a slow group never blocks others.
     const group = url.searchParams.get('group') ?? 'default';
+
     const partitions = [...Array(partitionCount).keys()].map((index) =>
       env.PARTITIONS.getByName(`${topic}:${index}`)
     );
+
     const pages = await Promise.all(
       partitions.map(async (stub) => {
         const page = await stub.consume(group, 100);
+
         if (page.records.length === 0) {
           return { nextOffset: page.nextOffset, lag: page.lag, handled: 0 };
         }
+
         // Commit only once the work succeeded. Committing first would make
         // this at-most-once, silently skipping a page on a crash. Throwing
         // instead re-reads it, so processing must tolerate duplicates.
         await handle(page.records);
         await stub.commit(group, page.nextOffset);
+
         return {
           nextOffset: page.nextOffset,
           lag: page.lag,
@@ -247,6 +272,7 @@ export default {
         };
       })
     );
+
     return Response.json(pages);
   },
 } satisfies ExportedHandler<Env>;

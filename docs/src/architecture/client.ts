@@ -24,6 +24,7 @@ const openList = sourceExcerpt(
   "const client = new DurabilitySocketClient<TodoList['socket']>({",
   '  };\n};'
 );
+
 const todoList = sourceExcerpt(
   workerExample,
   workerFile,
@@ -32,6 +33,7 @@ const todoList = sourceExcerpt(
   'export class TodoList extends DurableObject<Env> {',
   '    return this.durability.alarm(info);\n  }'
 );
+
 const upgrade = sourceExcerpt(
   workerExample,
   workerFile,
@@ -40,6 +42,7 @@ const upgrade = sourceExcerpt(
   'export default {',
   '};'
 );
+
 const clientClass = sourceExcerpt(
   client,
   clientFile,
@@ -48,6 +51,7 @@ const clientClass = sourceExcerpt(
   'export class DurabilitySocketClient<Socket extends AnySocketShape> {',
   '      close: () => connection.close(),\n    };\n  }'
 );
+
 const state = sourceExcerpt(
   client,
   clientFile,
@@ -56,6 +60,7 @@ const state = sourceExcerpt(
   'class Connection {',
   '    this.#transforms = transforms;\n  }'
 );
+
 const close = sourceExcerpt(
   client,
   clientFile,
@@ -64,6 +69,7 @@ const close = sourceExcerpt(
   '  close(): void {',
   '    this.#ws = undefined;\n  }'
 );
+
 const send = sourceExcerpt(
   client,
   clientFile,
@@ -72,6 +78,7 @@ const send = sourceExcerpt(
   '  #send(method: string, input: unknown): Promise<unknown> {',
   '      this.#flush();\n    });\n  }'
 );
+
 const subscribe = sourceExcerpt(
   client,
   clientFile,
@@ -80,6 +87,7 @@ const subscribe = sourceExcerpt(
   '  #subscribe(): void {',
   "      this.#invoke(handler, { names: fresh }, 'resync');\n    }\n  }"
 );
+
 const flush = sourceExcerpt(
   client,
   clientFile,
@@ -88,6 +96,7 @@ const flush = sourceExcerpt(
   '  #flush(): void {',
   '      this.#ws.send(pending.text);\n    }\n  }'
 );
+
 const open = sourceExcerpt(
   client,
   clientFile,
@@ -96,6 +105,7 @@ const open = sourceExcerpt(
   '  #connect(): void {',
   '      }\n    });\n  }'
 );
+
 const receive = sourceExcerpt(
   client,
   clientFile,
@@ -104,6 +114,7 @@ const receive = sourceExcerpt(
   '  #receive(text: string): void {',
   '    settle(pending);\n  }'
 );
+
 const disconnected = sourceExcerpt(
   client,
   clientFile,
@@ -112,6 +123,7 @@ const disconnected = sourceExcerpt(
   '  #disconnected(code: number): void {',
   '    this.close();\n  }'
 );
+
 const ping = sourceExcerpt(
   client,
   clientFile,
@@ -120,6 +132,7 @@ const ping = sourceExcerpt(
   '  #startPing(): void {',
   '    this.#cancelPing = this.#timer.schedule(ping, interval);\n  }'
 );
+
 const autoResponse = sourceExcerpt(
   socket,
   socketFile,
@@ -128,6 +141,7 @@ const autoResponse = sourceExcerpt(
   '    // Keep-alive pings are answered by the runtime without waking a hibernated object.',
   '      )\n    );\n  }'
 );
+
 const accept = sourceExcerpt(
   socket,
   socketFile,
@@ -136,6 +150,7 @@ const accept = sourceExcerpt(
   '  async fetch(request: Request): Promise<Response> {',
   '    return new Response(null, { status: 101, webSocket: client });\n  }'
 );
+
 const replay = sourceExcerpt(
   socket,
   socketFile,
@@ -144,6 +159,7 @@ const replay = sourceExcerpt(
   '  #subscribe(\n    ws: WebSocket,',
   '    return true;\n  }'
 );
+
 const register = sourceExcerpt(
   durability,
   durabilityFile,
@@ -152,6 +168,7 @@ const register = sourceExcerpt(
   '  async #run(input: {',
   '    this.#engine.waitUntil(background, onError);\n  }'
 );
+
 const publish = sourceExcerpt(
   socket,
   socketFile,

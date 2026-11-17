@@ -36,6 +36,7 @@ async function openExplorer(page: Page) {
     .getByRole('button', { name: 'Explore code and architecture', exact: true })
     .click();
   await expect(root.locator('[data-dialog]')).toBeVisible();
+
   return root;
 }
 
@@ -48,9 +49,11 @@ for (const slug of pages) {
     await page.goto(`/${slug}/`);
     const root = page.locator('[data-architecture]');
     await expect(root).toHaveAttribute('data-active-step', /.+/u);
+
     const model: WalkthroughState = JSON.parse(
       (await root.getAttribute('data-model'))!
     );
+
     // The article gets only a small preview, not an inline control dashboard.
     await expect(root.locator('[data-dialog]')).not.toBeVisible();
     await expect(root.locator('.aw-code-panel').first()).not.toBeVisible();
@@ -67,16 +70,20 @@ for (const slug of pages) {
 
     const files = [...new Set(model.excerpts.map((excerpt) => excerpt.file))];
     await expect(root.locator('[data-file-panel]')).toHaveCount(files.length);
+
     for (const file of files) {
       const original = await readFile(
         new URL(`../../../${file}`, import.meta.url),
         'utf8'
       );
+
       const rendered = await root
         .locator(`[data-file="${file}"] .line`)
         .allTextContents();
+
       expect(rendered.join('\n').trimEnd()).toBe(original.trimEnd());
     }
+
     for (const scenario of model.scenarios) {
       const diagram = scenarioDiagram(model, scenario);
       await root
@@ -88,13 +95,16 @@ for (const slug of pages) {
           exact: true,
         })
         .focus();
+
       for (const [index, step] of scenario.steps.entries()) {
         if (index > 0) {
           await page.keyboard.press('ArrowRight');
         }
+
         await expect(root).toHaveAttribute('data-active-step', step.id);
         const spotlit = diagram.stages[index]!.spotlight !== undefined;
         const nodes = stepNodes(diagram, index, introducedNodes(model, step));
+
         for (const node of nodes) {
           await expect(
             root.locator(
@@ -102,24 +112,31 @@ for (const slug of pages) {
             )
           ).toBeVisible();
         }
+
         await expect(
           root.locator(`[data-graph] [data-node="${nodes[0]}"]`)
         ).toHaveAttribute('aria-pressed', 'true');
+
         const file = model.excerpts.find(
           (excerpt) => excerpt.id === step.source.excerpt
         )!.file;
+
         const panel = root.locator(`[data-file="${file}"]`);
         await expect(panel).toBeVisible();
         await expect(panel.locator('[data-highlighted]')).toHaveCount(
           step.source.to - step.source.from + 1
         );
+
         const inView = await panel.locator('pre').evaluate((pre, number) => {
           const line = pre
             .querySelector(`[data-source-line="${number}"]`)!
             .getBoundingClientRect();
+
           const bounds = pre.getBoundingClientRect();
+
           return line.top >= bounds.top - 1 && line.bottom <= bounds.bottom + 1;
         }, step.source.from);
+
         expect(
           inView,
           `${slug}/${step.id}: scroll to the selected source`
@@ -135,6 +152,7 @@ for (const slug of pages) {
           step.status
         );
       }
+
       await expect(
         root.getByRole('button', {
           name: 'Next architecture step',
@@ -151,9 +169,11 @@ for (const slug of pages) {
         'data-active-step',
         scenario.steps.at(-2)!.id
       );
+
       for (let index = scenario.steps.length - 2; index > 0; index -= 1) {
         await page.keyboard.press('ArrowLeft');
       }
+
       await expect(root).toHaveAttribute(
         'data-active-step',
         scenario.steps[0]!.id
@@ -170,6 +190,7 @@ for (const slug of pages) {
         scenario.steps[0]!.id
       );
     }
+
     expect(errors).toEqual([]);
   });
 }
@@ -179,9 +200,11 @@ test('clicking code or a component keeps the complete file and moves the highlig
 }) => {
   await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
+
   const model: WalkthroughState = JSON.parse(
     (await root.getAttribute('data-model'))!
   );
+
   const steps = model.scenarios[0]!.steps;
   const rpc = steps.find((step) => step.id === 'rpc')!;
   const handler = steps.find((step) => step.id === 'handler')!;
@@ -202,9 +225,11 @@ test('clicking code or a component keeps the complete file and moves the highlig
     'aria-pressed',
     'true'
   );
+
   const library = root.locator(
     '[data-file="packages/durability/src/operations/index.ts"]'
   );
+
   await expect(library).toBeVisible();
   expect(
     await library.locator('pre').evaluate((pre) => pre.scrollTop)
@@ -218,6 +243,7 @@ test('arrow keys move the diagram after a node is clicked, and the step card fol
   const root = await openExplorer(page);
   const card = root.locator('[data-step-card]');
   await expect(card).toHaveAttribute('data-side', /.+/u);
+
   const placement = () =>
     card.evaluate((element) => `${element.style.left},${element.style.top}`);
 
@@ -241,19 +267,23 @@ test('arrow keys keep working when a focused code line belongs to a file that is
 }) => {
   await page.goto('/primitives/operations/');
   const root = await openExplorer(page);
+
   const model: WalkthroughState = JSON.parse(
     (await root.getAttribute('data-model'))!
   );
+
   const steps = model.scenarios[0]!.steps;
   await root
     .locator(
       `[data-file-panel]:not([hidden]) [data-source-line="${steps[0]!.source.from}"]`
     )
     .focus();
+
   for (const step of steps.slice(1)) {
     await page.keyboard.press('ArrowRight');
     await expect(root).toHaveAttribute('data-active-step', step.id);
   }
+
   await page.keyboard.press('ArrowLeft');
   await expect(root).toHaveAttribute('data-active-step', steps.at(-2)!.id);
 });
@@ -326,10 +356,12 @@ test('Escape closes the zoom, restores focus, and leaves the guide in place', as
   page,
 }) => {
   await page.goto('/primitives/operations/');
+
   const opener = page.getByRole('button', {
     name: 'Explore code and architecture',
     exact: true,
   });
+
   await opener.scrollIntoViewIfNeeded();
   const scroll = await page.evaluate(() => window.scrollY);
   const root = await openExplorer(page);

@@ -141,6 +141,7 @@ export const socketCollectionOptions = <
     onDelete,
     ...base
   } = config;
+
   let writer: SyncWriter<Row, Key> | undefined;
   const writeCounts = new Map<Key, number>();
   const waiters = new Set<() => void>();
@@ -155,6 +156,7 @@ export const socketCollectionOptions = <
       const key = keyOf(change);
       writeCounts.set(key, (writeCounts.get(key) ?? 0) + 1);
     }
+
     for (const waiter of waiters) {
       waiter();
     }
@@ -165,6 +167,7 @@ export const socketCollectionOptions = <
       if (!writer) {
         throw new Error(`Collection "${base.id}" has not started syncing`);
       }
+
       writer(Array.isArray(changes) ? changes : [changes]);
     },
   };
@@ -173,28 +176,35 @@ export const socketCollectionOptions = <
     // Counted before the handler runs: a server usually publishes the
     // confirming event before it answers the RPC the handler awaits.
     const since = new Map(keys.map((key) => [key, writeCounts.get(key) ?? 0]));
+
     return ({ timeoutMs = 30_000 }: { timeoutMs?: number } = {}) => {
       const synced = () =>
         keys.every(
           (key) => (writeCounts.get(key) ?? 0) > (since.get(key) ?? 0)
         );
+
       return new Promise<void>((resolve) => {
         if (synced()) {
           resolve();
+
           return;
         }
+
         const timer = setTimeout(() => {
           waiters.delete(check);
           resolve();
         }, timeoutMs);
+
         const check = () => {
           if (!synced()) {
             return;
           }
+
           clearTimeout(timer);
           waiters.delete(check);
           resolve();
         };
+
         waiters.add(check);
       });
     };
@@ -207,6 +217,7 @@ export const socketCollectionOptions = <
     (params: Params) => {
       const keys = params.transaction.mutations.map((mutation) => mutation.key);
       const awaitSynced = awaitSyncedFrom(keys);
+
       return handler({ ...params, rpc: connection.rpc, awaitSynced });
     };
 
@@ -227,31 +238,40 @@ export const socketCollectionOptions = <
           if (changes.length === 0) {
             return;
           }
+
           begin();
+
           for (const change of changes) {
             // Event inserts may repeat a row already present; `full` updates upsert.
             write(
               change.type === 'insert' ? { ...change, type: 'update' } : change
             );
           }
+
           commit();
           recordWrites(changes);
         };
+
         writer = apply;
 
         const snapshot = async () => {
           const current = ++generation;
           snapshotting = true;
+
           try {
             const rows = await loadSnapshot(connection.rpc);
+
             if (current !== generation) {
               return;
             }
+
             begin();
             truncate();
+
             for (const value of rows) {
               write({ type: 'insert', value });
             }
+
             commit();
             recordWrites(rows.map((value) => ({ type: 'insert', value })));
           } catch (error) {
@@ -282,21 +302,26 @@ export const socketCollectionOptions = <
           if (!map) {
             continue;
           }
+
           const subscribe = connection.on[
             event as keyof OutboundOf<Socket>
           ] as (handler: (payload: unknown) => void) => () => void;
+
           unsubscribers.push(
             subscribe((payload) => {
               if (snapshotting) {
                 return;
               }
+
               const changes = (map as (payload: unknown) => unknown)(payload) as
                 | SocketChange<Row, Key>
                 | SocketChange<Row, Key>[]
                 | void;
+
               if (!changes) {
                 return;
               }
+
               apply(Array.isArray(changes) ? changes : [changes]);
             })
           );
@@ -305,6 +330,7 @@ export const socketCollectionOptions = <
         return () => {
           generation += 1;
           writer = undefined;
+
           for (const unsubscribe of unsubscribers) {
             unsubscribe();
           }

@@ -22,6 +22,7 @@ const todoSchema = v.object({
   title: v.pipe(v.string(), v.minLength(1)),
   done: v.boolean(),
 });
+
 export type Todo = v.InferOutput<typeof todoSchema>;
 
 type Metadata = { userId: string };
@@ -37,6 +38,7 @@ export class TodoList extends DurableObject<Env> {
           payload.title,
           payload.done ? 1 : 0
         );
+
         return payload;
       },
     },
@@ -56,9 +58,11 @@ export class TodoList extends DurableObject<Env> {
         input: v.string(),
         handle: (id: string, call: SocketCall<Metadata>) => {
           const todo = this.list().find((candidate) => candidate.id === id);
+
           if (!todo) {
             throw new RangeError(`No todo "${id}" for ${call.metadata.userId}`);
           }
+
           const toggled = { ...todo, done: !todo.done };
           this.ctx.storage.sql.exec(
             'UPDATE todos SET done = ? WHERE id = ?',
@@ -66,6 +70,7 @@ export class TodoList extends DurableObject<Env> {
             id
           );
           this.socket.updated(toggled);
+
           return toggled;
         },
       },
@@ -127,16 +132,21 @@ export class TodoList extends DurableObject<Env> {
 export default {
   async fetch(request: Request, env: Env) {
     const match = /^\/lists\/([^/]+)\/ws$/.exec(new URL(request.url).pathname);
+
     if (!match?.[1]) {
       return new Response('Not found', { status: 404 });
     }
+
     const userId = await authenticate(request);
+
     if (!userId) {
       return new Response('Unauthorized', { status: 401 });
     }
+
     const upgrade = new Request(request, {
       headers: { ...Object.fromEntries(request.headers), 'x-user-id': userId },
     });
+
     return env.TODO_LISTS.getByName(match[1]).fetch(upgrade);
   },
 };

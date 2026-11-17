@@ -31,6 +31,7 @@ describe('DurabilityScheduler', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const alarms = new DurabilityAlarms({
       context: contextFor(storage),
       handlers: {
@@ -38,6 +39,7 @@ describe('DurabilityScheduler', () => {
         refresh: async () => undefined,
       },
     });
+
     const fallbackAt = Date.now() + 15_000;
 
     await alarms.cleanup(Date.now() + 5_000);
@@ -51,9 +53,11 @@ describe('DurabilityScheduler', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: contextFor(storage),
     });
+
     const durability = new Durability({
       scheduler: scheduler,
       handlers: {
@@ -63,6 +67,7 @@ describe('DurabilityScheduler', () => {
       },
       retries: { delay: () => 60_000 },
     });
+
     const alarms = new DurabilityAlarms({
       scheduler: scheduler,
       handlers: {
@@ -90,30 +95,39 @@ describe('DurabilityScheduler', () => {
 
   it('runs both helpers from one alarm and shares the concurrency bound', async () => {
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: contextFor(storage),
       alarmConcurrency: 1,
     });
+
     let releaseFirst: (() => void) | undefined;
+
     const firstPending = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
+
     let calls = 0;
     let activeHandlers = 0;
     let maxActive = 0;
+
     const enter = async () => {
       calls += 1;
       activeHandlers += 1;
       maxActive = Math.max(maxActive, activeHandlers);
+
       if (calls === 1) {
         await firstPending;
       }
+
       activeHandlers -= 1;
     };
+
     const durability = new Durability({
       scheduler: scheduler,
       handlers: { work: async () => enter() },
     });
+
     const alarms = new DurabilityAlarms({
       scheduler: scheduler,
       handlers: {
@@ -147,6 +161,7 @@ describe('DurabilityScheduler', () => {
     const context = contextFor(storage);
     const later = vi.fn(async () => undefined);
     const alarms = new DurabilityAlarms({ context, handlers: { later } });
+
     const durability = new Durability({
       context,
       handlers: { work: async () => 'done' },
@@ -173,10 +188,12 @@ describe('DurabilityScheduler', () => {
     const first = new DurabilityScheduler({ context });
     const second = new DurabilityScheduler({ context });
     const later = vi.fn(async () => undefined);
+
     const alarms = new DurabilityAlarms({
       scheduler: first,
       handlers: { later },
     });
+
     await alarms.later(Date.now());
     void new Durability({
       scheduler: first,
@@ -199,18 +216,22 @@ describe('DurabilityScheduler', () => {
     const context = contextFor(storage);
     let active = 0;
     let maxActive = 0;
+
     const handler = vi.fn(async () => {
       active += 1;
       maxActive = Math.max(maxActive, active);
       await Promise.resolve();
       active -= 1;
     });
+
     const durability = new Durability({ context, handlers: { work: handler } });
+
     const scheduler = new DurabilityScheduler({
       context,
       alarmConcurrency: 2,
       alarmMinDelayMs: 1_000,
     });
+
     void new DurabilityAlarms({
       scheduler,
       handlers: { later: async () => undefined },
@@ -234,6 +255,7 @@ describe('DurabilityScheduler', () => {
         JSON.stringify({ kind: 'value', value: null })
       );
     }
+
     await durability.alarm();
 
     expect(handler).toHaveBeenCalledTimes(10);
@@ -242,9 +264,11 @@ describe('DurabilityScheduler', () => {
 
   it('rejects a second copy of durability on the same object', () => {
     const context = contextFor(new FakeStorage());
+
     const registry = (globalThis as { [key: symbol]: unknown })[
       Symbol.for('durability.object-schedulers')
     ] as WeakMap<object, unknown>;
+
     registry.set(context.storage, {
       engine: {},
       installation: Symbol('another installation'),
@@ -258,15 +282,18 @@ describe('DurabilityScheduler', () => {
   it('keeps operations on different channels apart on one scheduler', async () => {
     const storage = new FakeStorage();
     const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+
     const app = new Durability({
       scheduler,
       handlers: { work: async ({ id }: DurableCall<null>) => `app:${id}` },
     });
+
     const library = new Durability({
       scheduler,
       channel: 'library',
       handlers: { work: async ({ id }: DurableCall<null>) => `library:${id}` },
     });
+
     const tracker = new DurabilityTracker({ sources: { app, library } });
 
     await app.work({ id: 'same', payload: null });
@@ -300,6 +327,7 @@ describe('DurabilityScheduler', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
     });
+
     void new Durability({
       scheduler,
       channel: 'library',
@@ -343,25 +371,30 @@ describe('DurabilityScheduler', () => {
       context: contextFor(storage),
       handlers: { work: ran },
     });
+
     await restarted.alarm();
     expect(ran).not.toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'durability.channel_missing' })
     );
+
     const [row] = storage.sql
       .exec<{ next_attempt_at: number }>(
         "SELECT next_attempt_at FROM durability_calls WHERE channel = 'removed'"
       )
       .toArray();
+
     expect(row?.next_attempt_at).toBeGreaterThanOrEqual(Date.now() + 59_000);
 
     // The channel's helper comes back and runs it.
     const returned = vi.fn(async () => 'back');
+
     const recovered = new Durability({
       context: contextFor(storage),
       channel: 'removed',
       handlers: { work: returned },
     });
+
     storage.sql.exec(
       "UPDATE durability_calls SET next_attempt_at = 0 WHERE channel = 'removed'"
     );
@@ -379,9 +412,11 @@ describe('DurabilityScheduler', () => {
     const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
     const appEvents: string[] = [];
     const libraryEvents: string[] = [];
+
     const fail = async () => {
       throw new Error('unavailable');
     };
+
     const app = new DurabilityAlarms({
       scheduler,
       handlers: { check: fail },
@@ -390,6 +425,7 @@ describe('DurabilityScheduler', () => {
         appEvents.push('outcome' in event ? event.outcome : event.type);
       },
     });
+
     const library = new DurabilityAlarms({
       scheduler,
       channel: 'library',
@@ -410,6 +446,7 @@ describe('DurabilityScheduler', () => {
         'SELECT channel, name, status FROM durability_alarms ORDER BY channel'
       )
       .toArray();
+
     expect(rows).toEqual([
       { channel: 'default', name: 'check', status: 'failed' },
       { channel: 'library', name: 'check', status: 'pending' },
@@ -425,15 +462,19 @@ describe('DurabilityScheduler', () => {
   it('lists, reads, and purges only its own channel', async () => {
     const storage = new FakeStorage();
     const scheduler = new DurabilityScheduler({ context: contextFor(storage) });
+
     const fail = async () => {
       throw new DurabilityNonRetryableError('failed');
     };
+
     const app = new DurabilityAlarms({ scheduler, handlers: { check: fail } });
+
     const library = new DurabilityAlarms({
       scheduler,
       channel: 'library',
       handlers: { check: fail, poll: fail },
     });
+
     await app.check(Date.now());
     await library.check(Date.now());
     await library.poll(Date.now());
@@ -464,6 +505,7 @@ describe('DurabilityScheduler', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
     });
+
     void new DurabilityAlarms({
       scheduler,
       channel: 'library',
@@ -484,9 +526,11 @@ describe('DurabilityScheduler', () => {
 
   it('runs a setTimeout callback after its delay unless it is cancelled', () => {
     vi.useFakeTimers();
+
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
     });
+
     const ran: string[] = [];
 
     scheduler.setTimeout(() => ran.push('later'), 200);
@@ -532,6 +576,7 @@ describe('DurabilityScheduler', () => {
     const scheduler = new DurabilityScheduler({
       context: contextFor(new FakeStorage()),
     });
+
     void new Durability({
       scheduler: scheduler,
       handlers: { work: async () => undefined },

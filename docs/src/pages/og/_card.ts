@@ -37,6 +37,7 @@ const TITLE: CardTypography = {
   lineHeight: 1.1,
   color: FOREGROUND,
 };
+
 const SECTION: CardTypography = {
   fontFamily: 'Inter',
   fontWeight: 400,
@@ -47,6 +48,7 @@ const SECTION: CardTypography = {
 // Fonts sit beside this file, not in public/, so they never ship. Read from
 // the project so `astro build --root <site>` finds them.
 const font = (file: string) => new URL(`src/pages/og/_fonts/${file}`, root);
+
 const renderer = await createCardRenderer({
   width: WIDTH,
   height: HEIGHT,
@@ -58,6 +60,7 @@ const renderer = await createCardRenderer({
 });
 
 type Style = Record<string, string | number>;
+
 const el = (
   type: string,
   style: Style,
@@ -95,6 +98,7 @@ async function card({
     lines: 3,
     style: TITLE,
   });
+
   const label = section
     ? await renderer.fit(section, {
         width: COLUMN,
@@ -103,6 +107,7 @@ async function card({
         style: SECTION,
       })
     : undefined;
+
   return el(
     'div',
     {

@@ -23,10 +23,13 @@ describe('Durability', () => {
   it('does not overlap eager and alarm execution during async lookup', async () => {
     const storage = new FakeStorage();
     let finish: (() => void) | undefined;
+
     const pending = new Promise<void>((resolve) => {
       finish = resolve;
     });
+
     const handler = vi.fn(async () => pending);
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
@@ -54,6 +57,7 @@ describe('Durability', () => {
     storage.alarmSetupBarrier = new Promise<void>((resolve) => {
       finishAlarmSetup = resolve;
     });
+
     const handler = vi.fn(
       async ({ payload }: DurableCall<{ value: number }>) => {
         const registered = storage.sql
@@ -62,10 +66,13 @@ describe('Durability', () => {
             'double:2'
           )
           .toArray();
+
         expect(registered).toEqual([{ status: 'pending' }]);
+
         return payload.value * 2;
       }
     );
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { double: handler },
@@ -74,10 +81,12 @@ describe('Durability', () => {
     await expect(durability.double.getResult('double:2')).resolves.toEqual({
       status: 'not_found',
     });
+
     const firstCall = durability.double({
       id: 'double:2',
       payload: { value: 2 },
     });
+
     expect(handler).not.toHaveBeenCalled();
     finishAlarmSetup?.();
     await expect(firstCall).resolves.toBeUndefined();
@@ -100,14 +109,17 @@ describe('Durability', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
     let shouldFail = true;
+
     const handler = vi.fn(
       async ({ payload }: DurableCall<{ value: string }>) => {
         if (shouldFail) {
           throw new Error('temporary failure');
         }
+
         return payload.value;
       }
     );
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { deliver: handler },
@@ -139,10 +151,12 @@ describe('Durability', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const handler = vi
       .fn<() => Promise<string>>()
       .mockRejectedValueOnce(new Error('retry'))
       .mockResolvedValue('done');
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
@@ -155,6 +169,7 @@ describe('Durability', () => {
     expect(handler).toHaveBeenCalledTimes(1);
     const pending = await durability.work.getResult('timer-retry');
     expect(pending.status).toBe('pending');
+
     if (pending.status !== 'pending') {
       throw new Error('Expected a pending retry');
     }
@@ -176,6 +191,7 @@ describe('Durability', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const failing = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -198,12 +214,14 @@ describe('Durability', () => {
     const recoveredHandler = vi.fn(
       async ({ payload }: DurableCall<{ message: string }>) => payload.message
     );
+
     const recovered = new Durability({
       context: contextFor(storage),
       handlers: { send: recoveredHandler },
       retries: { delay: () => 1_000 },
       alarmMinDelayMs: 1_000,
     });
+
     vi.advanceTimersByTime(1_000);
 
     await recovered.alarm();
@@ -223,12 +241,14 @@ describe('Durability', () => {
     const storage = new FakeStorage();
     let active = 0;
     let maxActive = 0;
+
     const handler = vi.fn(async () => {
       active += 1;
       maxActive = Math.max(maxActive, active);
       await Promise.resolve();
       active -= 1;
     });
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
@@ -260,6 +280,7 @@ describe('Durability', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const initial = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -280,16 +301,20 @@ describe('Durability', () => {
     expect(storage.alarmAt).toBe(retryAt);
 
     let finish: ((value: string) => void) | undefined;
+
     const longResult = new Promise<string>((resolve) => {
       finish = resolve;
     });
+
     const handler = vi.fn(async (_call: DurableCall<null>) => longResult);
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { wait: handler },
       alarmMinDelayMs: 1_000,
       alarmHandoffMs: 10_000,
     });
+
     vi.advanceTimersByTime(1_000);
     storage.alarmAt = null;
 
@@ -298,6 +323,7 @@ describe('Durability', () => {
       retryCount: 0,
       scheduledTime: Date.now(),
     });
+
     await vi.advanceTimersByTimeAsync(10_000);
     await firstAlarm;
 
@@ -307,11 +333,13 @@ describe('Durability', () => {
     });
     expect(storage.alarmAt).toBe(Date.now() + 1_000);
     storage.alarmAt = null;
+
     const secondAlarm = durability.alarm({
       isRetry: false,
       retryCount: 0,
       scheduledTime: Date.now(),
     });
+
     finish?.('done');
     await secondAlarm;
 
@@ -332,6 +360,7 @@ describe('Durability', () => {
     expect(jitter(1_000)).toBe(750);
 
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -369,6 +398,7 @@ describe('Durability', () => {
     const storage = new FakeStorage();
     let timeoutSignal: AbortSignal | undefined;
     const WorkflowNonRetryableError = class NonRetryableError extends Error {};
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -440,6 +470,7 @@ describe('Durability', () => {
 
   it('rejects reuse of an ID with a different payload and accepts the same data', async () => {
     const calls: unknown[] = [];
+
     const durability = new Durability({
       context: contextFor(new FakeStorage()),
       handlers: {
@@ -447,6 +478,7 @@ describe('Durability', () => {
           payload,
         }: DurableCall<{ to: string; tags?: string[] }>) => {
           calls.push(payload);
+
           return payload.to;
         },
       },
@@ -483,11 +515,13 @@ describe('Durability', () => {
 
   it('ignores nested object key order and never leaks payloads in conflicts', async () => {
     const calls: unknown[] = [];
+
     const durability = new Durability({
       context: contextFor(new FakeStorage()),
       handlers: {
         send: async ({ payload }: DurableCall<Record<string, unknown>>) => {
           calls.push(payload);
+
           return 'ok';
         },
       },
@@ -509,6 +543,7 @@ describe('Durability', () => {
         payload: { meta: { a: 1, b: 2 }, token: 'leaky-secret' },
       })
       .catch((caught: unknown) => caught);
+
     expect(error).toBeInstanceOf(DuplicateDurablePayloadError);
     const reported = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
     expect(reported).not.toContain('leaky-secret');
@@ -517,11 +552,13 @@ describe('Durability', () => {
 
   it('commits one authoritative payload for concurrent first registrations', async () => {
     const calls: unknown[] = [];
+
     const durability = new Durability({
       context: contextFor(new FakeStorage()),
       handlers: {
         send: async ({ payload }: DurableCall<{ cents: number }>) => {
           calls.push(payload);
+
           return payload.cents;
         },
       },
@@ -531,6 +568,7 @@ describe('Durability', () => {
       durability.send({ id: 'transfer:42', payload: { cents: 100 } }),
       durability.send({ id: 'transfer:42', payload: { cents: 10_000 } }),
     ]);
+
     const fulfilled = results.filter((result) => result.status === 'fulfilled');
     const rejected = results.filter((result) => result.status === 'rejected');
     expect(fulfilled).toHaveLength(1);
@@ -551,11 +589,13 @@ describe('Durability', () => {
 
   it('keeps its alarm armed when a run cannot reconcile, instead of failing the alarm', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: async (_call: DurableCall<null>) => 'done' },
       alarmMinDelayMs: 1_000,
     });
+
     await durability.work({ id: 'job', payload: null });
     await vi.waitFor(async () => {
       await expect(durability.work.getResult('job')).resolves.toMatchObject({
@@ -567,9 +607,11 @@ describe('Durability', () => {
     // reconcile, but it must not throw, and the alarm must still be set.
     const getAlarm = storage.getAlarm.bind(storage);
     storage.getAlarm = () => Promise.reject(new Error('storage unavailable'));
+
     const reported = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
+
     const before = Date.now();
     storage.alarmAt = null;
     await expect(durability.alarm()).resolves.toBeUndefined();
@@ -592,10 +634,12 @@ describe('Durability', () => {
     vi.useFakeTimers();
     const storage = new FakeStorage();
     const handler = vi.fn(async (_call: DurableCall<null>) => 'done');
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
     });
+
     storage.sql.exec(
       `INSERT INTO durability_calls
         (id, operation, payload, status, attempt, next_attempt_at)
@@ -609,11 +653,13 @@ describe('Durability', () => {
     vi.spyOn(storage.sql, 'exec').mockImplementation((query, ...bindings) => {
       if (/FROM durability_calls\s+WHERE status = 'pending'/.test(query)) {
         runs.push(Date.now());
+
         if (failures > 0) {
           failures -= 1;
           throw new Error('storage unavailable');
         }
       }
+
       return exec(query, ...bindings);
     });
     const start = Date.now();
@@ -656,15 +702,21 @@ describe('Durability', () => {
   it('retries a timed-out operation while its handler is still running', async () => {
     vi.useFakeTimers();
     let finishFirst: ((value: string) => void) | undefined;
+
     const firstPending = new Promise<string>((resolve) => {
       finishFirst = resolve;
     });
+
     const attempts: number[] = [];
+
     const handler = vi.fn(async ({ attempt }: DurableCall<null>) => {
       attempts.push(attempt);
+
       return attempt === 1 ? firstPending : 'second';
     });
+
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
@@ -703,9 +755,11 @@ describe('Durability', () => {
 
   it('fails an operation whose handler never settles once its attempts run out', async () => {
     vi.useFakeTimers();
+
     const handler = vi.fn(async (_call: DurableCall<null>) => {
       await new Promise(() => undefined);
     });
+
     const durability = new Durability({
       context: contextFor(new FakeStorage()),
       handlers: { work: handler },
@@ -736,6 +790,7 @@ describe('Durability', () => {
     const other = new Promise<void>((resolve) => {
       handler.mockImplementationOnce(async () => resolve());
     });
+
     await durability.work({ id: 'after', payload: null });
     await other;
   });
@@ -743,11 +798,13 @@ describe('Durability', () => {
   it('never claims an exhausted operation', async () => {
     const storage = new FakeStorage();
     const work = vi.fn(async () => undefined);
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work },
       methods: { work: { retries: { maxAttempts: 2 } } },
     });
+
     storage.sql.exec(
       `INSERT INTO durability_calls
         (id, operation, payload, status, attempt, next_attempt_at)
@@ -791,6 +848,7 @@ describe('Durability', () => {
           },
           retries: { delay, maxAttempts: 2 },
         });
+
         await durability.work({ id: `policy:${index}`, payload: null });
         await vi.waitFor(async () => {
           await expect(
@@ -806,6 +864,7 @@ describe('Durability', () => {
 
   it('persists non-serializable successful results as terminal failures', async () => {
     const handler = vi.fn(async () => 1n);
+
     const durability = new Durability({
       context: contextFor(new FakeStorage()),
       handlers: { work: handler },
@@ -826,14 +885,17 @@ describe('Durability', () => {
   it('leaves saturated eager calls for their reconciled alarm', async () => {
     const storage = new FakeStorage();
     let releaseFirst: (() => void) | undefined;
+
     const firstPending = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
+
     const handler = vi.fn(async ({ id }: DurableCall<null>) => {
       if (id === 'first') {
         await firstPending;
       }
     });
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: handler },
@@ -889,21 +951,27 @@ describe('Durability', () => {
     vi.setSystemTime(10);
     const storage = new FakeStorage();
     let finishOld: (() => void) | undefined;
+
     const oldPending = new Promise<void>((resolve) => {
       finishOld = resolve;
     });
+
     let invocation = 0;
     let oldSignal: AbortSignal | undefined;
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
         work: async ({ signal }: DurableCall<null>) => {
           invocation += 1;
+
           if (invocation === 1) {
             oldSignal = signal;
             await oldPending;
+
             return 'old';
           }
+
           return 'new';
         },
       },
@@ -941,9 +1009,11 @@ describe('Durability', () => {
     const storage = new FakeStorage();
     const events: DurabilityLifecycleEvent[] = [];
     const pending: Promise<unknown>[] = [];
+
     const consoleError = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
+
     const durability = new Durability({
       context: {
         ...contextFor(storage),
@@ -954,9 +1024,11 @@ describe('Durability', () => {
       handlers: { work: async () => 'done' },
       onLifecycleEvent(event) {
         events.push(event);
+
         if (event.type === 'registered') {
           return Promise.reject(new Error('metrics unavailable'));
         }
+
         return undefined;
       },
     });
@@ -1003,6 +1075,7 @@ describe('Durability', () => {
   it('omits handler results from default lifecycle events', async () => {
     const storage = new FakeStorage();
     const events: DurabilityLifecycleEvent[] = [];
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: async () => ({ secret: 'token-abc' }) },
@@ -1027,6 +1100,7 @@ describe('Durability', () => {
   it('includes handler results only when includeResults is enabled', async () => {
     const storage = new FakeStorage();
     const events: DurabilityLifecycleEvent[] = [];
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: { work: async () => ({ secret: 'token-abc' }) },

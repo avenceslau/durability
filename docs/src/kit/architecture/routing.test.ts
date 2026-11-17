@@ -25,6 +25,7 @@ function builds(diagram: ArchitectureDiagram): ReadonlyArray<readonly [string, S
     [`stage ${index}`, state] as const,
     ...composites.map((id) => {
       const clicks = new Map([[id, !state.expanded.has(id)]])
+
       return [`stage ${index} with ${id} clicked`, shownStage(diagram, index, clicks)] as const
     }),
   ])
@@ -36,8 +37,10 @@ function crossingPairs(diagram: ArchitectureDiagram, state: StageState): Readonl
     const view = state.nodes.get(id)
     const center = state.layout.nodes.get(id)
     assert.ok(view !== undefined && center !== undefined)
+
     return nodeRect(view, center, state.layout.scale)
   }
+
   const lines = diagram.edges
     .filter((edge) => state.visible.has(edge.id))
     .map((edge) => {
@@ -45,6 +48,7 @@ function crossingPairs(diagram: ArchitectureDiagram, state: StageState): Readonl
       assert.ok(route !== undefined, `${edge.id} is routed`)
       const [from, to] = drawnEnds(state, edge)
       const { path } = edgeGeometry(edge, route, rect(from), rect(to))
+
       return {
         id: edge.id,
         points: Array.from({ length: 81 }, (_, index) => pointOnPath(path, index / 80)),
@@ -110,6 +114,7 @@ test("a long edge arriving last finds a way in without crossing the edges alread
     ],
     stages: [["controller", "rateLimit", "bouncer", "engineInstance", "account", "souschef", "watchdog", "terminator"], []],
   })
+
   const [before, after] = diagram.stages
   assert.ok(before !== undefined && after !== undefined)
 
@@ -154,6 +159,7 @@ test("an edge bows round another edge rather than cross it", () => {
       { from: "left", to: "right" },
     ],
   })
+
   const state = diagram.stages[0]
   assert.ok(state !== undefined)
 
@@ -182,6 +188,7 @@ function stageRects(state: StageState): ReadonlyMap<string, Rect> {
   return new Map(
     [...state.layout.nodes].flatMap(([id, center]) => {
       const view = state.nodes.get(id)
+
       if (view === undefined || !state.visible.has(id)) {
         return []
       }
@@ -219,6 +226,7 @@ test("orthogonal edges run in straight lines through the gaps between nodes, nev
       const inside = Array.from({ length: 101 }, (_, index) => pointOnPath(path, index / 100)).some(
         ([x, y]) => x > rect.x && x < rect.x + rect.width && y > rect.y && y < rect.y + rect.height,
       )
+
       assert.ok(!inside, `${edge.id} passes through ${id}`)
     }
   }
@@ -292,6 +300,7 @@ function pathOf(diagram: ArchitectureDiagram, state: StageState, id: string): Pa
   const from = rects.get(fromId)
   const to = rects.get(toId)
   assert.ok(edge !== undefined && route !== undefined && from !== undefined && to !== undefined, `${id} is drawn`)
+
   return edgeGeometry(edge, route, from, to).path
 }
 
@@ -319,6 +328,7 @@ function labelBoxes(
     const [x, y] = edgeGeometry(edge, route, from, to).labelPoint
     const [width, height] = labelSize(edge.label).map((value) => value * state.layout.scale) as [number, number]
     const inner = [width * 0.82, height - 10 * state.layout.scale] as const
+
     return [
       {
         id: edge.id,
@@ -341,6 +351,7 @@ test("the three edges between the client and the controller run level on ports o
   const state = controlPlane.stages[5]
   assert.ok(state !== undefined)
   const ids = ["client->controller", "listRequest", "controller->client"]
+
   const heights = ids.map((id) => {
     const path = pathOf(controlPlane, state, id)
     const start = path[0]?.from
@@ -348,6 +359,7 @@ test("the three edges between the client and the controller run level on ports o
     assert.ok(start !== undefined && end !== undefined)
     assert.ok(Math.abs(start[1] - end[1]) < 0.01, `${id} runs level`)
     assert.ok(path.every(isStraight), `${id} is a straight line`)
+
     return start[1]
   })
 
@@ -371,9 +383,11 @@ test("the three edges between the client and the controller run level on ports o
 
     for (const line of ids.filter((other) => other !== id)) {
       const path = pathOf(controlPlane, state, line)
+
       const hidden = Array.from({ length: 101 }, (_, step) => pointOnPath(path, step / 100)).some((point) =>
         contains(knockout, point),
       )
+
       assert.ok(!hidden, `${id}'s label covers ${line}`)
     }
   }
@@ -405,6 +419,7 @@ test("parallel edges with room between them carry their labels there, on their l
       { from: "right", to: "left", label: "answer", back: true },
     ],
   })
+
   const state = diagram.stages[0]
   assert.ok(state !== undefined)
 
@@ -440,12 +455,14 @@ test("a rank gap widens for the widest label of any edge across it", () => {
         { from: "b", to: "c", label: "a label wider than the rest of them" },
       ],
     })
+
     const state = diagram.stages[0]
     assert.ok(state !== undefined)
     const rects = stageRects(state)
     const a = rects.get("a")
     const b = rects.get("b")
     assert.ok(a !== undefined && b !== undefined)
+
     return (b.x - (a.x + a.width)) / state.layout.scale
   }
 
@@ -461,13 +478,16 @@ test("every build keeps labels clear of each other, of nodes and notes, and of o
       const where = `${name} ${build}`
       const labels = labelBoxes(diagram, state)
       const nodes = [...stageRects(state)]
+
       const notes = diagram.notes.flatMap((note) => {
         const centre = state.layout.notes.get(note.id)
         const [width, height] = note.size.map((value) => value * state.layout.scale) as [number, number]
+
         return centre === undefined || !state.visible.has(note.id)
           ? []
           : [{ x: centre[0] - width / 2, y: centre[1] - height / 2, width, height, radius: 0 }]
       })
+
       const lines = diagram.edges
         .filter((edge) => state.visible.has(edge.id))
         .map((edge) => ({
@@ -533,6 +553,7 @@ test("elbows turn through rounded corners, with their middle runs inside the gap
 test("elbows sharing a channel run in lanes of their own", () => {
   const state = controlPlane.stages.at(-1)
   assert.ok(state !== undefined)
+
   const runs = controlPlane.edges
     .filter((edge) => state.layout.edges.get(edge.id)?.shape === "orthogonal")
     .flatMap((edge) =>
@@ -545,6 +566,7 @@ test("elbows sharing a channel run in lanes of their own", () => {
           high: Math.max(curve.from[1], curve.to[1]),
         })),
     )
+
   const lanes = runs.flatMap((run, index) =>
     runs
       .slice(index + 1)
@@ -593,6 +615,7 @@ test("a lone edge attaches at its side's centre, and ports along a side follow w
       { from: "hub", to: "level" },
     ],
   })
+
   const state = diagram.stages[0]
   assert.ok(state !== undefined)
 

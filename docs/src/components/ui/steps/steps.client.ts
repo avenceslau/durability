@@ -10,6 +10,7 @@ import { mount } from '@cloudflare/nimbus-docs/client';
 
 function initSteps(root: HTMLElement): () => void {
   const lists = root.querySelectorAll<HTMLOListElement>(':scope > ol');
+
   if (
     import.meta.env.DEV &&
     lists.length === 0 &&
@@ -22,6 +23,7 @@ function initSteps(root: HTMLElement): () => void {
         'use an ordered list.'
     );
   }
+
   lists.forEach((ol) => ol.setAttribute('role', 'list'));
 
   return () => {};

@@ -117,16 +117,20 @@ export const createLifecycleHooks = (
   initial: LifecycleHook | undefined
 ): LifecycleHooks => {
   const emits = new Set<Emit>();
+
   const add = (hook: LifecycleHook) => {
     const emit = emitter(hook);
     emits.add(emit);
+
     return () => {
       emits.delete(emit);
     };
   };
+
   if (initial) {
     add(initial);
   }
+
   return {
     emit: traceLifecycle((event) => {
       for (const emit of emits) {
@@ -150,6 +154,7 @@ export const createEmitter = <
   if (!hook) {
     return () => undefined;
   }
+
   return (event) => {
     const report = (error: unknown): void =>
       reportFailure(
@@ -161,15 +166,20 @@ export const createEmitter = <
         },
         error
       );
+
     try {
       const result = hook(event);
+
       if (result === undefined) {
         return;
       }
+
       const caught = Promise.resolve(result).catch(report);
+
       if (!waitUntil) {
         return;
       }
+
       try {
         waitUntil(caught);
       } catch (error) {

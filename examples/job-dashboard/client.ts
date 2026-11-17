@@ -22,14 +22,18 @@ export const openDashboard = (
   const reload = async () => {
     jobs.clear();
     let cursor: string | undefined;
+
     do {
       // eslint-disable-next-line no-await-in-loop
       const page = await conn.rpc.work({ cursor });
+
       for (const record of page.records) {
         jobs.set(record.id, record);
       }
+
       cursor = page.cursor;
     } while (cursor !== undefined);
+
     render([...jobs.values()]);
   };
 

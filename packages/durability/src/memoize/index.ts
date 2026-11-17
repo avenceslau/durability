@@ -61,12 +61,15 @@ export const createMemoize = (
   /** Serializes, checks, and writes a callback's result, then returns its persisted form. */
   const save = <T>(key: string, value: T): T => {
     let serialized: string;
+
     try {
       serialized = serialize(value);
     } catch (error) {
       throw new DurableMemoSerializationError(key, error);
     }
+
     const bytes = new TextEncoder().encode(serialized).byteLength;
+
     if (bytes > maxMemoBytes) {
       throw new DurableMemoLimitError(
         `Memoized result for ${JSON.stringify(key)} is ${bytes} bytes, over the ${maxMemoBytes}-byte limit`
@@ -96,9 +99,11 @@ export const createMemoize = (
           ref.attempt
         )
         .toArray().length > 0;
+
     if (!written) {
       throw supersededError(key);
     }
+
     // Return what a replay would return, so later code sees one shape either way.
     return deserialize(serialized) as T;
   };
@@ -141,13 +146,16 @@ export const createMemoize = (
         )
         .toArray()[0]
     );
+
     if (lookup.result !== null) {
       return deserialize(lookup.result) as T;
     }
+
     // A rescheduled or purged attempt must not start side effects it can never record.
     if (lookup.owned === 0) {
       throw supersededError(key);
     }
+
     // Waiting on the running call would deadlock a callback that memoizes its own key.
     if (running.has(key)) {
       throw new Error(
@@ -165,6 +173,7 @@ export const createMemoize = (
     // The key stays running through serialization, so a getter that memoizes
     // it again is rejected instead of running the callback a second time.
     running.add(key);
+
     try {
       return save(key, await callback());
     } finally {
@@ -255,6 +264,7 @@ export const deleteMemosOfDroppedTable = (
   if (!tableExists(sql, 'durability_memos') || tableExists(sql, table.name)) {
     return;
   }
+
   sql.exec(
     `DELETE FROM durability_memos
      WHERE owner = ? OR (json_valid(owner) AND json_extract(owner, '$[0]') = ?)`,

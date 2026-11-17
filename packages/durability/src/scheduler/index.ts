@@ -92,6 +92,7 @@ export type SchedulerAttachment =
 const minAlarmDelayMs = 1_000;
 const failedRunRetryMs = 1_000;
 const defaultAlarmConcurrency = 10;
+
 const schedulerOptionKeys = [
   'alarmConcurrency',
   'alarmMinDelayMs',
@@ -99,6 +100,7 @@ const schedulerOptionKeys = [
   'liveTimers',
   'onAlarmRetry',
 ] as const satisfies ReadonlyArray<keyof DurabilitySchedulerOptions>;
+
 const maxAlarmDelayMs = 15_000;
 
 const pendingHeadRowSchema = v.object({
@@ -106,6 +108,7 @@ const pendingHeadRowSchema = v.object({
   channel: v.optional(v.string()),
   next_attempt_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const countRowSchema = v.object({
   count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
@@ -159,6 +162,7 @@ export const assertChannel = (helper: string, channel: unknown): string => {
   if (typeof channel !== 'string' || channel.length === 0) {
     throw new TypeError(`${helper} channel must be a non-empty string`);
   }
+
   return channel;
 };
 
@@ -217,24 +221,30 @@ const decideRetry = (
     isNonRetryable(error) ||
     attempt >= spec.policy.maxAttempts ||
     spec.isTerminal(error);
+
   if (terminal) {
     const timestamp = Date.now();
+
     return { error, terminal, timestamp, nextAttemptAt: timestamp };
   }
 
   try {
     const rawDelay = spec.policy.delay(attempt);
+
     if (!Number.isFinite(rawDelay) || rawDelay < 0) {
       throw new DurableRetryPolicyError(spec.label);
     }
+
     const delay = Math.round(rawDelay);
     const timestamp = Date.now();
+
     if (
       !Number.isSafeInteger(delay) ||
       !Number.isSafeInteger(timestamp + delay)
     ) {
       throw new DurableRetryPolicyError(spec.label);
     }
+
     return {
       error,
       terminal: false,
@@ -243,6 +253,7 @@ const decideRetry = (
     };
   } catch (policyError) {
     const timestamp = Date.now();
+
     return {
       error: isErrorInstance(policyError, DurableRetryPolicyError)
         ? policyError
@@ -315,36 +326,45 @@ export class Engine {
     ) {
       this.context = context;
     }
+
     this.configure(options);
   }
 
   private configure(options: DurabilitySchedulerOptions): void {
     const merged: DurabilitySchedulerOptions = { ...this.explicitOptions };
+
     for (const key of schedulerOptionKeys) {
       const value = options[key];
+
       if (value === undefined) {
         continue;
       }
+
       const current = this.explicitOptions[key];
+
       if (current !== undefined && current !== value) {
         throw new Error(
           `Scheduler option "${key}" is already set to a different value for this Durable Object`
         );
       }
+
       Object.assign(merged, { [key]: value });
     }
 
     const alarmConcurrency = merged.alarmConcurrency ?? defaultAlarmConcurrency;
     const alarmMinDelayMs = merged.alarmMinDelayMs ?? 15_000;
     const alarmHandoffMs = merged.alarmHandoffMs ?? 14 * 60_000;
+
     if (
       merged.onAlarmRetry !== undefined &&
       typeof merged.onAlarmRetry !== 'function'
     ) {
       throw new TypeError('onAlarmRetry must be a function');
     }
+
     assertPositiveInteger('alarmConcurrency', alarmConcurrency);
     assertPositiveInteger('alarmMinDelayMs', alarmMinDelayMs);
+
     if (
       alarmMinDelayMs < minAlarmDelayMs ||
       alarmMinDelayMs > maxAlarmDelayMs
@@ -353,6 +373,7 @@ export class Engine {
         `alarmMinDelayMs must be between ${minAlarmDelayMs} and ${maxAlarmDelayMs}`
       );
     }
+
     assertPositiveInteger('alarmHandoffMs', alarmHandoffMs);
 
     // Permits already handed out stay out; raising the limit frees more now.
@@ -363,6 +384,7 @@ export class Engine {
     this.liveTimers = merged.liveTimers ?? false;
     this.onAlarmRetry = merged.onAlarmRetry;
     this.explicitOptions = merged;
+
     while (this.availablePermits > 0 && this.permitWaiters.length > 0) {
       const waiter = this.permitWaiters.shift()!;
       this.availablePermits -= 1;
@@ -372,20 +394,24 @@ export class Engine {
 
   register(participant: Participant): void {
     const { name } = participant.table;
+
     if (this.participants.some(({ table }) => table.name === name)) {
       throw new Error(`A ${name} helper is already attached to this scheduler`);
     }
+
     this.participants.push(participant);
   }
 
   /** Reserves an instance identity, including for helpers that do not schedule work. */
   claimChannel(kind: string, channel: string, helper: string): void {
     const claimed = this.claimedChannels.get(kind) ?? new Set<string>();
+
     if (claimed.has(channel)) {
       throw new Error(
         `${helper} for channel "${channel}" is already attached to this scheduler`
       );
     }
+
     claimed.add(channel);
     this.claimedChannels.set(kind, claimed);
   }
@@ -398,6 +424,7 @@ export class Engine {
   registerChannel(participant: ChannelParticipant): void {
     const { table, channel, helper } = participant;
     let channels = this.channelsByTable.get(table.name);
+
     if (!channels) {
       const created = new Map<string, ChannelParticipant>();
       this.register({
@@ -412,11 +439,13 @@ export class Engine {
       this.channelsByTable.set(table.name, created);
       channels = created;
     }
+
     this.claimChannel(table.name, channel, helper);
     channels.set(channel, {
       ...participant,
       table: { ...table, channel },
     });
+
     if (participant.nextPendingAt !== undefined) {
       // Missing custom channels are dormant. Defer until construction finishes,
       // then restore their alarm without requiring a new application write.
@@ -426,19 +455,23 @@ export class Engine {
           { table: table.name, channel },
           error
         );
+
       const resumed = Promise.resolve()
         .then(() => {
           if (participant.nextPendingAt?.(this.sql) !== undefined) {
             return this.scheduleNextAlarm();
           }
+
           return undefined;
         })
         .catch(async (error: unknown) => {
           if (await this.armFallbackAlarm()) {
             this.retryFailedRun();
           }
+
           onError(error);
         });
+
       this.waitUntil(resumed, onError);
     }
   }
@@ -453,21 +486,25 @@ export class Engine {
     channels: ReadonlyMap<string, ChannelParticipant>
   ): Promise<void> {
     const now = Date.now();
+
     const customTiming = [...channels.values()].some(
       (participant) => participant.nextPendingAt !== undefined
     );
+
     const channelTables = new Set([
       table.name,
       ...[...channels.values()].flatMap(
         (participant) => participant.channelTables ?? []
       ),
     ]);
+
     const query = customTiming
       ? [...channelTables]
           .map((name) => `SELECT channel FROM ${name}`)
           .join(' UNION ')
       : `SELECT DISTINCT channel FROM ${table.name}
          WHERE status = 'pending' AND next_attempt_at <= ?`;
+
     const unattached = v
       .parse(
         v.array(channelRowSchema),
@@ -475,15 +512,18 @@ export class Engine {
       )
       .map((row) => row.channel)
       .filter((channel) => !channels.has(channel));
+
     if (unattached.length === 0) {
       return;
     }
 
     for (const channel of unattached) {
       const identity = JSON.stringify([table.name, channel]);
+
       if (customTiming && this.reportedMissingChannels.has(identity)) {
         continue;
       }
+
       this.reportedMissingChannels.add(identity);
       reportFailure(
         'durability.channel_missing',
@@ -493,11 +533,13 @@ export class Engine {
         )
       );
     }
+
     // Custom timing may represent leases or recurring configurations, not pending
     // attempts. Retain those records unchanged until their channel returns.
     if (customTiming) {
       return;
     }
+
     await this.transaction((sql) => {
       for (const channel of unattached) {
         sql.exec(
@@ -518,6 +560,7 @@ export class Engine {
     if (!this.context.waitUntil) {
       return;
     }
+
     try {
       this.context.waitUntil(promise);
     } catch (error) {
@@ -531,6 +574,7 @@ export class Engine {
    */
   objectId(): string | undefined {
     const id: unknown = Reflect.get(this.context, 'id');
+
     return id === undefined || id === null ? undefined : String(id);
   }
 
@@ -555,9 +599,11 @@ export class Engine {
     if (this.migrated.has(capability)) {
       return;
     }
+
     if (!isSchemaCurrent(this.sql, capability, migrations)) {
       migrateCapability(this.storage, capability, migrations, undefined);
     }
+
     this.migrated.add(capability);
   }
 
@@ -572,30 +618,39 @@ export class Engine {
    */
   async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
     let nextPendingAt: number | undefined;
+
     const result = await this.storage.transaction(async (transaction) => {
       const value = write(this.sql);
       nextPendingAt = await this.reconcile(transaction);
+
       return value;
     });
+
     this.scheduleEarlyAlarm(nextPendingAt);
+
     return result;
   }
 
   private trackActive(table: string, key: string): void {
     let keys = this.activeByTable.get(table);
+
     if (!keys) {
       keys = new Set();
       this.activeByTable.set(table, keys);
     }
+
     keys.add(key);
   }
 
   private releaseActive(table: string, key: string): void {
     const keys = this.activeByTable.get(table);
+
     if (!keys) {
       return;
     }
+
     keys.delete(key);
+
     if (keys.size === 0) {
       this.activeByTable.delete(table);
     }
@@ -612,6 +667,7 @@ export class Engine {
     timer?: number | undefined;
   } {
     const channels = this.channelsByTable.get(participant.table.name);
+
     if (
       participant.table.channel === undefined &&
       channels !== undefined &&
@@ -621,22 +677,29 @@ export class Engine {
     ) {
       let physical: number | undefined;
       let timer: number | undefined;
+
       for (const channel of channels.values()) {
         const next = this.pendingTimes(channel);
+
         if (next.physical !== undefined) {
           physical = Math.min(physical ?? Infinity, next.physical);
         }
+
         if (next.timer !== undefined) {
           timer = Math.min(timer ?? Infinity, next.timer);
         }
       }
+
       return { physical, timer };
     }
+
     if (participant.nextPendingAt) {
       const at = participant.nextPendingAt(this.sql);
+
       if (at === undefined) {
         return {};
       }
+
       return participant.holding?.()
         ? { physical: at }
         : {
@@ -646,9 +709,11 @@ export class Engine {
               : at,
           };
     }
+
     const active = this.activeByTable.get(participant.table.name);
     const partitioned = this.channelsByTable.has(participant.table.name);
     const limit = (active?.size ?? 0) + 1;
+
     const rows = v.parse(
       v.array(pendingHeadRowSchema),
       this.sql
@@ -662,10 +727,13 @@ export class Engine {
         )
         .toArray()
     );
+
     const physical = rows[0]?.next_attempt_at;
+
     const eligible = rows.find(
       (row) => !active?.has(activeKey(row.channel, row.pk))
     );
+
     return { physical, timer: eligible?.next_attempt_at };
   }
 
@@ -678,11 +746,14 @@ export class Engine {
   ): Promise<number | undefined> {
     const physicalTimes: number[] = [];
     const timerTimes: number[] = [];
+
     for (const participant of this.participants) {
       const { physical, timer } = this.pendingTimes(participant);
+
       if (physical !== undefined) {
         physicalTimes.push(physical);
       }
+
       if (timer !== undefined) {
         timerTimes.push(timer);
       }
@@ -690,15 +761,19 @@ export class Engine {
 
     const physicalNextAt =
       physicalTimes.length === 0 ? undefined : Math.min(...physicalTimes);
+
     const currentAlarm = await physicalAlarm.getAlarm();
+
     if (physicalNextAt === undefined) {
       if (currentAlarm !== null) {
         await physicalAlarm.deleteAlarm();
       }
+
       return undefined;
     }
 
     const target = Math.max(physicalNextAt, Date.now() + this.alarmMinDelayMs);
+
     // Preserve a fallback inside this range so frequent reconciliation cannot push it later.
     if (
       currentAlarm === null ||
@@ -707,6 +782,7 @@ export class Engine {
     ) {
       await physicalAlarm.setAlarm(target);
     }
+
     return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);
   }
 
@@ -714,14 +790,18 @@ export class Engine {
     if (this.earlyAlarm?.timestamp === timestamp) {
       return;
     }
+
     if (this.earlyAlarm) {
       this.earlyAlarm.cancel();
       this.earlyAlarm = undefined;
     }
+
     if (timestamp === undefined) {
       return;
     }
+
     const delay = timestamp - Date.now();
+
     // Without liveTimers the in-memory timer only covers the sub-min-delay
     // window; the physical alarm handles everything beyond it. With liveTimers
     // it fires at the exact due time no matter how far out.
@@ -733,23 +813,28 @@ export class Engine {
       if (this.earlyAlarm?.cancel !== cancel) {
         return;
       }
+
       this.earlyAlarm = undefined;
       trace('scheduler.early_alarm', { scheduledTime: timestamp });
+
       const onError = (error: unknown) =>
         reportFailure(
           'durability.background_execution.failed',
           { scheduledTime: timestamp },
           error
         );
+
       const execution = this.alarm().catch(onError);
       this.waitUntil(execution, onError);
     }, delay);
+
     this.earlyAlarm = { timestamp, cancel };
   }
 
   /** Coalesces refreshes without dropping requests arriving after the pending-work read. */
   scheduleNextAlarm(): Promise<void> {
     this.alarmRefreshRequested = true;
+
     if (this.alarmRefresh) {
       return this.alarmRefresh;
     }
@@ -766,6 +851,7 @@ export class Engine {
         this.alarmRefresh = undefined;
       }
     })();
+
     return this.alarmRefresh;
   }
 
@@ -782,6 +868,7 @@ export class Engine {
     if (!Number.isSafeInteger(before) || before < 0) {
       throw new RangeError('timestamp must be a non-negative safe integer');
     }
+
     for (const running of active.values()) {
       if (running.createdAt < before) {
         running.controller?.abort(new Error(abortReason));
@@ -790,6 +877,7 @@ export class Engine {
 
     const where = `created_at < ?${channelClause(table)}`;
     const params = [before, ...channelBindings(table)];
+
     const removed = await this.transaction((sql) => {
       const { count } = v.parse(
         countRowSchema,
@@ -800,8 +888,10 @@ export class Engine {
           )
           .toArray()[0]
       );
+
       sql.exec(`DELETE FROM ${table.name} WHERE ${where}`, ...params);
       deleteStaleMemos(sql, table);
+
       return count;
     });
 
@@ -810,6 +900,7 @@ export class Engine {
         this.notify(table, key);
       }
     }
+
     return removed;
   }
 
@@ -820,8 +911,10 @@ export class Engine {
     listener: SettlementListener
   ): () => void {
     const owner = tableOwner(table);
+
     const byKey =
       this.watchers.get(owner) ?? new Map<string, Set<SettlementListener>>();
+
     this.watchers.set(owner, byKey);
     const listeners = byKey.get(key) ?? new Set<SettlementListener>();
     byKey.set(key, listeners);
@@ -829,6 +922,7 @@ export class Engine {
 
     return () => {
       listeners.delete(listener);
+
       if (listeners.size === 0 && byKey.get(key) === listeners) {
         byKey.delete(key);
       }
@@ -851,15 +945,19 @@ export class Engine {
     if (this.availablePermits <= 0) {
       return undefined;
     }
+
     this.availablePermits -= 1;
+
     return this.createRelease();
   }
 
   acquirePermit(): Promise<() => void> {
     const release = this.tryAcquirePermit();
+
     if (release) {
       return Promise.resolve(release);
     }
+
     return new Promise((resolve) => {
       this.permitWaiters.push(resolve);
     });
@@ -867,16 +965,21 @@ export class Engine {
 
   private createRelease(): () => void {
     let released = false;
+
     return () => {
       if (released) {
         return;
       }
+
       released = true;
       this.availablePermits += 1;
+
       if (this.availablePermits <= 0) {
         return;
       }
+
       const waiter = this.permitWaiters.shift();
+
       if (waiter) {
         this.availablePermits -= 1;
         waiter(this.createRelease());
@@ -895,6 +998,7 @@ export class Engine {
         async () => {
           while (nextIndex < items.length) {
             const item = items[nextIndex++];
+
             if (item !== undefined) {
               // eslint-disable-next-line no-await-in-loop
               await worker(item);
@@ -921,6 +1025,7 @@ export class Engine {
       if (!(await this.armFallbackAlarm())) {
         throw error;
       }
+
       reportFailure(
         'durability.alarm.failed',
         { retryInMs: this.alarmMinDelayMs },
@@ -939,10 +1044,12 @@ export class Engine {
    */
   private retryFailedRun(): void {
     this.failedRuns += 1;
+
     const delay = Math.min(
       failedRunRetryMs * 2 ** (this.failedRuns - 1),
       this.alarmMinDelayMs
     );
+
     this.scheduleEarlyAlarm(Date.now() + delay);
   }
 
@@ -951,11 +1058,13 @@ export class Engine {
     invocation: AlarmInvocationInfo | undefined
   ): void {
     const hook = this.onAlarmRetry;
+
     if (!hook) {
       return;
     }
 
     const objectId = this.objectId();
+
     const info: AlarmRetryInfo = {
       error: serializeError(failure),
       retryInMs: this.alarmMinDelayMs,
@@ -967,14 +1076,17 @@ export class Engine {
           }),
       ...(objectId === undefined ? {} : { objectId }),
     };
+
     const report = (hookError: unknown): void =>
       reportFailure(
         'durability.alarm.retry_hook_failed',
         { retryInMs: info.retryInMs },
         hookError
       );
+
     try {
       const result = hook(info);
+
       if (result !== undefined) {
         this.waitUntil(Promise.resolve(result).catch(report), report);
       }
@@ -989,17 +1101,20 @@ export class Engine {
    */
   private async runAlarm(info?: AlarmInvocationInfo): Promise<void> {
     const startedAt = Date.now();
+
     const execution = Promise.all(
       this.participants.map((participant) =>
         participant.runDue(startedAt, info)
       )
     ).then(() => undefined);
+
     void execution.catch(() => undefined);
 
     const handoff = Symbol('alarm handoff');
     const remaining = this.alarmHandoffMs - (Date.now() - startedAt);
     let cancelTimeout: (() => void) | undefined;
     let result: void | typeof handoff;
+
     try {
       result = await Promise.race([
         execution,
@@ -1016,8 +1131,10 @@ export class Engine {
 
     if (result === handoff) {
       await this.armForHandoff(Date.now());
+
       return;
     }
+
     await this.scheduleNextAlarm();
   }
 
@@ -1025,6 +1142,7 @@ export class Engine {
   private async armFallbackAlarm(): Promise<boolean> {
     try {
       await this.storage.setAlarm(Date.now() + this.alarmMinDelayMs);
+
       return true;
     } catch {
       return false;
@@ -1035,6 +1153,7 @@ export class Engine {
     return this.storage.transaction(async (physicalAlarm) => {
       const currentAlarm = await physicalAlarm.getAlarm();
       const target = Math.max(timestamp, Date.now() + this.alarmMinDelayMs);
+
       if (currentAlarm === null || currentAlarm > target) {
         await physicalAlarm.setAlarm(target);
       }
@@ -1052,14 +1171,17 @@ export class Engine {
   startExecution(spec: ExecutionSpec, eagerPermit?: () => void): Promise<void> {
     const { key, row, policy } = spec;
     let settleActive!: () => void;
+
     const settled = new Promise<void>((resolve) => {
       settleActive = resolve;
     });
+
     const activeExecution: ActiveExecution = {
       generation: row.generation_id,
       createdAt: row.created_at,
       settled,
     };
+
     spec.active.set(key, activeExecution);
     this.trackActive(spec.table.name, activeKey(spec.table.channel, key));
 
@@ -1067,6 +1189,7 @@ export class Engine {
 
     const execution = (async (): Promise<void> => {
       releasePermit ??= await this.acquirePermit();
+
       const attempt = claimAttempt(
         this.sql,
         spec.table,
@@ -1074,8 +1197,10 @@ export class Engine {
         row.generation_id,
         policy.maxAttempts
       );
+
       if (attempt === undefined) {
         await this.failExhausted(spec);
+
         return;
       }
 
@@ -1089,12 +1214,15 @@ export class Engine {
       const controller = new AbortController();
       activeExecution.controller = controller;
       let cancelTimeout: (() => void) | undefined;
+
       try {
         const handlerResult = Promise.resolve().then(() =>
           spec.invoke(attempt, controller.signal)
         );
+
         // After a timeout nothing awaits the handler, which may still reject.
         void handlerResult.catch(() => undefined);
+
         const timeoutResult = new Promise<never>((_resolve, reject) => {
           cancelTimeout = this.timer.schedule(() => {
             const error = spec.timeoutError();
@@ -1102,16 +1230,20 @@ export class Engine {
             reject(error);
           }, policy.attemptTimeoutMs);
         });
+
         const result = await Promise.race([handlerResult, timeoutResult]);
 
         // One transaction: a failed memo cleanup must undo the completion, not orphan the memos.
         const timestamp = this.transactionSync((sql) => {
           const completedAt = spec.complete(result, attempt);
+
           if (completedAt !== undefined) {
             deleteMemos(sql, spec.table, key);
           }
+
           return completedAt;
         });
+
         if (timestamp !== undefined) {
           this.notify(spec.table, key, row);
           spec.emit({
@@ -1138,6 +1270,7 @@ export class Engine {
       if (spec.active.get(key) === activeExecution) {
         spec.active.delete(key);
       }
+
       this.releaseActive(spec.table.name, activeKey(spec.table.channel, key));
       // Re-arm the in-memory timer now that this key is eligible again, so work
       // the timer skipped while it executed is picked up at its exact time.
@@ -1149,12 +1282,14 @@ export class Engine {
         )
       );
     });
+
     return execution;
   }
 
   private async failExhausted(spec: ExecutionSpec): Promise<void> {
     const { key, row, policy } = spec;
     const exhausted = serializeError(spec.exhaustedError());
+
     const attempt = await this.transaction((sql) => {
       const exhaustedAttempt = exhaustAttempts(
         sql,
@@ -1164,11 +1299,14 @@ export class Engine {
         policy.maxAttempts,
         exhausted
       );
+
       if (exhaustedAttempt !== undefined) {
         deleteMemos(sql, spec.table, key);
       }
+
       return exhaustedAttempt;
     });
+
     if (attempt === undefined) {
       return;
     }
@@ -1193,6 +1331,7 @@ export class Engine {
     const { key, row } = spec;
     const decision = decideRetry(spec, attempt, caught);
     const serializedError = serializeError(decision.error);
+
     const updated = await this.transaction((sql) => {
       const owned = updateAttempt(
         sql,
@@ -1204,14 +1343,18 @@ export class Engine {
         serializedError.message,
         serializedError.name
       );
+
       if (owned && decision.terminal) {
         deleteMemos(sql, spec.table, key);
       }
+
       return owned;
     });
+
     if (!updated) {
       return;
     }
+
     if (decision.terminal) {
       this.notify(spec.table, key);
     }
@@ -1224,6 +1367,7 @@ export class Engine {
       durationMs: Math.max(0, decision.timestamp - startedAt),
       error: serializedError,
     };
+
     spec.emit(
       decision.terminal
         ? { ...settled, outcome: 'failed' }
@@ -1245,7 +1389,9 @@ type ObjectScheduler = { engine: unknown; installation: symbol };
 const installation = Symbol('durability installation');
 const globalRegistry = globalThis as { [key: symbol]: unknown };
 const registryKey = Symbol.for('durability.object-schedulers');
+
 globalRegistry[registryKey] ??= new WeakMap<object, ObjectScheduler>();
+
 const objectSchedulers = globalRegistry[registryKey] as WeakMap<
   object,
   ObjectScheduler
@@ -1255,11 +1401,14 @@ const objectSchedulers = globalRegistry[registryKey] as WeakMap<
 const engineForObject = (config: DurabilitySchedulerConfig): Engine => {
   const { context } = config;
   const existing = objectSchedulers.get(context.storage);
+
   if (existing === undefined) {
     const engine = new Engine(context, config);
     objectSchedulers.set(context.storage, { engine, installation });
+
     return engine;
   }
+
   if (existing.installation !== installation) {
     throw new Error(
       'Another copy of durability is already attached to this Durable Object; install durability once, for example as a peer dependency'
@@ -1268,6 +1417,7 @@ const engineForObject = (config: DurabilitySchedulerConfig): Engine => {
 
   const engine = existing.engine as Engine;
   engine.attach(context, config);
+
   return engine;
 };
 
@@ -1337,9 +1487,12 @@ export const engineFor = (attachment: SchedulerAttachment): Engine => {
   if (attachment.scheduler === undefined) {
     return engineForObject(attachment);
   }
+
   const engine = engines.get(attachment.scheduler);
+
   if (!engine) {
     throw new Error('Unknown DurabilityScheduler instance');
   }
+
   return engine;
 };

@@ -75,18 +75,21 @@ export const largeObjectStream = defineTransform<
 >()
   .caller((options: LargeObjectStreamCallerOptions) => {
     const maxDecodeBytes = options.maxDecodeBytes ?? 8 * 1024 * 1024;
+
     if (!Number.isSafeInteger(maxDecodeBytes) || maxDecodeBytes <= 0) {
       throw new RangeError('maxDecodeBytes must be a positive safe integer');
     }
 
     return async ({ next }) => {
       const value = await next();
+
       if (!(value instanceof ReadableStream)) {
         return value;
       }
 
       const reader = value.getReader();
       const first = await reader.read();
+
       const isEncoded =
         !first.done &&
         first.value instanceof Uint8Array &&
@@ -97,10 +100,12 @@ export const largeObjectStream = defineTransform<
 
       if (!isEncoded) {
         let firstPending = true;
+
         return new ReadableStream<unknown>({
           async pull(controller) {
             const chunk = firstPending ? first : await reader.read();
             firstPending = false;
+
             if (chunk.done) {
               controller.close();
             } else {
@@ -114,10 +119,13 @@ export const largeObjectStream = defineTransform<
       }
 
       const decoder = new TextDecoder('utf-8', { fatal: true });
+
       const firstPayload = first.value.subarray(
         largeObjectStreamHeader.byteLength
       );
+
       let decodedBytes = firstPayload.byteLength;
+
       if (decodedBytes > maxDecodeBytes) {
         const error = new LargeObjectDecodeLimitError(maxDecodeBytes);
         void reader.cancel(error);
@@ -126,28 +134,36 @@ export const largeObjectStream = defineTransform<
 
       try {
         let json = decoder.decode(firstPayload, { stream: true });
+
         for (;;) {
           // eslint-disable-next-line no-await-in-loop -- Stream chunks must be decoded in order.
           const chunk = await reader.read();
+
           if (chunk.done) {
             json += decoder.decode();
             break;
           }
+
           if (!(chunk.value instanceof Uint8Array)) {
             throw new TypeError('Large object stream chunks must be bytes');
           }
+
           decodedBytes += chunk.value.byteLength;
+
           if (decodedBytes > maxDecodeBytes) {
             throw new LargeObjectDecodeLimitError(maxDecodeBytes);
           }
+
           json += decoder.decode(chunk.value, { stream: true });
         }
 
         const parsed: unknown = JSON.parse(json);
         const result = await options.schema['~standard'].validate(parsed);
+
         if (result.issues) {
           throw new LargeObjectValidationError(result.issues);
         }
+
         return parsed;
       } catch (error) {
         void reader.cancel(error);
@@ -158,18 +174,22 @@ export const largeObjectStream = defineTransform<
   .callee((options: LargeObjectStreamOptions | undefined) => {
     const maxEncodeBytes = options?.maxEncodeBytes ?? 8 * 1024 * 1024;
     const thresholdBytes = options?.thresholdBytes ?? 1024 * 1024;
+
     if (!Number.isSafeInteger(maxEncodeBytes) || maxEncodeBytes <= 0) {
       throw new RangeError('maxEncodeBytes must be a positive safe integer');
     }
+
     if (!Number.isSafeInteger(thresholdBytes) || thresholdBytes <= 0) {
       throw new RangeError('thresholdBytes must be a positive safe integer');
     }
+
     if (thresholdBytes > maxEncodeBytes) {
       throw new RangeError('thresholdBytes cannot exceed maxEncodeBytes');
     }
 
     return async ({ next }) => {
       const value = await next();
+
       if (
         typeof value !== 'object' ||
         value === null ||
@@ -179,29 +199,35 @@ export const largeObjectStream = defineTransform<
       }
 
       const json = JSON.stringify(value);
+
       if (json === undefined) {
         return value;
       }
 
       const bytes = new TextEncoder().encode(json);
+
       if (bytes.byteLength > maxEncodeBytes) {
         throw new LargeObjectEncodeLimitError(maxEncodeBytes);
       }
+
       if (bytes.byteLength < thresholdBytes) {
         return value;
       }
 
       let offset = -1;
+
       return new ReadableStream<Uint8Array>({
         pull(controller) {
           if (offset === -1) {
             controller.enqueue(largeObjectStreamHeader);
             offset = 0;
+
             return;
           }
 
           if (offset >= bytes.byteLength) {
             controller.close();
+
             return;
           }
 

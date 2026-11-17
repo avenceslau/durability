@@ -30,6 +30,7 @@ describe('memoize', () => {
     const storage = new FakeStorage();
     const sent: string[] = [];
     let failing = true;
+
     const durability = new Durability({
       context: contextFor(storage),
       retries: { delay: () => 1_000 },
@@ -41,17 +42,22 @@ describe('memoize', () => {
                 if (target === 'b' && failing) {
                   throw new Error('b is down');
                 }
+
                 sent.push(target);
+
                 return `sent:${target}`;
               })
             )
           );
+
           const failure = results.find(
             (result) => result.status === 'rejected'
           );
+
           if (failure) {
             throw failure.reason;
           }
+
           return results.map((result) =>
             result.status === 'fulfilled' ? result.value : null
           );
@@ -86,6 +92,7 @@ describe('memoize', () => {
   it('retries a completion whose memo cleanup fails instead of orphaning the memos', async () => {
     const storage = new FakeStorage();
     const work = vi.fn(() => 'done');
+
     const durability = new Durability({
       context: contextFor(storage),
       retries: { delay: () => 0 },
@@ -93,6 +100,7 @@ describe('memoize', () => {
         work: async ({ memoize }: DurableCall<null>) => memoize('work', work),
       },
     });
+
     const exec = storage.sql.exec.bind(storage.sql);
     let failCleanup = true;
     vi.spyOn(storage.sql, 'exec').mockImplementation((query, ...bindings) => {
@@ -105,6 +113,7 @@ describe('memoize', () => {
         failCleanup = false;
         throw new Error('cleanup failed');
       }
+
       return exec(query, ...bindings);
     });
 
@@ -124,6 +133,7 @@ describe('memoize', () => {
     const storage = new FakeStorage();
     const first = vi.fn(() => 1);
     const second = vi.fn(() => 2);
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -148,6 +158,7 @@ describe('memoize', () => {
   it('rejects a key that is already running instead of waiting on it', async () => {
     const storage = new FakeStorage();
     const callback = vi.fn(async () => 'once');
+
     const durability = new Durability({
       context: contextFor(storage),
       retries: { maxAttempts: 1 },
@@ -157,10 +168,12 @@ describe('memoize', () => {
             memoize('shared', callback),
             memoize('shared', callback),
           ]);
+
           return results.map((result) => {
             if (result.status === 'fulfilled') {
               return result.value;
             }
+
             return result.reason instanceof Error
               ? result.reason.message
               : String(result.reason);
@@ -202,21 +215,26 @@ describe('memoize', () => {
     const storage = new FakeStorage();
     let runs = 0;
     let second: Promise<unknown> | undefined;
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
         work: async ({ memoize }: DurableCall<null>) => {
           const callback = () => {
             runs += 1;
+
             return {
               get value() {
                 second ??= memoize('shared', callback);
+
                 return 1;
               },
             };
           };
+
           const first = await memoize('shared', callback);
           const outcome = await Promise.allSettled([second]);
+
           return {
             runs,
             first,
@@ -248,16 +266,19 @@ describe('memoize', () => {
     const storage = new FakeStorage();
     const callback = vi.fn(() => 'saved');
     let attempt = 0;
+
     const durability = new Durability({
       context: contextFor(storage),
       retries: { delay: () => 0 },
       handlers: {
         work: async ({ memoize }: DurableCall<null>) => {
           attempt += 1;
+
           if (attempt === 1) {
             await memoize('shared', callback);
             throw new Error('retry');
           }
+
           return Promise.all([
             memoize('shared', callback),
             memoize('shared', callback),
@@ -278,17 +299,20 @@ describe('memoize', () => {
 
   it('runs a failed key again when it is called again', async () => {
     const storage = new FakeStorage();
+
     const callback = vi
       .fn<() => string>()
       .mockImplementationOnce(() => {
         throw new Error('first try');
       })
       .mockReturnValue('second try');
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
         work: async ({ memoize }: DurableCall<null>) => {
           await memoize('flaky', callback).catch(() => undefined);
+
           return memoize('flaky', callback);
         },
       },
@@ -308,6 +332,7 @@ describe('memoize', () => {
     const storage = new FakeStorage();
     const sent: string[] = [];
     let attempt = 0;
+
     const durability = new Durability({
       context: contextFor(storage),
       retries: { delay: () => 0 },
@@ -317,14 +342,18 @@ describe('memoize', () => {
           await memoize('outer', () =>
             memoize('send:A', () => {
               sent.push('A');
+
               return 'A';
             })
           );
+
           if (attempt === 1) {
             throw new Error('transient');
           }
+
           return memoize('send:B', () => {
             sent.push('B');
+
             return 'B';
           });
         },
@@ -343,6 +372,7 @@ describe('memoize', () => {
 
   it('fails the work when it memoizes more keys than the limit allows', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -371,6 +401,7 @@ describe('memoize', () => {
 
   it('fails the work when a memoized result is larger than the limit', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -394,6 +425,7 @@ describe('memoize', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       retries: { delay: () => 60_000 },
@@ -405,6 +437,7 @@ describe('memoize', () => {
         },
       },
     });
+
     const tracker = new DurabilityTracker({ sources: { jobs: durability } });
 
     await durability.work({ id: 'job', payload: null });
@@ -423,6 +456,7 @@ describe('memoize', () => {
 
   it('returns the persisted shape on the first run too', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -431,6 +465,7 @@ describe('memoize', () => {
             kept: 1,
             dropped: undefined,
           }));
+
           return Object.keys(value);
         },
       },
@@ -447,6 +482,7 @@ describe('memoize', () => {
 
   it('deletes memos when an operation fails terminally', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -468,6 +504,7 @@ describe('memoize', () => {
 
   it('fails an operation terminally when a memoized result cannot be persisted', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -493,6 +530,7 @@ describe('memoize', () => {
 
   it('rejects empty keys', async () => {
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       handlers: {
@@ -518,6 +556,7 @@ describe('memoize', () => {
     vi.useFakeTimers();
     vi.setSystemTime(10);
     const storage = new FakeStorage();
+
     const durability = new Durability({
       context: contextFor(storage),
       retries: { delay: () => 60_000 },
@@ -540,6 +579,7 @@ describe('memoize', () => {
   it('deletes the memos of a reverted helper and keeps the other helper memos', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
+
     const durability = new Durability({
       context,
       retries: { delay: () => 60_000 },
@@ -550,6 +590,7 @@ describe('memoize', () => {
         },
       },
     });
+
     const alarms = new DurabilityAlarms({
       context,
       retries: { delay: () => 60_000 },
@@ -578,12 +619,14 @@ describe('memoize', () => {
     const storage = new FakeStorage();
     const expensive = vi.fn(async () => 'built');
     let failing = true;
+
     const alarms = new DurabilityAlarms({
       context: contextFor(storage),
       retries: { delay: () => 1_000 },
       handlers: {
         report: async ({ memoize }) => {
           await memoize('build', expensive);
+
           if (failing) {
             throw new Error('upload failed');
           }
@@ -610,12 +653,15 @@ describe('memoize', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const storage = new FakeStorage();
     let finishPull: (() => void) | undefined;
+
     const pullRunning = new Promise<void>((resolve) => {
       finishPull = resolve;
     });
+
     const after = vi.fn(() => 'after');
     const outcomes: Array<PromiseSettledResult<unknown>> = [];
     let runs = 0;
+
     const alarms = new DurabilityAlarms({
       context: contextFor(storage),
       handlers: {
@@ -627,10 +673,12 @@ describe('memoize', () => {
                 if (runs === 1) {
                   await pullRunning;
                 }
+
                 return runs;
               }),
             ]))
           );
+
           if (runs === 1) {
             outcomes.push(
               ...(await Promise.allSettled([memoize('after', after)]))

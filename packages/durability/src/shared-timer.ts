@@ -55,6 +55,7 @@ export class SharedTimer {
       index: this.#heap.length,
       callback,
     };
+
     this.#heap.push(entry);
     this.#moveUp(entry);
 
@@ -73,12 +74,14 @@ export class SharedTimer {
 
     return () => {
       entry.callback = undefined;
+
       if (entry.index === -1) {
         return;
       }
 
       const wasEarliest = entry.index === 0;
       this.#remove(entry);
+
       if (wasEarliest) {
         this.#setNativeTimer();
       }
@@ -95,6 +98,7 @@ export class SharedTimer {
     onTimeout: () => Error
   ): Promise<T> {
     let cancelTimeout: (() => void) | undefined;
+
     try {
       return await Promise.race([
         work,
@@ -112,6 +116,7 @@ export class SharedTimer {
     this.#nativeTimer = undefined;
 
     const earliest = this.#heap[0];
+
     if (earliest === undefined) {
       return;
     }
@@ -132,6 +137,7 @@ export class SharedTimer {
 
     const due: Entry[] = [];
     let earliest = this.#heap[0];
+
     while (earliest !== undefined && earliest.dueAt <= now) {
       this.#remove(earliest);
       due.push(earliest);
@@ -172,6 +178,7 @@ export class SharedTimer {
     entry.index = -1;
 
     const last = this.#heap.pop();
+
     if (last === undefined || last === entry) {
       return;
     }
@@ -192,9 +199,11 @@ export class SharedTimer {
     while (index > 0) {
       const parentIndex = (index - 1) >> 1;
       const parent = this.#heap[parentIndex];
+
       if (parent === undefined || !isBefore(entry, parent)) {
         break;
       }
+
       this.#place(parent, index);
       index = parentIndex;
     }
@@ -208,17 +217,22 @@ export class SharedTimer {
     for (;;) {
       const leftIndex = 2 * index + 1;
       const left = this.#heap[leftIndex];
+
       if (left === undefined) {
         break;
       }
+
       const right = this.#heap[leftIndex + 1];
       let child = left;
+
       if (right !== undefined && isBefore(right, left)) {
         child = right;
       }
+
       if (!isBefore(child, entry)) {
         break;
       }
+
       const childIndex = child.index;
       this.#place(child, index);
       index = childIndex;

@@ -70,6 +70,7 @@ function assertRetryOptionTypes() {
     delay: ({ error, attempt }) => {
       expectTypeOf(error).toEqualTypeOf<unknown>();
       expectTypeOf(attempt).toEqualTypeOf<number>();
+
       return attempt * 10;
     },
   });
@@ -84,6 +85,7 @@ function assertRetryOptionTypes() {
     baseDelayMs: 100,
   });
 }
+
 void assertRetryOptionTypes;
 
 describe('built-in transforms', () => {
@@ -112,9 +114,11 @@ describe('built-in transforms', () => {
       status: 'ok',
       value: 42,
     });
+
     const legacy = await service
       .with(betterResultCodec, { acceptLegacy: true })
       .read();
+
     expect(Result.isOk(legacy)).toBe(true);
     expect(Result.unwrap(legacy)).toBe(42);
   });
@@ -132,6 +136,7 @@ describe('built-in transforms', () => {
 
   it('converts thrown values into Better Result errors', async () => {
     const failure = new Error('unavailable');
+
     const service = createTransformStub({
       succeed: async () => 'done' as const,
       fail: async () => {
@@ -177,6 +182,7 @@ describe('built-in transforms', () => {
       largeObjectStream,
       { maxDecodeBytes: 32, schema: unknownSchema }
     );
+
     await expect(service.value('x'.repeat(64))).rejects.toBeInstanceOf(
       LargeObjectDecodeLimitError
     );
@@ -198,6 +204,7 @@ describe('built-in transforms', () => {
         },
       }
     );
+
     await expect(validated.value('x'.repeat(64))).resolves.toEqual({
       payload: 'x'.repeat(64),
     });
@@ -214,6 +221,7 @@ describe('built-in transforms', () => {
         },
       }
     );
+
     await expect(rejected.value('x'.repeat(64))).rejects.toBeInstanceOf(
       LargeObjectValidationError
     );
@@ -221,6 +229,7 @@ describe('built-in transforms', () => {
 
   it('rejects objects above the callee encode limit', async () => {
     class LimitedService extends LargeObjectService {}
+
     applyTransforms(LimitedService, {
       all: [
         registerTransform(largeObjectStream, {
@@ -234,6 +243,7 @@ describe('built-in transforms', () => {
       largeObjectStream,
       { schema: unknownSchema }
     );
+
     await expect(service.value('x'.repeat(64))).rejects.toBeInstanceOf(
       LargeObjectEncodeLimitError
     );
@@ -241,6 +251,7 @@ describe('built-in transforms', () => {
 
   it('preserves native streams at the minimum threshold', async () => {
     class MinimumThresholdService extends LargeObjectService {}
+
     applyTransforms(MinimumThresholdService, {
       all: [
         registerTransform(largeObjectStream, {
@@ -253,6 +264,7 @@ describe('built-in transforms', () => {
       largeObjectStream,
       { schema: unknownSchema }
     );
+
     await expect(new Response(await service.stream()).text()).resolves.toBe(
       'original stream'
     );
@@ -275,6 +287,7 @@ describe('built-in transforms', () => {
 
   it('does not capture ordinary errors as Durable Object aborts', async () => {
     const failure = new Error('ordinary failure');
+
     const service = createTransformStub({
       fail: async () => {
         throw failure;
@@ -287,19 +300,23 @@ describe('built-in transforms', () => {
   it('retries failures with an attempt-aware delay', async () => {
     const firstFailure = new Error('first');
     const secondFailure = new Error('second');
+
     const operation = vi
       .fn<() => Promise<string>>()
       .mockRejectedValueOnce(firstFailure)
       .mockRejectedValueOnce(secondFailure)
       .mockResolvedValue('done');
+
     const delay =
       vi.fn<(context: { error: unknown; attempt: number }) => void>();
+
     const service = createTransformStub({ operation }).with(retry, {
       retries: 2,
       delay: ({ error, attempt }) => {
         expectTypeOf(error).toEqualTypeOf<unknown>();
         expectTypeOf(attempt).toEqualTypeOf<number>();
         delay({ error, attempt });
+
         return 0;
       },
     });
@@ -320,11 +337,13 @@ describe('built-in transforms', () => {
   it('uses jittered exponential delay by default', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
     try {
       const operation = vi
         .fn<() => Promise<string>>()
         .mockRejectedValueOnce(new Error('temporary'))
         .mockResolvedValue('done');
+
       const service = createTransformStub({ operation }).with(retry, {
         retries: 1,
       });
@@ -344,6 +363,7 @@ describe('built-in transforms', () => {
   it('preserves the final retry error', async () => {
     const failure = new Error('still unavailable');
     const operation = vi.fn<() => Promise<string>>().mockRejectedValue(failure);
+
     const service = createTransformStub({ operation }).with(retry, {
       retries: 1,
       delay: () => 0,

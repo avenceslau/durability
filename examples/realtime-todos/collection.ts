@@ -29,6 +29,7 @@ export const todosFor = (listId: string) =>
         for (const { modified } of transaction.mutations) {
           await rpc.createTodo({ id: crypto.randomUUID(), payload: modified });
         }
+
         await awaitSynced();
       },
       onUpdate: async ({ transaction, rpc }) => {

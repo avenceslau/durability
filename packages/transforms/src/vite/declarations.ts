@@ -31,9 +31,12 @@ function wranglerBindingTypes(source: string): Map<string, string> {
     sourceType: 'script',
     plugins: [['typescript', { dts: true }]],
   });
+
   const types = new Map<string, string>();
+
   const visit = (value: unknown): void => {
     const node = syntaxNode(value);
+
     if (!node) {
       return;
     }
@@ -41,7 +44,9 @@ function wranglerBindingTypes(source: string): Map<string, string> {
     const annotation = syntaxNode(
       syntaxNode(node['typeAnnotation'])?.['typeAnnotation']
     );
+
     const name = identifierName(syntaxNode(node.key));
+
     if (
       node.type === 'TSPropertySignature' &&
       name !== undefined &&
@@ -59,6 +64,7 @@ function wranglerBindingTypes(source: string): Map<string, string> {
   };
 
   visit(ast);
+
   return types;
 }
 
@@ -81,11 +87,14 @@ function declarationContents(
   );
 
   const bindingTypes = wranglerBindingTypes(envTypes);
+
   const stubs = [...project.bindings.stubBindingNames].flatMap((name) => {
     const type = bindingTypes.get(name);
+
     if (type === undefined) {
       return [];
     }
+
     return [
       {
         key: identifierPattern.test(name) ? name : JSON.stringify(name),
@@ -139,6 +148,7 @@ export async function writeBindingDeclarations(
 
   let modulePath = relative(dirname(typesPath), mainPath).split('\\').join('/');
   modulePath = modulePath.slice(0, -extname(modulePath).length);
+
   if (!modulePath.startsWith('.')) {
     modulePath = `./${modulePath}`;
   }

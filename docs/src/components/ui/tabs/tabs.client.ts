@@ -10,9 +10,11 @@ let counter = 0;
 function initTabContainer(container: HTMLElement): () => void {
   const id = `nb-tabs-${counter++}`;
   const syncKey = container.dataset.nbSyncKey;
+
   const tablist = container.querySelector<HTMLElement>(
     ':scope > [role=tablist]'
   );
+
   const indicator =
     tablist?.querySelector<HTMLElement>('[data-nb-tabs-indicator]') ?? null;
 
@@ -21,7 +23,9 @@ function initTabContainer(container: HTMLElement): () => void {
   const existingTriggers = Array.from(
     container.querySelectorAll('[data-nb-tabs-trigger]')
   ).filter((t) => (t as HTMLElement).closest('[data-nb-tabs]') === container);
+
   const synthesize = existingTriggers.length === 0;
+
   // Only this container's own panels — exclude a nested <Tabs>'s panels,
   // whose nearest [data-nb-tabs] ancestor is the inner container.
   const panels = Array.from(
@@ -34,6 +38,7 @@ function initTabContainer(container: HTMLElement): () => void {
       const panel = panels.find(
         (p) => p.dataset.nbValue === trigger.dataset.nbValue
       );
+
       if (!panel) return;
       trigger.id ||= `${id}-tab-${i}`;
       panel.id ||= `${id}-panel-${i}`;
@@ -83,12 +88,15 @@ function initTabContainer(container: HTMLElement): () => void {
     // works in both directions; RTL scrollLeft runs negative.
     onActivate: (index) => {
       if (!tablist) return;
+
       const trigger = tablist.querySelectorAll<HTMLElement>(
         '[data-nb-tabs-trigger]'
       )[index];
+
       if (!trigger) return;
       const list = tablist.getBoundingClientRect();
       const tab = trigger.getBoundingClientRect();
+
       if (tab.left < list.left) {
         tablist.scrollLeft += tab.left - list.left;
       } else if (tab.right > list.right) {
@@ -106,10 +114,13 @@ function initTabContainer(container: HTMLElement): () => void {
     const start = scrolled > 1;
     const end = scrolled < max - 1;
     const state = start && end ? 'both' : start ? 'start' : end ? 'end' : null;
+
     if (state) tablist.dataset.overflow = state;
     else delete tablist.dataset.overflow;
   };
+
   const resize = tablist ? new ResizeObserver(markOverflow) : null;
+
   if (tablist) {
     resize!.observe(tablist);
     tablist.addEventListener('scroll', markOverflow, { passive: true });
@@ -123,9 +134,11 @@ function initTabContainer(container: HTMLElement): () => void {
     )
       .filter((t) => t.closest('[data-nb-tabs]') === container)
       .map((t) => (t.textContent ?? '').trim());
+
     const dupes = [
       ...new Set(labels.filter((l, i) => labels.indexOf(l) !== i)),
     ];
+
     if (dupes.length) {
       console.warn(
         `[nimbus] <Tabs syncKey="${syncKey}"> has duplicate tab labels (${dupes
@@ -142,6 +155,7 @@ function initTabContainer(container: HTMLElement): () => void {
     resize?.disconnect();
     tablist?.removeEventListener('scroll', markOverflow);
     instance.destroy();
+
     // Remove synthesized triggers so re-mount doesn't double up.
     if (synthesize && tablist) {
       tablist

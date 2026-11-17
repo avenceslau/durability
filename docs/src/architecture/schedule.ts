@@ -16,6 +16,7 @@ const construct = sourceExcerpt(
   '    this.#engine = engineFor(config);',
   '      holding: () => this.#loop !== undefined,\n    });'
 );
+
 const alarmMethod = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -24,6 +25,7 @@ const alarmMethod = sourceExcerpt(
   '  alarm(info?: AlarmInvocationInfo): Promise<void> {',
   '    return this.#engine.alarm(info);\n  }'
 );
+
 const set = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -32,6 +34,7 @@ const set = sourceExcerpt(
   '  async set(definition: ScheduleDefinition): Promise<boolean> {',
   '    return applied;\n  }'
 );
+
 const nextPending = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -40,6 +43,7 @@ const nextPending = sourceExcerpt(
   '  #nextPendingAt(sql: SqlStorage): number | undefined {',
   '    return held.length === 0 ? undefined : Math.min(...held);\n  }'
 );
+
 const identity = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -48,6 +52,7 @@ const identity = sourceExcerpt(
   '  #idempotencyKey(scheduledTime: number): string {',
   '    return `${this.#keyPrefix}${scheduledTime}${this.#keySuffix}`;\n  }'
 );
+
 const hold = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -56,6 +61,7 @@ const hold = sourceExcerpt(
   '  #hold(): Promise<void> {',
   '      await this.#startQueued();\n    }\n  }'
 );
+
 const interrupt = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -64,6 +70,7 @@ const interrupt = sourceExcerpt(
   '  async #interruptOrphans(): Promise<void> {',
   '        error,\n      });\n    }\n  }'
 );
+
 const tick = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -72,6 +79,7 @@ const tick = sourceExcerpt(
   '  async #tick(): Promise<void> {',
   '      this.#start(due.run);\n    }\n  }'
 );
+
 const start = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -80,6 +88,7 @@ const start = sourceExcerpt(
   '  #start(run: ScheduledRun): void {',
   "          'durability.schedule.dispatch_failed',\n          { scheduledTime },\n          error\n        )\n      );\n  }"
 );
+
 const record = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -88,6 +97,7 @@ const record = sourceExcerpt(
   '  async #record(',
   '    this.#deliver(run, outcome, 1);\n  }'
 );
+
 const deliverDue = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -96,6 +106,7 @@ const deliverDue = sourceExcerpt(
   '  #deliverDue(): void {',
   '      this.#deliver(this.#describe(row), outcomeOf(row), row.attempt + 1);\n    }\n  }'
 );
+
 const deliverOnce = sourceExcerpt(
   schedule,
   scheduleFile,
@@ -104,6 +115,7 @@ const deliverOnce = sourceExcerpt(
   '  async #deliverOnce(',
   '        run.scheduledTime\n      );\n    });\n  }'
 );
+
 const failDelivery = sourceExcerpt(
   schedule,
   scheduleFile,

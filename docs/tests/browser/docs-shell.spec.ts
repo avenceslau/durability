@@ -33,10 +33,12 @@ test('Nimbus keeps a separate navigation entry for every primitive', async ({
 test('Nimbus searches the built Pagefind index', async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-search-trigger]').first().click();
+
   const dialog = page.getByRole('dialog', {
     name: 'Search documentation',
     exact: true,
   });
+
   await expect(dialog).toBeVisible();
   await dialog.locator('[data-search-input]').fill('Semaphore');
   await expect(dialog.locator('[data-search-results]')).toBeVisible();

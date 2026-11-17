@@ -6,7 +6,11 @@
       "outputs": ["dist/**"]
     },
     "lint": {
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.oxlintrc.json"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/.oxlintrc.json",
+        "$TURBO_ROOT$/tools/oxlint/anti-slop/**"
+      ],
       "outputs": []
     },
     "test": {

@@ -22,6 +22,7 @@ const subscription = sourceExcerpt(
   'export class Subscription extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const construct = sourceExcerpt(
   durabilityAlarms,
   alarmsFile,
@@ -30,6 +31,7 @@ const construct = sourceExcerpt(
   "    this.#engine.migrateSchema('namedAlarms', durabilityNamedAlarmMigrations);",
   '      runDue: (now, info) => this.#runDue(now, info),\n    });'
 );
+
 const schedule = sourceExcerpt(
   durabilityAlarms,
   alarmsFile,
@@ -38,6 +40,7 @@ const schedule = sourceExcerpt(
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
   '      scheduledTime,\n    });\n  }'
 );
+
 const cancel = sourceExcerpt(
   durabilityAlarms,
   alarmsFile,
@@ -46,6 +49,7 @@ const cancel = sourceExcerpt(
   '  async #cancel(name: string): Promise<boolean> {',
   '    return true;\n  }'
 );
+
 const runDue = sourceExcerpt(
   durabilityAlarms,
   alarmsFile,
@@ -54,6 +58,7 @@ const runDue = sourceExcerpt(
   '  async #runDue(',
   '      throw failures[0];\n    }\n  }'
 );
+
 const execute = sourceExcerpt(
   durabilityAlarms,
   alarmsFile,
@@ -62,6 +67,7 @@ const execute = sourceExcerpt(
   '  #execute(',
   '        isErrorInstance(error, DurableAlarmTimeoutError) && !retryTimeouts,\n    });\n  }'
 );
+
 const reconcile = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -70,6 +76,7 @@ const reconcile = sourceExcerpt(
   '  private async reconcile(',
   '    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);\n  }'
 );
+
 const register = sourceExcerpt(
   durability,
   durabilityFile,

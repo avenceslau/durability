@@ -20,6 +20,7 @@ const outboxObject = sourceExcerpt(
   'export class OutboxObject extends DurableObject {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const config = sourceExcerpt(
   outbox,
   outboxFile,
@@ -28,6 +29,7 @@ const config = sourceExcerpt(
   'export type DurabilityOutboxConfig<Value> = SchedulerAttachment & {',
   '  onLifecycleEvent?: LifecycleHook;\n};'
 );
+
 const construct = sourceExcerpt(
   outbox,
   outboxFile,
@@ -36,6 +38,7 @@ const construct = sourceExcerpt(
   '    this.#engine = engineFor(config);',
   '    this.#attach();\n  }'
 );
+
 const stage = sourceExcerpt(
   outbox,
   outboxFile,
@@ -44,6 +47,7 @@ const stage = sourceExcerpt(
   '  #stageIn(sql: SqlStorage, key: string, value: Value): OutboxRow {',
   '    return staged;\n  }'
 );
+
 const registerChannel = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -52,6 +56,7 @@ const registerChannel = sourceExcerpt(
   '  registerChannel(participant: ChannelParticipant): void {',
   '          now\n        );\n      }\n    });\n  }'
 );
+
 const runDue = sourceExcerpt(
   outbox,
   outboxFile,
@@ -60,6 +65,7 @@ const runDue = sourceExcerpt(
   '  async #runDue(): Promise<void> {',
   '      release();\n    }\n  }'
 );
+
 const listDue = sourceExcerpt(
   outbox,
   outboxFile,
@@ -68,6 +74,7 @@ const listDue = sourceExcerpt(
   'const listDueForChannel = (',
   '      .toArray()\n  );'
 );
+
 const runBatch = sourceExcerpt(
   outbox,
   outboxFile,
@@ -76,6 +83,7 @@ const runBatch = sourceExcerpt(
   '  async #runBatch(key?: string): Promise<void> {',
   '      await this.#publishBatch(claims);\n    }\n  }'
 );
+
 const publishBatch = sourceExcerpt(
   outbox,
   outboxFile,
@@ -84,6 +92,7 @@ const publishBatch = sourceExcerpt(
   '  async #publishBatch(claims: OutboxRow[]): Promise<void> {',
   '          retried.push({ row, nextAttemptAt });\n        }\n      }\n    });'
 );
+
 const retryDelay = sourceExcerpt(
   outbox,
   outboxFile,
@@ -92,6 +101,7 @@ const retryDelay = sourceExcerpt(
   '  #retryDelay(attempt: number): number {',
   '    return infrastructureRetryMs;\n  }'
 );
+
 const deadline = sourceExcerpt(
   outbox,
   outboxFile,
@@ -100,6 +110,7 @@ const deadline = sourceExcerpt(
   '  async #deadline(run: () => unknown): Promise<void> {',
   '    );\n  }'
 );
+
 const transaction = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -108,6 +119,7 @@ const transaction = sourceExcerpt(
   '  async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {',
   '    return result;\n  }'
 );
+
 const reconcile = sourceExcerpt(
   scheduler,
   schedulerFile,

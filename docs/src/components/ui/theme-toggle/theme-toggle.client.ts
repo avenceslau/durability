@@ -18,6 +18,7 @@ function initThemeToggle(button: HTMLElement): () => void {
       document.documentElement.getAttribute('data-mode') === 'dark'
         ? 'light'
         : 'dark';
+
     try {
       localStorage.setItem('ui-mode', mode);
       window.__nbApplyTheme?.();
@@ -26,6 +27,7 @@ function initThemeToggle(button: HTMLElement): () => void {
       // choice for this page.
       window.__nbApplyTheme?.(mode);
     }
+
     syncPressed();
   }
 
@@ -39,6 +41,7 @@ function initThemeToggle(button: HTMLElement): () => void {
   window.__nbApplyTheme?.();
   syncPressed();
   button.addEventListener('click', handleClick);
+
   return () => button.removeEventListener('click', handleClick);
 }
 

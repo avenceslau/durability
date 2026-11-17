@@ -17,6 +17,7 @@ function item(id: string, point: Point, anchor = true): SnapItem {
 function at(positions: ReadonlyMap<string, Point>, id: string): Point {
   const point = positions.get(id)
   assert.ok(point !== undefined, `${id} has a position`)
+
   return point
 }
 
@@ -99,7 +100,9 @@ test("manual diagrams snap by default, and snap: false keeps the coordinates as 
       },
     },
   } as const
+
   const snapped = defineArchitecture(definition).stages[0]?.layout.nodes
+
   const drawn = defineArchitecture({
     ...definition,
     snap: false,

@@ -37,13 +37,16 @@ export class NamedAlarmTestObject extends DurableObject {
       crash: async ({ attempt }: DurableCall<null>) => {
         const attempts =
           (await this.ctx.storage.get<number[]>('crash-attempts')) ?? [];
+
         await this.ctx.storage.put('crash-attempts', [...attempts, attempt]);
         await new Promise(() => undefined);
       },
       timeout: async ({ attempt }: DurableCall<null>) => {
         const attempts =
           (await this.ctx.storage.get<number[]>('timeout-attempts')) ?? [];
+
         await this.ctx.storage.put('timeout-attempts', [...attempts, attempt]);
+
         if (attempt === 1) {
           await new Promise<void>((resolve) => {
             this.releaseTimeoutAttempt = resolve;
@@ -54,6 +57,7 @@ export class NamedAlarmTestObject extends DurableObject {
         const attempts =
           (await this.ctx.storage.get<number[]>('terminal-timeout-attempts')) ??
           [];
+
         await this.ctx.storage.put('terminal-timeout-attempts', [
           ...attempts,
           attempt,
@@ -73,12 +77,15 @@ export class NamedAlarmTestObject extends DurableObject {
       },
       reuse: async (_call: DurableCall<null>) => {
         this.reuseInvocations += 1;
+
         if (this.reuseInvocations === 1) {
           await new Promise<void>((resolve) => {
             this.releaseOldReuse = resolve;
           });
+
           return 'old';
         }
+
         return 'new';
       },
     },
@@ -111,10 +118,12 @@ export class NamedAlarmTestObject extends DurableObject {
       nearbyCrash: async ({ attempt, idempotencyKey, scheduledTime }) => {
         const recorded =
           (await this.ctx.storage.get<RecordedAlarm[]>('nearby-crash')) ?? [];
+
         await this.ctx.storage.put('nearby-crash', [
           ...recorded,
           { attempt, idempotencyKey, scheduledTime },
         ]);
+
         if (attempt === 1) {
           await new Promise(() => undefined);
         }
@@ -122,10 +131,12 @@ export class NamedAlarmTestObject extends DurableObject {
       cleanup: async ({ attempt, idempotencyKey, scheduledTime }) => {
         const recorded =
           (await this.ctx.storage.get<RecordedAlarm[]>('recorded')) ?? [];
+
         await this.ctx.storage.put('recorded', [
           ...recorded,
           { attempt, idempotencyKey, scheduledTime },
         ]);
+
         if (attempt === 1) {
           throw new Error('retry cleanup');
         }

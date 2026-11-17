@@ -20,6 +20,7 @@ const partition = sourceExcerpt(
   'export class Partition extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const fetchHandler = sourceExcerpt(
   example,
   exampleFile,
@@ -28,6 +29,7 @@ const fetchHandler = sourceExcerpt(
   '  async fetch(request, env): Promise<Response> {',
   '    return Response.json(pages);'
 );
+
 const construct = sourceExcerpt(
   log,
   logFile,
@@ -36,6 +38,7 @@ const construct = sourceExcerpt(
   '  constructor(config: DurabilityLogConfig<Body>) {',
   "      'DurabilityLog'\n    );\n  }"
 );
+
 const appendRecords = sourceExcerpt(
   log,
   logFile,
@@ -44,6 +47,7 @@ const appendRecords = sourceExcerpt(
   'const appendRecords = (',
   '  return records.map((record) => assigned.get(record.dedup_key)!);\n};'
 );
+
 const append = sourceExcerpt(
   log,
   logFile,
@@ -52,6 +56,7 @@ const append = sourceExcerpt(
   '  async append(',
   '    } finally {\n      finish();\n    }\n  }'
 );
+
 const read = sourceExcerpt(
   log,
   logFile,
@@ -60,6 +65,7 @@ const read = sourceExcerpt(
   '  async read(options: LogReadOptions): Promise<LogPage<Body>> {',
   '      lag: Math.max(0, bounds.nextOffset - nextOffset),\n    };\n  }'
 );
+
 const rehydrate = sourceExcerpt(
   log,
   logFile,
@@ -68,6 +74,7 @@ const rehydrate = sourceExcerpt(
   '  async #rehydrate(',
   '      .slice(0, limit);\n  }'
 );
+
 const commitCursor = sourceExcerpt(
   log,
   logFile,
@@ -76,6 +83,7 @@ const commitCursor = sourceExcerpt(
   'const commitCursor = (',
   '    committedAt\n  );\n};'
 );
+
 const trim = sourceExcerpt(
   log,
   logFile,
@@ -84,6 +92,7 @@ const trim = sourceExcerpt(
   '  async trim(): Promise<number> {',
   '      if (deleted < expiring.length) {\n        return removed;\n      }\n    }\n  }'
 );
+
 const claimExpired = sourceExcerpt(
   log,
   logFile,
@@ -92,6 +101,7 @@ const claimExpired = sourceExcerpt(
   'const claimExpired = (',
   '        now\n      )\n      .toArray()[0]\n  );'
 );
+
 const lease = sourceExcerpt(
   log,
   logFile,
@@ -100,6 +110,7 @@ const lease = sourceExcerpt(
   '  async lease(',
   '      expiresAt: now + this.#leaseMs,\n    };\n  }'
 );
+
 const settle = sourceExcerpt(
   log,
   logFile,
@@ -108,6 +119,7 @@ const settle = sourceExcerpt(
   '  async ack(consumer: string, batchId: string): Promise<void> {',
   '    throw new LogLeaseError(batchId);\n  }'
 );
+
 const schedule = sourceExcerpt(
   alarms,
   alarmsFile,

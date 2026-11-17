@@ -93,6 +93,7 @@ const pipeline: ArchitectureDefinition = {
 function stageOf(diagram: ArchitectureDiagram, index: number): StageState {
   const state = diagram.stages[index]
   assert.ok(state !== undefined)
+
   return state
 }
 
@@ -100,12 +101,14 @@ function rectOf(state: StageState, id: string): Rect {
   const view = state.nodes.get(id)
   const center = state.layout.nodes.get(id)
   assert.ok(view !== undefined && center !== undefined, `${id} is laid out`)
+
   return nodeRect(view, center, state.layout.scale)
 }
 
 function footprintOf(state: StageState, id: string): Rect {
   const rect = rectOf(state, id)
   const stack = stackOffset(state.nodes.get(id)?.replicas) * state.layout.scale
+
   return {
     ...rect,
     y: rect.y - stack,
@@ -153,6 +156,7 @@ test("layout is deterministic", () => {
 
 test("ranks follow edges; back, two-way, and cycle-closing edges don't push", () => {
   const nodes = ["a", "b", "c", "d"].map((id) => node(id))
+
   const ranks = assignRanks(nodes, [
     edge("a", "b"),
     edge("b", "c"),
@@ -245,7 +249,9 @@ test("nodes keep their order within a rank as later stages add nodes", () => {
     })),
     stages: [["hub", "c", "a"], ["e"], ["b", "d"]],
   }
+
   const diagram = defineArchitecture(fan)
+
   const order = (state: StageState, ids: ReadonlyArray<string>): ReadonlyArray<string> =>
     [...ids].sort((x, y) => (state.layout.nodes.get(x)?.[1] ?? 0) - (state.layout.nodes.get(y)?.[1] ?? 0))
 
@@ -329,6 +335,7 @@ test("labels stay clear of nodes and of each other", () => {
 
       const { labelPoint } = edgeGeometry(candidate, route, rectOf(state, candidate.from), rectOf(state, candidate.to))
       const [width, height] = labelSize(candidate.label).map((value) => value * state.layout.scale * 0.8)
+
       return [
         {
           id: candidate.id,

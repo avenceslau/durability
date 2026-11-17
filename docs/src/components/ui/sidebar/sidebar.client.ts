@@ -25,10 +25,12 @@ function initSidebar(root: HTMLElement): () => void {
   const persist = root.hasAttribute('data-nb-sidebar-persist');
 
   const filterTeardown = initFilter(root);
+
   if (filterTeardown) teardowns.push(filterTeardown);
 
   if (persist) {
     const persistTeardown = initPersistence(root);
+
     if (persistTeardown) teardowns.push(persistTeardown);
   }
 
@@ -43,6 +45,7 @@ function initFilter(root: HTMLElement): (() => void) | null {
   const input = root.querySelector<HTMLInputElement>(
     '[data-nb-sidebar-filter-input]'
   );
+
   // SidebarFilter is rendered *next to* Sidebar (sibling), so also look in
   // the parent — preserves the existing layout where filter sits above.
   const inputElement =
@@ -51,14 +54,18 @@ function initFilter(root: HTMLElement): (() => void) | null {
       '[data-nb-sidebar-filter-input]'
     ) ??
     null;
+
   if (!inputElement) return null;
 
   function handleInput() {
     const query = inputElement!.value.trim().toLowerCase();
+
     if (!query) {
       resetFilter(root);
+
       return;
     }
+
     applyFilter(root, query);
   }
 
@@ -106,7 +113,9 @@ function applyFilter(root: HTMLElement, query: string): void {
     // A method chip's `data-m` adds the full verb its label may abbreviate.
     const method =
       link.querySelector<HTMLElement>('i[data-m]')?.dataset.m ?? '';
+
     const text = `${link.textContent ?? ''} ${method}`.toLowerCase();
+
     if (!text.includes(query)) return;
     link.removeAttribute('data-nb-sidebar-hidden');
     revealAncestors(link, root);
@@ -115,6 +124,7 @@ function applyFilter(root: HTMLElement, query: string): void {
   groups.forEach((group) => {
     const label = group.querySelector(':scope > summary');
     const text = label?.textContent?.toLowerCase() ?? '';
+
     if (!text.includes(query)) return;
     group.removeAttribute('data-nb-sidebar-hidden');
     openGroup(group);
@@ -126,11 +136,13 @@ function applyFilter(root: HTMLElement, query: string): void {
 
 function revealAncestors(el: HTMLElement, scope: Element): void {
   let parent: HTMLElement | null = el.parentElement;
+
   while (parent && parent !== scope) {
     if (parent instanceof HTMLDetailsElement) {
       parent.removeAttribute('data-nb-sidebar-hidden');
       openGroup(parent);
     }
+
     parent = parent.parentElement;
   }
 }
@@ -152,11 +164,13 @@ function initPersistence(root: HTMLElement): (() => void) | null {
     root.closest<HTMLElement>('[data-nb-sidebar-tree]') ??
     root.closest('aside') ??
     root;
+
   const hash = root.dataset.nbSidebarHash ?? '';
 
   function savedScroll(): number | null {
     try {
       const saved = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? 'null');
+
       return saved?.hash === hash && typeof saved.scroll === 'number'
         ? saved.scroll
         : null;
@@ -182,11 +196,14 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   // scroll, then bring the current page into view if it is outside it.
   function restoreScroll() {
     const scroll = savedScroll();
+
     if (scroll !== null) scrollHost.scrollTop = scroll;
     const active = root.querySelector("[aria-current='page']");
+
     if (!active) return;
     const box = scrollHost.getBoundingClientRect();
     const item = active.getBoundingClientRect();
+
     if (item.top < box.top || item.bottom > box.bottom) {
       scrollHost.scrollTop +=
         item.top - box.top - box.height / 2 + item.height / 2;
@@ -194,14 +211,17 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   }
 
   let visible = scrollHost.clientHeight > 0;
+
   const resize =
     typeof ResizeObserver === 'undefined'
       ? undefined
       : new ResizeObserver(() => {
           const nowVisible = scrollHost.clientHeight > 0;
+
           if (nowVisible && !visible) restoreScroll();
           visible = nowVisible;
         });
+
   resize?.observe(scrollHost);
 
   function save() {
@@ -216,23 +236,29 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   // group the filter opened is transient state and not saved.
   const handleToggle = (event: Event) => {
     const group = event.target as HTMLElement | null;
+
     if (!(group instanceof HTMLDetailsElement)) return;
+
     if (group.hasAttribute('data-nb-opened-by-filter')) return;
     save();
   };
+
   root.addEventListener('toggle', handleToggle, true);
 
   function handleVisibility() {
     if (document.visibilityState === 'hidden') save();
   }
+
   document.addEventListener('visibilitychange', handleVisibility);
   window.addEventListener('pagehide', save);
 
   let raf = 0;
+
   function handleScroll() {
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(save);
   }
+
   scrollHost.addEventListener('scroll', handleScroll);
 
   return () => {
@@ -257,6 +283,7 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   document.addEventListener('keydown', (e) => {
     if (e.key !== '/') return;
     const active = document.activeElement as HTMLElement | null;
+
     if (
       active &&
       (active.tagName === 'INPUT' ||
@@ -265,6 +292,7 @@ function initPersistence(root: HTMLElement): (() => void) | null {
     ) {
       return;
     }
+
     // One tree per page now: the filter input travels with it between the
     // rail and the drawer, so take the first visible input.
     const input = Array.from(
@@ -272,6 +300,7 @@ function initPersistence(root: HTMLElement): (() => void) | null {
         '[data-nb-sidebar-filter-input]'
       )
     ).find((candidate) => candidate.offsetParent !== null);
+
     if (!input) return;
     e.preventDefault();
     input.focus();

@@ -20,6 +20,7 @@ const jobShard = sourceExcerpt(
   'export class JobShard extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const routing = sourceExcerpt(
   example,
   exampleFile,
@@ -28,6 +29,7 @@ const routing = sourceExcerpt(
   'const shardFor = (accountId: string, width = 4): string => {',
   '    return Response.json(results, { status: 202 });'
 );
+
 const finishedOption = sourceExcerpt(
   queue,
   queueFile,
@@ -36,6 +38,7 @@ const finishedOption = sourceExcerpt(
   '   * Returns which of these admitted items are done. The queue asks on its own',
   '  finished?(ids: string[]): string[] | Promise<string[]>;'
 );
+
 const construct = sourceExcerpt(
   queue,
   queueFile,
@@ -44,6 +47,7 @@ const construct = sourceExcerpt(
   '    const scheduler = config.scheduler ?? new DurabilityScheduler(config);',
   '            this.#finished !== undefined && this.#checking === undefined,\n        }),\n    });'
 );
+
 const enqueue = sourceExcerpt(
   queue,
   queueFile,
@@ -52,6 +56,7 @@ const enqueue = sourceExcerpt(
   '  async enqueue(',
   '    return { queued: queued.map((row) => row.id), duplicates };\n  }'
 );
+
 const release = sourceExcerpt(
   queue,
   queueFile,
@@ -60,6 +65,7 @@ const release = sourceExcerpt(
   '  async release(id: string): Promise<boolean> {',
   '    return true;\n  }'
 );
+
 const runDue = sourceExcerpt(
   queue,
   queueFile,
@@ -68,6 +74,7 @@ const runDue = sourceExcerpt(
   '  async #runDue(now: number): Promise<void> {',
   '        .map(({ key }) => this.#request(key)),\n    ]);\n  }'
 );
+
 const request = sourceExcerpt(
   queue,
   queueFile,
@@ -76,6 +83,7 @@ const request = sourceExcerpt(
   '  async #request(key: string): Promise<void> {',
   '        throw error;\n      }'
 );
+
 const claimLocally = sourceExcerpt(
   queue,
   queueFile,
@@ -84,6 +92,7 @@ const claimLocally = sourceExcerpt(
   '  #claimLocally(key: string): void {',
   '    this.#drawLeases(key);\n  }'
 );
+
 const drawLeases = sourceExcerpt(
   queue,
   queueFile,
@@ -92,6 +101,7 @@ const drawLeases = sourceExcerpt(
   '  #drawLeases(key: string): void {',
   '      this.#stageLeaseReport(lease);\n    }\n  }'
 );
+
 const returnIdleLeases = sourceExcerpt(
   queue,
   queueFile,
@@ -100,6 +110,7 @@ const returnIdleLeases = sourceExcerpt(
   '  #returnIdleLeases(key: string): void {',
   '      this.#stageLeaseReport(returned);\n    }\n  }'
 );
+
 const applyLeaseGrants = sourceExcerpt(
   queue,
   queueFile,
@@ -108,6 +119,7 @@ const applyLeaseGrants = sourceExcerpt(
   '  #applyLeaseGrants(key: string, grants: LeaseGrant[]): void {',
   '        confirmed: 0,\n      });\n    }\n  }'
 );
+
 const renewLeases = sourceExcerpt(
   queue,
   queueFile,
@@ -116,6 +128,7 @@ const renewLeases = sourceExcerpt(
   '  async #renewLeases(now: number): Promise<void> {',
   '        this.#stageLeaseReport(lease);\n      }\n    });\n  }'
 );
+
 const applyResults = sourceExcerpt(
   queue,
   queueFile,
@@ -124,6 +137,7 @@ const applyResults = sourceExcerpt(
   '  #applyResults(key: string, results: GrantResult[]): void {',
   '        store.updateGrant(updated);\n      }\n    }\n  }'
 );
+
 const publishReports = sourceExcerpt(
   queue,
   queueFile,
@@ -132,6 +146,7 @@ const publishReports = sourceExcerpt(
   '  async #publishReports(entries: OutboxEntry<Report>[]): Promise<void> {',
   '    this.#engine.waitUntil(this.#notify().catch(onError), onError);\n  }'
 );
+
 const checkFinished = sourceExcerpt(
   queue,
   queueFile,
@@ -140,6 +155,7 @@ const checkFinished = sourceExcerpt(
   '  async #releaseFinished(now: number): Promise<void> {',
   '        await this.release(id);\n      }\n    }\n  }'
 );
+
 const notifyBatch = sourceExcerpt(
   queue,
   queueFile,
@@ -148,6 +164,7 @@ const notifyBatch = sourceExcerpt(
   '  async #notify(): Promise<void> {',
   '    } finally {\n      release();\n    }\n  }'
 );
+
 const nextPendingAt = sourceExcerpt(
   queueStore,
   storeFile,

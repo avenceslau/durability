@@ -20,6 +20,7 @@ const { syncKey, class: className, ...attrs } = Astro.props;
 
 // Manual mode brings its own TabsList, so don't render a second, empty one.
 const content = await Astro.slots.render("default");
+
 // It's manual when its TabsList comes before any TabItem, so intro text can
 // precede the list and Tabs nested in a panel don't count.
 const list = content.search(/\sdata-nb-tabs-list\b/);

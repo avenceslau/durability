@@ -126,6 +126,7 @@ test("a composite without `collapsed` starts expanded, and stageWith overrides a
     },
     stages: [["controller", "limiter", "engine"]],
   })
+
   assert.ok(open.stages[0]?.expanded.has("limiter"))
 
   const diagram = defineArchitecture(limiter)
@@ -137,6 +138,7 @@ test("a composite without `collapsed` starts expanded, and stageWith overrides a
 
 test("a click holds through every build after it, over the builds' own expand: and collapse: tokens", () => {
   const diagram = defineArchitecture(limiter)
+
   const openAt = (clicks: CompositeClicks): ReadonlyArray<boolean> =>
     diagram.stages.map((_, index) => shownStage(diagram, index, clicks).expanded.has("limiter"))
 
@@ -204,6 +206,7 @@ function rectOf(state: StageState, id: string): Rect {
   const view = state.nodes.get(id)
   const center = state.layout.nodes.get(id)
   assert.ok(view !== undefined && center !== undefined, `${id} is placed`)
+
   return nodeRect(view, center, state.layout.scale)
 }
 
@@ -231,6 +234,7 @@ test("both states lay out without overlaps or crossings, and the neighbours keep
         const route = state.layout.edges.get(edge.id)
         assert.ok(route !== undefined)
         const { path } = edgeGeometry(edge, route, rectOf(state, from), rectOf(state, to))
+
         return Array.from({ length: 81 }, (_, step) => pointOnPath(path, step / 80))
       })
 

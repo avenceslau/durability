@@ -33,6 +33,7 @@ if (typeof CloseEvent === 'undefined') {
       this.wasClean = init.wasClean ?? false;
     }
   }
+
   globalThis.CloseEvent = NodeCloseEvent as typeof CloseEvent;
 }
 
@@ -75,6 +76,7 @@ class FakeSocket extends EventTarget {
     if (this.readyState === 3) {
       return;
     }
+
     this.readyState = 3;
     this.closed = { code, reason };
     this.dispatchEvent(new CloseEvent('close', { code, reason }));
@@ -223,9 +225,11 @@ describe('DurabilitySocketClient', () => {
 
   it('holds one native timer for the ping and every pending call', async () => {
     const conn = createClient().connect('a');
+
     const calls = Array.from({ length: 12_000 }, () =>
       conn.rpc.list().catch((error: unknown) => error)
     );
+
     FakeSocket.latest().open();
 
     expect(vi.getTimerCount()).toBe(1);
@@ -426,15 +430,18 @@ describe('DurabilitySocketClient', () => {
   it('applies transforms in order and lets them replace the input', async () => {
     const order: string[] = [];
     const logs: Record<string, unknown>[] = [];
+
     const conn = createClient()
       .with(async ({ input, next }) => {
         order.push('outer');
+
         return next(`${String(input)}!`);
       })
       .with(logging((entry) => logs.push(entry)))
       .with(async ({ next }) => {
         order.push('inner');
         const output = await next();
+
         return `${String(output)}?`;
       })
       .connect('a');
@@ -458,6 +465,7 @@ describe('DurabilitySocketClient', () => {
     const consoleError = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
+
     const conn = createClient().connect('a');
     const seen = vi.fn();
     conn.on.created(() => {

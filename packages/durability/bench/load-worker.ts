@@ -63,13 +63,16 @@ export class LoadTestObject extends DurableObject {
       job: async ({ attempt, payload }: DurableCall<LoadPayload>) => {
         this.operationAttempts += 1;
         this.enter('operation');
+
         try {
           if (payload.failUntil !== undefined && attempt <= payload.failUntil) {
             throw new Error(`forced failure on attempt ${attempt}`);
           }
+
           if (payload.holdMs) {
             await sleep(payload.holdMs);
           }
+
           this.completed += 1;
         } finally {
           this.leave('operation');
@@ -92,6 +95,7 @@ export class LoadTestObject extends DurableObject {
       tick: async ({ attempt }) => {
         this.alarmAttempts += 1;
         this.enter('alarm');
+
         try {
           if (attempt <= 1) {
             await sleep(5);
@@ -106,6 +110,7 @@ export class LoadTestObject extends DurableObject {
   private enter(kind: 'operation' | 'alarm'): void {
     this.concurrent += 1;
     this.maxConcurrent = Math.max(this.maxConcurrent, this.concurrent);
+
     if (kind === 'operation') {
       this.operationConcurrent += 1;
       this.maxOperationConcurrent = Math.max(
@@ -123,6 +128,7 @@ export class LoadTestObject extends DurableObject {
 
   private leave(kind: 'operation' | 'alarm'): void {
     this.concurrent -= 1;
+
     if (kind === 'operation') {
       this.operationConcurrent -= 1;
     } else {
@@ -134,6 +140,7 @@ export class LoadTestObject extends DurableObject {
     const [row] = this.ctx.storage.sql
       .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)
       .toArray();
+
     return row?.n ?? 0;
   }
 
@@ -143,6 +150,7 @@ export class LoadTestObject extends DurableObject {
         `SELECT COUNT(*) AS n FROM durability_calls WHERE status = 'pending'`
       )
       .toArray();
+
     return row?.n ?? 0;
   }
 
@@ -160,36 +168,46 @@ export class LoadTestObject extends DurableObject {
         : undefined;
 
     const seedStart = Date.now();
+
     for (let index = 0; index < input.count; index += 1) {
       const payload: LoadPayload = {};
+
       if (input.failUntil !== undefined) {
         payload.failUntil = input.failUntil;
       }
+
       if (input.holdMs !== undefined) {
         payload.holdMs = input.holdMs;
       }
+
       if (filler !== undefined) {
         payload.filler = filler;
       }
+
       // eslint-disable-next-line no-await-in-loop
       await this.durability.job({ id: `job:${index}`, payload });
     }
+
     for (let index = 0; index < (input.alarmCount ?? 0); index += 1) {
       // Named alarms are singletons per name; one handler drives every tick.
       // eslint-disable-next-line no-await-in-loop
       await this.alarms.tick(Date.now());
     }
+
     const seedMs = Date.now() - seedStart;
 
     const drainStart = Date.now();
     const deadline = drainStart + (input.drainTimeoutMs ?? 120_000);
+
     while (Date.now() < deadline) {
       if (this.pending() === 0 && this.concurrent === 0) {
         break;
       }
+
       // eslint-disable-next-line no-await-in-loop
       await sleep(10);
     }
+
     const drainMs = Date.now() - drainStart;
 
     const callRows = this.count('durability_calls');
@@ -218,6 +236,7 @@ export class LoadTestObject extends DurableObject {
 
   override alarm(info?: AlarmInvocationInfo) {
     this.physicalAlarmInvocations += 1;
+
     return this.scheduler.alarm(info);
   }
 }

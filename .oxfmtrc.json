@@ -12,6 +12,7 @@
     "**/dist/**",
     "**/coverage/**",
     "**/*.generated.d.ts",
-    "docs/src/kit/**"
+    "docs/src/kit/**",
+    "tools/oxlint/anti-slop/**"
   ]
 }

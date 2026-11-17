@@ -16,7 +16,9 @@ export type ButtonVariant =
   | 'destructive'
   | 'secondary-destructive'
   | 'outline';
+
 export type ButtonSize = 'xs' | 'sm' | 'base' | 'lg';
+
 export type ButtonShape = 'base' | 'square' | 'circle';
 
 // `rounded-lg` is the default radius for every button; `circle` overrides

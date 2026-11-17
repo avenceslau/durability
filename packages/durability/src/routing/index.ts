@@ -12,6 +12,7 @@ import { RoutingLoad, type EnqueueResult } from './load.js';
 import { RoutingClient, type Sharding } from './client.js';
 
 export type { EnqueueResult, LoadSnapshot, ProcessingLoad } from './load.js';
+
 export type { RoutingAddress, RoutingTarget, Sharding } from './client.js';
 
 export type RoutingSession<Input, Value, Context = unknown> = {
@@ -56,12 +57,14 @@ export class DurabilityRouting extends RoutingLoad {
           config,
           (message) => new RoutingError(message)
         );
+
         const stub = namespace.getByName(
           address.shard,
           address.locationHint === undefined
             ? undefined
             : { locationHint: address.locationHint }
         );
+
         return config.invoke(stub, input);
       },
       ...(config.sharding === undefined ? {} : { sharding: config.sharding }),
@@ -77,7 +80,9 @@ export class DurabilityRouting extends RoutingLoad {
           if (method !== 'push') {
             throw new RoutingError(`Unknown routing method "${method}"`);
           }
+
           const positional: unknown = args[1];
+
           if (
             positional !== undefined &&
             (positional === null ||
@@ -88,6 +93,7 @@ export class DurabilityRouting extends RoutingLoad {
               'Routing context must be an object when combined with transform context'
             );
           }
+
           return client.push(
             args[0] as Input,
             { ...positional, ...context } as Context
@@ -95,6 +101,7 @@ export class DurabilityRouting extends RoutingLoad {
         },
       }),
     };
+
     return createTransformStub(session);
   }
 }

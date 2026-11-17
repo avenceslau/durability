@@ -24,6 +24,7 @@ it('does not leak leases when a previously acknowledged holder downgrades while 
   let limit = 1;
   let oldPeer = false;
   let rejected = 0;
+
   const holder = new DurabilitySemaphoreServer({
     context: contextFor(new FakeStorage()),
     limit: () => limit,
@@ -36,7 +37,9 @@ it('does not leak leases when a previously acknowledged holder downgrades while 
       ttlMs: 5_000,
     },
   });
+
   const admitted: string[] = [];
+
   const queue = new DurabilitySemaphoreQueue<string>({
     context: contextFor(new FakeStorage()),
     channel: 'library',
@@ -49,22 +52,28 @@ it('does not leak leases when a previously acknowledged holder downgrades while 
           rejected += 1;
           throw new SemaphoreProtocolError('Malformed semaphore message');
         }
+
         const { clientChannel: _ignored, ...legacy } = message;
         const reply = await holder.handle(oldPeer ? legacy : message);
+
         if (reply.type !== 'grant') {
           throw new Error('Expected grant response');
         }
+
         return reply;
       },
       sync: async (_key, message) => {
         if (oldPeer && message.v !== 1) {
           throw new SemaphoreProtocolError('Malformed semaphore message');
         }
+
         const { clientChannel: _ignored, ...legacy } = message;
         const reply = await holder.handle(oldPeer ? legacy : message);
+
         if (reply.type !== 'synced') {
           throw new Error('Expected sync response');
         }
+
         return reply;
       },
     },
@@ -110,6 +119,7 @@ it('requires both the response version and the channel to match', async () => {
     clientChannel: 'library',
     grantResults: [],
   }));
+
   const queue = new DurabilitySemaphoreQueue({
     context: contextFor(new FakeStorage()),
     channel: 'library',
@@ -134,6 +144,7 @@ it('requires both the response version and the channel to match', async () => {
     },
     admit: vi.fn(),
   });
+
   await queue.enqueue([
     {
       id: 'a',
@@ -154,6 +165,7 @@ it('preserves v1 requests and requires a channel for v2', () => {
     demand: [],
     grants: [],
   };
+
   expect(v.parse(semaphoreRequestSchema, legacy)).toEqual(legacy);
   const named = { ...legacy, v: 2, clientChannel: 'library' };
   expect(v.parse(semaphoreRequestSchema, named)).toEqual(named);
@@ -175,5 +187,6 @@ it('keeps legacy lifecycle event values assignable without client-channel metada
     group: '',
     permits: 1,
   };
+
   expect(legacy.clientChannel).toBeUndefined();
 });

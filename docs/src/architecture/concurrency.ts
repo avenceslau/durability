@@ -20,6 +20,7 @@ const accountLimit = sourceExcerpt(
   'export class AccountLimit extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const limitsClient = sourceExcerpt(
   example,
   exampleFile,
@@ -28,6 +29,7 @@ const limitsClient = sourceExcerpt(
   'export const limits = DurabilitySemaphore.client({',
   '});'
 );
+
 const jobShard = sourceExcerpt(
   example,
   exampleFile,
@@ -36,6 +38,7 @@ const jobShard = sourceExcerpt(
   'export class JobShard extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const routing = sourceExcerpt(
   example,
   exampleFile,
@@ -44,6 +47,7 @@ const routing = sourceExcerpt(
   'const shardFor = (accountId: string, width = 4): string => {',
   '    return Response.json(results, { status: 202 });'
 );
+
 const enqueue = sourceExcerpt(
   queueSource,
   queueFile,
@@ -52,6 +56,7 @@ const enqueue = sourceExcerpt(
   '  async enqueue(',
   '    return { queued: queued.map((row) => row.id), duplicates };\n  }'
 );
+
 const request = sourceExcerpt(
   queueSource,
   queueFile,
@@ -60,6 +65,7 @@ const request = sourceExcerpt(
   '  async #request(key: string): Promise<void> {',
   '      this.#requesting.delete(key);\n    }\n  }'
 );
+
 const claim = sourceExcerpt(
   queueSource,
   queueFile,
@@ -68,6 +74,7 @@ const claim = sourceExcerpt(
   '  #claimLocally(key: string): void {',
   '      this.#stageLeaseReport(lease);\n    }\n  }'
 );
+
 const notify = sourceExcerpt(
   queueSource,
   queueFile,
@@ -76,6 +83,7 @@ const notify = sourceExcerpt(
   '  async #notify(): Promise<void> {',
   '    } finally {\n      release();\n    }\n  }'
 );
+
 const release = sourceExcerpt(
   queueSource,
   queueFile,
@@ -84,6 +92,7 @@ const release = sourceExcerpt(
   '  async release(id: string): Promise<boolean> {',
   '    return true;\n  }'
 );
+
 const checkFinished = sourceExcerpt(
   queueSource,
   queueFile,
@@ -92,6 +101,7 @@ const checkFinished = sourceExcerpt(
   '  async #releaseFinished(now: number): Promise<void> {',
   '        await this.release(id);\n      }\n    }\n  }'
 );
+
 const publish = sourceExcerpt(
   queueSource,
   queueFile,
@@ -100,6 +110,7 @@ const publish = sourceExcerpt(
   '  async #publishReports(entries: OutboxEntry<Report>[]): Promise<void> {',
   '    this.#engine.waitUntil(this.#notify().catch(onError), onError);\n  }'
 );
+
 const handle = sourceExcerpt(
   serverSource,
   serverFile,
@@ -108,6 +119,7 @@ const handle = sourceExcerpt(
   '  handle(message: SemaphoreRequest): Promise<SemaphoreResponse> {',
   '      this.#scheduleRound();\n    });\n  }'
 );
+
 const runRound = sourceExcerpt(
   serverSource,
   serverFile,
@@ -116,6 +128,7 @@ const runRound = sourceExcerpt(
   '  async #runRound(): Promise<void> {',
   '    const nextRequestAt = now + this.#roundPeriodMs;'
 );
+
 const reclaim = sourceExcerpt(
   serverSource,
   serverFile,

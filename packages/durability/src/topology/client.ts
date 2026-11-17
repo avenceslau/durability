@@ -73,12 +73,14 @@ export class TopologyClient<Meta = undefined> {
     if (typeof config.read !== 'function') {
       throw new TypeError('A topology client needs a read function');
     }
+
     this.#readTimeoutMs = config.readTimeoutMs ?? 1_000;
     this.#ttlMs = config.ttlMs ?? 30_000;
     this.#negativeTtlMs = config.negativeTtlMs ?? 5_000;
     assertPositiveInteger('readTimeoutMs', this.#readTimeoutMs);
     assertPositiveInteger('ttlMs', this.#ttlMs);
     assertPositiveInteger('negativeTtlMs', this.#negativeTtlMs);
+
     if (
       config.staleIfErrorMs !== undefined &&
       (!Number.isSafeInteger(config.staleIfErrorMs) ||
@@ -86,6 +88,7 @@ export class TopologyClient<Meta = undefined> {
     ) {
       throw new RangeError('staleIfErrorMs must be a non-negative integer');
     }
+
     this.#config = config;
   }
 
@@ -97,22 +100,28 @@ export class TopologyClient<Meta = undefined> {
    */
   get(group: string): Promise<TopologyView<Meta>> {
     const entry = this.#cache.get(group);
+
     if (entry && Date.now() < entry.expiresAt) {
       if (entry.failure) {
         return this.#fallback(group, entry);
       }
+
       if (entry.view) {
         this.#remember(group, entry);
+
         return Promise.resolve(entry.view);
       }
     }
 
     const inflight = this.#inflight.get(group);
+
     if (inflight) {
       return inflight;
     }
+
     const run = this.#load(group).finally(() => this.#inflight.delete(group));
     this.#inflight.set(group, run);
+
     return run;
   }
 
@@ -122,18 +131,22 @@ export class TopologyClient<Meta = undefined> {
     const now = Date.now();
 
     let failure: NonNullable<Entry<Meta>['failure']>;
+
     if ('snapshot' in result) {
       const { snapshot } = result;
+
       // The store is eventually consistent; a lagging replica must not move readers backwards.
       // Versions only compare within one coordinator: a group moved to another starts over.
       const outdated =
         previous?.newestSeen !== undefined &&
         previous.newestSeen.coordinator === snapshot.coordinator &&
         previous.newestSeen.version > snapshot.version;
+
       if (!outdated || previous.view !== undefined) {
         const view = outdated
           ? previous.view!
           : { ...snapshot, source: 'published' as const, fetchedAt: now };
+
         const expiresAt = now + jittered(this.#ttlMs);
         this.#remember(group, {
           view,
@@ -144,8 +157,10 @@ export class TopologyClient<Meta = undefined> {
           expiresAt,
           staleUntil: expiresAt + (this.#config.staleIfErrorMs ?? 0),
         });
+
         return view;
       }
+
       // Only a failed read leaves a newer version seen without a view, so the
       // older snapshot answers the same way that read did.
       failure = previous.failure!;
@@ -163,7 +178,9 @@ export class TopologyClient<Meta = undefined> {
       expiresAt: now + jittered(this.#negativeTtlMs),
       failure,
     };
+
     this.#remember(group, entry);
+
     return this.#fallback(group, entry);
   }
 
@@ -175,6 +192,7 @@ export class TopologyClient<Meta = undefined> {
   > {
     let encoded: string | null | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+
     try {
       encoded = await Promise.race([
         Promise.resolve().then(() => this.#config.read(group)),
@@ -199,11 +217,14 @@ export class TopologyClient<Meta = undefined> {
     if (encoded === null || encoded === undefined) {
       return { failure: { reason: 'missing' } };
     }
+
     try {
       const snapshot = decodeSnapshot<Meta>(encoded);
+
       if (snapshot.group !== group) {
         throw new Error(`Snapshot belongs to group "${snapshot.group}"`);
       }
+
       return { snapshot };
     } catch (cause) {
       return { failure: { reason: 'invalid', cause } };
@@ -215,6 +236,7 @@ export class TopologyClient<Meta = undefined> {
     entry: Entry<Meta>
   ): Promise<TopologyView<Meta>> {
     const { reason, cause } = entry.failure!;
+
     const notify = (source: TopologySource | 'none') =>
       this.#config.onFallback?.({ group, reason, source });
 
@@ -224,12 +246,15 @@ export class TopologyClient<Meta = undefined> {
       Date.now() < entry.staleUntil
     ) {
       notify('stale');
+
       return { ...entry.view, source: 'stale' };
     }
 
     const seeded = this.#config.seed?.(group);
+
     if (seeded !== undefined && seeded.length > 0) {
       notify('seed');
+
       return {
         group,
         version: 0,
@@ -243,8 +268,10 @@ export class TopologyClient<Meta = undefined> {
     }
 
     const fallback = await this.#config.fallback?.(group, reason);
+
     if (fallback !== undefined) {
       notify('fallback');
+
       return { ...fallback, source: 'fallback', fetchedAt: Date.now() };
     }
 
@@ -255,8 +282,10 @@ export class TopologyClient<Meta = undefined> {
   #remember(group: string, entry: Entry<Meta>): void {
     this.#cache.delete(group);
     this.#cache.set(group, entry);
+
     if (this.#cache.size > maxCachedGroups) {
       const oldest = this.#cache.keys().next().value;
+
       if (oldest !== undefined) {
         this.#cache.delete(oldest);
       }

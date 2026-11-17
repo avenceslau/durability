@@ -22,6 +22,7 @@ const partition = sourceExcerpt(
   'export class Partition extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const topics = sourceExcerpt(
   example,
   exampleFile,
@@ -30,6 +31,7 @@ const topics = sourceExcerpt(
   'const topics = DurabilityRouting.client({',
   '});'
 );
+
 const produce = sourceExcerpt(
   example,
   exampleFile,
@@ -38,6 +40,7 @@ const produce = sourceExcerpt(
   "    if (request.method === 'POST') {",
   '      });\n    }'
 );
+
 const poll = sourceExcerpt(
   example,
   exampleFile,
@@ -46,6 +49,7 @@ const poll = sourceExcerpt(
   '    // Each partition is polled independently: a slow group never blocks others.',
   '    return Response.json(pages);'
 );
+
 const handle = sourceExcerpt(
   example,
   exampleFile,
@@ -54,6 +58,7 @@ const handle = sourceExcerpt(
   'const handle = async (records: LogRecord<Event>[]): Promise<void> => {',
   '};'
 );
+
 const appendRecords = sourceExcerpt(
   logSource,
   logFile,
@@ -62,6 +67,7 @@ const appendRecords = sourceExcerpt(
   'const appendRecords = (',
   '  return records.map((record) => assigned.get(record.dedup_key)!);\n};'
 );
+
 const commitCursor = sourceExcerpt(
   logSource,
   logFile,
@@ -70,6 +76,7 @@ const commitCursor = sourceExcerpt(
   'const commitCursor = (',
   '  );\n};'
 );
+
 const append = sourceExcerpt(
   logSource,
   logFile,
@@ -78,6 +85,7 @@ const append = sourceExcerpt(
   '  async append(\n    records: LogAppendInput<Body> | LogAppendInput<Body>[]',
   '      return { success: true, value: offsets, load: await this.load() };'
 );
+
 const read = sourceExcerpt(
   logSource,
   logFile,
@@ -86,6 +94,7 @@ const read = sourceExcerpt(
   '  async read(options: LogReadOptions): Promise<LogPage<Body>> {',
   '      .slice(0, limit);\n  }'
 );
+
 const trim = sourceExcerpt(
   logSource,
   logFile,
@@ -94,6 +103,7 @@ const trim = sourceExcerpt(
   '  async trim(): Promise<number> {',
   '      if (deleted < expiring.length) {\n        return removed;\n      }\n    }\n  }'
 );
+
 const schedule = sourceExcerpt(
   alarmsSource,
   alarmsFile,
@@ -102,6 +112,7 @@ const schedule = sourceExcerpt(
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
   '      scheduledTime,\n    });\n  }'
 );
+
 const execute = sourceExcerpt(
   alarmsSource,
   alarmsFile,
@@ -110,6 +121,7 @@ const execute = sourceExcerpt(
   '  #execute(\n    row: AlarmRow,',
   '        isErrorInstance(error, DurableAlarmTimeoutError) && !retryTimeouts,\n    });\n  }'
 );
+
 const decideRetry = sourceExcerpt(
   schedulerSource,
   schedulerFile,
@@ -547,7 +559,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             partition,
             'const { hotOffset, nextOffset } = await this.log.bounds();',
-            'await this.alarms.enforceRetention(Date.now() + retentionSweepMs);\n          return;'
+            'await this.alarms.enforceRetention(Date.now() + retentionSweepMs);\n\n          return;'
           ),
           durable: 'The next occurrence 60 seconds out, and the object alarm.',
           volatile: 'Nothing.',

@@ -98,9 +98,11 @@ const nextVersion = (sql: SqlStorage): number => {
       )
       .toArray()[0]
   );
+
   if (!Number.isSafeInteger(version + 1)) {
     throw new RangeError('Outbox version exhausted');
   }
+
   return version;
 };
 
@@ -187,6 +189,7 @@ export let publishNow: (
 ) => Promise<boolean>;
 
 const infrastructureRetryMs = 60_000;
+
 // setTimeout overflows past 2^31 - 1 ms, and it keeps every derived timestamp
 // far inside the safe-integer range the storage indexes accept.
 const maxDelayMs = 2 ** 31 - 1;
@@ -221,23 +224,30 @@ export class DurabilityOutbox<Value = unknown> {
 
   constructor(config: DurabilityOutboxConfig<Value>) {
     this.#channel = assertChannel('Outbox', config.channel ?? defaultChannel);
+
     if (typeof config.publish !== 'function') {
       throw new TypeError('Outbox requires a publish function');
     }
+
     this.#maxBatchSize = config.maxBatchSize ?? 50;
     assertPositiveInteger('maxBatchSize', this.#maxBatchSize);
     this.#batchDelayMs = config.batchDelayMs ?? 0;
+
     if (!Number.isSafeInteger(this.#batchDelayMs) || this.#batchDelayMs < 0) {
       throw new RangeError('batchDelayMs must be a non-negative integer');
     }
+
     this.#attemptTimeoutMs = config.attemptTimeoutMs ?? 60_000;
     assertPositiveInteger('attemptTimeoutMs', this.#attemptTimeoutMs);
+
     if (this.#attemptTimeoutMs > maxDelayMs) {
       throw new RangeError(`attemptTimeoutMs must be at most ${maxDelayMs}`);
     }
+
     if (this.#batchDelayMs > maxDelayMs) {
       throw new RangeError(`batchDelayMs must be at most ${maxDelayMs}`);
     }
+
     this.#delay =
       config.retries?.delay ?? ((attempt) => jitter(exponential(attempt)));
     this.#publish = config.publish;
@@ -273,7 +283,9 @@ export class DurabilityOutbox<Value = unknown> {
     const row = await this.#engine.transaction((sql) =>
       this.#stageIn(sql, key, value)
     );
+
     this.#emitRegistered(row);
+
     return row.version;
   }
 
@@ -281,9 +293,11 @@ export class DurabilityOutbox<Value = unknown> {
     if (typeof key !== 'string' || key.length === 0) {
       throw new TypeError('Outbox keys must be non-empty strings');
     }
+
     const payload = serialize(value);
     const version = nextVersion(sql);
     const createdAt = Date.now();
+
     const staged: OutboxRow = {
       id: rowId(this.#channel, key),
       channel: this.#channel,
@@ -298,6 +312,7 @@ export class DurabilityOutbox<Value = unknown> {
       created_at: createdAt,
       generation_id: String(version),
     };
+
     // Replacing the generation fences any in-flight publication of an older
     // version: its acknowledgement can no longer delete this row.
     sql.exec(
@@ -314,6 +329,7 @@ export class DurabilityOutbox<Value = unknown> {
       staged.created_at,
       staged.generation_id
     );
+
     return staged;
   }
 
@@ -330,14 +346,17 @@ export class DurabilityOutbox<Value = unknown> {
     stageWithin = (outbox, sql, key, value) => {
       const row = outbox.#stageIn(sql, key, value);
       outbox.#emitRegistered(row);
+
       return row.version;
     };
+
     discardWithin = (outbox, sql, key) => {
       sql.exec(
         'DELETE FROM durability_outbox WHERE id = ?',
         rowId(outbox.#channel, key)
       );
     };
+
     publishNow = (outbox, key) => outbox.#publishNow(key);
   }
 
@@ -363,6 +382,7 @@ export class DurabilityOutbox<Value = unknown> {
     if (this.#running) {
       return this.#running;
     }
+
     // Every transaction reconciles the alarm; one per idle run keeps re-arming
     // it while anything else on the scheduler is due, such as a running operation.
     if (
@@ -371,13 +391,16 @@ export class DurabilityOutbox<Value = unknown> {
     ) {
       return undefined;
     }
+
     // The permit is taken before claiming the channel, so nothing that holds
     // the channel ever waits for a permit.
     const release = await this.#engine.acquirePermit();
+
     try {
       if (this.#running) {
         return await this.#running;
       }
+
       return await this.#exclusive(() => this.#runBatch());
     } finally {
       release();
@@ -392,14 +415,18 @@ export class DurabilityOutbox<Value = unknown> {
           rowId(this.#channel, key)
         )
         .toArray().length > 0;
+
     while (this.#running) {
       // eslint-disable-next-line no-await-in-loop
       await this.#running.catch(() => undefined);
     }
+
     if (!pending()) {
       return true;
     }
+
     await this.#exclusive(() => this.#runBatch(key));
+
     return !pending();
   }
 
@@ -409,7 +436,9 @@ export class DurabilityOutbox<Value = unknown> {
         this.#running = undefined;
       }
     });
+
     this.#running = running;
+
     return running;
   }
 
@@ -423,8 +452,10 @@ export class DurabilityOutbox<Value = unknown> {
         this.#maxBatchSize,
         key
       );
+
       const deadline = Date.now() + this.#attemptTimeoutMs;
       const claimed: OutboxRow[] = [];
+
       for (const row of due) {
         // A crash mid-publication leaves the claim due again at the deadline.
         const attempt = claimAttempt(
@@ -435,11 +466,14 @@ export class DurabilityOutbox<Value = unknown> {
           Number.MAX_SAFE_INTEGER,
           deadline
         );
+
         if (attempt === undefined) {
           continue;
         }
+
         claimed.push({ ...row, attempt });
       }
+
       return claimed;
     });
 
@@ -466,6 +500,7 @@ export class DurabilityOutbox<Value = unknown> {
               'Outbox entries can only be retried while publish is running'
             );
           }
+
           if (
             delayMs !== undefined &&
             (!Number.isSafeInteger(delayMs) ||
@@ -476,10 +511,12 @@ export class DurabilityOutbox<Value = unknown> {
               `delayMs must be an integer from 0 to ${maxDelayMs}`
             );
           }
+
           retries.set(row.id, delayMs);
         },
       })
     );
+
     for (const row of claims) {
       this.#emit({
         ...entity(row),
@@ -490,6 +527,7 @@ export class DurabilityOutbox<Value = unknown> {
     }
 
     let failure: SerializedError | undefined;
+
     try {
       await this.#deadline(() => this.#publish(entries));
     } catch (error) {
@@ -502,6 +540,7 @@ export class DurabilityOutbox<Value = unknown> {
       name: 'Retry',
       message: 'Retried by publisher',
     };
+
     const acknowledged: OutboxRow[] = [];
     const retried: Array<{ row: OutboxRow; nextAttemptAt: number }> = [];
     await this.#engine.transaction((sql) => {
@@ -511,15 +550,18 @@ export class DurabilityOutbox<Value = unknown> {
           generation: row.generation_id,
           attempt: row.attempt,
         };
+
         if (failure === undefined && !retries.has(row.id)) {
           if (deleteAttempt(sql, outboxTable, ref)) {
             acknowledged.push(row);
           }
+
           continue;
         }
 
         const nextAttemptAt =
           Date.now() + (retries.get(row.id) ?? this.#retryDelay(row.attempt));
+
         const settled = updateAttempt(
           sql,
           outboxTable,
@@ -529,6 +571,7 @@ export class DurabilityOutbox<Value = unknown> {
           retryError.message,
           retryError.name
         );
+
         if (settled) {
           retried.push({ row, nextAttemptAt });
         }
@@ -537,6 +580,7 @@ export class DurabilityOutbox<Value = unknown> {
 
     const timestamp = Date.now();
     const durationMs = Math.max(0, timestamp - startedAt);
+
     for (const row of acknowledged) {
       this.#emit({
         ...entity(row),
@@ -547,6 +591,7 @@ export class DurabilityOutbox<Value = unknown> {
         outcome: 'completed',
       });
     }
+
     for (const { row, nextAttemptAt } of retried) {
       this.#emit({
         ...entity(row),
@@ -565,6 +610,7 @@ export class DurabilityOutbox<Value = unknown> {
   #retryDelay(attempt: number): number {
     try {
       const delay = Math.round(this.#delay(attempt));
+
       if (Number.isSafeInteger(delay) && delay >= 0 && delay <= maxDelayMs) {
         return delay;
       }
@@ -575,6 +621,7 @@ export class DurabilityOutbox<Value = unknown> {
         error
       );
     }
+
     return infrastructureRetryMs;
   }
 

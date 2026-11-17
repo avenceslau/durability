@@ -6,6 +6,7 @@ import type { LogTestObject } from './worker';
 
 const namespaceFor = (name: string) => {
   const candidate = (workerExports as Record<string, unknown>)[name];
+
   if (
     (typeof candidate !== 'object' && typeof candidate !== 'function') ||
     candidate === null ||
@@ -13,6 +14,7 @@ const namespaceFor = (name: string) => {
   ) {
     throw new Error(`Loopback namespace "${name}" is unavailable`);
   }
+
   return candidate as DurableObjectNamespace<LogTestObject>;
 };
 
@@ -23,10 +25,12 @@ describe('durable log', () => {
   it('retains records across eviction so a consumer replays history', async () => {
     const name = crypto.randomUUID();
     const stub = objectFor(name);
+
     const appended = await stub.append([
       { body: { topic: 'a', value: 1 } },
       { body: { topic: 'b', value: 2 } },
     ]);
+
     expect(appended).toMatchObject({ success: true, value: [0, 1] });
 
     await stub.commit('search', 2);
@@ -41,13 +45,16 @@ describe('durable log', () => {
 
   it('keeps offsets monotonic and deduplicates a repeated append', async () => {
     const stub = objectFor(crypto.randomUUID());
+
     const first = await stub.append([
       { deduplicationKey: 'k1', body: { topic: 'a', value: 1 } },
     ]);
+
     const repeat = await stub.append([
       { deduplicationKey: 'k1', body: { topic: 'a', value: 1 } },
       { deduplicationKey: 'k2', body: { topic: 'b', value: 2 } },
     ]);
+
     expect(first).toMatchObject({ success: true, value: [0] });
     expect(repeat).toMatchObject({ success: true, value: [0, 1] });
     expect(await stub.bounds()).toEqual({

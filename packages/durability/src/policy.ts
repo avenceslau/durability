@@ -72,6 +72,7 @@ export const alarmMethodOptionsSchema = v.object({
 });
 
 export type MethodPolicy = v.InferOutput<typeof methodOptionsSchema>;
+
 export type AlarmMethodPolicy = v.InferOutput<typeof alarmMethodOptionsSchema>;
 
 export const assertPositiveInteger = (name: string, value: number): void => {
@@ -87,6 +88,7 @@ const assertMethodOptions = (prefix: string, method: MethodPolicy): void => {
       method.attemptTimeoutMs
     );
   }
+
   if (method.retries?.maxAttempts !== undefined) {
     assertPositiveInteger(
       `${prefix}.retries.maxAttempts`,
@@ -110,8 +112,10 @@ export const createPolicyResolver = <Method extends MethodPolicy>(
 ): PolicyResolver<Method> => {
   const attemptTimeoutMs = options.attemptTimeoutMs ?? 5 * 60_000;
   const retries = v.parse(retryOptionsSchema, options.retries ?? {});
+
   const delay =
     retries.delay ?? ((attempt: number) => jitter(exponential(attempt)));
+
   const maxAttempts = retries.maxAttempts ?? 5;
   assertPositiveInteger('attemptTimeoutMs', attemptTimeoutMs);
   assertPositiveInteger('retries.maxAttempts', maxAttempts);
@@ -120,12 +124,14 @@ export const createPolicyResolver = <Method extends MethodPolicy>(
     Object.entries(methods).map(([name, method]) => {
       const valid = v.parse(methodSchema, method);
       assertMethodOptions(`methods.${name}`, valid);
+
       return [name, valid];
     })
   );
 
   return (name) => {
     const method = parsed.get(name);
+
     return {
       method,
       attemptTimeoutMs: method?.attemptTimeoutMs ?? attemptTimeoutMs,

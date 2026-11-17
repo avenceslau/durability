@@ -25,11 +25,13 @@ describe('alarm channels', () => {
     const legacy = vi.fn(async () => undefined);
     const current = vi.fn(async () => undefined);
     const app = new DurabilityAlarms({ context, handlers: { [name]: legacy } });
+
     const library = new DurabilityAlarms({
       context,
       channel: 'library',
       handlers: { check: current },
     });
+
     await library.check(Date.now());
     await app.alarm();
     expect(legacy).toHaveBeenCalledExactlyOnceWith(
@@ -52,26 +54,32 @@ describe('alarm channels', () => {
     const appCompute = vi.fn(() => 'app');
     const libraryCompute = vi.fn(() => 'library');
     const result: string[] = [];
+
     const run =
       (compute: () => string) =>
       async ({ memoize, attempt }: DurableAlarmInfo) => {
         const saved = await memoize('shared', compute);
+
         if (attempt === 1) {
           throw new Error('retry');
         }
+
         result.push(saved);
       };
+
     const app = new DurabilityAlarms({
       context,
       retries: { delay: () => 60_000 },
       handlers: { check: run(appCompute) },
     });
+
     const library = new DurabilityAlarms({
       context,
       channel: 'library',
       retries: { delay: () => 60_000 },
       handlers: { check: run(libraryCompute) },
     });
+
     await app.check(Date.now());
     await library.check(Date.now());
     await app.alarm();
@@ -101,15 +109,18 @@ describe('alarm channels', () => {
   it("does not complete another channel's same-name tracker waiter", async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
+
     const app = new DurabilityAlarms({
       context,
       handlers: { check: async () => undefined },
     });
+
     const library = new DurabilityAlarms({
       context,
       channel: 'library',
       handlers: { check: async () => undefined },
     });
+
     const tracker = new DurabilityTracker({ sources: { app, library } });
     await app.check(Date.now());
     await library.check(Date.now() + 60_000);
@@ -127,11 +138,13 @@ describe('alarm channels', () => {
   it('refuses downgrade without deleting records from named channels', async () => {
     const storage = new FakeStorage();
     const context = contextFor(storage);
+
     const library = new DurabilityAlarms({
       context,
       channel: 'library',
       handlers: { check: async () => undefined },
     });
+
     await library.check(Date.now() + 60_000);
     expect(() => DurabilityAlarms.migrate(context, beforeChannels)).toThrow(
       /cannot_downgrade_nondefault_channels/

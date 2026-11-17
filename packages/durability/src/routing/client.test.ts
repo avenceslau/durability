@@ -17,10 +17,12 @@ describe('routing client', () => {
   it('routes a whole input once with caller context and a location hint', async () => {
     const input = [{ id: 'a' }, { id: 'b' }];
     const context = { tenant: 'acme', extra: () => 'local only' };
+
     const sharding = vi.fn(() => ({
       shard: 'tenant-acme',
       locationHint: 'weur' as const,
     }));
+
     const invoke = vi.fn(async () => accepted());
     const routing = new RoutingClient({ sharding, invoke });
     await expect(routing.push(input, context)).resolves.toMatchObject({
@@ -39,6 +41,7 @@ describe('routing client', () => {
       error: { name: 'Rejected', message: 'full' },
       load: new RoutingLoad().snapshot(500),
     };
+
     const invoke = vi.fn(async () => response);
     const router = new RoutingClient({ sharding: () => 'same', invoke });
     expect(await router.push('batch')).toBe(response);
@@ -50,6 +53,7 @@ describe('routing client', () => {
     const invoke = vi.fn(async () => {
       throw new Error('connection lost');
     });
+
     const router = new RoutingClient({ invoke });
     await expect(router.push('batch')).rejects.toThrow('connection lost');
     expect(invoke).toHaveBeenCalledTimes(1);
@@ -80,6 +84,7 @@ describe('routing client', () => {
     finish();
     const snapshot = load.snapshot(12);
     const sharding = vi.fn(() => 'hot');
+
     const router = new RoutingClient({
       sharding,
       invoke: async () => ({
@@ -88,6 +93,7 @@ describe('routing client', () => {
         load: snapshot,
       }),
     });
+
     await router.push('first');
     const seen = router.observations().get('hot');
     expect(seen?.outbound).toMatchObject({
@@ -95,9 +101,11 @@ describe('routing client', () => {
       averageProcessingMs: 125,
       pendingDeliveries: 12,
     });
+
     if (seen) {
       seen.outbound.pendingDeliveries = 999;
     }
+
     await router.push('second');
     expect(sharding).toHaveBeenLastCalledWith(
       'second',

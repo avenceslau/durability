@@ -26,6 +26,7 @@ const pipelineObject = sourceExcerpt(
   'export class Pipeline extends DurableObject<Env> {',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const dashboardObject = sourceExcerpt(
   dashboard,
   dashboardFile,
@@ -34,6 +35,7 @@ const dashboardObject = sourceExcerpt(
   'export class Dashboard extends DurableObject<Env> {',
   '    this.socket.webSocketClose(ws);\n  }'
 );
+
 const frontWorker = sourceExcerpt(
   worker,
   workerFile,
@@ -42,6 +44,7 @@ const frontWorker = sourceExcerpt(
   '  async fetch(request: Request, env: Env) {',
   '    });'
 );
+
 const construct = sourceExcerpt(
   tracker,
   trackerFile,
@@ -50,6 +53,7 @@ const construct = sourceExcerpt(
   '  readonly #sources: Array<[string, UntypedSource]>;',
   '    ]);\n  }'
 );
+
 const operationSource = sourceExcerpt(
   durability,
   durabilityFile,
@@ -58,6 +62,7 @@ const operationSource = sourceExcerpt(
   '  #trackedSource(): UntypedSource {',
   '        this.#engine.watch(this.#table, id, () => listener()),\n    };\n  }'
 );
+
 const get = sourceExcerpt(
   tracker,
   trackerFile,
@@ -66,6 +71,7 @@ const get = sourceExcerpt(
   '  /** Reacquires a handle by id, for example after an RPC disconnect. */',
   '    ) as unknown as TrackerHandle<Sources, Key>;\n  }'
 );
+
 const records = sourceExcerpt(
   tracker,
   trackerFile,
@@ -74,6 +80,7 @@ const records = sourceExcerpt(
   'const resultFor = (',
   '});'
 );
+
 const wait = sourceExcerpt(
   tracker,
   trackerFile,
@@ -82,6 +89,7 @@ const wait = sourceExcerpt(
   '  #wait(',
   '      check();\n    });\n  }'
 );
+
 const watchers = sourceExcerpt(
   scheduler,
   schedulerFile,
@@ -90,6 +98,7 @@ const watchers = sourceExcerpt(
   '  /** In-memory only: listeners never survive eviction. */',
   '      listener(completed);\n    }\n  }'
 );
+
 const settle = sourceExcerpt(
   scheduler,
   schedulerFile,

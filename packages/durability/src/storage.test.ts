@@ -3,6 +3,7 @@ import { claimAttempt } from './storage';
 import { FakeStorage } from './test-fakes';
 
 const table = { name: 'attempts', key: 'id' };
+
 const fixture = () => {
   const storage = new FakeStorage();
   storage.sql.exec(`
@@ -15,6 +16,7 @@ const fixture = () => {
     );
     INSERT INTO attempts VALUES ('job', 'current', 'pending', 0, 100);
   `);
+
   return storage;
 };
 

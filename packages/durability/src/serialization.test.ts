@@ -6,6 +6,7 @@ describe('serialize', () => {
     for (const value of [null, 0, 'x', [1, 'a', null], { a: { b: [true] } }]) {
       expect(deserialize(serialize(value))).toEqual(value);
     }
+
     expect(deserialize(serialize(undefined))).toBeUndefined();
   });
 

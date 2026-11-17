@@ -13,6 +13,7 @@ import {
 
 const source =
   'class Jobs {\n  run() {\n    if (ready) {\n      send();\n    }\n    commit();\n  }\n}\n';
+
 const excerpt = sourceExcerpt(
   source,
   'example.ts',
@@ -21,7 +22,9 @@ const excerpt = sourceExcerpt(
   '  run()',
   '  }'
 );
+
 const focus = sourceFocus(excerpt, 'commit();');
+
 const model = {
   id: 'test',
   title: 'Test',
@@ -117,10 +120,12 @@ test('every step shows the whole diagram and spotlights what it is about', () =>
     { ...model.scenarios[0].steps[0], id: 'second', stage: ['store'] },
   ];
   const diagram = scenarioDiagram(introduced, introduced.scenarios[0]);
+
   for (const state of diagram.stages) {
     assert.ok(state.visible.has('worker') && state.visible.has('store'));
     assert.ok(state.visible.has('worker->store'));
   }
+
   assert.equal(diagram.stages[0].spotlight.id, 'worker');
   assert.equal(diagram.stages[1].spotlight.id, 'store');
 });

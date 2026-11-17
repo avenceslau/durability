@@ -18,6 +18,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -30,6 +31,7 @@ afterEach(() => {
  */
 const settle = async (ms = 1_000) => {
   await vi.advanceTimersByTimeAsync(ms);
+
   for (let i = 0; i < 3; i += 1) {
     // eslint-disable-next-line no-await-in-loop
     await vi.advanceTimersByTimeAsync(5);
@@ -38,6 +40,7 @@ const settle = async (ms = 1_000) => {
 
 describe('semaphore queue', () => {
   const storageFor = () => new FakeStorage();
+
   const schedulerFor = (storage: FakeStorage) =>
     new DurabilityScheduler({
       context: { storage: storage as unknown as DurableObjectStorage },
@@ -48,8 +51,10 @@ describe('semaphore queue', () => {
     queue: Partial<DurabilitySemaphoreQueueConfig<string>> = {}
   ) => {
     const holders = new Map<string, DurabilitySemaphoreServer>();
+
     const holderFor = (key: string) => {
       let server = holders.get(key);
+
       if (!server) {
         server = new DurabilitySemaphoreServer({
           scheduler: schedulerFor(storageFor()),
@@ -58,23 +63,28 @@ describe('semaphore queue', () => {
         } as DurabilitySemaphoreConfig);
         holders.set(key, server);
       }
+
       return server;
     };
+
     const calls = { request: 0, sync: 0 };
     const admitted: AdmittedItem<string>[] = [];
     const events: DurabilitySemaphoreQueueEvent[] = [];
     const storage = storageFor();
     const scheduler = schedulerFor(storage);
+
     const queued = new DurabilitySemaphoreQueue<string>({
       scheduler,
       clientId: 'shard-1',
       server: {
         request: async (key, message) => {
           calls.request += 1;
+
           return holderFor(key).handle(message) as never;
         },
         sync: async (key, message) => {
           calls.sync += 1;
+
           return holderFor(key).handle(message) as never;
         },
       },
@@ -86,6 +96,7 @@ describe('semaphore queue', () => {
       },
       ...queue,
     } as DurabilitySemaphoreQueueConfig<string>);
+
     return {
       storage,
       scheduler,
@@ -106,6 +117,7 @@ describe('semaphore queue', () => {
       },
       { admit: () => new Promise((resolve) => setTimeout(resolve, 1_000)) }
     );
+
     new DurabilitySemaphoreServer({ scheduler, limit: 1 });
     const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
     await queue.enqueue([
@@ -129,6 +141,7 @@ describe('semaphore queue', () => {
 
   it('does not spin on unnotified items behind an active admission batch', async () => {
     const batches: string[][] = [];
+
     const { queue, scheduler } = fixture(
       { limit: 4, roundWaitMs: 1 },
       {
@@ -139,6 +152,7 @@ describe('semaphore queue', () => {
         },
       }
     );
+
     new DurabilitySemaphoreServer({ scheduler, limit: 1 });
     const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
     await queue.enqueue(
@@ -162,10 +176,12 @@ describe('semaphore queue', () => {
         finishedCheckMs: 20,
         finished: async (ids) => {
           await new Promise((resolve) => setTimeout(resolve, 1_000));
+
           return [...ids];
         },
       }
     );
+
     new DurabilitySemaphoreServer({ scheduler, limit: 1 });
     const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
     await queue.enqueue([
@@ -260,6 +276,7 @@ describe('semaphore queue', () => {
       limit: 2,
       leases: { provisioning: { mode: 'over', extra: 4 } },
     });
+
     await queue.enqueue(
       ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, key: 'acct', body: id }))
     );
@@ -312,15 +329,18 @@ describe('semaphore queue', () => {
         ttlMs: 60_000,
       },
     });
+
     // Renewal is due further out than the in-memory timer reaches; deliver the
     // physical alarm as the platform would.
     const tick = async (ms: number) => {
       await settle(ms);
+
       if (storage.alarmAt !== null && storage.alarmAt <= Date.now()) {
         await queue.alarm();
         await settle(10);
       }
     };
+
     await queue.enqueue(
       ['a', 'b'].map((id) => ({ id, key: 'acct', body: id }))
     );
@@ -336,6 +356,7 @@ describe('semaphore queue', () => {
       // eslint-disable-next-line no-await-in-loop
       await tick(10_000);
     }
+
     expect(await holderFor('acct').usage()).toMatchObject({
       granted: 1,
       leased: 1,
@@ -356,13 +377,16 @@ describe('semaphore queue', () => {
         ttlMs: 60_000,
       },
     });
+
     const tick = async (ms: number) => {
       await settle(ms);
+
       if (storage.alarmAt !== null && storage.alarmAt <= Date.now()) {
         await queue.alarm();
         await settle(10);
       }
     };
+
     await queue.enqueue(
       ['a', 'b'].map((id) => ({ id, key: 'acct', body: id }))
     );
@@ -373,6 +397,7 @@ describe('semaphore queue', () => {
     ]);
     await queue.release('a');
     await queue.release('b');
+
     // One permit of the lease was never drawn. Nothing reports the lease, so
     // the holder retires it at its expiry and keeps it counted until this
     // client says it is done with it.
@@ -380,6 +405,7 @@ describe('semaphore queue', () => {
       // eslint-disable-next-line no-await-in-loop
       await tick(10_000);
     }
+
     expect(await holderFor('acct').usage()).toMatchObject({
       granted: 0,
       leased: 0,
@@ -393,6 +419,7 @@ describe('semaphore queue', () => {
   ) => {
     const admitted: AdmittedItem<string>[] = [];
     const storage = storageFor();
+
     const queue = new DurabilitySemaphoreQueue<string>({
       scheduler: schedulerFor(storage),
       clientId: 'shard-2',
@@ -403,6 +430,7 @@ describe('semaphore queue', () => {
       retries: { delay: () => 3_000 },
       ...options,
     } as DurabilitySemaphoreQueueConfig<string>);
+
     return { queue, admitted, storage };
   };
 
@@ -418,16 +446,19 @@ describe('semaphore queue', () => {
   it('releases admitted items that finished reports done, without release()', async () => {
     const done = new Set<string>();
     const asked: string[][] = [];
+
     const { queue, holderFor, admitted } = fixture(
       { limit: 1 },
       {
         finished: (ids) => {
           asked.push(ids);
+
           return ids.filter((id) => done.has(id));
         },
         finishedCheckMs: 10_000,
       }
     );
+
     await queue.enqueue([
       { id: 'a', key: 'acct', body: 'A' },
       { id: 'b', key: 'acct', body: 'B' },
@@ -451,6 +482,7 @@ describe('semaphore queue', () => {
 
   it('writes nothing on an alarm run with nothing due', async () => {
     const storage = storageFor();
+
     const queue = new DurabilitySemaphoreQueue<string>({
       scheduler: schedulerFor(storage),
       clientId: 'shard-4',
@@ -461,6 +493,7 @@ describe('semaphore queue', () => {
       admit: () => undefined,
       finished: (ids) => ids,
     });
+
     const transactions = vi.spyOn(storage, 'transaction');
     await queue.alarm();
     // Only the engine's own reconciliation after the run.
@@ -470,6 +503,7 @@ describe('semaphore queue', () => {
   it('stays idle while the holder keeps a request for its round', async () => {
     const storage = storageFor();
     let answer!: (grant: PermitGrant) => void;
+
     const queue = new DurabilitySemaphoreQueue<string>({
       scheduler: schedulerFor(storage),
       clientId: 'shard-3',
@@ -482,6 +516,7 @@ describe('semaphore queue', () => {
       },
       admit: () => undefined,
     });
+
     await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
     await vi.advanceTimersByTimeAsync(5);
     expect(answer).toBeDefined();
@@ -499,9 +534,11 @@ describe('semaphore queue', () => {
   it('confirms a lease the holder retired with what it actually drew', async () => {
     const syncs: PermitSync[] = [];
     let requests = 0;
+
     const { queue, admitted } = scripted({
       request: async () => {
         requests += 1;
+
         return {
           ...grantOf(`unused-${requests}`, 0),
           grants: [],
@@ -518,6 +555,7 @@ describe('semaphore queue', () => {
       },
       sync: async (_key, message) => {
         syncs.push(message);
+
         return { type: 'synced', v: 1, grantResults: [] };
       },
     });
@@ -538,9 +576,11 @@ describe('semaphore queue', () => {
   it('returns idle lease headroom when the holder is contended, and stops drawing from it', async () => {
     const syncs: PermitSync[] = [];
     let requests = 0;
+
     const { queue, admitted } = scripted({
       request: async () => {
         requests += 1;
+
         return {
           ...grantOf(`unused-${requests}`, 0),
           grants: [],
@@ -557,6 +597,7 @@ describe('semaphore queue', () => {
       },
       sync: async (_key, message) => {
         syncs.push(message);
+
         return { type: 'synced', v: 1, grantResults: [] };
       },
     });
@@ -589,20 +630,25 @@ describe('semaphore queue', () => {
   it('asks again soon when the reply to a request cannot be applied', async () => {
     let requests = 0;
     let failNext = false;
+
     const { queue, storage } = scripted({
       request: async () => {
         requests += 1;
         failNext = requests === 1;
+
         return grantOf(`g${requests}`, 1);
       },
       sync: async () => ({ type: 'synced', v: 1, grantResults: [] }),
     });
+
     const transaction = storage.transaction.bind(storage);
     vi.spyOn(storage, 'transaction').mockImplementation((closure) => {
       if (failNext) {
         failNext = false;
+
         return Promise.reject(new Error('storage unavailable'));
       }
+
       return transaction(closure);
     });
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -621,16 +667,19 @@ describe('semaphore queue', () => {
     let grantedAt: number | undefined;
     const syncs: number[] = [];
     let writesUntilFault: number | undefined;
+
     const { queue, storage } = scripted({
       request: async () => {
         grantedAt = Date.now();
         // Past the write applying this reply and the alarm run's own
         // reconciliation, the early alarm's outbox claim fails.
         writesUntilFault = 2;
+
         return grantOf('g1', 1);
       },
       sync: async (_key, message) => {
         syncs.push(Date.now());
+
         return {
           type: 'synced',
           v: 1,
@@ -642,15 +691,19 @@ describe('semaphore queue', () => {
         };
       },
     });
+
     const transaction = storage.transaction.bind(storage);
     vi.spyOn(storage, 'transaction').mockImplementation((closure) => {
       if (writesUntilFault === 0) {
         writesUntilFault = undefined;
+
         return Promise.reject(new Error('storage unavailable'));
       }
+
       if (writesUntilFault !== undefined) {
         writesUntilFault -= 1;
       }
+
       return transaction(closure);
     });
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -668,6 +721,7 @@ describe('semaphore queue', () => {
 
   it('retries claim reports well inside the holder grant window', async () => {
     const syncs: number[] = [];
+
     const { queue } = scripted(
       {
         request: async () => grantOf('g1', 1),
@@ -678,13 +732,16 @@ describe('semaphore queue', () => {
       },
       { retries: { delay: (attempt) => 1_000 * 2 ** (attempt - 1) } }
     );
+
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
+
     for (let i = 0; i < 40; i += 1) {
       // eslint-disable-next-line no-await-in-loop
       await settle(1_000);
     }
+
     // Exponential backoff would wait 8 s, 16 s, 32 s; capped at 5 s it keeps trying.
     const gaps = syncs.slice(1).map((at, index) => at - syncs[index]!);
     expect(Math.max(...gaps)).toBeLessThanOrEqual(5_100);
@@ -693,9 +750,11 @@ describe('semaphore queue', () => {
 
   it('returns items to the queue when the holder forgot or clamped a grant', async () => {
     let requests = 0;
+
     const { queue, admitted } = scripted({
       request: async () => {
         requests += 1;
+
         return grantOf(`g${requests}`, 2);
       },
       sync: async (_key, message) => ({
@@ -754,6 +813,7 @@ describe('semaphore queue', () => {
         })),
       }),
     });
+
     await queue.enqueue([
       { id: 'a', key: 'k', body: 'A' },
       { id: 'b', key: 'k', body: 'B' },
@@ -770,6 +830,7 @@ describe('semaphore queue', () => {
 
   it('keeps an admitted item runnable when the holder forgets its grant', async () => {
     let forget = false;
+
     const { queue, admitted } = scripted({
       request: async () => grantOf('g1', 1),
       sync: async (_key, message) => ({
@@ -790,6 +851,7 @@ describe('semaphore queue', () => {
         ),
       }),
     });
+
     await queue.enqueue([{ id: 'a', key: 'k', body: 'A' }]);
     await settle();
     expect(admitted.map((item) => item.id)).toEqual(['a']);
@@ -807,6 +869,7 @@ describe('semaphore queue', () => {
 
   it('retries admit() until it returns and reports failures', async () => {
     let fail = true;
+
     const { queue, admitted } = fixture(
       {},
       {
@@ -815,10 +878,12 @@ describe('semaphore queue', () => {
           if (fail) {
             throw new Error('consumer down');
           }
+
           admitted.push(...items);
         },
       }
     );
+
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await queue.enqueue([{ id: 'a', key: 'acct', body: 'A' }]);
     await settle();
@@ -833,12 +898,15 @@ describe('semaphore queue', () => {
   it('cancels queued items, deduplicates IDs, and survives a holder outage', async () => {
     let down = true;
     let requests = 0;
+
     const { queue, admitted } = scripted({
       request: async () => {
         requests += 1;
+
         if (down) {
           throw new Error('holder unavailable');
         }
+
         return grantOf('g1', 1);
       },
       sync: async (_key, message) => ({
@@ -851,6 +919,7 @@ describe('semaphore queue', () => {
         })),
       }),
     });
+
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const result = await queue.enqueue([
@@ -858,6 +927,7 @@ describe('semaphore queue', () => {
       { id: 'a', key: 'k', body: 'A' },
       { id: 'b', key: 'k', body: 'B' },
     ]);
+
     expect(result).toEqual({ queued: ['a', 'b'], duplicates: ['a'] });
     expect(await queue.cancel('b')).toBe(true);
     expect(await queue.cancel('b')).toBe(false);

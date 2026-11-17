@@ -38,6 +38,7 @@ export const timeout = defineTransform<object, EmptyTransformContext>().caller(
       }
 
       let timer: ReturnType<typeof setTimeout> | undefined;
+
       try {
         return await Promise.race([
           next(),

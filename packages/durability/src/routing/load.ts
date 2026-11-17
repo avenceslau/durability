@@ -20,6 +20,7 @@ export type EnqueueResult<T, E = SerializedError> =
   | { success: false; error: E; load: LoadSnapshot };
 
 type Bucket = { second: number; count: number; durationMs: number };
+
 type Direction = 'inbound' | 'outbound';
 
 /**
@@ -41,20 +42,24 @@ export class RoutingLoad {
     const startedAt = Date.now();
     this.active[direction] += 1;
     let finished = false;
+
     return () => {
       if (finished) {
         return;
       }
+
       finished = true;
       this.active[direction] -= 1;
       const now = Date.now();
       const second = Math.floor(now / 1_000);
       const slot = second % 60;
       const previous = this.buckets[direction].get(slot);
+
       const bucket =
         previous?.second === second
           ? previous
           : { second, count: 0, durationMs: 0 };
+
       bucket.count += 1;
       bucket.durationMs += Math.max(0, now - startedAt);
       this.buckets[direction].set(slot, bucket);
@@ -64,6 +69,7 @@ export class RoutingLoad {
   /** Backlog comes from durable state, never reconstructed from telemetry. */
   snapshot(pendingDeliveries: number): LoadSnapshot {
     const now = Date.now();
+
     return {
       observedAt: now,
       windowMs: 60_000,
@@ -79,12 +85,14 @@ export class RoutingLoad {
     const second = Math.floor(now / 1_000);
     let completed = 0;
     let durationMs = 0;
+
     for (const bucket of this.buckets[direction].values()) {
       if (bucket.second <= second && bucket.second > second - 60) {
         completed += bucket.count;
         durationMs += bucket.durationMs;
       }
     }
+
     return {
       inFlight: this.active[direction],
       completed,

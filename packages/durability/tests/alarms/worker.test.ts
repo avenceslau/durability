@@ -21,6 +21,7 @@ const waitFor = async (
     if (remaining === 0) {
       throw error;
     }
+
     await scheduler.wait(5);
     await waitFor(assertion, remaining - 1);
   }

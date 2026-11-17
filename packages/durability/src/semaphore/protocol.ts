@@ -38,6 +38,7 @@ export const grantReportSchema = v.object({
   /** Claimed permits the client has returned, as a high-water mark. */
   released: nonNegative,
 });
+
 export type GrantReport = v.InferOutput<typeof grantReportSchema>;
 
 /** Cumulative counts for one lease the client holds. */
@@ -50,6 +51,7 @@ export const leaseReportSchema = v.object({
   /** The client stopped drawing: the lease's undrawn permits are returned. */
   retired: v.optional(v.boolean()),
 });
+
 export type LeaseReport = v.InferOutput<typeof leaseReportSchema>;
 
 export const leaseGrantSchema = v.object({
@@ -59,6 +61,7 @@ export const leaseGrantSchema = v.object({
   /** `expiresAt <= now` retires the lease: stop drawing immediately. */
   expiresAt: nonNegative,
 });
+
 export type LeaseGrant = v.InferOutput<typeof leaseGrantSchema>;
 
 export const permitRequestSchema = v.pipe(
@@ -85,6 +88,7 @@ export const permitRequestSchema = v.pipe(
   }),
   v.check(versionMatchesChannel, channelVersionError)
 );
+
 export type PermitRequest = v.InferOutput<typeof permitRequestSchema>;
 
 export const permitSyncSchema = v.pipe(
@@ -100,12 +104,14 @@ export const permitSyncSchema = v.pipe(
   }),
   v.check(versionMatchesChannel, channelVersionError)
 );
+
 export type PermitSync = v.InferOutput<typeof permitSyncSchema>;
 
 export const semaphoreRequestSchema = v.union([
   permitRequestSchema,
   permitSyncSchema,
 ]);
+
 export type SemaphoreRequest = v.InferOutput<typeof semaphoreRequestSchema>;
 
 export const semaphoreBlockedReasonSchema = v.picklist([
@@ -114,6 +120,7 @@ export const semaphoreBlockedReasonSchema = v.picklist([
   'limit_resolution_error',
   'not_permitted',
 ]);
+
 export type SemaphoreBlockedReason = v.InferOutput<
   typeof semaphoreBlockedReasonSchema
 >;
@@ -124,6 +131,7 @@ export const grantResultSchema = v.object({
   claimed: nonNegative,
   status: v.picklist(['ok', 'not_found', 'expired']),
 });
+
 export type GrantResult = v.InferOutput<typeof grantResultSchema>;
 
 export const permitGrantSchema = v.pipe(
@@ -151,6 +159,7 @@ export const permitGrantSchema = v.pipe(
   }),
   v.check(versionMatchesChannel, channelVersionError)
 );
+
 export type PermitGrant = v.InferOutput<typeof permitGrantSchema>;
 
 export const permitSyncResultSchema = v.pipe(
@@ -165,10 +174,12 @@ export const permitSyncResultSchema = v.pipe(
   }),
   v.check(versionMatchesChannel, channelVersionError)
 );
+
 export type PermitSyncResult = v.InferOutput<typeof permitSyncResultSchema>;
 
 export const semaphoreResponseSchema = v.union([
   permitGrantSchema,
   permitSyncResultSchema,
 ]);
+
 export type SemaphoreResponse = v.InferOutput<typeof semaphoreResponseSchema>;

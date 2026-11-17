@@ -26,6 +26,7 @@ describe('liveTimers in workerd', () => {
       () => false,
       () => true
     );
+
     expect(aborted).toBe(true);
     const recovered = env.LIVE_TIMERS_TEST.get(id);
     // The in-memory timers died with the instance; only the physical alarm is left.

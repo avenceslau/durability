@@ -14,6 +14,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -25,18 +26,22 @@ const published = (entries: OutboxEntry<string>[]): Published[] =>
 describe('outbox', () => {
   const fixture = () => {
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: { storage: storage as unknown as DurableObjectStorage },
     });
+
     return { storage, scheduler };
   };
 
   it('writes nothing on an alarm run with nothing due', async () => {
     const { storage, scheduler } = fixture();
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       publish: () => undefined,
     });
+
     const transactions = vi.spyOn(storage, 'transaction');
     await outbox.alarm();
     // Only the engine's own reconciliation after the run.
@@ -45,9 +50,11 @@ describe('outbox', () => {
 
   it('checks the outbox schema once per scheduler, however many channels attach', async () => {
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: { storage: storage as unknown as DurableObjectStorage },
     });
+
     const statements = vi.spyOn(storage.sql, 'exec');
     new DurabilityOutbox({ scheduler, channel: 'a', publish: () => undefined });
     const first = statements.mock.calls.length;
@@ -70,6 +77,7 @@ describe('outbox', () => {
     const updates = exec.mock.calls
       .map(([query]) => query.replace(/\s+/g, ' ').trim())
       .filter((query) => query.startsWith('UPDATE durability_outbox SET'));
+
     expect(updates).toHaveLength(2);
     expect(
       updates.every((query) =>
@@ -106,6 +114,7 @@ describe('outbox', () => {
 
   it('keeps versions monotonic after acknowledged rows are deleted', async () => {
     const { scheduler } = fixture();
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       publish: () => undefined,
@@ -122,10 +131,12 @@ describe('outbox', () => {
     const { scheduler } = fixture();
     let release!: () => void;
     const calls: Published[][] = [];
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       publish: async (entries) => {
         calls.push(published(entries));
+
         if (calls.length === 1) {
           await new Promise<void>((resolve) => {
             release = resolve;
@@ -152,6 +163,7 @@ describe('outbox', () => {
     const { scheduler } = fixture();
     const events: DurabilityLifecycleEvent[] = [];
     const attempts: number[] = [];
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       retries: { delay: () => 5_000 },
@@ -160,6 +172,7 @@ describe('outbox', () => {
       },
       publish: (entries) => {
         attempts.push(entries[0]!.attempt);
+
         if (attempts.length === 1) {
           throw new Error('sink unavailable');
         }
@@ -191,6 +204,7 @@ describe('outbox', () => {
     const { scheduler } = fixture();
     let releaseFirst!: () => void;
     const sink = new Map<string, { version: number; value: string }>();
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       attemptTimeoutMs: 1_000,
@@ -201,8 +215,10 @@ describe('outbox', () => {
             releaseFirst = resolve;
           });
         }
+
         for (const entry of entries) {
           const current = sink.get(entry.key);
+
           if (!current || current.version < entry.version) {
             sink.set(entry.key, {
               version: entry.version,
@@ -235,12 +251,14 @@ describe('outbox', () => {
     const versions: number[] = [];
     let concurrent = 0;
     let maxConcurrent = 0;
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       retries: { delay: () => 0 },
       publish: async (entries) => {
         concurrent += 1;
         maxConcurrent = Math.max(maxConcurrent, concurrent);
+
         try {
           if (gate === undefined) {
             await new Promise<void>((resolve) => {
@@ -248,6 +266,7 @@ describe('outbox', () => {
             });
             throw new Error('sink unavailable');
           }
+
           versions.push(...entries.map((entry) => entry.version));
         } finally {
           concurrent -= 1;
@@ -270,15 +289,18 @@ describe('outbox', () => {
     const { scheduler } = fixture();
     const seen: string[] = [];
     let escaped: OutboxEntry<string> | undefined;
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       publish: (entries) => {
         for (const entry of entries) {
           seen.push(entry.key);
+
           if (entry.key === 'b' && entry.attempt === 1) {
             entry.retry(1_000);
           }
         }
+
         escaped = entries[0];
       },
     });
@@ -296,12 +318,14 @@ describe('outbox', () => {
   it('retries a publication that exceeds its timeout', async () => {
     const { scheduler } = fixture();
     let calls = 0;
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       attemptTimeoutMs: 1_000,
       retries: { delay: () => 0 },
       publish: () => {
         calls += 1;
+
         return calls === 1 ? new Promise(() => undefined) : undefined;
       },
     });
@@ -332,22 +356,27 @@ describe('outbox', () => {
 
   it('publishes one key now without a permit and reports what is left pending', async () => {
     const storage = new FakeStorage();
+
     const scheduler = new DurabilityScheduler({
       context: { storage: storage as unknown as DurableObjectStorage },
       alarmConcurrency: 1,
     });
+
     const keys: string[][] = [];
     let fail = false;
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       retries: { delay: () => 1_000 },
       publish: (entries) => {
         keys.push(entries.map(({ key }) => key));
+
         if (fail) {
           throw new Error('sink down');
         }
       },
     });
+
     const operations = new Durability({
       scheduler,
       handlers: {
@@ -360,6 +389,7 @@ describe('outbox', () => {
         },
       },
     });
+
     const results: boolean[] = [];
     await outbox.stage('other', 'x');
 
@@ -382,11 +412,13 @@ describe('outbox', () => {
     const { scheduler } = fixture();
     const left = vi.fn((_entries: OutboxEntry<string>[]) => undefined);
     const right = vi.fn((_entries: OutboxEntry<string>[]) => undefined);
+
     const a = new DurabilityOutbox<string>({
       scheduler,
       channel: 'left',
       publish: left,
     });
+
     const b = new DurabilityOutbox<string>({
       scheduler,
       channel: 'right',
@@ -415,6 +447,7 @@ describe('outbox', () => {
 
   it('retains and postpones entries of a channel that is no longer configured', async () => {
     const { storage, scheduler } = fixture();
+
     const removed = new DurabilityOutbox<string>({
       scheduler,
       channel: 'removed',
@@ -422,16 +455,19 @@ describe('outbox', () => {
         throw new Error('unreachable');
       },
     });
+
     await removed.stage('a', 'one');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const restarted = new DurabilityScheduler({ context: contextFor(storage) });
     const publish = vi.fn(() => undefined);
+
     const kept = new DurabilityOutbox({
       scheduler: restarted,
       channel: 'kept',
       publish,
     });
+
     await kept.alarm();
 
     expect(publish).not.toHaveBeenCalled();
@@ -439,11 +475,13 @@ describe('outbox', () => {
 
     const recovered = vi.fn((_entries: OutboxEntry<string>[]) => undefined);
     const again = new DurabilityScheduler({ context: contextFor(storage) });
+
     const reattached = new DurabilityOutbox({
       scheduler: again,
       channel: 'removed',
       publish: recovered,
     });
+
     // Moving the clock without running timers keeps the previous object's
     // in-memory early alarm from firing, as if that object had been evicted.
     vi.setSystemTime(Date.now() + 60_000);
@@ -456,6 +494,7 @@ describe('outbox', () => {
   it('holds first publication for the batch delay', async () => {
     const { scheduler } = fixture();
     const publish = vi.fn((_entries: OutboxEntry<string>[]) => undefined);
+
     const outbox = new DurabilityOutbox<string>({
       scheduler,
       batchDelayMs: 10_000,
@@ -490,10 +529,12 @@ describe('outbox', () => {
           publish: () => undefined,
         })
     ).toThrow(RangeError);
+
     const outbox = new DurabilityOutbox({
       scheduler,
       publish: () => undefined,
     });
+
     await expect(outbox.stage('', 'value')).rejects.toThrow(TypeError);
   });
 });

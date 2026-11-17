@@ -33,20 +33,24 @@ export class Jobs extends DurableObject<Env> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const match = /^\/jobs\/([^/]+)$/u.exec(new URL(request.url).pathname);
+
     if (!match) {
       return new Response('Use POST or GET /jobs/:id', { status: 404 });
     }
+
     const id = match[1]!;
     // One object keeps the demo simple; choose object names for your workload.
     const jobs = env.JOBS.getByName('demo');
 
     if (request.method === 'POST') {
       let body: unknown;
+
       try {
         body = await request.json();
       } catch {
         return new Response('Expected JSON', { status: 400 });
       }
+
       if (
         typeof body !== 'object' ||
         body === null ||
@@ -55,6 +59,7 @@ export default {
       ) {
         return new Response('Expected { "text": string }', { status: 400 });
       }
+
       try {
         await jobs.submit(id, body.text);
       } catch (error) {
@@ -65,8 +70,10 @@ export default {
         ) {
           return Response.json({ error: error.message }, { status: 409 });
         }
+
         throw error;
       }
+
       return Response.json({ id }, { status: 202 });
     }
 

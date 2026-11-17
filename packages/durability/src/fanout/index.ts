@@ -96,6 +96,7 @@ const deliveriesTable: DurableTable = {
 const countRowSchema = v.object({
   count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const seqRowSchema = v.object({
   seq: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
@@ -194,6 +195,7 @@ export type DurabilityFanoutConfig<Body> = SchedulerAttachment &
 type DeadLetterReason = NonNullable<StoredMessage['failure']>['reason'];
 
 type Claim = { row: DeliveryRow; message: FanoutMessageRow };
+
 type Settlement = {
   claim: Claim;
   closed: boolean;
@@ -255,16 +257,21 @@ export class DurabilityFanout<Body = unknown> {
     this.#maxBatchSize = config.maxBatchSize ?? 10;
     assertPositiveInteger('maxBatchSize', this.#maxBatchSize);
     this.#batchDelayMs = config.batchDelayMs ?? 0;
+
     if (!Number.isSafeInteger(this.#batchDelayMs) || this.#batchDelayMs < 0) {
       throw new RangeError('batchDelayMs must be a non-negative integer');
     }
+
     this.#targets = new Map(
       Object.entries(config.targets).map(([id, target]) => [id, { ...target }])
     );
+
     if (this.#targets.size === 0) {
       throw new TypeError('Fanout requires at least one static target');
     }
+
     this.#policies = new Map();
+
     for (const [id, target] of this.#targets) {
       if (
         !id ||
@@ -273,11 +280,13 @@ export class DurabilityFanout<Body = unknown> {
       ) {
         throw new TypeError(`Invalid fanout target "${id}"`);
       }
+
       this.#policies.set(
         id,
         createPolicyResolver(config, { [id]: target }, methodOptionsSchema)(id)
       );
     }
+
     this.#engine = engineFor(config);
     this.#routing = config.routing ?? new RoutingLoad();
     this.#dlq = config.dlq;
@@ -306,7 +315,9 @@ export class DurabilityFanout<Body = unknown> {
       durabilityFanoutMigrations,
       target
     );
+
     deleteMemosOfDroppedTable(context.storage.sql, deliveriesTable);
+
     return result;
   }
 
@@ -341,8 +352,10 @@ export class DurabilityFanout<Body = unknown> {
     const finish = this.#routing.begin('inbound');
     let entries: Array<{ key: string; id: string; payload: string }>;
     let targets: string[];
+
     try {
       targets = [...(options.targets ?? this.#targets.keys())].sort();
+
       if (
         targets.length === 0 ||
         new Set(targets).size !== targets.length ||
@@ -352,10 +365,12 @@ export class DurabilityFanout<Body = unknown> {
           'Enqueue targets must be distinct configured target IDs'
         );
       }
+
       entries = (Array.isArray(messages) ? messages : [messages]).map(
         (message) => {
           const id = message.id ?? crypto.randomUUID();
           const key = message.deduplicationKey ?? id;
+
           if (
             typeof id !== 'string' ||
             !id ||
@@ -366,11 +381,13 @@ export class DurabilityFanout<Body = unknown> {
               'Message IDs and deduplication keys must be non-empty strings'
             );
           }
+
           return { key, id, payload: serialize(message.body) };
         }
       );
     } catch (error) {
       finish();
+
       return {
         success: false,
         error: serializeError(error),
@@ -379,11 +396,14 @@ export class DurabilityFanout<Body = unknown> {
     }
 
     let registered: Claim[];
+
     try {
       registered = await this.#transaction((sql) => {
         const claims: Claim[] = [];
+
         for (const entry of entries) {
           const existing = readManifest(sql, this.#channel, entry.key);
+
           if (existing) {
             if (
               existing.id !== entry.id ||
@@ -394,8 +414,10 @@ export class DurabilityFanout<Body = unknown> {
                 `Deduplication key "${entry.key}" already identifies different work`
               );
             }
+
             continue;
           }
+
           const { seq } = v.parse(
             seqRowSchema,
             sql
@@ -407,6 +429,7 @@ export class DurabilityFanout<Body = unknown> {
               )
               .toArray()[0]
           );
+
           const message: FanoutMessageRow = {
             ...entry,
             targets: JSON.stringify(targets),
@@ -415,6 +438,7 @@ export class DurabilityFanout<Body = unknown> {
             created_at: Date.now(),
             generation_id: crypto.randomUUID(),
           };
+
           sql.exec(
             `INSERT INTO durability_fanout_messages
                (channel, key, id, payload, targets, remaining, seq,
@@ -430,6 +454,7 @@ export class DurabilityFanout<Body = unknown> {
             message.created_at,
             message.generation_id
           );
+
           for (const target of targets) {
             const row: DeliveryRow = {
               id: JSON.stringify([entry.key, target]),
@@ -447,6 +472,7 @@ export class DurabilityFanout<Body = unknown> {
               dead_lettered_at: null,
               dead_letter_reason: null,
             };
+
             const inserted =
               sql
                 .exec(
@@ -466,20 +492,25 @@ export class DurabilityFanout<Body = unknown> {
                   row.generation_id
                 )
                 .toArray().length > 0;
+
             if (!inserted) {
               throw new Error('Fanout manifest and delivery state disagree');
             }
+
             this.#adjustPending(1);
             claims.push({ row, message });
           }
         }
+
         return claims;
       });
     } catch (error) {
       if (!(error instanceof FanoutEnqueueError)) {
         throw error;
       }
+
       finish();
+
       return {
         success: false,
         error: serializeError(error),
@@ -497,16 +528,21 @@ export class DurabilityFanout<Body = unknown> {
         attempt: 0,
       });
     }
+
     const load = await this.load();
+
     // Delayed first attempts are not due yet; the scheduler wakes for them.
     if (registered.length > 0 && this.#batchDelayMs === 0) {
       const onError = (error: unknown) =>
         reportFailure('durability.fanout.failed', {}, error);
+
       const work = this.#runDue()
         .then(() => this.#engine.scheduleNextAlarm())
         .catch(onError);
+
       this.#engine.waitUntil(work, onError);
     }
+
     return { success: true, value: entries.map(({ id }) => id), load };
   }
 
@@ -533,18 +569,23 @@ export class DurabilityFanout<Body = unknown> {
           .toArray()
       )
       .map((row) => row.target_id);
+
     // Each target advances independently; a missing or slow target cannot hide
     // another target behind a global LIMIT. Each pass processes one bounded batch.
     await Promise.all(
       targets.map((id) => {
         const running = this.#running.get(id);
+
         if (running) {
           return running;
         }
+
         const work = this.#runTarget(id).finally(() =>
           this.#running.delete(id)
         );
+
         this.#running.set(id, work);
+
         return work;
       })
     );
@@ -552,14 +593,17 @@ export class DurabilityFanout<Body = unknown> {
 
   async #runTarget(id: string): Promise<void> {
     const release = await this.#engine.acquirePermit();
+
     try {
       const due = this.#listDue(id, Date.now());
+
       if (due.length === 0) {
         return;
       }
 
       const target = this.#targets.get(id);
       const policy = this.#policies.get(id);
+
       if (!target || !policy) {
         reportFailure(
           'durability.fanout.target_missing',
@@ -567,19 +611,24 @@ export class DurabilityFanout<Body = unknown> {
           new Error(`Target "${id}" is no longer configured; retaining work`)
         );
         await this.#postpone(due);
+
         return;
       }
+
       // One transaction claims the whole batch: per-message transactions made the
       // pass cost O(batch) commits, which capped a shard's throughput.
       const { claims, terminal } = await this.#transaction((sql) => {
         const claimed: Claim[] = [];
         const exhausted: Claim[] = [];
         const deadline = Date.now() + policy.attemptTimeoutMs;
+
         for (const row of due) {
           const message = readManifest(sql, this.#channel, row.message_key);
+
           if (!message || message.generation_id !== row.generation_id) {
             throw new Error('Fanout delivery is missing its message manifest');
           }
+
           if (
             row.phase === 'dead_letter' ||
             row.attempt >= policy.maxAttempts
@@ -587,6 +636,7 @@ export class DurabilityFanout<Body = unknown> {
             exhausted.push({ row, message });
             continue;
           }
+
           const attempt = claimAttempt(
             sql,
             this.#table,
@@ -595,13 +645,17 @@ export class DurabilityFanout<Body = unknown> {
             policy.maxAttempts,
             deadline
           );
+
           if (attempt === undefined) {
             continue;
           }
+
           claimed.push({ row: { ...row, attempt }, message });
         }
+
         return { claims: claimed, terminal: exhausted };
       });
+
       for (const claim of terminal) {
         // eslint-disable-next-line no-await-in-loop
         await this.#deadLetter(
@@ -609,6 +663,7 @@ export class DurabilityFanout<Body = unknown> {
           claim.row.dead_letter_reason ?? 'exhausted'
         );
       }
+
       if (claims.length > 0) {
         await this.#deliver(target, claims, policy);
       }
@@ -638,13 +693,16 @@ export class DurabilityFanout<Body = unknown> {
   ): Promise<void> {
     const startedAt = Date.now();
     const finish = this.#routing.begin('outbound');
+
     const states: Settlement[] = claims.map((claim) => ({
       claim,
       closed: false,
     }));
+
     const messages = states.map((state) =>
       this.#message(state, policy, startedAt)
     );
+
     for (const claim of claims) {
       this.#emit({
         ...entity(claim),
@@ -653,13 +711,16 @@ export class DurabilityFanout<Body = unknown> {
         attempt: claim.row.attempt,
       });
     }
+
     let failure: unknown = new Error(
       'Consumer returned without settling the message'
     );
+
     try {
       await this.#deadline(async () => {
         let invocationFailed = false;
         let invocationError: unknown;
+
         try {
           if (target.deliver) {
             await target.deliver(messages);
@@ -678,9 +739,11 @@ export class DurabilityFanout<Body = unknown> {
                 await message.ack();
               })
             );
+
             const rejected = writes.find(
               (write) => write.status === 'rejected'
             );
+
             if (rejected?.status === 'rejected') {
               throw rejected.reason;
             }
@@ -689,23 +752,29 @@ export class DurabilityFanout<Body = unknown> {
           invocationFailed = true;
           invocationError = error;
         }
+
         for (const state of states) {
           state.closed = true;
         }
+
         if (!invocationFailed && target.ackOnReturn) {
           this.#ackUnsettled(states, startedAt);
         }
+
         // A callback failure must not bypass already-started settlements.
         // The outer deadline still bounds a hung storage or RPC operation.
         const settlements = await Promise.allSettled(
           states.map((state) => state.pending)
         );
+
         if (invocationFailed) {
           throw invocationError;
         }
+
         const rejected = settlements.find(
           (settlement) => settlement.status === 'rejected'
         );
+
         if (rejected?.status === 'rejected') {
           throw rejected.reason;
         }
@@ -716,18 +785,22 @@ export class DurabilityFanout<Body = unknown> {
       for (const state of states) {
         state.closed = true;
       }
+
       finish();
     }
+
     for (const state of states) {
       if (state.completed) {
         continue;
       }
+
       if (state.outcome !== undefined) {
         // Pending actions retain their persisted claim deadline. Failed actions
         // may have committed despite throwing; consult state before retrying.
         if (!state.finished) {
           continue;
         }
+
         const current = v.parse(
           v.optional(deliveryRowSchema),
           this.#engine.sql
@@ -739,6 +812,7 @@ export class DurabilityFanout<Body = unknown> {
             )
             .toArray()[0]
         );
+
         if (
           !current ||
           current.generation_id !== state.claim.row.generation_id ||
@@ -748,6 +822,7 @@ export class DurabilityFanout<Body = unknown> {
           continue;
         }
       }
+
       state.outcome = 'retry';
       // eslint-disable-next-line no-await-in-loop
       await this.#retry(
@@ -763,17 +838,20 @@ export class DurabilityFanout<Body = unknown> {
   /** Acks every unsettled message of a batch in one transaction. */
   #ackUnsettled(states: Settlement[], startedAt: number): void {
     const unsettled = states.filter((state) => state.outcome === undefined);
+
     if (unsettled.length === 0) {
       return;
     }
 
     const removed = this.#transaction((sql) => {
       const ids = new Set<string>();
+
       for (const { claim } of unsettled) {
         if (this.#removeDelivery(sql, claim.row)) {
           ids.add(claim.row.id);
         }
       }
+
       return ids;
     });
 
@@ -785,6 +863,7 @@ export class DurabilityFanout<Body = unknown> {
           if (!ids.has(state.claim.row.id)) {
             return undefined;
           }
+
           state.completed = true;
           this.#emit({
             ...entity(state.claim),
@@ -794,6 +873,7 @@ export class DurabilityFanout<Body = unknown> {
             durationMs: Math.max(0, Date.now() - startedAt),
             outcome: 'completed',
           });
+
           return undefined;
         })
         .finally(() => {
@@ -809,10 +889,12 @@ export class DurabilityFanout<Body = unknown> {
     startedAt: number
   ): DurabilityFanoutMessage<Body> {
     const { row, message } = state.claim;
+
     const identity = {
       deliveryId: deliveryIdentity(row),
       target: row.target_id,
     };
+
     const settle = (
       outcome: NonNullable<Settlement['outcome']>,
       action: () => Promise<void>
@@ -822,18 +904,22 @@ export class DurabilityFanout<Body = unknown> {
           new FanoutSettlementError(message.id, state.outcome)
         );
       }
+
       state.outcome = outcome;
       state.pending = action()
         .then(() => {
           state.completed = true;
+
           return undefined;
         })
         .finally(() => {
           state.finished = true;
         });
       void state.pending.catch(() => undefined);
+
       return state.pending;
     };
+
     return {
       id: message.id,
       ...identity,
@@ -872,6 +958,7 @@ export class DurabilityFanout<Body = unknown> {
               )
             );
           }
+
           return settle('retry', () =>
             this.#retry(
               state.claim,
@@ -906,6 +993,7 @@ export class DurabilityFanout<Body = unknown> {
     if (!deleteAttempt(sql, this.#table, attemptOf(row))) {
       return false;
     }
+
     deleteMemos(sql, this.#table, row.id);
 
     this.#adjustPending(-1);
@@ -922,6 +1010,7 @@ export class DurabilityFanout<Body = unknown> {
       this.#channel,
       row.message_key
     );
+
     return true;
   }
 
@@ -933,15 +1022,20 @@ export class DurabilityFanout<Body = unknown> {
     startedAt: number
   ): Promise<void> {
     const { row } = claim;
+
     if (row.attempt >= policy.maxAttempts) {
       await this.#deadLetter(claim, 'exhausted', error);
+
       return;
     }
+
     let nextAttemptAt: number;
+
     try {
       const rawDelay = override ?? policy.delay(row.attempt);
       const delay = Math.round(rawDelay);
       nextAttemptAt = Date.now() + delay;
+
       if (
         !Number.isFinite(rawDelay) ||
         rawDelay < 0 ||
@@ -951,8 +1045,10 @@ export class DurabilityFanout<Body = unknown> {
       }
     } catch (caught) {
       await this.#deadLetter(claim, 'exhausted', serializeError(caught));
+
       return;
     }
+
     await this.#transaction((sql) => {
       const updated = updateAttempt(
         sql,
@@ -963,6 +1059,7 @@ export class DurabilityFanout<Body = unknown> {
         error.message,
         error.name
       );
+
       if (!updated) {
         throw new FanoutSettlementError(row.id);
       }
@@ -986,18 +1083,22 @@ export class DurabilityFanout<Body = unknown> {
   ): Promise<void> {
     const { row, message } = claim;
     const timestamp = row.dead_lettered_at ?? Date.now();
+
     const error =
       failure ??
       (row.last_error === null
         ? null
         : { name: row.last_error_name ?? 'Error', message: row.last_error });
+
     // Without a DLQ nothing could ever accept this delivery, and retrying the
     // dead-letter step would keep the object awake forever, so it is dropped.
     if (!this.#dlq) {
       await this.#remove(row);
       this.#emitTerminal(claim, reason, error);
+
       return;
     }
+
     // Persist intent BEFORE external I/O: eviction or timeout must never turn
     // a terminal decision into another consumer delivery.
     await this.#transaction((sql) => {
@@ -1013,10 +1114,12 @@ export class DurabilityFanout<Body = unknown> {
         error?.message ?? null,
         error?.name ?? null
       );
+
       if (!updated) {
         throw new FanoutSettlementError(row.id);
       }
     });
+
     try {
       const stored: StoredMessage<Body> = {
         id: deliveryIdentity(row),
@@ -1028,6 +1131,7 @@ export class DurabilityFanout<Body = unknown> {
         attempts: row.attempt,
         failure: { reason, error },
       };
+
       await this.#deadline(() => this.#dlq!(stored), infrastructureRetryMs);
       await this.#remove(row);
       this.#emitTerminal(claim, reason, error);
@@ -1078,6 +1182,7 @@ export class DurabilityFanout<Body = unknown> {
         )
         .toArray()[0]
     ).count;
+
     return this.#pending;
   }
 
@@ -1108,6 +1213,7 @@ export class DurabilityFanout<Body = unknown> {
         )
         .toArray()
     );
+
     if (first.length >= this.#maxBatchSize) {
       return first;
     }
@@ -1128,6 +1234,7 @@ export class DurabilityFanout<Body = unknown> {
         )
         .toArray()
     );
+
     return [...first, ...retries];
   }
 

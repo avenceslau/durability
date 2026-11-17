@@ -33,6 +33,7 @@ export async function loadWranglerProject(
 ): Promise<WranglerProject> {
   const wrangler = await import('wrangler');
   let config: Unstable_Config;
+
   try {
     config = wrangler.unstable_readConfig(
       { config: configPath },
@@ -49,6 +50,7 @@ export async function loadWranglerProject(
   }
 
   const durableObjectBindings = config.durable_objects.bindings;
+
   const startWorkerBindings =
     wrangler.unstable_convertConfigBindingsToStartWorkerBindings(config) ?? {};
 
@@ -62,6 +64,7 @@ export async function loadWranglerProject(
       stubBindingNames: new Set(
         Object.entries(startWorkerBindings).flatMap(([name, binding]) => {
           const type: unknown = Reflect.get(Object(binding), 'type');
+
           return typeof type !== 'string' ||
             unwrappedBindingTypes.has(type) ||
             type.startsWith('unsafe_')
@@ -88,12 +91,14 @@ export async function generateEnvTypes(
   typesPath: string
 ): Promise<string> {
   const wrangler = await import('wrangler');
+
   try {
     const { env } = await wrangler.experimental_generateTypes({
       config: configPath,
       includeRuntime: false,
       path: typesPath,
     });
+
     return env ?? '';
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

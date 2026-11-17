@@ -31,29 +31,35 @@ export const betterResultCodec = Object.assign(
       (options: BetterResultCodecOptions | undefined) =>
         async ({ next }) => {
           const value = await next();
+
           if (typeof value === 'object' && value !== null) {
             const envelope = Reflect.get(value, betterResultEnvelopeKey);
+
             if (typeof envelope === 'object' && envelope !== null) {
               if (Reflect.get(envelope, 'version') !== 1) {
                 throw new TypeError(
                   'Unsupported Better Result envelope version'
                 );
               }
+
               const result = Result.deserialize(
                 Reflect.get(envelope, 'result')
               );
+
               if (
                 Result.isError(result) &&
                 ResultDeserializationError.is(result.error)
               ) {
                 throw new TypeError('Invalid Better Result envelope');
               }
+
               return result;
             }
           }
 
           if (options?.acceptLegacy === true) {
             const legacy = Result.deserialize(value);
+
             if (
               !Result.isError(legacy) ||
               !ResultDeserializationError.is(legacy.error)
@@ -61,16 +67,19 @@ export const betterResultCodec = Object.assign(
               return legacy;
             }
           }
+
           return value;
         }
     )
     .callee((_options: void) => async ({ next }) => {
       const value = await next();
+
       if (!(value instanceof Ok) && !(value instanceof Err)) {
         return value;
       }
 
       const serialized = Result.serialize(value);
+
       return {
         ...serialized,
         [betterResultEnvelopeKey]: { version: 1, result: serialized },

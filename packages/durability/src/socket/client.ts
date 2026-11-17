@@ -173,28 +173,35 @@ class Connection {
   call(method: string, input: unknown): Promise<unknown> {
     const run = (index: number, currentInput: unknown): Promise<unknown> => {
       const transform = this.#transforms[index];
+
       if (!transform) {
         return this.#send(method, currentInput);
       }
+
       return transform({
         method,
         input: currentInput,
         next: (nextInput = currentInput) => run(index + 1, nextInput),
       });
     };
+
     return run(0, input);
   }
 
   on(name: string, handler: (payload: unknown) => void): () => void {
     let handlers = this.#handlers.get(name);
+
     if (!handlers) {
       handlers = new Set();
       this.#handlers.set(name, handlers);
       this.#subscribe();
     }
+
     handlers.add(handler);
+
     return () => {
       handlers.delete(handler);
+
       if (handlers.size === 0 && this.#handlers.get(name) === handlers) {
         this.#handlers.delete(name);
         this.#subscribe();
@@ -205,6 +212,7 @@ class Connection {
   onStatus(handler: (status: SocketStatus) => void): () => void {
     this.#statusHandlers.add(handler);
     handler(this.#status);
+
     return () => {
       this.#statusHandlers.delete(handler);
     };
@@ -212,6 +220,7 @@ class Connection {
 
   onResync(handler: (info: SocketResync) => void): () => void {
     this.#resyncHandlers.add(handler);
+
     return () => {
       this.#resyncHandlers.delete(handler);
     };
@@ -221,13 +230,16 @@ class Connection {
     if (this.#status === 'closed') {
       return;
     }
+
     this.#setStatus('closed');
     this.#stopTimers();
     this.#generation += 1;
+
     for (const pending of this.#pending.values()) {
       pending.cancelTimeout();
       pending.reject(new SocketClosedError());
     }
+
     this.#pending.clear();
     this.#handlers.clear();
     this.#statusHandlers.clear();
@@ -240,7 +252,9 @@ class Connection {
     if (this.#status === 'closed') {
       return Promise.reject(new SocketClosedError());
     }
+
     const id = String(++this.#nextId);
+
     const frame: SocketClientFrame = {
       v: socketProtocolVersion,
       type: 'call',
@@ -248,6 +262,7 @@ class Connection {
       method,
       input,
     };
+
     return new Promise((resolve, reject) => {
       const pending: PendingCall = {
         method,
@@ -263,6 +278,7 @@ class Connection {
           this.#config.timeoutMs
         ),
       };
+
       this.#pending.set(id, pending);
       this.#flush();
     });
@@ -271,9 +287,12 @@ class Connection {
   #subscribe(): void {
     if (this.#status !== 'connected') {
       this.#connect();
+
       return;
     }
+
     const names = [...this.#handlers.keys()];
+
     const frame: SocketClientFrame = {
       v: socketProtocolVersion,
       type: 'subscribe',
@@ -281,6 +300,7 @@ class Connection {
       names,
       ...(this.#lastSeq === undefined ? {} : { since: this.#lastSeq }),
     };
+
     this.#subscribes.set(frame.id, names);
     this.#ws?.send(JSON.stringify(frame));
   }
@@ -290,13 +310,17 @@ class Connection {
     this.#lastSeq = frame.seq;
     const names = this.#subscribes.get(frame.id) ?? [];
     this.#subscribes.delete(frame.id);
+
     const fresh = frame.replayed
       ? names.filter((name) => !this.#acknowledged.has(name))
       : names;
+
     this.#acknowledged = new Set(names);
+
     if (fresh.length === 0) {
       return;
     }
+
     for (const handler of this.#resyncHandlers) {
       this.#invoke(handler, { names: fresh }, 'resync');
     }
@@ -306,12 +330,15 @@ class Connection {
   #flush(): void {
     if (this.#status !== 'connected' || !this.#ws) {
       this.#connect();
+
       return;
     }
+
     for (const pending of this.#pending.values()) {
       if (pending.sent) {
         continue;
       }
+
       pending.sent = true;
       this.#ws.send(pending.text);
     }
@@ -333,12 +360,15 @@ class Connection {
       if (!current()) {
         return;
       }
+
       this.#attempt = 0;
       this.#lastReceivedAt = Date.now();
       this.#setStatus('connected');
+
       if (this.#handlers.size > 0) {
         this.#subscribe();
       }
+
       this.#flush();
       this.#startPing();
     });
@@ -346,12 +376,14 @@ class Connection {
       if (!current()) {
         return;
       }
+
       this.#receive(typeof message.data === 'string' ? message.data : '');
     });
     ws.addEventListener('close', (closed) => {
       if (!current()) {
         return;
       }
+
       this.#disconnected(closed.code);
     });
     ws.addEventListener('error', () => {
@@ -363,33 +395,44 @@ class Connection {
 
   #receive(text: string): void {
     this.#lastReceivedAt = Date.now();
+
     if (text === pongText) {
       return;
     }
+
     const frame = parseServerFrame(text);
+
     if (!frame) {
       this.#abandon(new SocketProtocolError('Received an invalid frame'));
+
       return;
     }
+
     switch (frame.type) {
       case 'event':
         this.#lastSeq = frame.seq;
         this.#dispatch(frame.name, frame.payload);
+
         return;
       case 'subscribed':
         this.#subscribed(frame);
+
         return;
       case 'result':
         this.#settle(frame, (pending) => pending.resolve(frame.output));
+
         return;
       case 'error':
         if (this.#subscribes.delete(frame.id)) {
           reportFailure('durability.socket.subscribe_failed', {}, frame.error);
+
           return;
         }
+
         this.#settle(frame, (pending) =>
           pending.reject(new SocketRemoteError(frame.error))
         );
+
         return;
     }
   }
@@ -399,9 +442,11 @@ class Connection {
     settle: (pending: PendingCall) => void
   ): void {
     const pending = this.#pending.get(frame.id);
+
     if (!pending) {
       return;
     }
+
     this.#pending.delete(frame.id);
     pending.cancelTimeout();
     settle(pending);
@@ -429,18 +474,23 @@ class Connection {
     this.#stopTimers();
     this.#ws = undefined;
     this.#subscribes.clear();
+
     for (const [id, pending] of this.#pending) {
       if (!pending.sent) {
         continue;
       }
+
       this.#pending.delete(id);
       pending.cancelTimeout();
       pending.reject(new SocketConnectionLostError(pending.method));
     }
+
     if (code === socketProtocolErrorCode) {
       this.#abandon(new SocketProtocolError('Server rejected the protocol'));
+
       return;
     }
+
     this.#setStatus('disconnected');
     this.#attempt += 1;
     this.#cancelRetry = this.#timer.schedule(
@@ -455,26 +505,33 @@ class Connection {
   /** Stops reconnecting after a protocol failure, which a retry cannot fix. */
   #abandon(error: SocketProtocolError): void {
     reportFailure('durability.socket.protocol_error', {}, error);
+
     for (const pending of this.#pending.values()) {
       pending.cancelTimeout();
       pending.reject(error);
     }
+
     this.#pending.clear();
     this.close();
   }
 
   #startPing(): void {
     const interval = this.#config.pingIntervalMs;
+
     const ping = (): void => {
       // Scheduled before the socket is used, so a close that stops the timers
       // also stops the next ping.
       this.#cancelPing = this.#timer.schedule(ping, interval);
+
       if (Date.now() - this.#lastReceivedAt > interval * 2) {
         this.#ws?.close(4000, 'Keep-alive timeout');
+
         return;
       }
+
       this.#ws?.send(pingText);
     };
+
     this.#cancelPing = this.#timer.schedule(ping, interval);
   }
 
@@ -489,7 +546,9 @@ class Connection {
     if (this.#status === status) {
       return;
     }
+
     this.#status = status;
+
     for (const handler of this.#statusHandlers) {
       this.#invoke(handler, status, 'status');
     }
@@ -502,6 +561,7 @@ const defaultWebSocket = (): (new (url: string) => WebSocket) => {
       'No WebSocket implementation; pass `webSocket` in the client config'
     );
   }
+
   return WebSocket;
 };
 
@@ -547,28 +607,33 @@ export class DurabilitySocketClient<Socket extends AnySocketShape> {
 
   connect(id: string): SocketConnection<Socket> {
     const connection = new Connection(this.#config, id, this.#transforms);
+
     const rpc = new Proxy({} as RpcMethods<InboundOf<Socket>>, {
       get: (_target, method) =>
         typeof method === 'string'
           ? (input?: unknown) => connection.call(method, input)
           : undefined,
     });
+
     const on = new Proxy({} as EventHandlers<OutboundOf<Socket>>, {
       get: (_target, name) => {
         if (name === 'status') {
           return (handler: (status: SocketStatus) => void) =>
             connection.onStatus(handler);
         }
+
         if (name === 'resync') {
           return (handler: (info: SocketResync) => void) =>
             connection.onResync(handler);
         }
+
         return typeof name === 'string'
           ? (handler: (payload: unknown) => void) =>
               connection.on(name, handler)
           : undefined;
       },
     });
+
     return {
       rpc,
       on,
@@ -587,9 +652,11 @@ export const logging =
   ): SocketTransform =>
   async ({ method, input, next }) => {
     const startedAt = Date.now();
+
     try {
       const output = await next();
       log({ method, input, output, durationMs: Date.now() - startedAt });
+
       return output;
     } catch (error) {
       log({ method, input, error, durationMs: Date.now() - startedAt });

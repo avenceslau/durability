@@ -22,6 +22,7 @@ const workerFetch = sourceExcerpt(
   'export default {',
   '  },\n};'
 );
+
 const operation = sourceExcerpt(
   pipelineSource,
   pipelineFile,
@@ -30,6 +31,7 @@ const operation = sourceExcerpt(
   'export class Pipeline extends DurableObject<Env> {',
   '    includeResults: true,\n  });'
 );
+
 const fanout = sourceExcerpt(
   pipelineSource,
   pipelineFile,
@@ -38,6 +40,7 @@ const fanout = sourceExcerpt(
   '  // Push side. Delivery is durable: the dashboard gets the batch again after',
   '    batchDelayMs: 100,\n  });'
 );
+
 const lifecycle = sourceExcerpt(
   pipelineSource,
   pipelineFile,
@@ -46,6 +49,7 @@ const lifecycle = sourceExcerpt(
   '    this.durability.lifecycle((event) => {',
   '    });'
 );
+
 const enqueue = sourceExcerpt(
   pipelineSource,
   pipelineFile,
@@ -54,6 +58,7 @@ const enqueue = sourceExcerpt(
   '  private async publish(',
   '    ]);\n  }'
 );
+
 const importOrder = sourceExcerpt(
   pipelineSource,
   pipelineFile,
@@ -62,6 +67,7 @@ const importOrder = sourceExcerpt(
   '  /** Registers the import; resolves on acceptance, not completion. */',
   '    return this.scheduler.alarm(info);\n  }'
 );
+
 const ingest = sourceExcerpt(
   dashboardSource,
   dashboardFile,
@@ -70,6 +76,7 @@ const ingest = sourceExcerpt(
   '  ingest(events: JobEvent[]): void {',
   '      this.socket.job(record);'
 );
+
 const clientSnapshot = sourceExcerpt(
   clientSource,
   'examples/job-dashboard/client.ts',
@@ -78,6 +85,7 @@ const clientSnapshot = sourceExcerpt(
   '  const reload = async () => {',
   '  });'
 );
+
 const socketPublish = sourceExcerpt(
   socketSource,
   socketFile,
@@ -86,6 +94,7 @@ const socketPublish = sourceExcerpt(
   '  #publish(name: string, payload: unknown): void {',
   '      sendFrame(ws, frame);\n    }\n  }'
 );
+
 const socketReplay = sourceExcerpt(
   socketSource,
   socketFile,

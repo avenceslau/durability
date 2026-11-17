@@ -8,12 +8,16 @@ export class NodeSqlStorage {
   // Nested transactions use savepoints, as SQLite-backed Durable Objects do.
   private begin(): string | undefined {
     this.depth += 1;
+
     if (this.depth === 1) {
       this.database.exec('BEGIN');
+
       return undefined;
     }
+
     const savepoint = `nested_${this.depth}`;
     this.database.exec(`SAVEPOINT ${savepoint}`);
+
     return savepoint;
   }
 
@@ -35,9 +39,11 @@ export class NodeSqlStorage {
 
   transaction<T>(closure: () => T): T {
     const savepoint = this.begin();
+
     try {
       const result = closure();
       this.commit(savepoint);
+
       return result;
     } catch (error) {
       this.rollback(savepoint);
@@ -47,9 +53,11 @@ export class NodeSqlStorage {
 
   async transactionAsync<T>(closure: () => Promise<T>): Promise<T> {
     const savepoint = this.begin();
+
     try {
       const value = await closure();
       this.commit(savepoint);
+
       return value;
     } catch (error) {
       this.rollback(savepoint);
@@ -62,8 +70,10 @@ export class NodeSqlStorage {
     ...bindings: SqlStorageValue[]
   ): SqlStorageCursor<T> {
     const statements = query.split(';').filter((statement) => statement.trim());
+
     if (bindings.length === 0 && statements.length > 1) {
       this.database.exec(query);
+
       return {
         rowsRead: 0,
         rowsWritten: 0,
@@ -72,6 +82,7 @@ export class NodeSqlStorage {
     }
 
     const statement = this.database.prepare(query);
+
     const rows = statement.all(
       ...(bindings as SQLInputValue[])
     ) as unknown as T[];
@@ -84,6 +95,7 @@ export class NodeSqlStorage {
         if (rows.length !== 1) {
           throw new Error(`Expected exactly one row, got ${rows.length}`);
         }
+
         return rows[0];
       },
     } as unknown as SqlStorageCursor<T>;
@@ -121,6 +133,7 @@ export class FakeWebSocket {
 
 export const socketContextFor = (storage: FakeStorage) => {
   const sockets: FakeWebSocket[] = [];
+
   return {
     storage: storage as unknown as DurableObjectStorage,
     sockets,
@@ -165,12 +178,15 @@ export class FakeStorage {
   ): Promise<T> {
     const result = this.transactionTail.then(async () => {
       const alarmAt = this.alarmAt;
+
       try {
         return await this.database.transactionAsync(async () => {
           const value = await closure(
             this as unknown as DurableObjectTransaction
           );
+
           await this.transactionCommitBarrier;
+
           return value;
         });
       } catch (error) {
@@ -178,10 +194,12 @@ export class FakeStorage {
         throw error;
       }
     });
+
     this.transactionTail = result.then(
       () => undefined,
       () => undefined
     );
+
     return result;
   }
 }

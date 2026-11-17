@@ -52,6 +52,7 @@ type HistoryRow = v.InferOutput<typeof historyRowSchema>;
  * rewrite.
  */
 const legacyCombinedV4 = 'durability_0004_generation_and_created_at';
+
 const legacyHalves = [
   'durability_0004_calls_generation_and_created_at',
   'durability_0004_alarms_generation_and_created_at',
@@ -73,12 +74,14 @@ const ensureHistoryTable = (sql: SqlStorage, table: string): void => {
       applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
     )
   `);
+
   const columns = new Set(
     sql
       .exec(`SELECT name FROM pragma_table_info('${table}')`)
       .toArray()
       .map((row) => row['name'])
   );
+
   for (const column of ['capability', 'down']) {
     if (!columns.has(column)) {
       sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
@@ -93,9 +96,11 @@ const translateLegacyHistory = (sql: SqlStorage): void => {
       legacyCombinedV4
     )
     .toArray();
+
   if (legacy.length === 0) {
     return;
   }
+
   for (const name of legacyHalves) {
     sql.exec(
       `INSERT OR IGNORE INTO ${migrationTableName} (name) VALUES (?)`,
@@ -118,6 +123,7 @@ const readHistory = (
       name
     );
   }
+
   return v.parse(
     v.array(historyRowSchema),
     sql
@@ -139,6 +145,7 @@ const runDown = (
   if (down === null) {
     throw new Error(`Migration "${name}" has no stored down script`);
   }
+
   sql.exec(down);
   sql.exec(`DELETE FROM ${table} WHERE name = ?`, name);
 };
@@ -155,17 +162,21 @@ const revertFutureMigrations = (
   known: ReadonlySet<string>
 ): string[] => {
   const future = history.filter(({ name }) => !known.has(name)).reverse();
+
   if (future.length === 0) {
     return [];
   }
+
   if (future.length > maxFutureMigrations) {
     throw new Error(
       `${scope.label} schema is ${future.length} migrations ahead of this version; refusing to revert more than ${maxFutureMigrations}`
     );
   }
+
   for (const row of future) {
     runDown(sql, scope.table, row.name, row.down);
   }
+
   return future.map(({ name }) => name);
 };
 
@@ -186,6 +197,7 @@ export const isSchemaCurrent = (
   migrations: DurableMigrations
 ): boolean => {
   let rows: v.InferOutput<typeof currentRowSchema>[];
+
   try {
     rows = v.parse(
       v.array(currentRowSchema),
@@ -203,6 +215,7 @@ export const isSchemaCurrent = (
   }
 
   const known = new Map(migrations.map(({ name, down }) => [name, down]));
+
   return (
     rows.length === known.size &&
     rows.every((row) => known.get(row.name) === row.down)
@@ -216,14 +229,17 @@ const migrateScope = (
   target: string | null | undefined
 ): DurabilityMigrationResult => {
   storage = traceStorage(storage);
+
   const resolvedTarget =
     target === undefined
       ? (migrations[migrations.length - 1]?.name ?? null)
       : target;
+
   const targetIndex =
     resolvedTarget === null
       ? -1
       : migrations.findIndex((migration) => migration.name === resolvedTarget);
+
   if (resolvedTarget !== null && targetIndex === -1) {
     throw new Error(
       `Unknown ${scope.label} migration target "${resolvedTarget}"`
@@ -234,17 +250,21 @@ const migrateScope = (
   // future migrations were reverted, leaves the schema and history as they were.
   return storage.transactionSync(() => {
     ensureHistoryTable(storage.sql, scope.table);
+
     if (scope.table === migrationTableName) {
       translateLegacyHistory(storage.sql);
     }
+
     const known = new Set(migrations.map(({ name }) => name));
     const history = readHistory(storage.sql, scope, migrations);
+
     const rolledBack = revertFutureMigrations(
       storage.sql,
       scope,
       history,
       known
     );
+
     const applied = new Map(
       history
         .filter(({ name }) => known.has(name))
@@ -255,9 +275,11 @@ const migrateScope = (
       .slice(targetIndex + 1)
       .filter(({ name }) => applied.has(name))
       .reverse();
+
     const toApply = migrations
       .slice(0, targetIndex + 1)
       .filter(({ name }) => !applied.has(name));
+
     const toRefresh = migrations
       .slice(0, targetIndex + 1)
       .filter(
@@ -268,6 +290,7 @@ const migrateScope = (
     for (const migration of toRevert) {
       runDown(storage.sql, scope.table, migration.name, migration.down);
     }
+
     for (const migration of toApply) {
       storage.sql.exec(migration.up);
       storage.sql.exec(
@@ -277,6 +300,7 @@ const migrateScope = (
         migration.down
       );
     }
+
     // Keep stored down scripts current so a downgrade runs the latest revert logic.
     for (const migration of toRefresh) {
       storage.sql.exec(
@@ -292,6 +316,7 @@ const migrateScope = (
         .exec(`SELECT COUNT(*) AS count FROM ${scope.table}`)
         .toArray()[0]
     ).count;
+
     if (remaining === 0) {
       storage.sql.exec(`DROP TABLE IF EXISTS ${scope.table}`);
     }
@@ -372,9 +397,11 @@ export const migrate = (
   options: MigrateOptions = {}
 ): DurabilityMigrationResult => {
   const table = options.table ?? 'schema_migrations';
+
   if (!sqlIdentifier.test(table) || table === migrationTableName) {
     throw new Error(`Invalid schema migration table "${table}"`);
   }
+
   return migrateScope(
     storage,
     {

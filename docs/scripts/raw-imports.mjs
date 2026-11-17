@@ -8,7 +8,9 @@ registerHooks({
     if (!url.endsWith('?raw')) {
       return nextLoad(url, context);
     }
+
     const text = readFileSync(fileURLToPath(url.slice(0, -'?raw'.length)), 'utf8');
+
     return {
       format: 'module',
       source: `export default ${JSON.stringify(text)};`,

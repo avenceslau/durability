@@ -81,15 +81,19 @@ const allocationRowSchema = v.object({
 const offsetRowSchema = v.object({
   offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const seqRowSchema = v.object({
   seq: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const countRowSchema = v.object({
   count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const totalBytesRowSchema = v.object({
   total_bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const boundsRowSchema = v.object({
   hot: v.nullable(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
   cold: v.nullable(v.pipe(v.number(), v.safeInteger(), v.minValue(0))),
@@ -121,6 +125,7 @@ const appendRecords = (
   appendedAt: number
 ): number[] => {
   const assigned = new Map<string, number>();
+
   for (const record of records) {
     const existing = v.parse(
       v.optional(offsetRowSchema),
@@ -133,6 +138,7 @@ const appendRecords = (
         )
         .toArray()[0]
     );
+
     if (existing !== undefined) {
       assigned.set(record.dedup_key, existing.offset);
     }
@@ -140,6 +146,7 @@ const appendRecords = (
 
   const fresh = records.filter((record) => !assigned.has(record.dedup_key));
   const distinct = [...new Map(fresh.map((row) => [row.dedup_key, row]))];
+
   if (distinct.length === 0) {
     return records.map((record) => assigned.get(record.dedup_key)!);
   }
@@ -160,6 +167,7 @@ const appendRecords = (
       )
       .toArray()[0]
   ).seq;
+
   let added = 0;
   distinct.forEach(([dedupKey, row], index) => {
     const offset = first + index;
@@ -227,7 +235,9 @@ const readBounds = (sql: SqlStorage, channel: string): LogBounds => {
       )
       .toArray()[0]
   );
+
   const hotOffset = row.hot ?? row.next_offset;
+
   return {
     oldestOffset: Math.min(row.cold ?? hotOffset, hotOffset),
     hotOffset,
@@ -309,15 +319,18 @@ const trimThrough = (
       )
       .toArray()
   );
+
   if (removed.length === 0) {
     return 0;
   }
+
   sql.exec(
     `UPDATE durability_log_seq SET total_bytes = MAX(0, total_bytes - ?)
      WHERE channel = ?`,
     removed.reduce((total, row) => total + row.bytes, 0),
     channel
   );
+
   return removed.length;
 };
 
@@ -590,6 +603,7 @@ const deleteLeases = (
   if (batchIds.length === 0) {
     return;
   }
+
   sql.exec(
     `DELETE FROM durability_log_leases
      WHERE channel = ?
@@ -740,32 +754,39 @@ export class DurabilityLog<Body = unknown> {
     );
     this.#maxBatchSize = config.maxBatchSize ?? 100;
     assertPositiveInteger('maxBatchSize', this.#maxBatchSize);
+
     if (config.retention?.maxAgeMs !== undefined) {
       assertPositiveInteger('retention.maxAgeMs', config.retention.maxAgeMs);
     }
+
     if (config.retention?.maxRecords !== undefined) {
       assertPositiveInteger(
         'retention.maxRecords',
         config.retention.maxRecords
       );
     }
+
     if (config.retention?.maxBytes !== undefined) {
       assertPositiveInteger('retention.maxBytes', config.retention.maxBytes);
+
       if (config.retention.maxBytes > maxLogBytes) {
         throw new RangeError(
           `retention.maxBytes must not exceed ${maxLogBytes} bytes`
         );
       }
     }
+
     this.#routing = config.routing ?? new RoutingLoad();
     this.#retention = config.retention;
     this.#cold = config.cold;
     this.#leases = config.leases;
+
     if (this.#leases) {
       this.#maxParallelism = this.#leases.maxParallelism ?? 1;
       assertPositiveInteger('leases.maxParallelism', this.#maxParallelism);
       this.#leaseMs = this.#leases.leaseMs ?? 30_000;
       assertPositiveInteger('leases.leaseMs', this.#leaseMs);
+
       if (this.#leases.maxAttempts !== undefined) {
         assertPositiveInteger('leases.maxAttempts', this.#leases.maxAttempts);
       }
@@ -773,9 +794,11 @@ export class DurabilityLog<Body = unknown> {
 
     this.#engine = engineFor(config);
     this.#engine.migrateSchema('log', durabilityLogMigrations);
+
     if (this.#leases) {
       this.#engine.migrateSchema('logLeases', durabilityLogLeaseMigrations);
     }
+
     this.#engine.claimChannel(
       'durability_log_records',
       this.#channel,
@@ -804,25 +827,31 @@ export class DurabilityLog<Body = unknown> {
     records: LogAppendInput<Body> | LogAppendInput<Body>[]
   ): Promise<EnqueueResult<number[]>> {
     const finish = this.#routing.begin('inbound');
+
     try {
       const inputs = Array.isArray(records) ? records : [records];
       let rows: Array<{ dedup_key: string; payload: string; bytes: number }>;
+
       try {
         if (inputs.length === 0) {
           throw new LogAppendError('Append requires at least one record');
         }
+
         if (inputs.length > this.#maxBatchSize) {
           throw new LogAppendError(
             `Append of ${inputs.length} records exceeds maxBatchSize ${this.#maxBatchSize}`
           );
         }
+
         rows = inputs.map((input) => {
           if (input.deduplicationKey === '') {
             throw new LogAppendError(
               'Append deduplication keys must be non-empty'
             );
           }
+
           const payload = serialize(input.body);
+
           return {
             dedup_key: input.deduplicationKey ?? crypto.randomUUID(),
             payload,
@@ -833,6 +862,7 @@ export class DurabilityLog<Body = unknown> {
         if (!(error instanceof LogAppendError)) {
           throw error;
         }
+
         return {
           success: false,
           error: serializeError(error),
@@ -841,9 +871,11 @@ export class DurabilityLog<Body = unknown> {
       }
 
       const appendedAt = Date.now();
+
       const offsets = this.#engine.transactionSync((sql) =>
         appendRecords(sql, this.#channel, rows, appendedAt)
       );
+
       return { success: true, value: offsets, load: await this.load() };
     } finally {
       finish();
@@ -858,14 +890,19 @@ export class DurabilityLog<Body = unknown> {
   async read(options: LogReadOptions): Promise<LogPage<Body>> {
     const limit = options.limit ?? this.#maxBatchSize;
     assertPositiveInteger('limit', limit);
+
     if (!Number.isInteger(options.from) || options.from < 0) {
       throw new LogAppendError('Read offset must be a non-negative integer');
     }
+
     const bounds = readBounds(this.#engine.sql, this.#channel);
+
     if (options.from < bounds.oldestOffset) {
       throw new LogTruncatedError(options.from, bounds.oldestOffset);
     }
+
     const capped = Math.min(limit, this.#maxBatchSize);
+
     const records =
       options.from < bounds.hotOffset
         ? await this.#rehydrate(options.from, capped, bounds)
@@ -875,10 +912,12 @@ export class DurabilityLog<Body = unknown> {
             options.from,
             capped
           ).map((row) => this.#record(row));
+
     const nextOffset =
       records.length === 0
         ? Math.max(options.from, bounds.nextOffset)
         : records[records.length - 1]!.offset + 1;
+
     return {
       records,
       nextOffset,
@@ -896,13 +935,16 @@ export class DurabilityLog<Body = unknown> {
     bounds: LogBounds
   ): Promise<LogRecord<Body>[]> {
     const segment = findSegment(this.#engine.sql, this.#channel, from);
+
     const records = segment
       ? await this.#cold?.read(segment.locator)
       : undefined;
+
     if (!records) {
       // The index outlived the data, so the offset is unreadable after all.
       throw new LogTruncatedError(from, Math.max(from + 1, bounds.hotOffset));
     }
+
     return records
       .filter((record) => record.offset >= from)
       .sort((left, right) => left.offset - right.offset)
@@ -933,6 +975,7 @@ export class DurabilityLog<Body = unknown> {
     if (!Number.isInteger(offset) || offset < 0) {
       throw new LogAppendError('Commit offset must be a non-negative integer');
     }
+
     commitCursor(this.#engine.sql, this.#channel, consumer, offset, Date.now());
   }
 
@@ -958,18 +1001,22 @@ export class DurabilityLog<Body = unknown> {
     if (!this.#retention) {
       return 0;
     }
+
     const { maxAgeMs, maxRecords, maxBytes } = this.#retention;
     const cutoff = maxAgeMs === undefined ? undefined : Date.now() - maxAgeMs;
     let removed = 0;
+
     for (;;) {
       const oldest = listOldest(
         this.#engine.sql,
         this.#channel,
         this.#maxBatchSize
       );
+
       if (oldest.length === 0) {
         return removed;
       }
+
       const excess =
         maxRecords === undefined
           ? 0
@@ -977,27 +1024,35 @@ export class DurabilityLog<Body = unknown> {
               0,
               countRecords(this.#engine.sql, this.#channel) - maxRecords
             );
+
       const heldBytes =
         maxBytes === undefined
           ? 0
           : totalBytes(this.#engine.sql, this.#channel);
+
       let overBytes = Math.max(0, heldBytes - (maxBytes ?? 0));
+
       const expiring = takeWhile(oldest, (row, index) => {
         const reclaiming = overBytes > 0;
         overBytes -= row.bytes;
+
         return (
           index < excess ||
           reclaiming ||
           (cutoff !== undefined && row.appended_at < cutoff)
         );
       });
+
       if (expiring.length === 0) {
         return removed;
       }
+
       const first = expiring[0]!;
       const last = expiring[expiring.length - 1]!;
+
       if (this.#cold) {
         const records = expiring.map((row) => this.#record(row));
+
         // eslint-disable-next-line no-await-in-loop
         const locator = await this.#cold.write({
           channel: this.#channel,
@@ -1005,9 +1060,11 @@ export class DurabilityLog<Body = unknown> {
           lastOffset: last.offset,
           records,
         });
+
         if (typeof locator !== 'string' || locator.length === 0) {
           throw new TypeError('Cold storage must return a non-empty locator');
         }
+
         // Indexed before deletion: a crash in between leaves the segment
         // written and readable, never records that point nowhere.
         insertSegment(this.#engine.sql, this.#channel, {
@@ -1018,10 +1075,13 @@ export class DurabilityLog<Body = unknown> {
           flushed_at: Date.now(),
         });
       }
+
       const deleted = this.#engine.transactionSync((sql) =>
         trimThrough(sql, this.#channel, last.offset + 1, expiring.length)
       );
+
       removed += deleted;
+
       // Records are flushed before deletion, so stopping on partial progress
       // keeps the next pass from writing the remainder a second time.
       if (deleted < expiring.length) {
@@ -1038,6 +1098,7 @@ export class DurabilityLog<Body = unknown> {
     if (!Number.isInteger(offset) || offset < 0) {
       throw new LogAppendError('Offset must be a non-negative integer');
     }
+
     return this.#engine.sql
       .exec(
         `DELETE FROM durability_log_segments
@@ -1079,16 +1140,20 @@ export class DurabilityLog<Body = unknown> {
       crypto.randomUUID(),
       now + this.#leaseMs
     );
+
     if (reclaimed) {
       const { oldestOffset } = readBounds(sql, this.#channel);
+
       if (reclaimed.first_offset < oldestOffset) {
         this.#dropTrimmed(consumer, reclaimed, oldestOffset);
         throw new LogTruncatedError(reclaimed.first_offset, oldestOffset);
       }
+
       const poisoned =
         leases.maxAttempts !== undefined &&
         leases.onPoison !== undefined &&
         reclaimed.attempt > leases.maxAttempts;
+
       const lease = {
         batchId: reclaimed.batch_id,
         consumer,
@@ -1101,9 +1166,11 @@ export class DurabilityLog<Body = unknown> {
         attempt: reclaimed.attempt,
         expiresAt: reclaimed.expires_at,
       };
+
       if (!poisoned) {
         return lease;
       }
+
       // Terminal intent is durable before the callback runs, so a failing
       // handler cannot resurrect a range that already exhausted its attempts.
       // A skipped range counts as settled, so the cursor moves past it as for an ack.
@@ -1111,6 +1178,7 @@ export class DurabilityLog<Body = unknown> {
         this.#settle(reclaimed.batch_id, 'skipped');
         this.#advance(consumer);
       });
+
       try {
         await leases.onPoison!(lease as LogLease);
       } catch (error) {
@@ -1120,6 +1188,7 @@ export class DurabilityLog<Body = unknown> {
           error
         );
       }
+
       return undefined;
     }
 
@@ -1132,6 +1201,7 @@ export class DurabilityLog<Body = unknown> {
     const allocated = readAllocation(sql, this.#channel, consumer);
     const from = Math.max(bounds.oldestOffset, committed ?? 0, allocated ?? 0);
     const records = await this.#readFrom(from, size, bounds);
+
     if (records.length === 0) {
       return undefined;
     }
@@ -1152,6 +1222,7 @@ export class DurabilityLog<Body = unknown> {
       });
       setAllocation(transaction, this.#channel, consumer, last + 1);
     });
+
     return {
       batchId,
       consumer,
@@ -1185,6 +1256,7 @@ export class DurabilityLog<Body = unknown> {
   /** In-flight and settled-but-uncommitted ranges, for operators and tests. */
   async leases(consumer: string): Promise<LogLeaseRow[]> {
     this.#requireLeases();
+
     return v.parse(
       v.array(logLeaseRowSchema),
       this.#engine.sql
@@ -1208,9 +1280,11 @@ export class DurabilityLog<Body = unknown> {
       state,
       state === 'pending' ? 0 : Date.now()
     );
+
     if (settled) {
       return;
     }
+
     // Either the batch never existed, was fenced by a redelivery, or was
     // already settled; all three are the caller holding a stale handle.
     throw new LogLeaseError(batchId);
@@ -1242,6 +1316,7 @@ export class DurabilityLog<Body = unknown> {
           lease.batch_id
         );
       }
+
       this.#advance(consumer);
     });
   }
@@ -1249,14 +1324,17 @@ export class DurabilityLog<Body = unknown> {
   /** Commits the unbroken run of settled ranges starting at the cursor. */
   #advance(consumer: string): void {
     const sql = this.#engine.sql;
+
     // Offsets below the retained window are gone for everyone; a cursor
     // stranded there could never meet the ranges leased after them.
     const from = Math.max(
       readCursor(sql, this.#channel, consumer) ?? 0,
       readBounds(sql, this.#channel).oldestOffset
     );
+
     let cursor = from;
     const settled: string[] = [];
+
     // Ranges settled while an earlier one was outstanding wait behind it; when
     // it settles the cursor must pass all of them, however many pages that is.
     for (let page = true; page; ) {
@@ -1267,21 +1345,27 @@ export class DurabilityLog<Body = unknown> {
         cursor,
         this.#maxBatchSize
       );
+
       page = candidates.length === this.#maxBatchSize;
+
       for (const row of candidates) {
         const contiguous = row.first_offset <= cursor;
         const done = row.state === 'acked' || row.state === 'skipped';
+
         if (!contiguous || !done) {
           page = false;
           break;
         }
+
         cursor = Math.max(cursor, row.last_offset + 1);
         settled.push(row.batch_id);
       }
     }
+
     if (settled.length === 0) {
       return;
     }
+
     commitCursor(sql, this.#channel, consumer, cursor, Date.now());
     deleteLeases(sql, this.#channel, settled);
   }
@@ -1293,16 +1377,20 @@ export class DurabilityLog<Body = unknown> {
     // after a flush can span several segments and the hot window.
     const records: LogRecord<Body>[] = [];
     let from = first;
+
     while (from <= last) {
       // eslint-disable-next-line no-await-in-loop
       const page = await this.#readFrom(from, last - from + 1, bounds);
       const inRange = page.filter((record) => record.offset <= last);
+
       if (inRange.length === 0) {
         break;
       }
+
       records.push(...inRange);
       from = inRange[inRange.length - 1]!.offset + 1;
     }
+
     return records;
   }
 
@@ -1314,6 +1402,7 @@ export class DurabilityLog<Body = unknown> {
     if (from < bounds.hotOffset && from < bounds.nextOffset) {
       return this.#rehydrate(from, limit, bounds);
     }
+
     return readRecords(this.#engine.sql, this.#channel, from, limit).map(
       (row) => this.#record(row)
     );
@@ -1323,6 +1412,7 @@ export class DurabilityLog<Body = unknown> {
     if (!this.#leases) {
       throw new TypeError('Leases require the leases option');
     }
+
     return this.#leases;
   }
 
@@ -1332,6 +1422,7 @@ export class DurabilityLog<Body = unknown> {
    */
   async load(): Promise<LoadSnapshot> {
     const bounds = readBounds(this.#engine.sql, this.#channel);
+
     const slowest = readCursors(this.#engine.sql, this.#channel).reduce<
       number | undefined
     >(
@@ -1339,6 +1430,7 @@ export class DurabilityLog<Body = unknown> {
         lowest === undefined ? row.offset : Math.min(lowest, row.offset),
       undefined
     );
+
     return this.#routing.snapshot(
       slowest === undefined ? 0 : Math.max(0, bounds.nextOffset - slowest)
     );
@@ -1358,11 +1450,14 @@ const takeWhile = <T>(
   predicate: (item: T, index: number) => boolean
 ): T[] => {
   const taken: T[] = [];
+
   for (const [index, item] of items.entries()) {
     if (!predicate(item, index)) {
       break;
     }
+
     taken.push(item);
   }
+
   return taken;
 };

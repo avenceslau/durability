@@ -35,6 +35,7 @@ const {
   class: className,
   ...attrs
 } = Astro.props;
+
 const composed = Astro.slots.has("default");
 const prev = composed ? undefined : prevNext?.prev;
 const next = composed ? undefined : prevNext?.next;

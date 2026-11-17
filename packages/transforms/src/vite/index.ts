@@ -58,6 +58,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         config.root,
         options.wrangler ?? 'wrangler.jsonc'
       );
+
       const project = await loadWranglerProject(wranglerPath);
       bindings = project.bindings;
 
@@ -66,19 +67,24 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       }
 
       const mainPath = resolve(dirname(wranglerPath), project.config.main);
+
       const typesPath = options.types
         ? resolve(config.root, options.types)
         : resolve(dirname(mainPath), 'do-transforms.generated.d.ts');
+
       await writeBindingDeclarations(project, mainPath, typesPath);
     },
     transform(code, id) {
       const cleanId = id.split('?')[0] ?? id;
+
       const mayWrapBindings =
         bindings.durableObjectBindingNames.size > 0 ||
         bindings.stubBindingNames.size > 0;
+
       const mayInjectRouting = [...clientFactories.values()].some((name) =>
         code.includes(name)
       );
+
       if (
         cleanId.includes('/node_modules/') ||
         !/\.[cm]?[jt]sx?$/.test(cleanId) ||
@@ -95,9 +101,11 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           ? ['decorators-legacy', 'typescript']
           : ['decorators-legacy', 'jsx', 'typescript'],
       });
+
       const program = syntaxNode(
         (ast as unknown as { program?: unknown }).program
       );
+
       const scopes = indexScopes(ast);
 
       const routingInjections =
@@ -112,6 +120,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           : [];
 
       markConfiguredBindings(scopes, bindings);
+
       const wrappers = mayWrapBindings
         ? findWrappers(
             {
@@ -123,14 +132,17 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
             ast
           )
         : [];
+
       if (wrappers.length === 0 && routingInjections.length === 0) {
         return null;
       }
 
       const transformed = new MagicString(code);
+
       for (const injection of routingInjections) {
         transformed.prependLeft(injection.at, injection.text);
       }
+
       if (wrappers.length > 0) {
         applyWrappers(transformed, code, wrappers);
       }

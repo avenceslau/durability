@@ -14,6 +14,7 @@ import {
 import { contextFor, FakeStorage } from '../test-fakes';
 
 type Limits = { max: number };
+
 type States = { limits: Limits; config: string };
 
 const coordinatorId = 'coordinator-1';
@@ -32,6 +33,7 @@ class Store {
       if (this.fail) {
         throw new Error('store unavailable');
       }
+
       this.writes.push({ group: snapshot.group, version: snapshot.version });
       this.values.set(snapshot.group, encoded);
     },
@@ -39,6 +41,7 @@ class Store {
       if (this.fail) {
         throw new Error('store unavailable');
       }
+
       this.deletes.push({ group, version });
       this.values.delete(group);
     },
@@ -58,6 +61,7 @@ class Members {
     if (this.failing.has(member.id)) {
       throw new Error(`${member.id} unavailable`);
     }
+
     const updates = this.applied.get(member.id) ?? [];
     updates.push(update);
     this.applied.set(member.id, updates);
@@ -82,10 +86,12 @@ const fixture = () => {
   const store = new Store();
   const members = new Members();
   const events: DurabilityTopologyEvent[] = [];
+
   const context = {
     storage: storage as unknown as DurableObjectStorage,
     id: { toString: () => coordinatorId },
   };
+
   const config: DurabilityTopologyConfig<undefined, States> = {
     context,
     publish: store.publisher,
@@ -98,8 +104,10 @@ const fixture = () => {
       events.push(event);
     },
   };
+
   const topology = new DurabilityTopology<undefined, States>(config);
   const client = DurabilityTopology.client({ read: store.read });
+
   return { storage, store, members, events, config, topology, client };
 };
 
@@ -118,6 +126,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -168,12 +177,14 @@ describe('DurabilityTopology', () => {
     const same = await topology.update('acme', ({ members }) => ({
       members: [...members],
     }));
+
     expect(same.snapshot.version).toBe(1);
     expect(store.writes).toHaveLength(1);
 
     const grown = await topology.update('acme', ({ members }) => ({
       members: [...members, active('acme-1')],
     }));
+
     expect(grown.snapshot.version).toBe(2);
     expect(grown.snapshot.members).toEqual([
       { id: 'acme-0', state: 'active', joinedAt: 1_800_000_000_000 },
@@ -215,6 +226,7 @@ describe('DurabilityTopology', () => {
     const result = await topology.update('acme', () => ({
       members: [active('acme-0')],
     }));
+
     expect(result.published).toBe(false);
     expect(topology.snapshot('acme')?.version).toBe(1);
 
@@ -235,16 +247,20 @@ describe('DurabilityTopology', () => {
           releaseFirst = resolve;
         });
       }
+
       await original(snapshot, encoded);
     };
 
     const first = topology.update('acme', () => ({
       members: [active('acme-0')],
     }));
+
     await settle();
+
     const second = topology.update('acme', ({ members }) => ({
       members: [...members, active('acme-1')],
     }));
+
     await settle();
     releaseFirst();
 
@@ -271,11 +287,14 @@ describe('DurabilityTopology', () => {
       members: [active('acme-0')],
       states: { limits: { max: 2 } },
     }));
+
     await settle();
     expect(recreated.snapshot.version).toBe(3);
+
     const versions = (members.applied.get('acme-0') ?? []).map(
       ({ version }) => version
     );
+
     expect(versions).toHaveLength(2);
     expect(versions[1]).toBeGreaterThan(versions[0]!);
   });
@@ -362,6 +381,7 @@ describe('DurabilityTopology', () => {
 
     const result = await topology.update('acme', ({ members }) => {
       (members[0] as { state: string }).state = 'draining';
+
       return {};
     });
 
@@ -380,16 +400,20 @@ describe('DurabilityTopology', () => {
           landLate = resolve;
         });
       }
+
       await original(snapshot, encoded);
+
       // The abandoned v1 write lands after v2's, before v2 is acknowledged.
       if (snapshot.version === 2 && store.writes.length === 1) {
         landLate();
+
         for (let tick = 0; tick < 20; tick++) {
           // eslint-disable-next-line no-await-in-loop
           await Promise.resolve();
         }
       }
     };
+
     const slow = new DurabilityTopology<undefined, States>(
       slowPublishConfig(store)
     );
@@ -401,6 +425,7 @@ describe('DurabilityTopology', () => {
     const second = await slow.update('acme', ({ members }) => ({
       members: [...members, active('acme-1')],
     }));
+
     // The late v1 landed mid-publish, so v2 was restaged rather than acknowledged.
     expect(second.published).toBe(false);
     await settle();
@@ -412,6 +437,7 @@ describe('DurabilityTopology', () => {
     const store = new Store();
     let release!: () => void;
     let blocked = false;
+
     const topology = new DurabilityTopology<undefined, States>({
       context: {
         storage: new FakeStorage() as unknown as DurableObjectStorage,
@@ -444,6 +470,7 @@ describe('DurabilityTopology', () => {
     const grown = await topology.update('acme', ({ members }) => ({
       members: [...members, active('acme-1')],
     }));
+
     expect(grown.published).toBe(true);
     expect(store.writes.map(({ version }) => version)).toEqual([1, 2]);
     release();
@@ -455,6 +482,7 @@ describe('DurabilityTopology', () => {
     const store = new Store();
     let hang = true;
     const write = store.publisher.write;
+
     const config = {
       context: {
         storage: storage as unknown as DurableObjectStorage,
@@ -471,28 +499,34 @@ describe('DurabilityTopology', () => {
           if (hang) {
             await new Promise(() => undefined);
           }
+
           await write(snapshot, encoded);
         },
       },
     };
 
     const evicted = new DurabilityTopology<undefined, States>(config);
+
     const first = evicted.update('acme', () => ({
       members: [active('acme-0')],
     }));
+
     await vi.advanceTimersByTimeAsync(100);
     const v1 = await first;
     expect(v1.published).toBe(false);
 
     // A new instance over the same storage: nothing in memory knows v1's write is outstanding.
     hang = false;
+
     const revived = new DurabilityTopology<undefined, States>({
       ...config,
       context: { ...contextFor(storage), id: coordinatorId } as never,
     });
+
     const v2 = await revived.update('acme', ({ members }) => ({
       members: [...members, active('acme-1')],
     }));
+
     expect(v2.published).toBe(false);
     expect(decodeSnapshot(store.values.get('acme')!).version).toBe(2);
 
@@ -511,6 +545,7 @@ describe('DurabilityTopology', () => {
   it('works without a publisher', async () => {
     const { config } = fixture();
     const { publish: _publish, ...withoutPublisher } = config;
+
     const topology = new DurabilityTopology<undefined, States>({
       ...withoutPublisher,
       context: {
@@ -518,9 +553,11 @@ describe('DurabilityTopology', () => {
         id: coordinatorId,
       } as never,
     });
+
     const result = await topology.update('acme', () => ({
       members: [active('acme-0')],
     }));
+
     expect(result.published).toBe(true);
     expect(await topology.delete('acme')).toEqual({ published: true });
   });

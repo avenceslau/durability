@@ -68,9 +68,11 @@ describe('schedule in workerd', () => {
         first + index * every + jitterMs,
       ])
     );
+
     for (const { due_at, started_at } of firings) {
       expect(started_at).toBeGreaterThanOrEqual(due_at);
     }
+
     expect((await stub.outcomes()).map((row) => row.scheduled_time)).toEqual(
       firings.map((row) => row.scheduled_time)
     );
@@ -90,10 +92,12 @@ describe('schedule in workerd', () => {
     expect(resent).toEqual({ applied: false, state: first.state });
     expect(next.applied).toBe(true);
     expect(next.state?.jitterMs).not.toBe(first.state?.jitterMs);
+
     for (const { state } of [first, next]) {
       expect(state?.jitterMs).toBeGreaterThanOrEqual(0);
       expect(state?.jitterMs).toBeLessThanOrEqual(jitterMs.maxMs);
     }
+
     expect(await stub.physicalAlarm()).toBe(
       (next.state?.nextAt ?? 0) + (next.state?.jitterMs ?? 0)
     );
@@ -134,6 +138,7 @@ describe('schedule in workerd', () => {
       () => false,
       () => true
     );
+
     expect(aborted).toBe(true);
     const recovered = env.SCHEDULE_TEST.get(id);
     await runDurableObjectAlarm(recovered);
@@ -170,6 +175,7 @@ describe('schedule in workerd', () => {
         () => false,
         () => true
       );
+
       expect(aborted).toBe(true);
       const recovered = namespace.get(id);
       await runDurableObjectAlarm(recovered);

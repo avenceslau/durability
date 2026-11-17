@@ -6,6 +6,7 @@ import { layoutStage, NODE, noteSize, spreadPorts, stackOffset, type StageLayout
 import { snapPositions } from "./snap.ts"
 
 export { NODE } from "./layout.ts"
+
 export type { EdgeRoute, StageLayout } from "./layout.ts"
 
 export type FlowColor = "blue" | "red" | "green" | "orange" | "purple"
@@ -284,10 +285,12 @@ function measureNode(
 
   if (iconAt === "top") {
     const height = NODE.padding * 2 + NODE.topIcon + 12 + NODE.labelSize + (sublabel === undefined ? 0 : 24)
+
     return [Math.max(text + NODE.padding * 2, height), height]
   }
 
   const iconWidth = icon === undefined ? 0 : NODE.icon + NODE.iconGap
+
   return [Math.round(NODE.padding * 2 + iconWidth + text), NODE.height]
 }
 
@@ -319,6 +322,7 @@ function checkNode(
   }
 
   const replaces = node.replaces === undefined ? [] : typeof node.replaces === "string" ? [node.replaces] : node.replaces
+
   const references = [
     ["after", node.after],
     ["below", node.below],
@@ -538,6 +542,7 @@ function layoutKey(visible: ReadonlySet<string>, views: ReadonlyMap<string, Node
   const sizes = [...views]
     .filter(([id]) => visible.has(id))
     .map(([id, view]) => `${id}:${view.size.join("x")}:${view.replicas ?? 1}`)
+
   return [...[...visible].sort(), ...sizes].join("|")
 }
 
@@ -575,6 +580,7 @@ function ancestors(parentOf: ReadonlyMap<string, string>, id: string): ReadonlyA
 function displayOf(parts: Parts, items: ReadonlySet<string>, expanded: ReadonlySet<string>): Display {
   const standIn = (id: string): string =>
     [id, ...ancestors(parts.parentOf, id).filter((up) => !expanded.has(up))].at(-1) ?? id
+
   const nodes = new Set<string>()
   const composites = new Set<string>()
 
@@ -615,6 +621,7 @@ function edgesThrough(display: Display, edges: ReadonlyArray<DiagramEdge>, taken
     }
 
     taken.add(key)
+
     return [
       {
         ...edge,
@@ -631,8 +638,10 @@ function edgesThrough(display: Display, edges: ReadonlyArray<DiagramEdge>, taken
  */
 function aimHints(node: DiagramNode, standIn: (id: string) => string): DiagramNode {
   const { after, below, above, ...rest } = node
+
   const hints = Object.entries({ after, below, above }).flatMap(([hint, anchor]) => {
     const target = anchor === undefined ? undefined : standIn(anchor)
+
     return target === undefined || target === node.id ? [] : [[hint, target] as const]
   })
 
@@ -647,11 +656,13 @@ function resolveStages(
   stages: ReadonlyArray<ReadonlyArray<StageToken>>,
 ): Pick<ArchitectureDiagram, "stages" | "stageWith"> {
   const { parentOf } = parts
+
   const itemIds = [
     ...parts.nodes.filter((node) => !parentOf.has(node.id)).map((node) => node.id),
     ...parts.notes.map((note) => note.id),
     ...parts.groups.map((group) => group.id),
   ]
+
   const nodeIds = new Set(parts.nodes.map((node) => node.id))
   const edgeIds = new Set(parts.edges.map((edge) => edge.id))
   const composites = new Set(parts.nodes.filter((node) => node.contains.length > 0).map((node) => node.id))
@@ -659,6 +670,7 @@ function resolveStages(
   const visible = new Set<string>()
   const hiddenEdges = new Set<string>()
   const changes = new Map<string, NodeChanges>()
+
   const expanded = new Set(
     parts.nodes.filter((node) => composites.has(node.id) && node.collapsed !== true).map((node) => node.id),
   )
@@ -761,6 +773,7 @@ function resolveStages(
 
   const descendants = (ids: ReadonlyArray<string>): ReadonlyArray<string> =>
     ids.flatMap((id) => [id, ...descendants(parts.nodes.find((node) => node.id === id)?.contains ?? [])])
+
   const bases = new Map<string, StageLayout>()
   const spread = new Map<string, StageLayout>()
 
@@ -776,21 +789,25 @@ function resolveStages(
     const shown = edgesThrough(display, stage.edges, taken)
     // Edges a later stage adds between nodes already here take part now, so nothing moves when they appear.
     const later = new Set(tokenStages.slice(index + 1).flatMap((other) => other.edges))
+
     const upcoming = edgesThrough(
       display,
       parts.edges.filter((edge) => later.has(edge) && !stage.edges.includes(edge)),
       taken,
     )
+
     const state = new Set([
       ...display.nodes,
       ...display.composites,
       ...[...stage.items].filter((id) => !nodeIds.has(id)),
       ...shown.map((edge) => edge.id),
     ])
+
     const spotlight = (): ReturnType<typeof lightUp> | undefined =>
       stage.spotlight === undefined
         ? undefined
         : lightUp(stage.spotlight, `stage ${index} token "${stage.spotlight}"`, state, shown, parts.flows)
+
     let spotlit: ReturnType<typeof lightUp> | undefined
 
     try {
@@ -804,7 +821,9 @@ function resolveStages(
 
     const members = (ids: ReadonlyArray<string>): ReadonlyArray<string> =>
       parts.mode === "manual" ? descendants(ids) : descendants(ids).filter((id) => display.nodes.has(id))
+
     const key = layoutKey(new Set([...state, ...upcoming.map((edge) => edge.id)]), stage.views)
+
     const base =
       bases.get(key) ??
       layoutStage(
@@ -819,6 +838,7 @@ function resolveStages(
               aimHints(node, (id) => {
                 const target = display.standIn(id)
                 const first = parts.nodes.find((other) => other.id === target)?.contains[0]
+
                 return display.composites.has(target) && first !== undefined ? first : target
               }),
             ),
@@ -852,9 +872,11 @@ function resolveStages(
         },
         parts.nodes,
       )
+
     bases.set(key, base)
 
     const shownKey = `${key}#${shown.map((edge) => edge.id).join("|")}`
+
     const layout =
       spread.get(shownKey) ??
       spreadPorts(
@@ -863,6 +885,7 @@ function resolveStages(
         stage.views,
         parts.notes.filter((note) => stage.items.has(note.id)),
       )
+
     spread.set(shownKey, layout)
 
     return {
@@ -877,11 +900,14 @@ function resolveStages(
   }
 
   let previous: StageLayout | undefined
+
   const resolved = tokenStages.map((stage, index) => {
     const state = build(index, stage.expanded, previous, true)
     previous = state.layout
+
     return state
   })
+
   const variants = new Map<string, StageState>()
 
   return {
@@ -897,6 +923,7 @@ function resolveStages(
 
       const state = variants.get(key) ?? build(index, new Set(open), own?.layout, false)
       variants.set(key, state)
+
       return state
     },
   }
@@ -946,6 +973,7 @@ function pinPositions(
       const point = node.pin ?? node.at
       const view = viewOf(node, undefined)
       const stack = stackOffset(view.replicas)
+
       return point === undefined
         ? []
         : [
@@ -976,6 +1004,7 @@ function pinPositions(
   }
 
   const { width, height } = definition.canvas
+
   return snapPositions(items, definition.snap?.tolerance ?? Math.max(width, height) * 0.04)
 }
 

@@ -4,15 +4,19 @@ function initPageActions(root: HTMLElement): () => void {
   const copyBtn = root.querySelector<HTMLButtonElement>(
     '[data-nb-page-actions-copy]'
   );
+
   const copyIcon = root.querySelector<SVGElement>(
     '[data-nb-page-actions-copy-icon]'
   );
+
   const checkIcon = root.querySelector<SVGElement>(
     '[data-nb-page-actions-check-icon]'
   );
+
   const label = root.querySelector<HTMLSpanElement>(
     '[data-nb-page-actions-label]'
   );
+
   const mdUrl = root.dataset.mdUrl;
 
   if (!copyBtn || !mdUrl) return () => {};
@@ -21,6 +25,7 @@ function initPageActions(root: HTMLElement): () => void {
 
   function showState(state: 'copied' | 'error') {
     if (!copyIcon || !checkIcon || !label) return;
+
     if (state === 'copied') {
       copyIcon.classList.add('hidden');
       checkIcon.classList.remove('hidden');
@@ -28,6 +33,7 @@ function initPageActions(root: HTMLElement): () => void {
     } else {
       label.textContent = "Couldn't copy";
     }
+
     if (resetTimer) window.clearTimeout(resetTimer);
     resetTimer = window.setTimeout(() => {
       copyIcon.classList.remove('hidden');
@@ -39,9 +45,12 @@ function initPageActions(root: HTMLElement): () => void {
   async function handleCopyPage() {
     const markdown = fetch(mdUrl!).then(async (res) => {
       if (!res.ok) throw new Error(`${res.status}`);
+
       return new Blob([await res.text()], { type: 'text/plain' });
     });
+
     markdown.catch(() => {});
+
     try {
       // Hand the clipboard a pending item inside the click: Safari refuses a
       // write that starts after the fetch resolves.
@@ -52,6 +61,7 @@ function initPageActions(root: HTMLElement): () => void {
       } else {
         await navigator.clipboard.writeText(await (await markdown).text());
       }
+
       showState('copied');
     } catch {
       showState('error');

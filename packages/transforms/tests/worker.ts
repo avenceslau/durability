@@ -45,6 +45,7 @@ export class ContextDO extends DurableObject {
       abortedKeys.add(key);
       this.ctx.abort('broken');
     }
+
     return 'recovered';
   }
 
@@ -131,6 +132,7 @@ export class CounterTarget extends RpcTarget {
   #count = 0;
   increment(): number {
     this.#count += 1;
+
     return this.#count;
   }
 }

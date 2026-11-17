@@ -108,6 +108,7 @@ const reservedOutboundNames = new Set(['status', 'resync']);
 const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
   trace('socket.send', { frame });
   let text = JSON.stringify(frame);
+
   if (text.length > socketMaxFrameLength) {
     if (frame.type === 'event') {
       reportFailure(
@@ -115,8 +116,10 @@ const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
         { name: frame.name, seq: frame.seq },
         new Error('Outbound event exceeds the frame limit')
       );
+
       return;
     }
+
     text = JSON.stringify({
       v: socketProtocolVersion,
       type: 'error',
@@ -127,6 +130,7 @@ const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
       },
     } satisfies SocketServerFrame);
   }
+
   try {
     ws.send(text);
   } catch (error) {
@@ -136,6 +140,7 @@ const sendFrame = (ws: WebSocket, frame: SocketServerFrame): void => {
 
 const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
   const stored: unknown = ws.deserializeAttachment();
+
   if (typeof stored !== 'object' || stored === null) {
     return {
       metadata: undefined as Metadata,
@@ -143,9 +148,11 @@ const readAttachment = <Metadata>(ws: WebSocket): Attachment<Metadata> => {
       channel: defaultChannel,
     };
   }
+
   const names = Reflect.get(stored, 'names');
   // Connections accepted before channels existed carry no channel.
   const channel = Reflect.get(stored, 'channel');
+
   return {
     metadata: Reflect.get(stored, 'metadata') as Metadata,
     names: Array.isArray(names)
@@ -177,6 +184,7 @@ class DurabilitySocketCore<
 
   constructor(config: DurabilitySocketConfig<Inbound, Outbound, Metadata>) {
     const retention = config.retention ?? 1_000;
+
     if (!Number.isSafeInteger(retention) || retention <= 0) {
       throw new RangeError('retention must be a positive safe integer');
     }
@@ -197,10 +205,12 @@ class DurabilitySocketCore<
       ...Object.getOwnPropertyNames(DurabilitySocketCore.prototype),
       ...reservedOutboundNames,
     ]);
+
     for (const name of this.#outboundNames) {
       if (reserved.has(name)) {
         throw new Error(`"${name}" is reserved by DurabilitySocket`);
       }
+
       Object.defineProperty(this, name, {
         value: traceFunction(`DurabilitySocket.${name}`, (payload: unknown) =>
           this.#publish(name, payload)
@@ -216,8 +226,10 @@ class DurabilitySocketCore<
       this.#channel,
       'DurabilitySocket'
     );
+
     const frameHandlers =
       frameHandlersByObject.get(engine) ?? new Map<string, FrameHandler>();
+
     frameHandlers.set(this.#channel, (ws, frame) => this.#handle(ws, frame));
     frameHandlersByObject.set(engine, frameHandlers);
     this.#frameHandlers = frameHandlers;
@@ -275,18 +287,22 @@ class DurabilitySocketCore<
   ): Promise<void> {
     const text =
       typeof message === 'string' ? message : new TextDecoder().decode(message);
+
     const frame = parseClientFrame(text);
+
     if (!frame) {
       trace('socket.close', {
         code: socketProtocolErrorCode,
         reason: 'Invalid frame',
       });
       ws.close(socketProtocolErrorCode, 'Invalid frame');
+
       return;
     }
 
     const { channel } = readAttachment(ws);
     const handle = this.#frameHandlers.get(channel);
+
     if (!handle) {
       reportFailure(
         'durability.socket.channel_missing',
@@ -298,8 +314,10 @@ class DurabilitySocketCore<
         reason: 'Socket channel is not attached',
       });
       ws.close(channelMissingCloseCode, 'Socket channel is not attached');
+
       return;
     }
+
     await handle(ws, frame);
   }
 
@@ -313,8 +331,10 @@ class DurabilitySocketCore<
   async #handle(ws: WebSocket, frame: SocketClientFrame): Promise<void> {
     if (frame.type === 'subscribe') {
       this.#subscribe(ws, frame);
+
       return;
     }
+
     await this.#call(ws, frame);
   }
 
@@ -323,6 +343,7 @@ class DurabilitySocketCore<
     frame: Extract<SocketClientFrame, { type: 'call' }>
   ): Promise<void> {
     const handler = this.#inbound.get(frame.method);
+
     if (!handler) {
       sendFrame(ws, {
         v: socketProtocolVersion,
@@ -333,12 +354,14 @@ class DurabilitySocketCore<
           message: `Unknown method "${frame.method}"`,
         },
       });
+
       return;
     }
 
     const call: SocketCall<never> = {
       metadata: readAttachment<never>(ws).metadata,
     };
+
     try {
       const output =
         typeof handler === 'function'
@@ -351,6 +374,7 @@ class DurabilitySocketCore<
               )) as never,
               call
             );
+
       sendFrame(ws, {
         v: socketProtocolVersion,
         type: 'result',
@@ -373,9 +397,11 @@ class DurabilitySocketCore<
     input: unknown
   ): Promise<unknown> {
     const result = await schema['~standard'].validate(input);
+
     if (result.issues) {
       throw new SocketInputError(method, result.issues);
     }
+
     return result.value;
   }
 
@@ -384,6 +410,7 @@ class DurabilitySocketCore<
     frame: Extract<SocketClientFrame, { type: 'subscribe' }>
   ): void {
     const unknown = frame.names.find((name) => !this.#outboundNames.has(name));
+
     if (unknown !== undefined) {
       sendFrame(ws, {
         v: socketProtocolVersion,
@@ -394,6 +421,7 @@ class DurabilitySocketCore<
           message: `Unknown event "${unknown}"`,
         },
       });
+
       return;
     }
 
@@ -428,15 +456,18 @@ class DurabilitySocketCore<
     if (since === undefined || since > head) {
       return false;
     }
+
     if (since === head) {
       return true;
     }
+
     const oldest = this.#storage.sql
       .exec<{ seq: number }>(
         'SELECT MIN(seq) AS seq FROM durability_socket_events WHERE channel = ?',
         this.#channel
       )
       .one().seq;
+
     if (since + 1 < oldest) {
       return false;
     }
@@ -448,11 +479,14 @@ class DurabilitySocketCore<
         since
       )
       .toArray();
+
     const wanted = new Set(names);
+
     for (const row of rows) {
       if (!wanted.has(row.name)) {
         continue;
       }
+
       sendFrame(ws, {
         v: socketProtocolVersion,
         type: 'event',
@@ -461,6 +495,7 @@ class DurabilitySocketCore<
         payload: deserialize(row.payload),
       });
     }
+
     return true;
   }
 
@@ -471,12 +506,14 @@ class DurabilitySocketCore<
         this.#channel
       )
       .one();
+
     return row.seq ?? 0;
   }
 
   #publish(name: string, payload: unknown): void {
     const serialized = serialize(payload);
     const sql = this.#storage.sql;
+
     // Trimming keeps the newest event of a channel, so its maximum never goes back.
     const { seq } = sql
       .exec<{ seq: number }>(
@@ -491,6 +528,7 @@ class DurabilitySocketCore<
         this.#channel
       )
       .one();
+
     sql.exec(
       'DELETE FROM durability_socket_events WHERE channel = ? AND seq <= ?',
       this.#channel,
@@ -504,17 +542,21 @@ class DurabilitySocketCore<
       name,
       payload,
     };
+
     for (const ws of this.#context.getWebSockets()) {
       if (ws.readyState !== WebSocket.OPEN) {
         continue;
       }
+
       const attachment = readAttachment(ws);
+
       if (
         attachment.channel !== this.#channel ||
         !attachment.names.includes(name)
       ) {
         continue;
       }
+
       sendFrame(ws, frame);
     }
   }
@@ -595,6 +637,7 @@ export const DurabilitySocket =
   DurabilitySocketCore as unknown as DurabilitySocketConstructor;
 
 export { durabilitySocketMigrations } from './migrations.js';
+
 export {
   event,
   type SocketCall,

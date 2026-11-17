@@ -37,9 +37,11 @@ export class RoutingClient<Input, Value, Context = unknown> {
 
   constructor(config: RoutingClientConfig<Input, Value, Context>) {
     this.#limit = config.softBacklogLimit ?? 1_000;
+
     if (!Number.isSafeInteger(this.#limit) || this.#limit < 1) {
       throw new RangeError('softBacklogLimit must be a positive safe integer');
     }
+
     this.#config = config;
   }
 
@@ -50,6 +52,7 @@ export class RoutingClient<Input, Value, Context = unknown> {
         this.#observations.delete(key);
       }
     }
+
     return new Map(
       [...this.#observations].map(([key, load]) => [key, structuredClone(load)])
     );
@@ -57,10 +60,13 @@ export class RoutingClient<Input, Value, Context = unknown> {
 
   async push(input: Input, context?: Context): Promise<EnqueueResult<Value>> {
     const observed = this.observations();
+
     const target = this.#config.sharding
       ? await this.#config.sharding(input, context, observed)
       : this.#select(observed);
+
     const address = typeof target === 'string' ? { shard: target } : target;
+
     if (
       !address ||
       typeof address.shard !== 'string' ||
@@ -70,22 +76,28 @@ export class RoutingClient<Input, Value, Context = unknown> {
         'Sharding must return a non-empty shard key or { shard, locationHint }'
       );
     }
+
     const response = await this.#config.invoke(address, input);
     const prior = this.#observations.get(address.shard);
+
     if (!prior || response.load.observedAt >= prior.observedAt) {
       this.#observations.delete(address.shard);
       this.#observations.set(address.shard, structuredClone(response.load));
     }
+
     // Advisory state must stay bounded for high-cardinality tenant routing.
     if (this.#observations.size > 1_024) {
       const oldest = this.#observations.keys().next().value;
+
       if (oldest !== undefined) {
         this.#observations.delete(oldest);
       }
     }
+
     if (!this.#config.sharding) {
       this.#resize(response.load);
     }
+
     return response;
   }
 
@@ -94,9 +106,11 @@ export class RoutingClient<Input, Value, Context = unknown> {
     const second = `shard-${Math.floor(Math.random() * this.#width)}`;
     const a = observations.get(first);
     const b = observations.get(second);
+
     if (!a || !b) {
       return !a ? first : second;
     }
+
     // Backlog counts are message-target pairs; timing describes target batches.
     // Compare these separately rather than claiming a bogus drain-time estimate.
     if (a.outbound.pendingDeliveries !== b.outbound.pendingDeliveries) {
@@ -104,25 +118,31 @@ export class RoutingClient<Input, Value, Context = unknown> {
         ? first
         : second;
     }
+
     const pressure = (load: LoadSnapshot) =>
       load.inbound.inFlight * (load.inbound.averageProcessingMs ?? 0) +
       load.outbound.inFlight * (load.outbound.averageProcessingMs ?? 0);
+
     return pressure(a) <= pressure(b) ? first : second;
   }
 
   #resize(load: LoadSnapshot): void {
     const now = Date.now();
+
     if (now - load.observedAt >= load.windowMs) {
       return;
     }
+
     if (
       load.outbound.pendingDeliveries > this.#limit &&
       now - this.#lastResize >= 1_000
     ) {
       this.#width += 1;
       this.#lastResize = now;
+
       return;
     }
+
     if (
       this.#width > 1 &&
       now - this.#lastResize >= load.windowMs &&

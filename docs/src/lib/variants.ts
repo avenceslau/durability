@@ -2,6 +2,7 @@ import type { ClassValue } from 'clsx';
 import { cn } from './cn';
 
 type VariantMap = Record<string, Record<string, string>>;
+
 type Selection<V extends VariantMap> = { [K in keyof V]?: keyof V[K] };
 
 interface Config<V extends VariantMap> {
@@ -29,10 +30,13 @@ export function variants<V extends VariantMap>(config: Config<V>) {
       ...config.defaults,
       ...stripUndefined(selection),
     } as Record<keyof V, string>;
+
     const classes = Object.keys(config.variants).map((key) => {
       const table = config.variants[key];
+
       return table[picked[key]] ?? table[config.defaults[key] as string];
     });
+
     const compound = (config.compound ?? [])
       .filter(({ class: _, ...when }) =>
         Object.entries(when).every(
@@ -40,6 +44,7 @@ export function variants<V extends VariantMap>(config: Config<V>) {
         )
       )
       .map((entry) => entry.class);
+
     return cn(config.base, classes, compound, className);
   };
 }

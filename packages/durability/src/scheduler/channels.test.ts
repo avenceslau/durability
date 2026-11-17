@@ -18,15 +18,18 @@ describe('shared scheduler channels', () => {
       const context = contextFor(storage);
       const scheduler = new DurabilityScheduler({ context, liveTimers });
       new DurabilitySemaphoreServer({ scheduler, limit: 1 });
+
       const work = new Durability({
         scheduler,
         handlers: {
           slow: async () => {
             await new Promise((resolve) => setTimeout(resolve, 1_000));
+
             return 'done';
           },
         },
       });
+
       const alarms = vi.spyOn(engineFor({ scheduler }), 'alarm');
       await work.slow({ id: 'a', payload: null });
 
@@ -47,14 +50,19 @@ describe('shared scheduler channels', () => {
     const engine = engineFor({ scheduler });
     const held = Array.from({ length: 10 }, () => engine.tryAcquirePermit()!);
     const admitted = vi.fn();
+
     const waiting = engine.acquirePermit().then((release) => {
       admitted();
+
       return release;
     });
+
     void new DurabilityScheduler({ context, alarmConcurrency: 1 });
+
     for (const release of held.slice(0, 9)) {
       release();
     }
+
     await Promise.resolve();
     expect(admitted).not.toHaveBeenCalled();
     expect(engine.tryAcquirePermit()).toBeUndefined();
@@ -76,16 +84,20 @@ describe('shared scheduler channels', () => {
     const engine = engineFor({ scheduler });
     const held = Array.from({ length: 10 }, () => engine.tryAcquirePermit()!);
     const admitted = vi.fn();
+
     const waiting = engine.acquirePermit().then((release) => {
       admitted();
+
       return release;
     });
+
     void new DurabilityScheduler({ context, alarmConcurrency: 11 });
     await Promise.resolve();
     expect(admitted).toHaveBeenCalledTimes(1);
     const release = await waiting;
     expect(engine.tryAcquirePermit()).toBeUndefined();
     release();
+
     for (const finish of held) {
       finish();
     }
@@ -98,21 +110,27 @@ describe('shared scheduler channels', () => {
       const storage = new FakeStorage();
       const context = contextFor(storage);
       Durability.migrate(context);
+
       const scheduler = new DurabilityScheduler({
         context,
         alarmHandoffMs: 100,
       });
+
       const engine = engineFor({ scheduler });
       let finish!: () => void;
+
       const blocked = new Promise<void>((resolve) => {
         finish = resolve;
       });
+
       const runDue = vi.fn(async () => {
         if (mode === 'reject') {
           throw new Error('claim failed');
         }
+
         await blocked;
       });
+
       engine.registerChannel({
         table: { name: 'durability_calls', key: 'id' },
         channel: 'default',

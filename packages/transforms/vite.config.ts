@@ -24,7 +24,9 @@ export default defineConfig({
           },
         },
       });
+
       const outputs = Array.isArray(result) ? result : [result];
+
       const serviceModule = outputs
         .flatMap((output) => ('output' in output ? output.output : []))
         .find((output) => output.type === 'chunk');

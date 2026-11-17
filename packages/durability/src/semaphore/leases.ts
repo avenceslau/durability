@@ -84,6 +84,7 @@ export const resolveLeasePolicy = (
     maxClientsPerGroup: options.maxClientsPerGroup ?? 100,
     limitedGroups: options.limitedGroups ?? 'exclude',
   };
+
   for (const name of [
     'permitsPerLease',
     'ttlMs',
@@ -92,21 +93,26 @@ export const resolveLeasePolicy = (
   ] as const) {
     assertPositiveInteger(`leases.${name}`, policy[name]);
   }
+
   if (policy.ttlMs > maxDelayMs) {
     throw new RangeError(`leases.ttlMs must be at most ${maxDelayMs}`);
   }
+
   const amount =
     policy.provisioning.mode === 'under'
       ? policy.provisioning.reserve
       : policy.provisioning.mode === 'over'
         ? policy.provisioning.extra
         : undefined;
+
   if (amount !== undefined) {
     const value = typeof amount === 'number' ? amount : amount.ratio;
+
     if (!Number.isFinite(value) || value < 0) {
       throw new RangeError('lease provisioning amounts must be non-negative');
     }
   }
+
   return policy;
 };
 
@@ -125,6 +131,7 @@ export const budgets = (
       shared: false,
     };
   }
+
   if (provisioning.mode === 'under') {
     // The reserve never takes the last permit: groups excluded from leases and
     // clients without lease support would otherwise never be admitted.
@@ -132,8 +139,10 @@ export const budgets = (
       Math.max(0, limit - 1),
       scaled(provisioning.reserve, limit)
     );
+
     return { grants: limit - reserve, leases: reserve, shared: false };
   }
+
   return { grants: limit, leases: limit, shared: true };
 };
 
@@ -182,8 +191,10 @@ export const applyLeaseReports = (
     unknownDebt: 0,
     drawn: new Map(),
   };
+
   for (const report of reports) {
     const lease = store.getLease(report.leaseId);
+
     if (!lease || !ownedBy(lease, client)) {
       outcome.echoes.push({
         leaseId: report.leaseId,
@@ -199,17 +210,21 @@ export const applyLeaseReports = (
 
     const drawn = Math.min(Math.max(0, report.drawn), lease.permits);
     outcome.drawn.set(lease.lease_id, drawn);
+
     const released = Math.max(
       lease.released,
       Math.min(Math.max(0, report.released), drawn)
     );
+
     // An expired lease is retired, not forgotten: its permits may be running.
     // Only the client's own retired report shrinks a lease to what it drew:
     // until then it may still be drawing, whoever asked it to stop.
     const retired =
       lease.retired === 1 || report.retired === true || lease.expires_at <= now;
+
     const permits =
       report.retired === true ? Math.max(released, drawn) : lease.permits;
+
     if (released >= permits) {
       store.removeLease(lease.lease_id);
       // Echoed as settled (permits = released) so the client can drop the lease.
@@ -220,6 +235,7 @@ export const applyLeaseReports = (
       });
       continue;
     }
+
     const refreshed: LeaseRow = {
       ...lease,
       permits,
@@ -227,9 +243,11 @@ export const applyLeaseReports = (
       retired: retired ? 1 : 0,
       expires_at: retired ? lease.expires_at : now + policy.ttlMs,
     };
+
     store.updateLease(refreshed);
     outcome.echoes.push(toLeaseGrant(refreshed, now));
   }
+
   return outcome;
 };
 
@@ -269,6 +287,7 @@ export const allocateLeases = (
   const { now } = input;
   const grants = new Map<string, LeaseGrant[]>();
   const events: LeaseEvent[] = [];
+
   const echo = (lease: LeaseRow, grant: LeaseGrant): void => {
     const key = clientKey(lease.client_id, lease.client_channel);
     grants.set(key, [...(grants.get(key) ?? []), grant]);
@@ -277,9 +296,11 @@ export const allocateLeases = (
   let footprint = 0;
   const groupFootprint = new Map<string, number>();
   const usable = new Set<string>();
+
   for (const lease of store.listLeases()) {
     const group = input.policies.get(lease.grp) ?? {};
     let current = lease;
+
     // An unreported lease is retired, not swept: its client may be cut off
     // with work still running, so its footprint stays until it reports, as a
     // claimed grant permit stays until it is released.
@@ -307,6 +328,7 @@ export const allocateLeases = (
     const live = leaseFootprint(current);
     footprint += live;
     groupFootprint.set(lease.grp, (groupFootprint.get(lease.grp) ?? 0) + live);
+
     // An unreported lease is assumed fully drawn, as gatekeeper does.
     if (
       !current.retired &&
@@ -319,6 +341,7 @@ export const allocateLeases = (
   }
 
   const byGroup = new Map<string, LeaseCandidate[]>();
+
   for (const candidate of input.candidates) {
     if (
       !leaseEligible(policy, input.policies.get(candidate.group) ?? {}) ||
@@ -332,19 +355,24 @@ export const allocateLeases = (
     ) {
       continue;
     }
+
     const existing = byGroup.get(candidate.group) ?? [];
+
     const prior = existing.find(
       (c) =>
         c.clientId === candidate.clientId &&
         c.clientChannel === candidate.clientChannel
     );
+
     if (prior) {
       prior.oldestAt = Math.min(prior.oldestAt, candidate.oldestAt);
     } else {
       existing.push({ ...candidate });
     }
+
     byGroup.set(candidate.group, existing);
   }
+
   const chosen = [...byGroup.entries()]
     .map(([group, clients]) => ({
       group,
@@ -366,19 +394,24 @@ export const allocateLeases = (
   // the headroom their clients reported covers the excess. Their footprint
   // stays until each client confirms what it actually drew.
   let excess = footprint + input.unknownDebt - input.budget;
+
   if (excess > 0) {
     const live = store
       .listLeases()
       .filter((lease) => lease.expires_at > now && !lease.retired)
       .sort((a, b) => b.created_at - a.created_at);
+
     for (const lease of live) {
       if (excess <= 0) {
         break;
       }
+
       const drawn = input.drawn.get(lease.lease_id);
+
       if (drawn === undefined || drawn >= lease.permits) {
         continue;
       }
+
       const retired: LeaseRow = { ...lease, retired: 1 };
       store.updateLease(retired);
       excess -= lease.permits - drawn;
@@ -400,7 +433,9 @@ export const allocateLeases = (
     (n, clients) => n + clients.length,
     0
   );
+
   let remaining = Math.max(0, input.budget - footprint - input.unknownDebt);
+
   // With fewer permits than candidates, the oldest demand gets one each
   // rather than everyone getting a rounded-down share of nothing.
   const share = Math.min(
@@ -409,23 +444,30 @@ export const allocateLeases = (
   );
 
   let issued = 0;
+
   for (const candidate of chosen) {
     if (remaining <= 0) {
       break;
     }
+
     const group = input.policies.get(candidate.group) ?? {};
+
     const groupRoom =
       group.limit === undefined
         ? share
         : group.limit -
           (input.groupUsed.get(candidate.group) ?? 0) -
           (groupFootprint.get(candidate.group) ?? 0);
+
     const permits = Math.min(share, groupRoom, remaining);
+
     if (permits <= 0) {
       continue;
     }
+
     remaining -= permits;
     issued += 1;
+
     const lease: LeaseRow = {
       lease_id: crypto.randomUUID(),
       client_id: candidate.clientId,
@@ -437,6 +479,7 @@ export const allocateLeases = (
       expires_at: now + policy.ttlMs,
       retired: 0,
     };
+
     store.insertLease(lease);
     footprint += permits;
     groupFootprint.set(
@@ -455,5 +498,6 @@ export const allocateLeases = (
       permits,
     });
   }
+
   return { grants, footprint, events, unserved: issued < eligible };
 };

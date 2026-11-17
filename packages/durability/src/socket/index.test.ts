@@ -65,6 +65,7 @@ afterEach(() => {
 const createSocket = (storage = new FakeStorage()) => {
   const context = socketContextFor(storage);
   const todos: Todo[] = [];
+
   const socket = new DurabilitySocket({
     context,
     inbound: {
@@ -75,6 +76,7 @@ const createSocket = (storage = new FakeStorage()) => {
         handle: (todo: Todo, call: SocketCall<{ userId: string }>) => {
           todos.push(todo);
           socket.created({ ...todo, by: call.metadata.userId });
+
           return todo.id;
         },
       },
@@ -86,6 +88,7 @@ const createSocket = (storage = new FakeStorage()) => {
     metadata: (request) => ({ userId: request.headers.get('x-user')! }),
     retention: 3,
   });
+
   return { context, socket, todos };
 };
 
@@ -100,6 +103,7 @@ const connect = async (
 ) => {
   const response = await socket.fetch(upgrade(user));
   expect(response.status).toBe(101);
+
   return (response as Response & { webSocket: FakeWebSocket }).webSocket;
 };
 
@@ -131,7 +135,9 @@ describe('DurabilitySocket', () => {
 
   it('exposes inbound and outbound types through the socket shape', () => {
     const { socket } = createSocket();
+
     type Socket = typeof socket;
+
     expectTypeOf<
       SocketInboundOutput<InboundOf<Socket>['list']>
     >().toEqualTypeOf<Todo[]>();
@@ -233,6 +239,7 @@ describe('DurabilitySocket', () => {
     const [reply] = ws.frames() as [
       { error: { name: string; message: string } },
     ];
+
     expect(reply.error.name).toBe('SocketInputError');
     expect(reply.error.message).toMatch(/^Invalid input for "create": /);
     expect(new SocketInputError('x', [{ message: 'boom' }]).issues).toEqual([
@@ -262,6 +269,7 @@ describe('DurabilitySocket', () => {
 
   it('serializes handler errors by name and message', async () => {
     const context = socketContextFor(new FakeStorage());
+
     const socket = new DurabilitySocket({
       context,
       inbound: {
@@ -271,6 +279,7 @@ describe('DurabilitySocket', () => {
       },
       outbound: {},
     });
+
     await connect(socket);
     const ws = serverSide(context);
 
@@ -305,11 +314,13 @@ describe('DurabilitySocket', () => {
     await connect(socket, 'a');
     await connect(socket, 'b');
     await connect(socket, 'c');
+
     const [a, b, c] = context.sockets as [
       FakeWebSocket,
       FakeWebSocket,
       FakeWebSocket,
     ];
+
     await socket.webSocketMessage(
       a as unknown as WebSocket,
       frame({ type: 'subscribe', id: 's', names: ['removed'] })
@@ -329,6 +340,7 @@ describe('DurabilitySocket', () => {
       name: 'removed',
       payload: '1',
     };
+
     expect(a.frames()[a.frames().length - 1]).toEqual(removedEvent);
     expect(b.frames()[b.frames().length - 1]).toEqual(removedEvent);
     expect(c.frames()).toEqual([]);
@@ -390,9 +402,11 @@ describe('DurabilitySocket', () => {
   it('replays retained events after `since` and prunes beyond retention', async () => {
     const storage = new FakeStorage();
     const { context, socket } = createSocket(storage);
+
     for (const id of ['1', '2', '3', '4', '5']) {
       socket.removed(id);
     }
+
     expect(
       storage.sql
         .exec<{ seq: number }>(
@@ -418,9 +432,11 @@ describe('DurabilitySocket', () => {
 
   it('reports a snapshot is needed when `since` is missing, stale, or ahead', async () => {
     const { context, socket } = createSocket();
+
     for (const id of ['1', '2', '3', '4', '5']) {
       socket.removed(id);
     }
+
     await connect(socket);
     const ws = serverSide(context);
 
@@ -446,11 +462,13 @@ describe('DurabilitySocket', () => {
 
   it('rejects non-JSON outbound payloads before persisting them', () => {
     const context = socketContextFor(new FakeStorage());
+
     const socket = new DurabilitySocket({
       context,
       inbound: {},
       outbound: { tick: event<Date>() },
     });
+
     expect(() => socket.tick(new Date())).toThrow('Invalid JSON value');
   });
 });
@@ -474,12 +492,14 @@ const createChannelSocket = (
   retention = 3
 ) => {
   const label = channel ?? 'default';
+
   const socket = new DurabilitySocket({
     context,
     ...(channel === undefined ? {} : { channel }),
     inbound: {
       whoami: (_input: unknown, call: SocketCall<{ user: string }>) => {
         calls.push(label);
+
         return `${label}:${call.metadata.user}`;
       },
       publish: {
@@ -487,6 +507,7 @@ const createChannelSocket = (
         handle: (payload: string) => {
           calls.push(label);
           socket.changed(payload);
+
           return payload;
         },
       },
@@ -497,6 +518,7 @@ const createChannelSocket = (
     }),
     retention,
   });
+
   return socket;
 };
 
@@ -512,6 +534,7 @@ const connectServer = async (
   user?: string
 ) => {
   await connect(socket, user);
+
   return serverSide(context);
 };
 
@@ -581,6 +604,7 @@ describe('DurabilitySocket channels', () => {
         method: 'whoami',
       });
     }
+
     await send(library, appWs, {
       type: 'subscribe',
       id: 's',
@@ -686,6 +710,7 @@ describe('DurabilitySocket channels', () => {
       app.changed(`a${index}`);
       library.changed(`l${index}`);
     }
+
     for (const index of [4, 5, 6, 7, 8]) {
       app.changed(`a${index}`);
     }
@@ -821,6 +846,7 @@ describe('DurabilitySocket channels', () => {
     const library = createChannelSocket(first, 'library', firstCalls);
     const appWs = await connectServer(app, first);
     const libraryWs = await connectServer(library, first);
+
     for (const ws of [appWs, libraryWs]) {
       await send(app, ws, {
         type: 'subscribe',
@@ -828,15 +854,18 @@ describe('DurabilitySocket channels', () => {
         names: ['changed'],
       });
     }
+
     library.changed('before');
 
     const second = restart(first);
     const secondCalls: string[] = [];
+
     const restartedLibrary = createChannelSocket(
       second,
       'library',
       secondCalls
     );
+
     const restartedApp = createChannelSocket(second, undefined, secondCalls);
     await send(restartedApp, libraryWs, {
       type: 'call',
@@ -907,6 +936,7 @@ describe('DurabilitySocket channels', () => {
     const consoleError = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
+
     const first = socketContextFor(new FakeStorage());
     const library = createChannelSocket(first, 'library');
     createChannelSocket(first, undefined);
@@ -983,6 +1013,7 @@ describe('DurabilitySocket channels', () => {
       applied: ['durability_0006_create_socket_events'],
       rolledBack: [],
     });
+
     for (const payload of ['one', 'two', 'three']) {
       context.storage.sql.exec(
         'INSERT INTO durability_socket_events (name, payload, created_at) VALUES (?, ?, ?)',
@@ -991,6 +1022,7 @@ describe('DurabilitySocket channels', () => {
         1
       );
     }
+
     context.storage.sql.exec(
       'DELETE FROM durability_socket_events WHERE seq = 1'
     );

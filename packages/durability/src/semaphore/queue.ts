@@ -165,14 +165,17 @@ const outboxChannelFor = (channel: string): string =>
   channel === defaultChannel
     ? 'durability.semaphore-queue'
     : JSON.stringify(['durability.semaphore-queue', channel]);
+
 /** Half the holder's default grantTimeoutMs. */
 const maxReportRetryMs = 5_000;
+
 /** Queued items read per key when building a request's demand. */
 const demandScanLimit = 200;
 const maxDelayMs = 2 ** 31 - 1;
 
 const pairKey = (key: string, second: string): string =>
   JSON.stringify([key, second]);
+
 const parsePairKey = (value: string): [string, string] =>
   JSON.parse(value) as [string, string];
 
@@ -209,6 +212,7 @@ const renewal = (
   expiresAt: number
 ): Pick<QueueLeaseRow, 'renew_at' | 'renew_ms'> => {
   const renewMs = Math.max(1_000, Math.floor((expiresAt - now) / 2));
+
   return { renew_at: now + renewMs, renew_ms: renewMs };
 };
 
@@ -245,12 +249,15 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       'Semaphore queue',
       config.channel ?? defaultChannel
     );
+
     if (typeof config.clientId !== 'string' || config.clientId.length === 0) {
       throw new TypeError('clientId must be a non-empty string');
     }
+
     if (typeof config.admit !== 'function') {
       throw new TypeError('Semaphore queue requires an admit function');
     }
+
     this.#server = config.server;
     this.#identity =
       channel === defaultChannel
@@ -261,25 +268,31 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
             clientChannel: channel,
           };
     this.#admit = config.admit;
+
     if (
       config.finished !== undefined &&
       typeof config.finished !== 'function'
     ) {
       throw new TypeError('finished must be a function');
     }
+
     this.#finished = config.finished;
     this.#finishedCheckMs = config.finishedCheckMs ?? 60_000;
     assertPositiveInteger('finishedCheckMs', this.#finishedCheckMs);
+
     if (this.#finishedCheckMs > maxDelayMs) {
       throw new RangeError(`finishedCheckMs must be at most ${maxDelayMs}`);
     }
+
     this.#maxAdmitBatch = config.maxAdmitBatch ?? 100;
     assertPositiveInteger('maxAdmitBatch', this.#maxAdmitBatch);
     this.#attemptTimeoutMs = config.attemptTimeoutMs ?? 60_000;
     assertPositiveInteger('attemptTimeoutMs', this.#attemptTimeoutMs);
+
     if (this.#attemptTimeoutMs > maxDelayMs) {
       throw new RangeError(`attemptTimeoutMs must be at most ${maxDelayMs}`);
     }
+
     this.#delay =
       config.retries?.delay ?? ((attempt) => jitter(exponential(attempt)));
 
@@ -357,6 +370,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   ): Promise<{ queued: string[]; duplicates: string[] }> {
     const rows = items.map((item): QueueItemRow => {
       const id = item.id ?? crypto.randomUUID();
+
       if (
         typeof id !== 'string' ||
         id.length === 0 ||
@@ -368,7 +382,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           'Semaphore items need a non-empty id, a semaphore key, and a string group'
         );
       }
+
       const now = Date.now();
+
       return {
         id,
         key: item.key,
@@ -389,6 +405,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       const store = this.#store;
       const inserted: QueueItemRow[] = [];
       const existing: string[] = [];
+
       for (const row of rows) {
         if (store.insertItem(row)) {
           inserted.push(row);
@@ -396,10 +413,12 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           existing.push(row.id);
         }
       }
+
       for (const key of new Set(inserted.map((row) => row.key))) {
         this.#claimLocally(key);
         this.#refreshKey(key);
       }
+
       return { queued: inserted, duplicates: existing };
     });
 
@@ -413,6 +432,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         group: row.grp,
       });
     }
+
     return { queued: queued.map((row) => row.id), duplicates };
   }
 
@@ -421,14 +441,19 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     const released = await this.#engine.transaction(() => {
       const store = this.#store;
       const item = store.getItem(id);
+
       if (!item || item.status !== 'admitted') {
         return undefined;
       }
+
       store.removeItem(id);
+
       if (item.lease_id !== null) {
         const lease = store.getLease(item.lease_id);
+
         if (lease) {
           const returned = lease.released + 1;
+
           // A spent lease is retired; its row is dropped later, in #runDue.
           const updated = {
             ...lease,
@@ -438,19 +463,23 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
                 ? Math.min(lease.expires_at, Date.now())
                 : lease.expires_at,
           };
+
           store.updateLease(updated);
           this.#stageLeaseReport(updated);
         }
       } else if (item.grant_id !== null) {
         const grant = store.getGrant(item.grant_id);
+
         if (grant) {
           const updated = { ...grant, released: grant.released + 1 };
           store.updateGrant(updated);
           this.#stageReport(updated);
         }
       }
+
       return item;
     });
+
     if (!released) {
       return false;
     }
@@ -463,6 +492,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       key: released.key,
       group: released.grp,
     });
+
     return true;
   }
 
@@ -471,13 +501,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     const cancelled = await this.#engine.transaction(() => {
       const store = this.#store;
       const item = store.getItem(id);
+
       if (!item || item.status !== 'queued') {
         return undefined;
       }
+
       store.removeItem(id);
       this.#refreshKey(item.key);
+
       return item;
     });
+
     if (!cancelled) {
       return false;
     }
@@ -490,14 +524,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       key: cancelled.key,
       group: cancelled.grp,
     });
+
     return true;
   }
 
   async status(id: string): Promise<SemaphoreItemStatus | undefined> {
     const item = this.#store.getItem(id);
+
     if (!item) {
       return undefined;
     }
+
     if (item.status === 'admitted') {
       return {
         state: 'admitted',
@@ -505,10 +542,13 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         admittedAt: item.admitted_at ?? item.created_at,
       };
     }
+
     if (item.status === 'claiming') {
       return { state: 'claiming', enqueuedAt: item.created_at };
     }
+
     const blocked = this.#blocked.get(pairKey(item.key, item.grp));
+
     return blocked === undefined
       ? { state: 'queued', enqueuedAt: item.created_at }
       : { state: 'queued', enqueuedAt: item.created_at, blocked };
@@ -559,6 +599,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     ) {
       return true;
     }
+
     reportFailure(
       'durability.semaphore_queue.channel_not_acknowledged',
       { key, channel: this.#identity.clientChannel ?? defaultChannel },
@@ -566,34 +607,41 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         `The holder of "${key}" did not acknowledge semaphore queue channel "${this.#identity.clientChannel ?? defaultChannel}"`
       )
     );
+
     return false;
   }
 
   /** Asks the holder for permits covering this key's queued items. */
   async #request(key: string): Promise<void> {
     this.#requesting.add(key);
+
     try {
       const store = this.#store;
       const queued = store.listItems(key, 'queued', demandScanLimit);
       const grants = store.listGrants(key);
       const leases = store.listLeases(key);
+
       if (queued.length === 0) {
         await this.#engine.transaction(() => {
           this.#refreshKey(key);
         });
+
         return;
       }
 
       const demand = new Map<string, { count: number; oldestAt: number }>();
+
       for (const item of queued) {
         const entry = demand.get(item.grp) ?? {
           count: 0,
           oldestAt: item.created_at,
         };
+
         entry.count += 1;
         entry.oldestAt = Math.min(entry.oldestAt, item.created_at);
         demand.set(item.grp, entry);
       }
+
       const message: PermitRequest = {
         type: 'request',
         ...this.#identity,
@@ -615,6 +663,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       });
 
       let grant: PermitGrant;
+
       try {
         grant = await this.#deadline('request', () =>
           this.#server.request(key, message)
@@ -626,19 +675,23 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           error
         );
         await this.#retryAfter(key, queued.length, this.#retryDelay(1));
+
         return;
       }
+
       if (!this.#acknowledged(key, grant)) {
         // Unclaimed grants return to the holder's pool at its grant timeout;
         // delay another request when a holder answers with a mismatched
         // version or channel instead of repeatedly reserving more capacity.
         await this.#retryAfter(key, queued.length, this.#attemptTimeoutMs);
+
         return;
       }
 
       try {
         await this.#engine.transaction(() => {
           const txStore = this.#store;
+
           for (const given of grant.grants) {
             txStore.insertGrant({
               grant_id: given.grantId,
@@ -652,16 +705,21 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
               created_at: Date.now(),
             });
           }
+
           this.#applyLeaseGrants(key, grant.leases ?? []);
           this.#claimLocally(key);
           this.#applyResults(key, grant.grantResults);
+
           if (grant.contended) {
             this.#returnIdleLeases(key);
           }
+
           const remaining = this.#refreshKey(key, grant.nextRequestAt);
+
           for (const group of new Set(remaining.map((item) => item.grp))) {
             this.#blocked.delete(pairKey(key, group));
           }
+
           for (const { group, reason } of grant.blocked) {
             this.#blocked.set(pairKey(key, group), reason);
           }
@@ -674,11 +732,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       }
 
       const counts = new Map<string, number>();
+
       for (const item of store.listItems(key, 'queued', demandScanLimit)) {
         counts.set(item.grp, (counts.get(item.grp) ?? 0) + 1);
       }
+
       for (const { group, reason } of grant.blocked) {
         const count = counts.get(group) ?? 0;
+
         if (count > 0) {
           this.#emit({
             entityKind: 'semaphore_item',
@@ -702,23 +763,30 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
    */
   #claimLocally(key: string): void {
     const store = this.#store;
+
     const grants = store
       .listGrants(key)
       .filter((grant) => grant.claimed < grant.permits);
+
     if (grants.length === 0) {
       this.#drawLeases(key);
+
       return;
     }
+
     const queued = store.listItems(key, 'queued', demandScanLimit);
     const touched = new Map<string, QueueGrantRow>();
+
     for (const item of queued) {
       const grant = grants.find(
         (candidate) =>
           candidate.grp === item.grp && candidate.claimed < candidate.permits
       );
+
       if (!grant) {
         continue;
       }
+
       grant.claimed += 1;
       touched.set(grant.grant_id, grant);
       store.updateItem({
@@ -727,10 +795,12 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         grant_id: grant.grant_id,
       });
     }
+
     for (const grant of touched.values()) {
       store.updateGrant(grant);
       this.#stageReport(grant);
     }
+
     this.#drawLeases(key);
   }
 
@@ -742,21 +812,27 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   #drawLeases(key: string): void {
     const store = this.#store;
     const now = Date.now();
+
     const leases = store
       .listLeases(key)
       .filter((lease) => drawable(lease, now));
+
     if (leases.length === 0) {
       return;
     }
+
     const queued = store.listItems(key, 'queued', demandScanLimit);
     const touched = new Map<string, QueueLeaseRow>();
+
     for (const item of queued) {
       const lease = leases.find(
         (candidate) => candidate.grp === item.grp && drawable(candidate, now)
       );
+
       if (!lease) {
         continue;
       }
+
       lease.drawn += 1;
       touched.set(lease.lease_id, lease);
       store.updateItem({
@@ -769,6 +845,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         next_attempt_at: now,
       });
     }
+
     for (const lease of touched.values()) {
       store.updateLease(lease);
       this.#stageLeaseReport(lease);
@@ -783,9 +860,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   #returnIdleLeases(key: string): void {
     const store = this.#store;
     const now = Date.now();
+
     const waiting = new Set(
       store.listItems(key, 'queued', demandScanLimit).map((item) => item.grp)
     );
+
     for (const lease of store.listLeases(key)) {
       if (
         retiredLocally(lease, now) ||
@@ -794,6 +873,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       ) {
         continue;
       }
+
       const returned = { ...lease, permits: lease.drawn, expires_at: now };
       store.updateLease(returned);
       this.#stageLeaseReport(returned);
@@ -808,20 +888,25 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   #applyLeaseGrants(key: string, grants: LeaseGrant[]): void {
     const store = this.#store;
     const now = Date.now();
+
     for (const grant of grants) {
       const lease = store.getLease(grant.leaseId);
+
       if (grant.expiresAt <= now) {
         if (!lease) {
           continue;
         }
+
         if (retiredLocally(lease, now)) {
           // The holder settles a stopped lease by echoing it with nothing left
           // counted; until then this client keeps reporting it.
           if (grant.permits <= lease.released && !lease.confirmed) {
             store.updateLease({ ...lease, confirmed: 1 });
           }
+
           continue;
         }
+
         // The holder keeps counting the whole lease until this report says
         // how much was drawn by the time drawing stopped.
         const retired = { ...lease, permits: lease.drawn, expires_at: now };
@@ -829,6 +914,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         this.#stageLeaseReport(retired);
         continue;
       }
+
       if (lease) {
         // A refresh sent before this client retired the lease must not revive it.
         if (!retiredLocally(lease, now)) {
@@ -838,8 +924,10 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
             ...renewal(now, grant.expiresAt),
           });
         }
+
         continue;
       }
+
       store.insertLease({
         lease_id: grant.leaseId,
         key,
@@ -864,6 +952,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     if (this.#store.listRenewalsDue(now, 1).length === 0) {
       return;
     }
+
     await this.#engine.transaction(() => {
       for (const lease of this.#store.listRenewalsDue(now, 100)) {
         this.#store.updateLease({ ...lease, renew_at: now + lease.renew_ms });
@@ -881,11 +970,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   #applyResults(key: string, results: GrantResult[]): void {
     const store = this.#store;
     const now = Date.now();
+
     for (const result of results) {
       const grant = store.getGrant(result.grantId);
+
       if (!grant || grant.key !== key) {
         continue;
       }
+
       const claiming = store
         .listItemsByGrant(grant.grant_id)
         .filter((item) => item.status === 'claiming');
@@ -894,10 +986,12 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         result.status === 'not_found'
           ? grant.admitted
           : Math.max(grant.confirmed, result.claimed);
+
       const admitNow = claiming.slice(
         0,
         Math.max(0, confirmed - grant.admitted)
       );
+
       for (const item of admitNow) {
         store.updateItem({
           ...item,
@@ -908,17 +1002,20 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           next_attempt_at: now,
         });
       }
+
       let updated: QueueGrantRow = {
         ...grant,
         confirmed,
         admitted: grant.admitted + admitNow.length,
       };
+
       if (result.status !== 'ok') {
         // The holder reclaimed (or forgot) what was not confirmed: those items
         // queue again, and the grant shrinks to what was actually admitted.
         for (const item of claiming.slice(admitNow.length)) {
           store.updateItem({ ...item, status: 'queued', grant_id: null });
         }
+
         updated = {
           ...updated,
           permits: updated.admitted,
@@ -926,6 +1023,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           confirmed: updated.admitted,
         };
       }
+
       if (
         updated.released >= updated.permits &&
         updated.confirmed >= updated.permits
@@ -945,14 +1043,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     const store = this.#store;
     const queued = store.listItems(key, 'queued', demandScanLimit);
     const current = store.getKey(key);
+
     if (queued.length === 0 && !current && nextRequestAt === undefined) {
       return queued;
     }
+
     store.upsertKey({
       key,
       queued: queued.length,
       next_request_at: nextRequestAt ?? current?.next_request_at ?? Date.now(),
     });
+
     return queued;
   }
 
@@ -982,18 +1083,22 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   /** Outbox sink: one `sync` per key; a failed key keeps its entries pending. */
   async #publishReports(entries: OutboxEntry<Report>[]): Promise<void> {
     const byKey = new Map<string, OutboxEntry<Report>[]>();
+
     for (const entry of entries) {
       const [key] = parsePairKey(entry.key);
       byKey.set(key, [...(byKey.get(key) ?? []), entry]);
     }
+
     await Promise.all(
       [...byKey].map(async ([key, keyEntries]) => {
         const grants: GrantReport[] = [];
         const leases: LeaseReport[] = [];
+
         for (const entry of keyEntries) {
           const id = parsePairKey(entry.key)[1].slice(
             entry.value.kind.length + 1
           );
+
           if (entry.value.kind === 'grant') {
             grants.push({
               grantId: id,
@@ -1009,7 +1114,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
             });
           }
         }
+
         let synced: PermitSyncResult;
+
         try {
           synced = await this.#deadline('sync', () =>
             this.#server.sync(key, {
@@ -1025,31 +1132,40 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
             { key },
             error
           );
+
           for (const entry of keyEntries) {
             entry.retry();
           }
+
           return;
         }
+
         if (!this.#acknowledged(key, synced)) {
           // The reports stay pending: claims stay unconfirmed and items stay
           // stored until a holder that knows the channel answers.
           for (const entry of keyEntries) {
             entry.retry();
           }
+
           return;
         }
+
         await this.#engine.transaction(() => {
           this.#applyResults(key, synced.grantResults);
           this.#applyLeaseGrants(key, synced.leases ?? []);
+
           if (synced.contended) {
             this.#returnIdleLeases(key);
           }
+
           this.#refreshKey(key);
         });
       })
     );
+
     const onError = (error: unknown) =>
       reportFailure('durability.semaphore_queue.notify_failed', {}, error);
+
     this.#engine.waitUntil(this.#notify().catch(onError), onError);
   }
 
@@ -1060,12 +1176,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     }
 
     const finished = this.#finished;
+
     if (!finished || this.#store.listCheckDue(now, 1).length === 0) {
       return;
     }
 
     this.#checking = this.#checkFinished(now, finished).finally(() => {
       this.#checking = undefined;
+
       return this.#engine.scheduleNextAlarm();
     });
 
@@ -1079,17 +1197,23 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     // Schedule the next check before asking, as admit() claims its batch: rows
     // left due while finished() runs would re-arm the alarm at once.
     const later = now + this.#finishedCheckMs;
+
     const due = await this.#engine.transaction(() => {
       const rows = this.#store.listCheckDue(now, this.#maxAdmitBatch);
+
       for (const row of rows) {
         this.#store.updateItem({ ...row, next_attempt_at: later });
       }
+
       return rows;
     });
+
     if (due.length === 0) {
       return;
     }
+
     let done: string[] = [];
+
     try {
       done = await this.#deadline('finished', () =>
         finished(due.map((row) => row.id))
@@ -1101,7 +1225,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         error
       );
     }
+
     const asked = new Set(due.map((row) => row.id));
+
     for (const id of new Set(done)) {
       if (asked.has(id)) {
         // eslint-disable-next-line no-await-in-loop
@@ -1117,12 +1243,14 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
     }
 
     const due = this.#store.listUnnotified(Date.now(), this.#maxAdmitBatch);
+
     if (due.length === 0) {
       return;
     }
 
     this.#notifying = this.#notifyBatch(due).finally(() => {
       this.#notifying = undefined;
+
       return this.#engine.scheduleNextAlarm();
     });
 
@@ -1131,26 +1259,34 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
 
   async #notifyBatch(due: QueueItemRow[]): Promise<void> {
     const release = await this.#engine.acquirePermit();
+
     try {
       const deadline = Date.now() + this.#attemptTimeoutMs;
+
       // Claim the batch so a concurrent alarm cannot notify the same items.
       const claimed = await this.#engine.transaction(() => {
         const rows: QueueItemRow[] = [];
+
         for (const item of due) {
           const current = this.#store.getItem(item.id);
+
           if (!current || current.status !== 'admitted' || current.notified) {
             continue;
           }
+
           const row = {
             ...current,
             attempt: current.attempt + 1,
             next_attempt_at: deadline,
           };
+
           this.#store.updateItem(row);
           rows.push(row);
         }
+
         return rows;
       });
+
       if (claimed.length === 0) {
         return;
       }
@@ -1166,7 +1302,9 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           via: row.lease_id === null ? 'grant' : 'lease',
         })
       );
+
       let failure: unknown;
+
       try {
         await this.#deadline('admit', () => this.#admit(admitted));
       } catch (error) {
@@ -1176,9 +1314,11 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
       await this.#engine.transaction(() => {
         for (const row of claimed) {
           const current = this.#store.getItem(row.id);
+
           if (!current || current.attempt !== row.attempt) {
             continue;
           }
+
           this.#store.updateItem(
             failure === undefined
               ? {
@@ -1193,14 +1333,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
           );
         }
       });
+
       if (failure !== undefined) {
         reportFailure(
           'durability.semaphore_queue.admit_failed',
           { count: claimed.length, error: serializeError(failure).message },
           failure
         );
+
         return;
       }
+
       for (const item of admitted) {
         this.#emit({
           entityKind: 'semaphore_item',
@@ -1220,6 +1363,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   #retryDelay(attempt: number): number {
     try {
       const delay = Math.round(this.#delay(attempt));
+
       if (Number.isSafeInteger(delay) && delay >= 0 && delay <= maxDelayMs) {
         return delay;
       }
@@ -1230,6 +1374,7 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
         error
       );
     }
+
     return 60_000;
   }
 

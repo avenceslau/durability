@@ -123,11 +123,14 @@ export type DurabilityTrackerConfig<Sources extends TrackerSources> = {
 };
 
 type AnyResult = TrackedResult<unknown>;
+
 type AnyItem = UntypedRecord & { source: string };
+
 type AnyHandle = AnyItem & {
   get(): Promise<AnyResult>;
   wait(options: TrackedWaitOptions): Promise<AnyResult>;
 };
+
 type Found = { source: UntypedSource; item: AnyItem };
 
 const limitSchema = v.pipe(
@@ -136,6 +139,7 @@ const limitSchema = v.pipe(
   v.minValue(1),
   v.maxValue(100)
 );
+
 const cursorSchema = v.strictTuple([
   v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   v.nullable(v.string()),
@@ -198,6 +202,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const { found, cursor } = await this.#collect(query);
     const items = found.map(({ source, item }) => this.#handle(source, item));
     const page = cursor === undefined ? { items } : { items, cursor };
+
     return page as unknown as TrackerPage<Sources, Key>;
   }
 
@@ -211,6 +216,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     const { found, cursor } = await this.#collect(query);
     const records = found.map(({ item }) => item);
     const page = cursor === undefined ? { records } : { records, cursor };
+
     return page as unknown as TrackerRecordPage<Sources, Key>;
   }
 
@@ -221,9 +227,11 @@ export class DurabilityTracker<Sources extends TrackerSources> {
   ): Promise<TrackerHandle<Sources, Key> | undefined> {
     const [key, resolved] = this.#source(source);
     const record = await resolved.get(id);
+
     if (!record) {
       return undefined;
     }
+
     return this.#handle(
       resolved,
       itemFor(key, record)
@@ -234,16 +242,20 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     query: TrackerQuery<Sources, SourceKey<Sources>>
   ): Promise<{ found: Found[]; cursor: string | undefined }> {
     const limit = v.parse(limitSchema, query.limit ?? 50);
+
     const candidates =
       query.source === undefined ? this.#sources : [this.#source(query.source)];
+
     const [start, startCursor] =
       query.cursor === undefined
         ? [0, null]
         : v.parse(cursorSchema, JSON.parse(query.cursor));
 
     const found: Found[] = [];
+
     for (const [offset, [key, source]] of candidates.slice(start).entries()) {
       const index = start + offset;
+
       if (found.length >= limit) {
         return { found, cursor: JSON.stringify([index, null]) };
       }
@@ -256,21 +268,26 @@ export class DurabilityTracker<Sources extends TrackerSources> {
         status: query.status,
         name: query.name,
       });
+
       for (const record of page.records) {
         found.push({ source, item: itemFor(key, record) });
       }
+
       if (page.cursor !== undefined) {
         return { found, cursor: JSON.stringify([index, page.cursor]) };
       }
     }
+
     return { found, cursor: undefined };
   }
 
   #source(key: string): [string, UntypedSource] {
     const found = this.#sources.find(([candidate]) => candidate === key);
+
     if (!found) {
       throw new Error(`Unknown tracked source "${key}"`);
     }
+
     return found;
   }
 
@@ -288,6 +305,7 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     options: TrackedWaitOptions
   ): Promise<AnyResult> {
     const timeoutMs = options?.timeoutMs;
+
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) {
       return Promise.reject(
         new RangeError('timeoutMs must be a non-negative safe integer')
@@ -295,39 +313,50 @@ export class DurabilityTracker<Sources extends TrackerSources> {
     }
 
     const read = async () => resultFor(entry, await source.get(entry.id));
+
     return new Promise<AnyResult>((resolve, reject) => {
       let done = false;
       let unwatch: (() => void) | undefined;
       let cancelTimeout: (() => void) | undefined;
+
       const finish = (settle: () => void) => {
         if (done) {
           return;
         }
+
         done = true;
         cancelTimeout?.();
         unwatch?.();
         settle();
       };
+
       const fail = (error: unknown) => finish(() => reject(error));
+
       const resolveIfSettled = (result: AnyResult) => {
         if (result.status !== 'pending') {
           finish(() => resolve(result));
         }
       };
+
       const check = (settled?: UntypedRecord) => {
         if (settled) {
           resolveIfSettled(resultFor(entry, settled));
+
           return;
         }
+
         read().then(resolveIfSettled, fail);
       };
 
       // Subscribe before the first read so a settlement in between is not missed.
       unwatch = source.watch?.(entry.id, check);
+
       if (done) {
         unwatch?.();
+
         return;
       }
+
       cancelTimeout = this.#timer.schedule(() => {
         read().then((result) => finish(() => resolve(result)), fail);
       }, timeoutMs);
