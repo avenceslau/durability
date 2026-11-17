@@ -664,6 +664,57 @@ describe('fifo queue', () => {
     expect(await stores.getByName(queue).deliveries('held')).toEqual([]);
   });
 
+  const messagesHeld = (state: DurableObjectState): number =>
+    state.storage.sql
+      .exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM durability_log_records'
+      )
+      .one().count;
+
+  it('deletes messages once every target has acknowledged them', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'running');
+    await addTarget(queue, 'held', { paused: true });
+    await produce(queue, [
+      { key: 'k', body: 1 },
+      { key: 'k', body: 2 },
+      { key: 'k', body: 3 },
+    ]);
+    await received(queue, 'running', 3);
+    const partition = await partitionWith(queue, 3);
+    const settledBy = (target: string) =>
+      waitFor(
+        async () => (await overview(queue)).partitions[0]?.targets[target],
+        (progress) => progress?.settled === 3
+      );
+    await settledBy('running');
+
+    // A settled message is kept for a minute, so the test makes the messages
+    // older than that and runs the sweep itself.
+    const heldAfterSweep = () =>
+      runInDurableObject(partition, async (instance, state) => {
+        state.storage.sql.exec(
+          'UPDATE durability_log_records SET appended_at = appended_at - 120000'
+        );
+        await (
+          instance as unknown as { enforceRetention(): Promise<void> }
+        ).enforceRetention();
+        return messagesHeld(state);
+      });
+
+    // `held` has received none of them yet.
+    expect(await heldAfterSweep()).toBe(3);
+
+    await resume(queue, 'held');
+    await settledBy('held');
+    expect(await heldAfterSweep()).toBe(0);
+
+    // What is sent next follows what was deleted.
+    await produce(queue, [{ key: 'k', body: 4 }]);
+    const byKey = bodiesByKey(await received(queue, 'held', 4));
+    expect(byKey['k']).toEqual([1, 2, 3, 4]);
+  });
+
   const gigabyte = 1024 ** 3;
 
   /**
@@ -1244,8 +1295,17 @@ describe('fifo queue', () => {
     await produce(queue, [{ key: 'k', body: 1 }]);
     await received(queue, 'kept', 1);
     expect(await stores.getByName(queue).deliveries('dropped')).toEqual([]);
+    const partition = await partitionWith(queue, 1);
 
     await expectOk(await admin(`/queues/${queue}`, 'DELETE'));
+    // The partition deletes what it held, however recent.
+    await waitFor(
+      () =>
+        runInDurableObject(partition, (_instance, object) =>
+          messagesHeld(object)
+        ),
+      (held) => held === 0
+    );
     // A deletion can be repeated, as after one that failed halfway.
     await expectOk(await admin(`/queues/${queue}`, 'DELETE'));
     expect((await admin(`/queues/${queue}`)).status).toBe(409);

@@ -477,9 +477,11 @@ ticking and can be evicted.
   longer sample interval first.
 - **Thresholds.** The autoscaler's target rates and cooldowns, and the request rate one
   limiter should carry, are starting points, not measurements of your workload.
-- **Retention.** A message lives 4 days, delivered or not. A partition holds up to 512 MB
-  itself and keeps the rest of an undelivered backlog in R2; targets that are behind read
-  from both. Only pull consumers have the longer, configurable retention of the
+- **Retention.** A message every target has settled is deleted from its partition a minute
+  later; the minute lets the partition recognise a repeated send and serve a target added
+  a moment ago. One that some target has not settled lives 4 days at most. A partition
+  holds up to 512 MB itself and keeps the rest of an undelivered backlog in R2; targets
+  that are behind read from both. Only pull consumers have the longer, configurable retention of the
   pull bucket.
 - **Pull consumer visibility.** The dashboard shows the pull target writing to the bucket,
   not how far each consumer has read.

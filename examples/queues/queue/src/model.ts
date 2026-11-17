@@ -34,7 +34,10 @@ export const sendSchema = v.object({
     v.array(
       v.object({
         body: v.unknown(),
-        /** Sending the same id again while the message is retained is a no-op. */
+        /**
+         * Sending the same id again is a no-op while the partition keeps the
+         * message: at least a minute, longer while a target still needs it.
+         */
         id: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
       })
     ),
@@ -239,6 +242,12 @@ export type PartitionSample = PartitionIdentity & {
   withoutTarget: number;
   /** False once a resize replaced this partition; it then only delivers. */
   accepting: boolean;
+  /**
+   * Messages in the partition's own storage, and objects of its backlog in
+   * R2. Absent on samples stored before these were reported.
+   */
+  held?: number;
+  backlogObjects?: number;
   targets: Record<string, TargetProgress>;
 };
 
@@ -316,6 +325,9 @@ export type Point = {
   /** Messages dead-lettered because the queue had no target to deliver them to. */
   withoutTarget: number;
   partitions: number;
+  /** What the partitions store: messages themselves, and backlog objects in R2. */
+  held?: number;
+  backlogObjects?: number;
   targets: Record<string, TargetTotals>;
   permits?: {
     limit: number;
@@ -343,6 +355,9 @@ export type QueueSummary = {
   deliveredPerSecond: number;
   backlog: number;
   deadLettered: number;
+  /** Messages in the partitions' own storage, and backlog objects in R2. */
+  held: number;
+  backlogObjects: number;
 };
 
 export type Overview = {

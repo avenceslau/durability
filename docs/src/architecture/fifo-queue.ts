@@ -602,7 +602,7 @@ export const walkthrough = validateWalkthrough({
     },
     log: {
       description:
-        'The partition’s SQLite: messages by offset and one position per target. For targets that answer per message, a pending table holds every message handed out and not yet settled, and every message held behind a retried one of its key. Messages stay until retention removes them (4 days or 512 MB), whatever the positions are.',
+        'The partition’s SQLite: messages by offset and one position per target. For targets that answer per message, a pending table holds every message handed out and not yet settled, and every message held behind a retried one of its key. A message every target has settled is deleted a minute later; the others stay until retention removes them (4 days) or moves them to R2 (past 512 MB).',
       href: '/primitives/log/',
       source: 'claim',
     },

@@ -89,6 +89,16 @@ const retentionBytes = 512 * 1024 * 1024;
 /** Returned for a run of messages nobody needs, so nothing is written for it. */
 const droppedSegment = 'dropped';
 const retentionSweepMs = 60_000;
+/**
+ * A message every target has acknowledged or given up on is deleted once it
+ * is this old. It is kept that long for two things only its partition can
+ * do: recognise a send repeated with the same ids, and hand a target that
+ * was added moments ago what was sent after it.
+ */
+const keepSettledMs = 60_000;
+/** Settled messages are deleted this often at most, and this many at a time. */
+const discardEveryMs = 5_000;
+const discardedPerPass = 20_000;
 /** Must outlast the longest target timeout, or a batch is redelivered while it runs. */
 const leaseMs = 60_000;
 /** One alarm run delivers for this long, then hands over to the next run. */
@@ -290,6 +300,9 @@ export class Partition extends DurableObject<Cloudflare.Env> {
    * target has received the message, or given up on it.
    */
   private async neededFrom(): Promise<number> {
+    if (this.ctx.storage.kv.get<boolean>('queueDeleted')) {
+      return Infinity;
+    }
     const config = this.config;
     if (!config) {
       return 0;
@@ -384,13 +397,16 @@ export class Partition extends DurableObject<Cloudflare.Env> {
    */
   private async dropBacklogSegments(): Promise<number | undefined> {
     const neededFrom = await this.neededFrom();
+    const atOnce = 1_000;
     const done = this.sql
       .exec<{ first_offset: number; object_key: string }>(
         `SELECT first_offset, object_key FROM backlog_segments
          WHERE last_offset < ? OR newest_at < ?
-         ORDER BY first_offset LIMIT 1000`,
-        neededFrom,
-        Date.now() - retentionMs
+         ORDER BY first_offset LIMIT ?`,
+        // SQLite has no infinity to compare with.
+        Math.min(neededFrom, Number.MAX_SAFE_INTEGER),
+        Date.now() - retentionMs,
+        atOnce
       )
       .toArray();
     if (done.length > 0) {
@@ -413,6 +429,9 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     // before the oldest kept segment is gone.
     const { hotOffset } = await this.log.bounds();
     await this.log.forgetColdBefore(oldest?.first_offset ?? hotOffset);
+    if (done.length === atOnce) {
+      return Date.now() + 1;
+    }
     return oldest === undefined
       ? undefined
       : oldest.newest_at + retentionMs + 1;
@@ -576,13 +595,16 @@ export class Partition extends DurableObject<Cloudflare.Env> {
    * The offset of the first message stored at or after `time`, or the end of
    * the log. Messages are stored in time order, so it is found by halving.
    */
-  private async firstOffsetSince(time: number | undefined): Promise<number> {
+  private async firstOffsetSince(
+    time: number | undefined,
+    within?: { from: number; to: number }
+  ): Promise<number> {
     const { oldestOffset, nextOffset } = await this.log.bounds();
     if (time === undefined) {
       return nextOffset;
     }
-    let from = oldestOffset;
-    let to = nextOffset;
+    let from = within?.from ?? oldestOffset;
+    let to = within?.to ?? nextOffset;
     while (from < to) {
       const middle = Math.floor((from + to) / 2);
       // eslint-disable-next-line no-await-in-loop
@@ -622,11 +644,46 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Trims the log and the partition's batches in the pull bucket, then
-   * schedules the next sweep for whichever of the two is due first.
+   * Deletes what the partition still holds of the messages no target needs
+   * any more, once they are old enough. Resolves to when more of them will
+   * be, if any are left; a delivery asks for a sweep of its own.
+   */
+  private async discardSettled(): Promise<number | undefined> {
+    const { hotOffset, nextOffset } = await this.log.bounds();
+    const settledBelow = Math.min(await this.neededFrom(), nextOffset);
+    if (settledBelow <= hotOffset) {
+      return undefined;
+    }
+    // Nothing of a deleted queue will be sent again or handed to a target.
+    const through = this.ctx.storage.kv.get<boolean>('queueDeleted')
+      ? settledBelow
+      : await this.firstOffsetSince(Date.now() - keepSettledMs, {
+          from: hotOffset,
+          to: settledBelow,
+        });
+    const discarded = await this.log.discardBefore(through, discardedPerPass);
+    if (discarded === discardedPerPass) {
+      return Date.now() + 1;
+    }
+    const tooYoung =
+      through < settledBelow ? await this.recordAt(through) : undefined;
+    return tooYoung === undefined
+      ? undefined
+      : Math.max(
+          tooYoung.appendedAt + keepSettledMs,
+          Date.now() + discardEveryMs
+        );
+  }
+
+  /**
+   * Deletes settled messages, trims the log and the partition's batches in
+   * the pull bucket, then schedules the next sweep for whichever is due
+   * first.
    */
   private async enforceRetention(): Promise<void> {
     this.ctx.storage.kv.delete('sweepAt');
+    const { hotOffset: heldFrom } = await this.log.bounds();
+    const settledDue = await this.discardSettled();
     await this.log.trim();
     const segmentsDue = await this.dropBacklogSegments();
     // A sweep that throws is retried a few times and then dropped, which
@@ -646,12 +703,18 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         : Math.max(oldest.appendedAt + retentionMs, Date.now()) + 1;
 
     const next = Math.min(
+      settledDue ?? Infinity,
       logDue ?? Infinity,
       pullLogDue ?? Infinity,
       segmentsDue ?? Infinity
     );
     if (Number.isFinite(next)) {
       await this.sweepBy(next);
+    }
+    // The partition holds less than it reported, and an idle one has
+    // nothing else to make it report again.
+    if (hotOffset !== heldFrom) {
+      await this.stageSample(true);
     }
   }
 
@@ -789,9 +852,16 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     return sample;
   }
 
-  /** The queue was deleted: stop delivering, reporting, and accepting. */
-  stopForDeletedQueue(): void {
+  /**
+   * The queue was deleted: stop delivering, reporting, and accepting, and
+   * delete what the partition holds, here and in R2. The sweeps do that, a
+   * part at a time.
+   */
+  async stopForDeletedQueue(): Promise<void> {
+    await this.sweepBy(Date.now());
     this.ctx.storage.kv.put('queueDeleted', true);
+    this.sql.exec('DELETE FROM pending');
+    this.unsettledCounts = undefined;
   }
 
   /**
@@ -856,13 +926,9 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     if (resumeAt !== undefined) {
       await this.requestDelivery(resumeAt);
     }
-    const segments = this.sql
-      .exec<{ count: number }>('SELECT COUNT(*) AS count FROM backlog_segments')
-      .one().count;
-    if (segments > 0) {
-      // Delivery may have passed some of them; the sweep deletes those.
-      await this.sweepBy(Date.now() + retentionSweepMs);
-    }
+    // Delivery has passed messages, and perhaps segments in R2 with them:
+    // the sweep deletes what no target needs any more.
+    await this.sweepBy(Date.now() + retentionSweepMs);
     await this.stageSample(true);
   }
 
@@ -1612,7 +1678,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   }
 
   private async sample(identity: PartitionIdentity): Promise<PartitionSample> {
-    const { nextOffset } = await this.log.bounds();
+    const { hotOffset, nextOffset } = await this.log.bounds();
     const positions = await this.log.cursors();
     if (this.refusedSinceSample > 0) {
       this.ctx.storage.kv.put('counters', {
@@ -1634,6 +1700,12 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       rejected: counters.rejected,
       withoutTarget: counters.targets[noTargetName]?.deadLettered ?? 0,
       accepting: this.ctx.storage.kv.get<Layout>('replacedBy') === undefined,
+      held: nextOffset - hotOffset,
+      backlogObjects: this.sql
+        .exec<{
+          count: number;
+        }>('SELECT COUNT(*) AS count FROM backlog_segments')
+        .one().count,
       targets: Object.fromEntries(
         Object.keys(this.config?.targets ?? {}).map((name) => [
           name,

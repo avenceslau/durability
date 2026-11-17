@@ -126,6 +126,11 @@ const allQueues = (summaries: QueueSummary[]): HTMLElement[] => {
       ),
       tile('Backlog', compact(total((summary) => summary.backlog))),
       tile(
+        'Stored',
+        compact(total((summary) => summary.held)),
+        `${compact(total((summary) => summary.backlogObjects))} backlog objects in R2`
+      ),
+      tile(
         'Rejected',
         perSecond(total((summary) => summary.rejectedPerSecond))
       ),

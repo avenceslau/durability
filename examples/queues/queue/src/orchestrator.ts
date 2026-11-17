@@ -939,7 +939,13 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       ),
     };
 
-    for (const sample of this.samplesOf()) {
+    const samples = this.samplesOf();
+    point.held = samples.reduce((all, sample) => all + (sample.held ?? 0), 0);
+    point.backlogObjects = samples.reduce(
+      (all, sample) => all + (sample.backlogObjects ?? 0),
+      0
+    );
+    for (const sample of samples) {
       point.accepted += sample.accepted;
       point.rejected += sample.rejected;
       point.withoutTarget += sample.withoutTarget;
@@ -1282,6 +1288,8 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       deliveredPerSecond: 0,
       backlog: 0,
       deadLettered: 0,
+      held: last?.held ?? 0,
+      backlogObjects: last?.backlogObjects ?? 0,
     };
     if (!last) {
       return summary;
