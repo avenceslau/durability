@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { SerializedError } from '../errors.js';
+import type { Json } from '../serialization.js';
 
 export const socketProtocolVersion = 1;
 
@@ -21,23 +22,25 @@ export type SocketServerFrame =
   | { v: 1; type: 'subscribed'; id: string; seq: number; replayed: boolean }
   | { v: 1; type: 'event'; seq: number; name: string; payload?: unknown };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
+type JsonObject = { [key: string]: Json };
+
+const isJsonObject = (value: Json | undefined): value is JsonObject =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
 
-const isSerializedError = (value: unknown): value is SerializedError =>
-  isRecord(value) &&
+const isSerializedError = (value: Json | undefined): value is SerializedError =>
+  isJsonObject(value) &&
   typeof value['name'] === 'string' &&
   typeof value['message'] === 'string';
 
-const parseFrame = (text: string): Record<string, unknown> | undefined => {
+const parseFrame = (text: string): JsonObject | undefined => {
   if (text.length > socketMaxFrameLength) {
     return undefined;
   }
 
-  let parsed: unknown;
+  let parsed: Json;
 
   try {
     parsed = JSON.parse(text);
@@ -45,7 +48,7 @@ const parseFrame = (text: string): Record<string, unknown> | undefined => {
     return undefined;
   }
 
-  if (!isRecord(parsed) || parsed['v'] !== socketProtocolVersion) {
+  if (!isJsonObject(parsed) || parsed['v'] !== socketProtocolVersion) {
     return undefined;
   }
 

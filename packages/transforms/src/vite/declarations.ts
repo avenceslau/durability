@@ -42,7 +42,7 @@ function wranglerBindingTypes(source: string): Map<string, string> {
     }
 
     const annotation = syntaxNode(
-      syntaxNode(node['typeAnnotation'])?.['typeAnnotation']
+      syntaxNode(node.typeAnnotation)?.typeAnnotation
     );
 
     const name = identifierName(syntaxNode(node.key));

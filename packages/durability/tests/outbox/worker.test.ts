@@ -1,11 +1,8 @@
 import { exports as workerExports } from 'cloudflare:workers';
 import { runDurableObjectAlarm } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import type { OutboxObject } from './worker';
 
-const namespace = (workerExports as Record<string, unknown>)[
-  'OutboxObject'
-] as DurableObjectNamespace<OutboxObject>;
+const namespace = workerExports.OutboxObject;
 
 describe('outbox in workerd', () => {
   it('commits and rolls back with the application transaction', async () => {

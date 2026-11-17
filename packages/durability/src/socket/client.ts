@@ -648,11 +648,24 @@ export class DurabilitySocketClient<Socket extends AnySocketShape> {
   }
 }
 
+/** One call recorded by {@link logging}: its output if it resolved, or its error. */
+export type SocketCallLog =
+  | {
+      method: string;
+      input: unknown;
+      output: unknown;
+      durationMs: number;
+    }
+  | {
+      method: string;
+      input: unknown;
+      error: unknown;
+      durationMs: number;
+    };
+
 /** Logs every call's input, output or error, and duration. */
 export const logging =
-  (
-    log: (entry: Record<string, unknown>) => void = console.log
-  ): SocketTransform =>
+  (log: (entry: SocketCallLog) => void = console.log): SocketTransform =>
   async ({ method, input, next }) => {
     const startedAt = Date.now();
 

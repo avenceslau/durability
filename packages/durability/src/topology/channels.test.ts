@@ -269,7 +269,7 @@ describe('topology instance channels', () => {
     const nested = new Members();
 
     const createTopology = (channel: string, state: string, members: Members) =>
-      new DurabilityTopology<undefined, Record<string, unknown>>({
+      new DurabilityTopology<undefined, Record<string, number>>({
         context,
         channel,
         publish: new Store().publisher,

@@ -9,9 +9,6 @@ export type Limits = { max: number };
 
 type Env = { TOPOLOGY: KVNamespace };
 
-const namespaceFor = <T extends Rpc.DurableObjectBranded>(name: string) =>
-  (workerExports as Record<string, unknown>)[name] as DurableObjectNamespace<T>;
-
 export const topologyKey = (group: string) => `topology/${group}`;
 
 export const secondaryKey = (group: string) => `topology-secondary/${group}`;
@@ -19,10 +16,7 @@ export const secondaryKey = (group: string) => `topology-secondary/${group}`;
 const deliverLimits = (
   member: { id: string },
   update: TopologyStateUpdate<Limits>
-) =>
-  namespaceFor<TopologyShard>('TopologyShard')
-    .getByName(member.id)
-    .applyLimits(update);
+) => workerExports.TopologyShard.getByName(member.id).applyLimits(update);
 
 export class TopologyCoordinator extends DurableObject<Env> {
   private readonly scheduler = new DurabilityScheduler({ context: this.ctx });

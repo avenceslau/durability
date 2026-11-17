@@ -17,9 +17,9 @@ let sequence = 0;
  * is process-wide and monotonic so interleaved async work can be reordered
  * and correlated when replaying a simulation.
  */
-export const trace = (
+export const trace = <Details extends object>(
   operation: string,
-  details: Record<string, unknown> = {}
+  details?: Details
 ): number => {
   if (!devMode) {
     return 0;
@@ -42,9 +42,9 @@ export const trace = (
   return sequence;
 };
 
-const traceCall = <T>(
+const traceCall = <Details extends object, T>(
   operation: string,
-  details: Record<string, unknown>,
+  details: Details,
   run: () => T
 ): T => {
   const call = trace(operation, details);
@@ -80,10 +80,14 @@ const loggableArgs = (args: readonly unknown[]): unknown[] =>
  * Wraps a public function so dev mode logs its arguments and outcome. `details`
  * identifies the receiver when the arguments alone do not.
  */
-export const traceFunction = <Args extends unknown[], Result>(
+export const traceFunction = <
+  Args extends unknown[],
+  Result,
+  Details extends object,
+>(
   method: string,
   fn: (...args: Args) => Result,
-  details: Record<string, unknown> = {}
+  details?: Details
 ): ((...args: Args) => Result) => {
   if (!devMode) {
     return fn;

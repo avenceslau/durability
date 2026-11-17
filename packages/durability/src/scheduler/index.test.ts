@@ -265,11 +265,15 @@ describe('DurabilityScheduler', () => {
   it('rejects a second copy of durability on the same object', () => {
     const context = contextFor(new FakeStorage());
 
-    const registry = (globalThis as { [key: symbol]: unknown })[
-      Symbol.for('durability.object-schedulers')
-    ] as WeakMap<object, unknown>;
+    const registryKey: unique symbol = Symbol.for(
+      'durability.object-schedulers'
+    );
 
-    registry.set(context.storage, {
+    const registry = (
+      globalThis as { [registryKey]?: WeakMap<object, unknown> }
+    )[registryKey];
+
+    registry?.set(context.storage, {
       engine: {},
       installation: Symbol('another installation'),
     });

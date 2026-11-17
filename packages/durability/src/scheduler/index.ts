@@ -579,7 +579,7 @@ export class Engine {
   }
 
   emitter<
-    Event extends { entityKind: string; type: string } =
+    Event extends { entityKind: string; type: string; id?: string } =
       DurabilityLifecycleEvent,
   >(
     hook: ((event: Event) => void | Promise<void>) | undefined
@@ -1398,15 +1398,16 @@ type ObjectScheduler = { engine: unknown; installation: symbol };
 // Every copy of this package in an isolate shares the registry, so a second
 // copy reaching the same object is caught instead of fighting over its alarm.
 const installation = Symbol('durability installation');
-const globalRegistry = globalThis as { [key: symbol]: unknown };
-const registryKey = Symbol.for('durability.object-schedulers');
+const registryKey: unique symbol = Symbol.for('durability.object-schedulers');
 
-globalRegistry[registryKey] ??= new WeakMap<object, ObjectScheduler>();
+const globalRegistry = globalThis as {
+  [registryKey]?: WeakMap<object, ObjectScheduler>;
+};
 
-const objectSchedulers = globalRegistry[registryKey] as WeakMap<
+const objectSchedulers = (globalRegistry[registryKey] ??= new WeakMap<
   object,
   ObjectScheduler
->;
+>());
 
 /** The one engine behind every scheduler and helper of a Durable Object. */
 const engineForObject = (config: DurabilitySchedulerConfig): Engine => {

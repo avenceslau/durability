@@ -146,7 +146,8 @@ export const createLifecycleHooks = (
  * and rejections are logged, and promises ride on `waitUntil` when available.
  */
 export const createEmitter = <
-  Event extends { entityKind: string; type: string } = DurabilityLifecycleEvent,
+  Event extends { entityKind: string; type: string; id?: string } =
+    DurabilityLifecycleEvent,
 >(
   hook: ((event: Event) => void | Promise<void>) | undefined,
   waitUntil: ((promise: Promise<unknown>) => void) | undefined

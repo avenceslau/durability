@@ -793,7 +793,7 @@ export class DurabilityTopology<
 
   #parseDraft(draft: unknown): {
     members: readonly TopologyMemberInput<Meta>[] | undefined;
-    states: Record<string, unknown>;
+    states: Partial<States>;
   } {
     if (draft === null || typeof draft !== 'object') {
       throw new TopologyError('update must return a draft object');
@@ -816,7 +816,7 @@ export class DurabilityTopology<
 
     return {
       members: members as readonly TopologyMemberInput<Meta>[] | undefined,
-      states: states as Record<string, unknown>,
+      states: states as Partial<States>,
     };
   }
 
@@ -878,7 +878,7 @@ export class DurabilityTopology<
   #writeStates(
     sql: SqlStorage,
     group: string,
-    changes: Record<string, unknown>,
+    changes: Partial<States>,
     current: v.InferOutput<typeof stateRowSchema>[]
   ): Set<string> {
     const existing = new Map(current.map((row) => [row.channel, row.value]));
