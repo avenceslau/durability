@@ -189,12 +189,19 @@ const grantReport = (grant: QueueGrantRow): GrantReport => ({
 const retiredLocally = (lease: QueueLeaseRow, now: number): boolean =>
   lease.expires_at <= now;
 
-const leaseReport = (lease: QueueLeaseRow): LeaseReport => ({
-  leaseId: lease.lease_id,
-  drawn: lease.drawn,
-  released: lease.released,
-  ...(retiredLocally(lease, Date.now()) ? { retired: true } : {}),
-});
+const leaseReport = (lease: QueueLeaseRow): LeaseReport => {
+  const report: LeaseReport = {
+    leaseId: lease.lease_id,
+    drawn: lease.drawn,
+    released: lease.released,
+  };
+
+  if (retiredLocally(lease, Date.now())) {
+    report.retired = true;
+  }
+
+  return report;
+};
 
 /**
  * The holder sweeps a lease at its expiry by its own clock; stopping local
@@ -1067,16 +1074,21 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
   }
 
   #stageLeaseReport(lease: QueueLeaseRow): void {
+    const report: Extract<Report, { kind: 'lease' }> = {
+      kind: 'lease',
+      drawn: lease.drawn,
+      released: lease.released,
+    };
+
+    if (retiredLocally(lease, Date.now())) {
+      report.retired = true;
+    }
+
     stageWithin(
       this.#outbox,
       this.#engine.sql,
       pairKey(lease.key, `lease:${lease.lease_id}`),
-      {
-        kind: 'lease',
-        drawn: lease.drawn,
-        released: lease.released,
-        ...(retiredLocally(lease, Date.now()) ? { retired: true } : {}),
-      }
+      report
     );
   }
 
@@ -1106,12 +1118,17 @@ export class DurabilitySemaphoreQueue<Body = unknown> {
               released: entry.value.released,
             });
           } else {
-            leases.push({
+            const report: LeaseReport = {
               leaseId: id,
               drawn: entry.value.drawn,
               released: entry.value.released,
-              ...(entry.value.retired ? { retired: true } : {}),
-            });
+            };
+
+            if (entry.value.retired) {
+              report.retired = true;
+            }
+
+            leases.push(report);
           }
         }
 

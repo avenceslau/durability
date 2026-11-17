@@ -8,7 +8,11 @@ import {
   type FanoutInput,
   type StoredMessage,
 } from 'durability';
-import { DurabilityRouting, type RoutingSession } from 'durability/routing';
+import {
+  DurabilityRouting,
+  type RoutingAddress,
+  type RoutingSession,
+} from 'durability/routing';
 
 type Env = {
   DEAD_LETTERS: R2Bucket;
@@ -111,14 +115,21 @@ export const routing = DurabilityRouting.client({
   target: EmailDelivery,
   // Vite injects exportName from this application class and Wrangler's config.
   invoke: (stub, batch: Batch) => stub.enqueue(batch),
-  sharding: (batch, context: Context | undefined) => ({
-    shard:
-      context?.lane ??
-      `customer-${batch.messages[0]?.body.customerId ?? 'unknown'}`,
-    ...(batch.messages[0]?.body.region === undefined
-      ? {}
-      : { locationHint: batch.messages[0].body.region }),
-  }),
+  sharding: (batch, context: Context | undefined) => {
+    const address: RoutingAddress = {
+      shard:
+        context?.lane ??
+        `customer-${batch.messages[0]?.body.customerId ?? 'unknown'}`,
+    };
+
+    const region = batch.messages[0]?.body.region;
+
+    if (region !== undefined) {
+      address.locationHint = region;
+    }
+
+    return address;
+  },
 });
 
 const lane = defineTransform<
@@ -143,12 +154,14 @@ export async function redrive(env: Env, after: number): Promise<number> {
   let accepted = 0;
 
   do {
+    const listOptions: R2ListOptions = { prefix: deadLetterPrefix, limit: 100 };
+
+    if (cursor !== undefined) {
+      listOptions.cursor = cursor;
+    }
+
     // eslint-disable-next-line no-await-in-loop
-    const page = await env.DEAD_LETTERS.list({
-      prefix: deadLetterPrefix,
-      limit: 100,
-      ...(cursor === undefined ? {} : { cursor }),
-    });
+    const page = await env.DEAD_LETTERS.list(listOptions);
 
     for (const object of page.objects) {
       // eslint-disable-next-line no-await-in-loop

@@ -3,7 +3,11 @@ import { TopologyError } from '../errors';
 import { DurabilityOutbox } from '../outbox';
 import { serialize } from '../serialization';
 import { contextFor, FakeStorage } from '../test-fakes';
-import { DurabilityTopology, type TopologyStateUpdate } from './index';
+import {
+  DurabilityTopology,
+  type DurabilityTopologyConfig,
+  type TopologyStateUpdate,
+} from './index';
 import { decodeSnapshot, type TopologyMember } from './snapshot';
 
 type States = { limits: { max: number } };
@@ -62,12 +66,9 @@ const instance = (
   channel: string | undefined,
   store = new Store(),
   members = new Members()
-) => ({
-  store,
-  members,
-  topology: new DurabilityTopology<undefined, States>({
+) => {
+  const config: DurabilityTopologyConfig<undefined, States> = {
     context,
-    ...(channel === undefined ? {} : { channel }),
     retries: { delay: () => 1_000 },
     publish: { ...store.publisher, attemptTimeoutMs: 100 },
     states: {
@@ -75,8 +76,18 @@ const instance = (
         deliver: members.deliver,
       },
     },
-  }),
-});
+  };
+
+  if (channel !== undefined) {
+    config.channel = channel;
+  }
+
+  return {
+    store,
+    members,
+    topology: new DurabilityTopology<undefined, States>(config),
+  };
+};
 
 const outboxChannels = (storage: FakeStorage) =>
   storage.sql

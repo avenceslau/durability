@@ -169,15 +169,19 @@ export class TopologyClient<Meta = undefined> {
     }
 
     const entry: Entry<Meta> = {
-      // A missing group is not an error, so nothing stale may be served for it.
-      ...(failure.reason === 'missing' || !previous?.view
-        ? {}
-        : { view: previous.view }),
-      ...(previous?.newestSeen ? { newestSeen: previous.newestSeen } : {}),
       staleUntil: previous?.staleUntil ?? 0,
       expiresAt: now + jittered(this.#negativeTtlMs),
       failure,
     };
+
+    // A missing group is not an error, so nothing stale may be served for it.
+    if (failure.reason !== 'missing' && previous?.view) {
+      entry.view = previous.view;
+    }
+
+    if (previous?.newestSeen) {
+      entry.newestSeen = previous.newestSeen;
+    }
 
     this.#remember(group, entry);
 

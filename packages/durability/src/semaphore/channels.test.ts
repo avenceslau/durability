@@ -10,6 +10,7 @@ import { DurabilityOutbox } from '../outbox';
 import {
   DurabilitySemaphoreQueue,
   type AdmittedItem,
+  type DurabilitySemaphoreQueueConfig,
   type SemaphoreHolder,
 } from './queue';
 import type {
@@ -73,24 +74,31 @@ const leasing = (
   clientId: string,
   count: number,
   clientChannel?: string
-): PermitRequest => ({
-  type: 'request',
-  v: clientChannel === undefined ? 1 : 2,
-  clientId,
-  ...(clientChannel === undefined ? {} : { clientChannel }),
-  demand:
-    count === 0
-      ? []
-      : [
-          {
-            group: 'g',
-            count,
-            oldestAt: 1,
-          },
-        ],
-  grants: [],
-  leases: [],
-});
+): PermitRequest => {
+  const request: PermitRequest = {
+    type: 'request',
+    v: clientChannel === undefined ? 1 : 2,
+    clientId,
+    demand:
+      count === 0
+        ? []
+        : [
+            {
+              group: 'g',
+              count,
+              oldestAt: 1,
+            },
+          ],
+    grants: [],
+    leases: [],
+  };
+
+  if (clientChannel !== undefined) {
+    request.clientChannel = clientChannel;
+  }
+
+  return request;
+};
 
 const sync = (
   holder: DurabilitySemaphoreServer,
@@ -114,13 +122,19 @@ describe('semaphore pools on one object', () => {
     const storage = new FakeStorage();
     const scheduler = schedulerFor(storage);
 
-    const pool = (channel: string | undefined, limit: number) =>
-      new DurabilitySemaphoreServer({
+    const pool = (channel: string | undefined, limit: number) => {
+      const config: DurabilitySemaphoreConfig = {
         scheduler,
-        ...(channel === undefined ? {} : { channel }),
         limit,
         leases: { provisioning: { mode: 'over', extra: 2 } },
-      });
+      };
+
+      if (channel !== undefined) {
+        config.channel = channel;
+      }
+
+      return new DurabilitySemaphoreServer(config);
+    };
 
     const main = pool(undefined, 2);
     const batch = pool('batch', 3);
@@ -327,17 +341,22 @@ describe('semaphore queue channels', () => {
     message: PermitRequest,
     options: Pick<PermitGrant, 'nextRequestAt'> &
       Partial<Pick<PermitGrant, 'grants'>>
-  ): PermitGrant => ({
-    type: 'grant',
-    v: message.v,
-    grants: options.grants ?? [],
-    blocked: [],
-    nextRequestAt: options.nextRequestAt,
-    grantResults: [],
-    ...(message.clientChannel === undefined
-      ? {}
-      : { clientChannel: message.clientChannel }),
-  });
+  ): PermitGrant => {
+    const grant: PermitGrant = {
+      type: 'grant',
+      v: message.v,
+      grants: options.grants ?? [],
+      blocked: [],
+      nextRequestAt: options.nextRequestAt,
+      grantResults: [],
+    };
+
+    if (message.clientChannel !== undefined) {
+      grant.clientChannel = message.clientChannel;
+    }
+
+    return grant;
+  };
 
   const holderServer = (
     holder: DurabilitySemaphoreServer
@@ -353,10 +372,9 @@ describe('semaphore queue channels', () => {
     channel: string | undefined,
     admitted: AdmittedItem<string>[] = [],
     options: { attemptTimeoutMs?: number } = {}
-  ): Queue =>
-    new DurabilitySemaphoreQueue<string>({
+  ): Queue => {
+    const config: DurabilitySemaphoreQueueConfig<string> = {
       scheduler,
-      ...(channel === undefined ? {} : { channel }),
       clientId: 'shard',
       server,
       admit: (items) => {
@@ -364,7 +382,14 @@ describe('semaphore queue channels', () => {
       },
       retries: { delay: () => 1_000 },
       ...options,
-    });
+    };
+
+    if (channel !== undefined) {
+      config.channel = channel;
+    }
+
+    return new DurabilitySemaphoreQueue<string>(config);
+  };
 
   it('keeps two queues with one clientId apart at a shared holder pool', async () => {
     const holder = holderFor({ limit: 3 });
@@ -528,7 +553,7 @@ describe('semaphore queue channels', () => {
       sync: async (_key, message) => {
         syncs.push(message);
 
-        return {
+        const synced: PermitSyncResult = {
           type: 'synced',
           v: message.v,
           grantResults: message.grants.map((grant) => ({
@@ -536,8 +561,13 @@ describe('semaphore queue channels', () => {
             claimed: grant.claimed,
             status: 'ok' as const,
           })),
-          ...(acknowledgeSync ? { clientChannel: message.clientChannel! } : {}),
         };
+
+        if (acknowledgeSync) {
+          synced.clientChannel = message.clientChannel!;
+        }
+
+        return synced;
       },
     };
 

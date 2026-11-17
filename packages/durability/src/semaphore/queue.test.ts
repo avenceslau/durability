@@ -581,7 +581,7 @@ describe('semaphore queue', () => {
       request: async () => {
         requests += 1;
 
-        return {
+        const grant: PermitGrant = {
           ...grantOf(`unused-${requests}`, 0),
           grants: [],
           leases: [
@@ -592,8 +592,13 @@ describe('semaphore queue', () => {
               expiresAt: Date.now() + 120_000,
             },
           ],
-          ...(requests > 1 ? { contended: true } : {}),
         };
+
+        if (requests > 1) {
+          grant.contended = true;
+        }
+
+        return grant;
       },
       sync: async (_key, message) => {
         syncs.push(message);

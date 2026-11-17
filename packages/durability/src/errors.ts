@@ -343,10 +343,18 @@ export const reportFailure = (
         ? readString(error, 'stack')
         : undefined;
 
+    const logged: SerializedError & { stack?: string } = {
+      ...serializeError(error),
+    };
+
+    if (stack) {
+      logged.stack = stack;
+    }
+
     console.error({
       event,
       ...details,
-      error: { ...serializeError(error), ...(stack ? { stack } : {}) },
+      error: logged,
     });
   } catch {
     return;

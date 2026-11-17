@@ -173,12 +173,17 @@ const clientOf = (message: SemaphoreRequest): SemaphoreClientIdentity => ({
  */
 const acknowledgement = (
   message: SemaphoreRequest
-): Pick<SemaphoreResponse, 'v' | 'clientChannel'> => ({
-  v: message.v,
-  ...(message.clientChannel === undefined
-    ? {}
-    : { clientChannel: message.clientChannel }),
-});
+): Pick<SemaphoreResponse, 'v' | 'clientChannel'> => {
+  const echo: Pick<SemaphoreResponse, 'v' | 'clientChannel'> = {
+    v: message.v,
+  };
+
+  if (message.clientChannel !== undefined) {
+    echo.clientChannel = message.clientChannel;
+  }
+
+  return echo;
+};
 
 /** Permits left queued per (group, reason) across one round's allocations. */
 const blockedCounts = (
@@ -461,15 +466,23 @@ export class DurabilitySemaphoreServer {
 
     for (const [entry, allocation] of round.allocations) {
       const { leases, ...rest } = allocation;
-      entry.resolve({
+
+      const grant: PermitGrant = {
         type: 'grant',
         ...acknowledgement(entry.request),
         ...rest,
         nextRequestAt,
-        ...(entry.request.leases === undefined
-          ? {}
-          : { leases, ...(round.contended ? { contended: true } : {}) }),
-      });
+      };
+
+      if (entry.request.leases !== undefined) {
+        grant.leases = leases;
+
+        if (round.contended) {
+          grant.contended = true;
+        }
+      }
+
+      entry.resolve(grant);
     }
 
     for (const event of [...round.reclaimed, ...round.leaseEvents]) {
@@ -759,17 +772,21 @@ export class DurabilitySemaphoreServer {
       return { grantResults, leaseEchoes: leaseOutcome?.echoes };
     });
 
-    return {
+    const synced: PermitSyncResult = {
       type: 'synced',
       ...acknowledgement(message),
       grantResults: result.grantResults,
-      ...(result.leaseEchoes === undefined
-        ? {}
-        : {
-            leases: result.leaseEchoes,
-            ...(this.#contended ? { contended: true } : {}),
-          }),
     };
+
+    if (result.leaseEchoes !== undefined) {
+      synced.leases = result.leaseEchoes;
+
+      if (this.#contended) {
+        synced.contended = true;
+      }
+    }
+
+    return synced;
   }
 
   /**

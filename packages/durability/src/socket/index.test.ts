@@ -9,13 +9,20 @@ import {
 } from 'vitest';
 import * as v from 'valibot';
 import { serialize } from '../serialization';
-import { DurabilitySocket, event, SocketInputError } from './index';
+import {
+  DurabilitySocket,
+  event,
+  SocketInputError,
+  type DurabilitySocketConfig,
+} from './index';
 import type {
   InboundOf,
   OutboundOf,
   SocketCall,
   SocketInboundInput,
+  SocketInboundMap,
   SocketInboundOutput,
+  SocketOutboundMap,
 } from './protocol';
 import { FakeStorage, FakeWebSocket, socketContextFor } from '../test-fakes';
 
@@ -493,9 +500,18 @@ const createChannelSocket = (
 ) => {
   const label = channel ?? 'default';
 
+  const channelOption: Pick<
+    DurabilitySocketConfig<SocketInboundMap, SocketOutboundMap, never>,
+    'channel'
+  > = {};
+
+  if (channel !== undefined) {
+    channelOption.channel = channel;
+  }
+
   const socket = new DurabilitySocket({
     context,
-    ...(channel === undefined ? {} : { channel }),
+    ...channelOption,
     inbound: {
       whoami: (_input: unknown, call: SocketCall<{ user: string }>) => {
         calls.push(label);

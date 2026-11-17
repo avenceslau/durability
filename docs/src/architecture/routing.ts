@@ -59,7 +59,7 @@ const stub = sourceExcerpt(
   routingFile,
   'stub',
   'Turn an address into a stub',
-  '    const client = new RoutingClient<Input, Value, Context>({',
+  '    const clientConfig: RoutingClientConfig<Input, Value, Context> = {',
   '        return config.invoke(stub, input);\n      },'
 );
 

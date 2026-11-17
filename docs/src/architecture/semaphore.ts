@@ -30,7 +30,7 @@ const route = sourceExcerpt(
   semaphoreFile,
   'route',
   'Route a message to the holder by key',
-  '    const client = new SemaphoreClient({',
+  '    const clientConfig: SemaphoreClientConfig = {',
   '        return config.invoke(stub, message);'
 );
 
@@ -76,7 +76,7 @@ const runRound = sourceExcerpt(
   'run-round',
   'Run a round and answer every request',
   '  async #runRound(): Promise<void> {',
-  '          : { leases, ...(round.contended ? { contended: true } : {}) }),\n      });\n    }'
+  '      entry.resolve(grant);\n    }'
 );
 
 const allocate = sourceExcerpt(

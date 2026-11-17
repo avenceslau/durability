@@ -9,7 +9,11 @@ import {
 } from '../durable-object-target.js';
 import { RoutingError } from '../errors.js';
 import { RoutingLoad, type EnqueueResult } from './load.js';
-import { RoutingClient, type Sharding } from './client.js';
+import {
+  RoutingClient,
+  type RoutingClientConfig,
+  type Sharding,
+} from './client.js';
 
 export type { EnqueueResult, LoadSnapshot, ProcessingLoad } from './load.js';
 
@@ -51,7 +55,7 @@ export class DurabilityRouting extends RoutingLoad {
   >(
     config: DurabilityRoutingConfig<Target, Input, Value, Context>
   ): TransformStub<RoutingSession<Input, Value, Context>> {
-    const client = new RoutingClient<Input, Value, Context>({
+    const clientConfig: RoutingClientConfig<Input, Value, Context> = {
       invoke: (address, input) => {
         const namespace = resolveNamespace(
           config,
@@ -67,11 +71,17 @@ export class DurabilityRouting extends RoutingLoad {
 
         return config.invoke(stub, input);
       },
-      ...(config.sharding === undefined ? {} : { sharding: config.sharding }),
-      ...(config.softBacklogLimit === undefined
-        ? {}
-        : { softBacklogLimit: config.softBacklogLimit }),
-    });
+    };
+
+    if (config.sharding !== undefined) {
+      clientConfig.sharding = config.sharding;
+    }
+
+    if (config.softBacklogLimit !== undefined) {
+      clientConfig.softBacklogLimit = config.softBacklogLimit;
+    }
+
+    const client = new RoutingClient<Input, Value, Context>(clientConfig);
 
     const session: RoutingSession<Input, Value, Context> = {
       push: (input, context) => client.push(input, context),
