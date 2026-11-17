@@ -1,7 +1,12 @@
 import { join, resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ResolvedConfig } from 'vite';
+import {
+  unstable_convertConfigBindingsToStartWorkerBindings,
+  unstable_readConfig,
+} from 'wrangler';
 import { doTransforms } from '../src/vite';
+import { loadWranglerProject } from '../src/vite/wrangler';
 
 type TestPlugin = {
   configResolved(config: ResolvedConfig): Promise<void> | void;
@@ -15,93 +20,19 @@ type TestPlugin = {
     | undefined;
 };
 
-const readConfig = vi.hoisted(() =>
-  vi.fn(({ config }: { config: string }) => {
-    if (config.endsWith('invalid.jsonc')) {
-      throw new Error('Expected services to be an array');
-    }
-
-    const migrationOnly = config.endsWith('migrations-only.jsonc');
-
-    return {
-      kv_namespaces: migrationOnly ? [] : [{ binding: 'CACHE', id: 'cache' }],
-      vars: migrationOnly ? {} : { GREETING: 'hello' },
-      wasm_modules: migrationOnly ? {} : { MODULE: 'module.wasm' },
-      durable_objects: {
-        bindings: migrationOnly
-          ? []
-          : [{ class_name: 'ContextDO', name: 'CONTEXT_DO' }],
-      },
-      migrations: [
-        {
-          new_sqlite_classes: ['JobShards', 'Mailbox', 'AliasedMailbox'],
-          tag: 'v1',
-        },
-      ],
-      main: 'tests/worker.ts',
-      name: 'do-transforms-test',
-      services: migrationOnly
-        ? []
-        : [
-            {
-              binding: 'CONTEXT_SERVICE',
-              entrypoint: 'ContextService',
-              service: 'do-transforms-test',
-            },
-          ],
-    };
-  })
-);
-
-type MockConfig = ReturnType<typeof readConfig>;
-
-const convertBindings = vi.hoisted(() =>
-  vi.fn((config: MockConfig) => ({
-    ...Object.fromEntries(
-      config.services.map((binding) => [binding.binding, { type: 'service' }])
-    ),
-    ...Object.fromEntries(
-      config.durable_objects.bindings.map((binding) => [
-        binding.name,
-        { type: 'durable_object_namespace' },
-      ])
-    ),
-    ...Object.fromEntries(
-      config.kv_namespaces.map((binding) => [
-        binding.binding,
-        { type: 'kv_namespace' },
-      ])
-    ),
-    ...Object.fromEntries(
-      Object.keys(config.vars).map((name) => [name, { type: 'plain_text' }])
-    ),
-    ...Object.fromEntries(
-      Object.keys(config.wasm_modules).map((name) => [
-        name,
-        { type: 'wasm_module' },
-      ])
-    ),
-  }))
-);
-
-vi.mock('wrangler', () => ({
-  unstable_convertConfigBindingsToStartWorkerBindings: convertBindings,
-  unstable_readConfig: readConfig,
-}));
-
-const packageRoot = resolve(import.meta.dirname, '..');
+const fixtureRoot = resolve(import.meta.dirname, 'fixtures/vite');
 let plugin: TestPlugin;
 
 beforeAll(async () => {
   plugin = doTransforms({
-    wrangler: './wrangler.test.jsonc',
+    wrangler: './wrangler.jsonc',
     types: false,
   }) as unknown as TestPlugin;
-  await plugin.configResolved({ root: packageRoot } as ResolvedConfig);
+  await plugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
 });
 
 async function transform(code: string): Promise<string | null> {
-  const result = await plugin.transform(code, join(packageRoot, 'worker.ts'));
+  const result = await plugin.transform(code, join(fixtureRoot, 'worker.ts'));
 
   return result?.code ?? null;
 }
@@ -112,17 +43,38 @@ async function transformWith(
 ): Promise<string | null> {
   const result = await testPlugin.transform(
     code,
-    join(packageRoot, 'worker.ts')
+    join(fixtureRoot, 'worker.ts')
   );
 
   return result?.code ?? null;
 }
 
 describe('Vite binding transforms', () => {
-  it('loads validated Wrangler config with an absolute path and preserved main', () => {
+  it('reads the Wrangler config with warnings hidden and the original main preserved', () => {
+    const configPath = join(fixtureRoot, 'wrangler.jsonc');
+    const readConfig = vi.fn(unstable_readConfig);
+
+    const project = loadWranglerProject(configPath, {
+      unstable_readConfig: readConfig,
+      unstable_convertConfigBindingsToStartWorkerBindings,
+    });
+
     expect(readConfig).toHaveBeenCalledWith(
-      { config: join(packageRoot, 'wrangler.test.jsonc') },
+      { config: configPath },
       { hideWarnings: true, preserveOriginalMain: true }
+    );
+    expect(project.config.main).toBe('../../worker.ts');
+  });
+
+  it('resolves the Wrangler config path against the Vite root', async () => {
+    expect(process.cwd()).not.toBe(fixtureRoot);
+
+    await expect(
+      transform(
+        'export default { fetch(request, env) { env.CONTEXT_SERVICE.greet(); } };'
+      )
+    ).resolves.toContain(
+      '__doTransformsCreateStub(env.CONTEXT_SERVICE).greet()'
     );
   });
 
@@ -298,12 +250,12 @@ export default {
 
   it('rewrites namespace stubs to restorable factories when enabled', async () => {
     const restorePlugin = doTransforms({
-      wrangler: './wrangler.test.jsonc',
+      wrangler: './wrangler.jsonc',
       types: false,
       restoreBrokenStubs: true,
     }) as unknown as TestPlugin;
 
-    await restorePlugin.configResolved({ root: packageRoot } as ResolvedConfig);
+    await restorePlugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
 
     const result = await transformWith(
       restorePlugin,
@@ -358,12 +310,12 @@ export default {
 
   it('only imports the restorable factory when no service is wrapped', async () => {
     const restorePlugin = doTransforms({
-      wrangler: './wrangler.test.jsonc',
+      wrangler: './wrangler.jsonc',
       types: false,
       restoreBrokenStubs: true,
     }) as unknown as TestPlugin;
 
-    await restorePlugin.configResolved({ root: packageRoot } as ResolvedConfig);
+    await restorePlugin.configResolved({ root: fixtureRoot } as ResolvedConfig);
 
     const result = await transformWith(
       restorePlugin,
@@ -387,7 +339,7 @@ export default {
   }
 };
 `,
-      join(packageRoot, 'worker.ts?import')
+      join(fixtureRoot, 'worker.ts?import')
     );
 
     expect(result?.code).toContain(
@@ -405,7 +357,7 @@ export default {
   }
 };
 `,
-      join(packageRoot, 'worker.tsx')
+      join(fixtureRoot, 'worker.tsx')
     );
 
     expect(result?.code).toContain(
@@ -414,28 +366,33 @@ export default {
   });
 
   it('reports invalid Wrangler configuration', async () => {
-    const wranglerPath = join(packageRoot, 'invalid.jsonc');
+    const wranglerPath = join(fixtureRoot, 'invalid.jsonc');
 
     const invalidPlugin = doTransforms({
       wrangler: wranglerPath,
       types: false,
     }) as unknown as TestPlugin;
 
-    await expect(
-      invalidPlugin.configResolved({ root: packageRoot } as ResolvedConfig)
-    ).rejects.toThrow(
-      `do-transforms could not load a valid Wrangler configuration at ${wranglerPath}: Expected services to be an array`
+    const loading = invalidPlugin.configResolved({
+      root: fixtureRoot,
+    } as ResolvedConfig);
+
+    await expect(loading).rejects.toThrow(
+      `do-transforms could not load a valid Wrangler configuration at ${wranglerPath}: Processing `
+    );
+    await expect(loading).rejects.toThrow(
+      'The field "services" should be an array but got {"binding":"CONTEXT_SERVICE"}.'
     );
   });
 
   it('rejects a types path that is not a declaration file', async () => {
     const typesPlugin = doTransforms({
-      wrangler: './wrangler.test.jsonc',
+      wrangler: './wrangler.jsonc',
       types: './env.ts',
     }) as unknown as TestPlugin;
 
     await expect(
-      typesPlugin.configResolved({ root: packageRoot } as ResolvedConfig)
+      typesPlugin.configResolved({ root: fixtureRoot } as ResolvedConfig)
     ).rejects.toThrow('do-transforms types path must end in .d.ts');
   });
 });
@@ -577,7 +534,7 @@ DurabilityRouting.client(config);
     }) as unknown as TestPlugin;
 
     await migrationOnlyPlugin.configResolved({
-      root: packageRoot,
+      root: fixtureRoot,
     } as ResolvedConfig);
 
     const result = await transformWith(

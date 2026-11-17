@@ -1,0 +1,24 @@
+{
+  "name": "do-transforms-test",
+  "main": "../../worker.ts",
+  "compatibility_date": "2026-07-07",
+  "services": [
+    {
+      "binding": "CONTEXT_SERVICE",
+      "service": "do-transforms-test",
+      "entrypoint": "ContextService",
+    },
+  ],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "cache" }],
+  "vars": { "GREETING": "hello" },
+  "wasm_modules": { "MODULE": "module.wasm" },
+  "durable_objects": {
+    "bindings": [{ "name": "CONTEXT_DO", "class_name": "ContextDO" }],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["JobShards", "Mailbox", "AliasedMailbox"],
+    },
+  ],
+}

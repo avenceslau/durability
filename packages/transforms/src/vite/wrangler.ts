@@ -1,4 +1,8 @@
-import type { Unstable_Config } from 'wrangler';
+import type {
+  Unstable_Config,
+  unstable_convertConfigBindingsToStartWorkerBindings,
+  unstable_readConfig,
+} from 'wrangler';
 
 // Bindings whose runtime values are not RPC-capable objects. Proxying module
 // blobs would also break identity checks such as `WebAssembly.instantiate`.
@@ -22,16 +26,22 @@ export type WranglerBindings = {
   durableObjectClassNames: ReadonlySet<string>;
 };
 
+/** The Wrangler functions that read a config and its bindings. */
+export type WranglerConfigFunctions = {
+  unstable_readConfig: typeof unstable_readConfig;
+  unstable_convertConfigBindingsToStartWorkerBindings: typeof unstable_convertConfigBindingsToStartWorkerBindings;
+};
+
 export type WranglerProject = {
   configPath: string;
   config: Unstable_Config;
   bindings: WranglerBindings;
 };
 
-export async function loadWranglerProject(
-  configPath: string
-): Promise<WranglerProject> {
-  const wrangler = await import('wrangler');
+export function loadWranglerProject(
+  configPath: string,
+  wrangler: WranglerConfigFunctions
+): WranglerProject {
   let config: Unstable_Config;
 
   try {
