@@ -7,6 +7,7 @@ export {
   type CallerTransformHandler,
   type RegisteredTransform,
   type TransformContext,
+  type TransformContextValue,
   type TransformNextInput,
 } from './define.js';
 
