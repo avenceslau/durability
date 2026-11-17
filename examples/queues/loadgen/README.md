@@ -26,7 +26,13 @@ The generator has no URL of its own. The dashboard shows a **Load test** card on
 
 ## Run
 
-On the dashboard, set the tenants, the requests per second for each, the messages per request, the keys per tenant, how long to run, and the partition range of the tenants' queues, then **Start**. The card shows requests and messages per second, what the queue rejected, requests that failed, and send latency; each tenant's queue has its own page with the usual charts.
+On the dashboard, set the tenants, the requests per second for each, the messages per request, the keys per tenant, how long to run, and the partition range of the tenants' queues (leave the upper end empty for no limit), then **Start**. The card shows requests and messages per second, what the queue rejected, requests that failed, and send latency; each tenant's queue has its own page with the usual charts.
+
+A run creates the tenants' queues if they do not exist, and a new queue takes up to a minute to be known in every region. During that minute the generators far from it fail their sends. For a clean measurement, start a second run with the same tenants: it uses the queues the first one made.
+
+Set **Deliver at most** to throttle the run's target, in messages per second per partition. With a low value the queues accept far more than they deliver, so a backlog builds while the run sends, the queues add partitions to accept it, and the backlog drains slowly afterwards.
+
+Set **Quiet, seconds** above 0 for a load that comes in bursts: every generator sends for the burst, stops for the quiet time, and repeats, all at the same moments. The requests per second are the rate during a burst. That is the way to watch a backlog build and drain on the dashboard's first page.
 
 A run always ends by itself after the seconds given, at most an hour. **Stop** ends it at once. **Delete the load queues** removes every `load-<n>` queue and what it holds.
 
@@ -35,7 +41,8 @@ The same over HTTP, for scripts:
 ```sh
 curl -X POST https://<queue>/api/load -H 'Content-Type: application/json' -d '{
   "tenants": 50, "requestsPerSecond": 100, "minMessages": 100, "maxMessages": 300,
-  "keys": 1000, "seconds": 300, "partitions": { "min": 8, "max": 32 } }'
+  "keys": 1000, "seconds": 300, "burstSeconds": 30, "quietSeconds": 60,
+  "partitions": { "min": 8, "max": 32 } }'
 curl https://<queue>/api/load            # status; `url` opens the run in the dashboard
 curl -X DELETE https://<queue>/api/load  # stop
 ```
@@ -44,16 +51,16 @@ curl -X DELETE https://<queue>/api/load  # stop
 
 | Class            | Role                                                                                                                                           |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LoadController` | One object. Creates the tenants' queues, hands the run to every generator, wakes them again every 30 seconds, and adds up what they report.    |
+| `LoadController` | One object. Creates the tenants' queues, hands the run to the first generator, which passes it on in a tree, and adds up what they report.     |
 | `LoadGenerator`  | Sends to one tenant's queue at up to 25 requests per second, in ticks of ten seconds spread over 100 ms slices, and reports to the controller. |
 | `LoadControl`    | The entrypoint the queue's dashboard API calls.                                                                                                |
 | `Sink`           | A `QueueEntrypoint` whose `queue()` returns at once, which acknowledges the batch.                                                             |
 
-A tenant at 100 requests per second has four generators; fifty such tenants have two hundred. The load is an **open loop**: a generator starts its requests on schedule whether or not earlier ones were answered, so a queue that falls behind does not slow the load down. What it cannot take shows as rejected messages, failed requests, and latency.
+A tenant at 100 requests per second has four generators; fifty such tenants have two hundred. Generators are spread over eight regions, because each runs the queue's Worker next to itself: thousands in one place would leave a few machines to do all the accepting. The load is an **open loop**: a generator starts its requests on schedule whether or not earlier ones were answered, so a queue that falls behind does not slow the load down. What it cannot take shows as rejected messages, failed requests, and latency.
 
 ## Limits
 
-- At most 2,000 generators, which is 50,000 requests per second.
+- At most 5,000 generators, which is 125,000 requests per second, to one tenant or shared between several.
 - A generator waits for the queue's answer however long it takes, so a request counts as failed only when it throws. The queue has no timeout of its own on a send either.
 - Counts are kept by the controller in memory between reports; a restart of the controller during a run loses the per-second numbers for one tick, not the totals.
 - This sends real traffic and stores real messages: a run at 5,000 requests per second with 200 messages each is a million messages, and several million Durable Object storage rows, every second. Mind what that costs on your account.

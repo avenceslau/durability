@@ -1485,7 +1485,7 @@ await log.commit('search', page.nextOffset);
 
 ### Retention is not acknowledgement
 
-Records leave only through `trim()`, which enforces `maxAgeMs` and `maxRecords`, oldest first. Retention is deliberately not automatic, because no capability should schedule work an application did not ask for. A `DurabilityAlarms` handler is the composition that gives it a schedule, and it keeps `alarm()` a pure delegation:
+Records leave through `trim()`, which enforces `maxAgeMs` and `maxRecords`, oldest first. Retention is deliberately not automatic, because no capability should schedule work an application did not ask for. A `DurabilityAlarms` handler is the composition that gives it a schedule, and it keeps `alarm()` a pure delegation:
 
 ```ts
 private readonly alarms = new DurabilityAlarms({
@@ -1518,6 +1518,8 @@ type LogColdStorage<Body> = {
 External storage expires on its own schedule, so mirror a lifecycle rule with `forgetColdBefore(offset)` to drop stale index entries. Returning `undefined` from `read` is also honoured: a segment the index outlived surfaces as truncation rather than a silent gap.
 
 Retention still **ignores cursors**, exactly as a log should: a consumer slower than everything readable loses records. It learns loudly rather than silently skipping, because reading below the oldest readable offset throws `LogTruncatedError` carrying `requestedOffset` and `oldestOffset`. Leased consumers learn the same way: when a range awaiting redelivery (nacked or expired) was trimmed, `lease()` throws `LogTruncatedError` once, drops the trimmed offsets from the range, and the next call carries on from what is still retained. A leased consumer's cursor moves past offsets trimmed before anyone leased them. Compare `bounds()` against a cursor to detect the risk before it happens.
+
+A caller that knows no consumer will read below an offset again can free those records at once with `discardBefore(offset, limit?)`, which deletes the oldest records the object still holds below `offset`, at most `limit` per call, and returns how many. They are not handed to cold storage. The log does not check cursors here either, and the deduplication keys of the deleted records are free again, so keep records for as long as a repeated append must still be recognised.
 
 ### Leases for parallel consumers
 

@@ -35,14 +35,31 @@ export type Report = LoadCounts & {
 
 /** One generator sends at most this many requests a second, so the load comes from many objects. */
 export const generatorRps = 25;
-/** As many as one controller can wake within its subrequest limit. */
-export const maxGenerators = 2_000;
+/** Each one reports to the controller every tick; this many keep that within what one object takes. */
+export const maxGenerators = 5_000;
 
 const generatorsPerTenant = (options: LoadOptions): number =>
   Math.ceil(options.requestsPerSecond / generatorRps);
 
 export const generatorCount = (options: LoadOptions): number =>
   options.tenants * generatorsPerTenant(options);
+
+/**
+ * Generators wake each other: generator 0 is woken by the controller, and
+ * each one wakes this many more. Thousands start within a few hops, where
+ * the controller waking them one by one took longer than a short run lasts.
+ */
+const fanout = 16;
+
+/** The generators that generator `index` wakes, out of `count`. */
+export const childrenOf = (index: number, count: number): number[] => {
+  const first = index * fanout + 1;
+  const last = Math.min(first + fanout, count);
+  return Array.from(
+    { length: Math.max(0, last - first) },
+    (_, at) => first + at
+  );
+};
 
 export const queueOf = (tenant: number): string => `load-${tenant}`;
 export const isLoadQueue = (name: string): boolean => /^load-\d+$/.test(name);
@@ -59,6 +76,19 @@ export const assignment = (
   };
 };
 
+/**
+ * Whether a bursty run is sending at `now`. It depends only on the run, so
+ * every generator starts and stops its bursts together.
+ */
+export const inBurst = (run: Run, now: number): boolean => {
+  const { burstSeconds, quietSeconds } = run.options;
+  if (!quietSeconds) {
+    return true;
+  }
+  const cycleMs = (burstSeconds + quietSeconds) * 1_000;
+  return (now - run.startedAt) % cycleMs < burstSeconds * 1_000;
+};
+
 export const active = (run: Run | undefined, now: number): run is Run =>
   run !== undefined && !run.stopped && now < run.endsAt;
 
@@ -72,5 +102,30 @@ const namespace = <T extends Rpc.DurableObjectBranded>(
 
 export const controller = () =>
   namespace<LoadController>('LoadController').getByName('controller');
-export const generator = (index: number) =>
-  namespace<LoadGenerator>('LoadGenerator').getByName(`generator-${index}`);
+/**
+ * Generators are spread over these regions. Each one runs the queue's Worker
+ * next to itself, so thousands in one place would have a few machines do all
+ * the work of accepting, and the test would measure those machines.
+ */
+const regions: DurableObjectLocationHint[] = [
+  'wnam',
+  'enam',
+  'sam',
+  'weur',
+  'eeur',
+  'apac',
+  'afr',
+  'me',
+];
+
+/** The hint only places an object the first time, so it is part of the name. */
+export const generator = (index: number) => {
+  const region = regions[index % regions.length]!;
+  return namespace<LoadGenerator>('LoadGenerator').getByName(
+    `generator-${index}-${region}`,
+    { locationHint: region }
+  );
+};
+
+export const generatorIndex = (name: string | undefined): number =>
+  Number(name?.split('-')[1] ?? 0);

@@ -21,6 +21,9 @@ type Order = {
   total: number;
 };
 
+/** What `POST /orders` takes: one customer's orders, oldest first. */
+type OrdersOfCustomer = { customer: string; totals: number[] };
+
 const queue = 'orders';
 
 /** Stands in for the real work. It fails for one customer, to show a retry. */
@@ -85,15 +88,16 @@ export default {
 
     if (pathname === '/orders') {
       // Demo input only: authenticate and validate it in an application.
-      const orders = await request.json<Order[]>();
-      const outcome = await env.QUEUE.send(
-        queue,
-        // One customer's orders stay in order.
-        orders.map((order) => ({ key: order.customer, body: order }))
-      );
-      return Response.json(outcome, {
-        status: outcome.rejected.length === 0 ? 202 : 503,
+      const { customer, totals } = await request.json<OrdersOfCustomer>();
+      // A send has one key. The customer is the key, so one customer's
+      // orders stay in order, and the queue stores all of them or none.
+      const outcome = await env.QUEUE.send(queue, {
+        key: customer,
+        messages: totals.map((total) => ({
+          body: { customer, total } satisfies Order,
+        })),
       });
+      return Response.json(outcome, { status: outcome.accepted ? 202 : 503 });
     }
     return new Response('Not found', { status: 404 });
   },

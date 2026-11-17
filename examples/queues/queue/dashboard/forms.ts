@@ -1,4 +1,10 @@
-import type { MessageInput, QueueSettings } from '../src/model';
+import type { QueueSettings, SendInput } from '../src/model';
+
+/**
+ * `maxPartitions` of `src/model.ts`, repeated: importing it would add the
+ * schema library to the page.
+ */
+export const maxPartitions = 10_000;
 import {
   element,
   errorMessage,
@@ -98,11 +104,12 @@ export const settingsForm = (
       { class: 'inline' },
       field(
         'Min partitions',
-        numberInput('min', { min: 1, max: 256, required: true })
+        numberInput('min', { min: 1, max: maxPartitions, required: true })
       ),
       field(
         'Max partitions',
-        numberInput('max', { min: 1, max: 256, required: true })
+        numberInput('max', { min: 1, max: maxPartitions, placeholder: 'none' }),
+        'Empty means no limit'
       ),
       field(
         'Target rate per partition',
@@ -111,8 +118,8 @@ export const settingsForm = (
       ),
       field(
         'Max backlog',
-        numberInput('maxBacklog', { min: 1, required: true }),
-        'Per partition'
+        numberInput('maxBacklog', { min: 1, placeholder: 'none' }),
+        'Per partition. Empty for no limit: the rest waits in R2'
       ),
       field(
         'Max concurrency',
@@ -159,13 +166,13 @@ export const settingsForm = (
     await save({
       partitions: {
         min: numberField(form, 'min') ?? 1,
-        max: numberField(form, 'max') ?? 16,
+        max: numberField(form, 'max') ?? null,
         targetRate: numberField(form, 'targetRate') ?? 200,
       },
       maxConcurrency: numberField(form, 'maxConcurrency') ?? null,
       limitMode: textField(form, 'limitMode') === 'fast' ? 'fast' : 'strict',
       limiterTargetRate: numberField(form, 'limiterTargetRate') ?? 200,
-      maxBacklog: numberField(form, 'maxBacklog') ?? 100_000,
+      maxBacklog: numberField(form, 'maxBacklog') ?? null,
       pullConsumers: new FormData(form).has('pullConsumers'),
       pullRetentionDays: numberField(form, 'pullRetentionDays') ?? 7,
     });
@@ -203,7 +210,7 @@ export const resizeForm = (
       { class: 'inline' },
       field(
         'Partitions',
-        numberInput('count', { min: 1, max: 256, required: true })
+        numberInput('count', { min: 1, max: maxPartitions, required: true })
       ),
       element(
         'div',
@@ -222,7 +229,7 @@ export const resizeForm = (
 };
 
 export const sendMessagesForm = (
-  send: (messages: MessageInput[]) => Promise<string>
+  send: (input: SendInput) => Promise<string>
 ): HTMLFormElement => {
   const notice = element('p', { class: 'notice' });
   const form = element(
@@ -249,12 +256,6 @@ export const sendMessagesForm = (
       )
     ),
     element(
-      'label',
-      { class: 'check' },
-      element('input', { type: 'checkbox', name: 'spread' }),
-      'Use a different key per message (key-0, key-1, ...) to spread across partitions'
-    ),
-    element(
       'div',
       { class: 'actions' },
       element('button', { type: 'submit' }, 'Send')
@@ -269,14 +270,11 @@ export const sendMessagesForm = (
     } catch {
       throw new Error('The body is not valid JSON');
     }
-    const key = textField(form, 'key');
-    const spread = new FormData(form).get('spread') !== null;
     const count = numberField(form, 'count') ?? 1;
-    const messages = Array.from({ length: count }, (_, index) => ({
-      key: spread ? `${key}-${index}` : key,
-      body,
-    }));
-    return send(messages);
+    return send({
+      key: textField(form, 'key'),
+      messages: Array.from({ length: count }, () => ({ body })),
+    });
   });
   return form;
 };

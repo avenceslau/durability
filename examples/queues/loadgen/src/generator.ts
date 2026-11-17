@@ -4,7 +4,12 @@ import { exponential } from 'durability/utils';
 import {
   active,
   assignment,
+  childrenOf,
   controller,
+  generator,
+  generatorCount,
+  generatorIndex,
+  inBurst,
   type Env,
   type Report,
   type Run,
@@ -17,6 +22,8 @@ const tickMs = 10_000;
 // one burst per tick.
 const sliceMs = 100;
 const slicesPerTick = tickMs / sliceMs;
+// Children are woken again this often, which revives any whose loop died.
+const wakeAgainMs = 30_000;
 // A gap longer than a tick follows a restart; the cap stops it becoming a spike.
 const maxCatchUpMs = tickMs + 5_000;
 
@@ -43,10 +50,9 @@ const nothing = (): Omit<Report, 'seconds' | 'requests'> => ({
  */
 export class LoadGenerator extends DurableObject<Env> {
   private run = this.ctx.storage.kv.get<Run>('run');
-  private readonly index = Number(
-    this.ctx.id.name?.replace('generator-', '') ?? 0
-  );
+  private readonly index = generatorIndex(this.ctx.id.name);
   private lastTickAt: number | undefined;
+  private wokeChildrenAt = 0;
   /** The part of a request the rate left over from the previous tick. */
   private owed = 0;
   private sequence = 0;
@@ -78,8 +84,23 @@ export class LoadGenerator extends DurableObject<Env> {
     if (!this.run || run.revision > this.run.revision) {
       this.run = run;
       this.ctx.storage.kv.put('run', run);
+      // Passed on at once, so a start or a stop reaches everyone in a few hops.
+      this.wakeChildren(run);
     }
     await this.alarms.tick(Date.now());
+  }
+
+  private wakeChildren(run: Run): void {
+    this.wokeChildrenAt = Date.now();
+    for (const child of childrenOf(this.index, generatorCount(run.options))) {
+      this.ctx.waitUntil(
+        generator(child)
+          .start(run)
+          .catch((error: unknown) =>
+            console.error({ event: 'loadgen.wake.failed', child, error })
+          )
+      );
+    }
   }
 
   private async tick(): Promise<void> {
@@ -92,6 +113,9 @@ export class LoadGenerator extends DurableObject<Env> {
 
     // Scheduled first so that a tick that fails cannot end the loop.
     await this.alarms.tick(now + tickMs);
+    if (now - this.wokeChildrenAt >= wakeAgainMs) {
+      this.wakeChildren(run);
+    }
     const elapsedMs = Math.min(
       maxCatchUpMs,
       now - (this.lastTickAt ?? now - tickMs)
@@ -99,10 +123,7 @@ export class LoadGenerator extends DurableObject<Env> {
     this.lastTickAt = now;
 
     const { queue, rate } = assignment(run.options, this.index);
-    this.owed += (rate * elapsedMs) / 1_000;
-    const requests = Math.floor(this.owed);
-    this.owed -= requests;
-    const sent = await this.send(run, queue, requests);
+    const sent = await this.send(run, queue, (rate * elapsedMs) / 1_000);
     this.report(sent, elapsedMs / 1_000);
   }
 
@@ -132,27 +153,30 @@ export class LoadGenerator extends DurableObject<Env> {
   }
 
   /**
-   * Starts `count` requests paced across the tick, without awaiting their
-   * answers, and resolves to how many it started: fewer when the run ends or
-   * is stopped part of the way through.
+   * Paces a tick's requests across its slices without awaiting their answers,
+   * and resolves to how many it started. A slice outside a burst sends
+   * nothing and owes nothing later; the run ending or being stopped ends the
+   * tick early.
    */
-  private async send(run: Run, queue: string, count: number): Promise<number> {
+  private async send(run: Run, queue: string, inTick: number): Promise<number> {
     let sent = 0;
     for (let slice = 0; slice < slicesPerTick; slice += 1) {
       if (!active(this.run, Date.now())) {
         break;
       }
-      const inSlice =
-        Math.floor((count * (slice + 1)) / slicesPerTick) -
-        Math.floor((count * slice) / slicesPerTick);
-      sent += inSlice;
-      for (let index = 0; index < inSlice; index += 1) {
-        this.inFlight += 1;
-        this.ctx.waitUntil(
-          this.sendOne(run, queue).finally(() => {
-            this.inFlight -= 1;
-          })
-        );
+      if (inBurst(run, Date.now())) {
+        this.owed += inTick / slicesPerTick;
+        const inSlice = Math.floor(this.owed);
+        this.owed -= inSlice;
+        sent += inSlice;
+        for (let index = 0; index < inSlice; index += 1) {
+          this.inFlight += 1;
+          this.ctx.waitUntil(
+            this.sendOne(run, queue).finally(() => {
+              this.inFlight -= 1;
+            })
+          );
+        }
       }
       if (slice < slicesPerTick - 1) {
         // eslint-disable-next-line no-await-in-loop
@@ -167,8 +191,9 @@ export class LoadGenerator extends DurableObject<Env> {
     const { minMessages, maxMessages, keys } = run.options;
     const count =
       minMessages + Math.floor(Math.random() * (maxMessages - minMessages + 1));
+    // A send has one key: each request is one key's next messages.
+    const key = `key-${Math.floor(Math.random() * keys)}`;
     const messages = Array.from({ length: count }, () => ({
-      key: `key-${Math.floor(Math.random() * keys)}`,
       body: {
         generator: this.index,
         sequence: (this.sequence += 1),
@@ -177,11 +202,12 @@ export class LoadGenerator extends DurableObject<Env> {
     }));
 
     try {
-      const outcome = await this.env.QUEUE.send(queue, messages);
-      this.outcomes.accepted += outcome.accepted.length;
-      for (const rejection of outcome.rejected) {
-        this.outcomes.rejected += rejection.ids.length;
-        this.outcomes.lastRejection = describe(rejection.error);
+      const outcome = await this.env.QUEUE.send(queue, { key, messages });
+      if (outcome.accepted) {
+        this.outcomes.accepted += count;
+      } else {
+        this.outcomes.rejected += count;
+        this.outcomes.lastRejection = describe(outcome.error);
       }
     } catch (error) {
       this.outcomes.failed += 1;

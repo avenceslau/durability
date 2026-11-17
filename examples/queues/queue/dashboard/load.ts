@@ -1,7 +1,7 @@
 import type { LoadCounts, LoadOptions, LoadStatus } from '../src/load';
 import { api } from './api';
 import { compact, dateTime, element, numberField, perSecond } from './dom';
-import { field, handleSubmit, numberInput } from './forms';
+import { field, handleSubmit, maxPartitions, numberInput } from './forms';
 
 type Answer = { available: false } | ({ available: true } & LoadStatus);
 
@@ -57,9 +57,13 @@ const describe = (status: LoadStatus): string => {
   }
   const { tenants, requestsPerSecond, minMessages, maxMessages } =
     status.options;
+  const { burstSeconds, quietSeconds } = status.options;
   const shape =
     `${tenants} tenants at ${requestsPerSecond} requests/s each, ` +
-    `${minMessages} to ${maxMessages} messages per request`;
+    `${minMessages} to ${maxMessages} messages per request` +
+    (quietSeconds > 0
+      ? `, in bursts of ${burstSeconds} s with ${quietSeconds} s between`
+      : '');
   if (status.phase === 'running') {
     return `Running: ${shape}. Stops by itself at ${dateTime(status.endsAt ?? 0)}.`;
   }
@@ -109,7 +113,7 @@ export const loadTestSection = async (): Promise<
         'Requests per second, per tenant',
         numberInput('requestsPerSecond', {
           min: 1,
-          max: 1_000,
+          max: 100_000,
           value: 100,
           required: true,
         })
@@ -155,10 +159,38 @@ export const loadTestSection = async (): Promise<
         })
       ),
       field(
+        'Burst, seconds',
+        numberInput('burstSeconds', {
+          min: 1,
+          max: 3_600,
+          value: 30,
+          required: true,
+        })
+      ),
+      field(
+        'Quiet, seconds',
+        numberInput('quietSeconds', {
+          min: 0,
+          max: 3_600,
+          value: 0,
+          required: true,
+        }),
+        '0 for a steady load. Otherwise: a burst, this long with nothing, and again'
+      ),
+      field(
+        'Deliver at most',
+        numberInput('deliverPerSecond', {
+          min: 1,
+          max: 1_000_000,
+          placeholder: 'no limit',
+        }),
+        'Messages per second, per partition. A low value lets a backlog build'
+      ),
+      field(
         'Partitions per tenant, from',
         numberInput('partitionsMin', {
           min: 1,
-          max: 256,
+          max: maxPartitions,
           value: 8,
           required: true,
         })
@@ -167,10 +199,10 @@ export const loadTestSection = async (): Promise<
         'to',
         numberInput('partitionsMax', {
           min: 1,
-          max: 256,
-          value: 32,
-          required: true,
-        })
+          max: maxPartitions,
+          placeholder: 'none',
+        }),
+        'Empty means no limit'
       )
     ),
     element('div', { class: 'actions' }, startButton, stopButton, deleteButton),
@@ -211,9 +243,12 @@ export const loadTestSection = async (): Promise<
       maxMessages: number('maxMessages'),
       keys: number('keys'),
       seconds: number('seconds'),
+      burstSeconds: number('burstSeconds'),
+      quietSeconds: numberField(form, 'quietSeconds') ?? 0,
+      deliverPerSecond: numberField(form, 'deliverPerSecond') ?? null,
       partitions: {
         min: number('partitionsMin'),
-        max: number('partitionsMax'),
+        max: numberField(form, 'partitionsMax') ?? null,
       },
     };
     const total = options.tenants * options.requestsPerSecond;

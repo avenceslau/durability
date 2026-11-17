@@ -8,6 +8,7 @@ import {
   settingsInputSchema,
   targetInputSchema,
   targetNameSchema,
+  targetsInputSchema,
   type Overview,
   type QueueSummary,
 } from './model';
@@ -23,11 +24,13 @@ export const listQueues = () => directory().list();
 
 export const createQueue = async (
   queue: string,
-  settings: SettingsInput = {}
+  settings: SettingsInput = {},
+  targets: Record<string, TargetInput> = {}
 ): Promise<void> => {
   await orchestrator(queue).create(
     queue,
-    v.parse(settingsInputSchema, settings)
+    v.parse(settingsInputSchema, settings),
+    v.parse(targetsInputSchema, targets)
   );
   await directory().add(queue);
 };

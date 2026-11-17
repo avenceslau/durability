@@ -110,32 +110,38 @@ await env.QUEUE_ADMIN.putTarget('orders', 'billing', {
 ## Accepting a message
 
 ```ts
-const outcome = await env.QUEUE.send('orders', [
+const outcome = await env.QUEUE.send('orders', {
   // One customer's orders stay in order.
-  { key: 'customer-42', body: { total: 12 } },
-  { key: 'customer-42', body: { total: 7 } },
-]);
-// outcome.accepted: the ids stored; outcome.rejected: [{ ids, error }]
+  key: 'customer-42',
+  messages: [{ body: { total: 12 } }, { body: { total: 7 } }],
+});
+// { accepted: true, ids } or { accepted: false, error: { name, message } }
 ```
 
 1. A producer calls `send` on its `QueueBinding`, or POSTs to the HTTP API. The Worker
    reads the queue's partition list. The list lives in KV because every send
    needs it and no send should wait on the orchestrator; the Worker caches it in memory.
-2. It hashes each message's key to a partition of the current epoch and groups the
-   messages by partition, keeping their order. A send with many keys touches most
-   partitions, so the Worker makes one call to a partition at a time: groups that arrive
-   while one is on its way wait and go together in the next call.
-3. Each partition schedules a delivery run, then appends what the call carries to its log
+2. A send has one key, and the Worker hashes it to a partition of the current epoch, so
+   a send goes to one partition. A send spread over many partitions would call each for a
+   message or two, and a partition can answer far fewer calls than it can store messages.
+   The Worker also makes one call to a partition at a time: sends that arrive while one
+   is on its way wait and go together in the next call.
+3. The partition schedules a delivery run, then appends what the call carries to its log
    in one transaction, all of it or none. An append assigns the next offsets, and the offset is the order: everything
    after this point follows it. Scheduling comes first so that a stored message always has
    a run coming to deliver it.
 4. The partition answers. **Accepted means stored**, not delivered.
 
 A partition refuses a send in two cases. If a resize replaced it, it answers with the new
-layout and the Worker sends there instead. If a running target is more than `maxBacklog`
-behind, it answers with backpressure, which HTTP reports as `429`: messages are removed by
-retention whether or not a target received them, so refusing early is what prevents a
-silent loss later.
+layout and the Worker sends there instead. If the queue sets `maxBacklog` and a running
+target is further behind than that, it answers with backpressure, which HTTP reports as
+`429`.
+
+By default there is no such limit. A partition keeps a bounded amount in its own storage;
+when a target falls further behind than that holds, the partition's log moves its oldest
+messages to R2 and reads them back as delivery reaches them. Messages every target has
+received are dropped on the way instead of written. So a deep backlog costs R2 storage and
+a little latency, not refused sends.
 
 A send that fails without an answer is uncertain. Sending again with the same message
 `id`s is safe within a partition, which accepts an id once. It is not safe across a
@@ -365,9 +371,36 @@ already refuses, such a Worker is redirected rather than accepted: nothing can b
 in the old epoch after a message of the same key went to the new one. Step 4 then makes
 sure the old epoch's messages are delivered first.
 
+The old partitions do not stop at the same moment, least of all under load, when a busy
+partition turns the orchestrator's call away and is asked again. So a key moves to the new
+epoch only once its own partition has stopped. A Worker that sent every key there after
+its first redirect would store a key while that key's own partition still accepts from
+other Workers, and the old epoch is delivered first. A redirected Worker instead tells the
+next old partition to stop before it moves that partition's key. The stop then travels
+with the sends themselves: under a load that left the orchestrator a minute to reach every
+partition, the new partitions were taking nearly all of it within about 25 seconds.
+
 The cost is that accepting scales immediately while delivery of new messages waits for
 the old backlog. The autoscaler accounts for that by at least doubling when it grows, and
 by not shrinking while a target is behind.
+
+Growing is quick and shrinking is slow. A queue that is refusing sends is judged on its
+last five seconds and may grow again ten seconds after a resize. It halves only after
+half an hour in which half its partitions would have carried the traffic, and half an
+hour after its last resize: the traffic that needed the partitions tends to come back,
+and every resize makes delivery wait.
+
+Demand is what is sent to the queue, not only what it accepted. A partition that gets to
+a call more than two seconds after the Worker made it refuses the call without touching
+storage, which keeps an overloaded partition able to answer the orchestrator, and the
+Worker reports what it refused itself with its next call, including calls the runtime
+turned away from an overloaded partition. Both are in the partition's
+report, so a queue too small for its traffic grows within seconds. A queue has no limit of
+its own unless `partitions.max` is set; what stops it is what one orchestrator can hold,
+10,000 partitions.
+Partitions are given regions by their index, because objects that start near the
+orchestrator share machines and hold each other up.
+A resize does not wait for earlier ones to drain.
 
 **One resize runs at a time.** A target that is paused, or whose messages keep being
 retried, holds the old epoch until every message in it is acknowledged or dead-lettered,
@@ -416,26 +449,26 @@ ticking and can be evicted.
 
 ## Failure and recovery decisions
 
-| Failure or edge                                        | What the design does                                                                                      | Still yours to decide                                                                |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| Send fails without an answer                           | Uncertain. A retry with the same ids is stored once by the same partition.                                | Producer retry limits; a retry after a resize can store a message twice.             |
-| Worker holds an old partition list                     | The replaced partition refuses and names the new layout; the Worker sends there.                          | Nothing.                                                                             |
-| Consumer retries a message                             | It is delivered again after its delay; later messages of its key wait for that target, other keys flow.   | `maxRetries`, `retryDelaySeconds`, and whether a long hold on one key is acceptable. |
-| Consumer acknowledges a later message of a retried key | That message is delivered again after the retried one; the delivery is not counted against it.            | Stopping at a key's first failure, and receiver deduplication.                       |
-| Call throws or times out                               | Every message of the batch is retried. An RPC call keeps running after the timeout.                       | The timeout, and work that is safe to run twice at once.                             |
-| Queue has no targets                                   | Messages go straight to the dead letters; a redrive of the queue delivers them to every later target.     | Whether to redrive once a target exists.                                             |
-| Pull consumer does not acknowledge                     | The lease ends and the same messages are handed out again, with a higher attempt.                         | The lease length, and receiver deduplication.                                        |
-| Pull consumer falls behind retention                   | Its batches are deleted; it continues with the oldest that remain.                                        | The retention, up to 50 days, and monitoring of consumer progress.                   |
-| Message exhausts its retries                           | Written to R2 as its own dead letter, then forgotten. Redrive sends it again for that target only.        | When to redrive, and that order no longer covers that message.                       |
-| Partition evicted during a delivery                    | The messages become due again after the target's timeout plus five seconds, and are delivered again.      | Receiver deduplication on the message `id`.                                          |
-| Pull or archive write fails                            | The same batch is retried with backoff before anything after it; after `maxRetries` it is dead-lettered.  | Nothing; the pull target allows 100 retries.                                         |
-| Target falls behind retention                          | Sends are refused at `maxBacklog` for running targets, before retention can remove undelivered messages.  | A paused target is not protected: it loses what expires while it is paused.          |
-| Storage fails while scheduling work                    | Alarms are scheduled before the state they serve is stored, and the alarms that drive work never give up. | Nothing.                                                                             |
-| Orchestrator evicted mid-resize                        | The stored intent makes the next tick repeat the steps, each of which can be repeated.                    | Nothing.                                                                             |
-| Orchestrator evicted between storing and pushing       | Every tick pushes the stored configuration and shares again.                                              | Ticks run only while partitions report; an idle queue repairs on next use.           |
-| Limiter unreachable                                    | Its partitions cannot take permits and stop delivering; accepting is unaffected.                          | Alerting on backlog without delivery.                                                |
-| Permit held by an evicted partition                    | Adopted when the target next has work, otherwise returned by a check a minute after it was granted.       | Nothing.                                                                             |
-| A target that never succeeds during a resize           | It holds the old epoch, and the next resize, until its messages are dead-lettered.                        | Pause, fix, or remove the target.                                                    |
+| Failure or edge                                        | What the design does                                                                                                      | Still yours to decide                                                                |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Send fails without an answer                           | Uncertain. A retry with the same ids is stored once by the same partition.                                                | Producer retry limits; a retry after a resize can store a message twice.             |
+| Worker holds an old partition list                     | The replaced partition refuses and names the new layout; the Worker sends there.                                          | Nothing.                                                                             |
+| Consumer retries a message                             | It is delivered again after its delay; later messages of its key wait for that target, other keys flow.                   | `maxRetries`, `retryDelaySeconds`, and whether a long hold on one key is acceptable. |
+| Consumer acknowledges a later message of a retried key | That message is delivered again after the retried one; the delivery is not counted against it.                            | Stopping at a key's first failure, and receiver deduplication.                       |
+| Call throws or times out                               | Every message of the batch is retried. An RPC call keeps running after the timeout.                                       | The timeout, and work that is safe to run twice at once.                             |
+| Queue has no targets                                   | Messages go straight to the dead letters; a redrive of the queue delivers them to every later target.                     | Whether to redrive once a target exists.                                             |
+| Pull consumer does not acknowledge                     | The lease ends and the same messages are handed out again, with a higher attempt.                                         | The lease length, and receiver deduplication.                                        |
+| Pull consumer falls behind retention                   | Its batches are deleted; it continues with the oldest that remain.                                                        | The retention, up to 50 days, and monitoring of consumer progress.                   |
+| Message exhausts its retries                           | Written to R2 as its own dead letter, then forgotten. Redrive sends it again for that target only.                        | When to redrive, and that order no longer covers that message.                       |
+| Partition evicted during a delivery                    | The messages become due again after the target's timeout plus five seconds, and are delivered again.                      | Receiver deduplication on the message `id`.                                          |
+| Pull or archive write fails                            | The same batch is retried with backoff before anything after it; after `maxRetries` it is dead-lettered.                  | Nothing; the pull target allows 100 retries.                                         |
+| Target falls behind                                    | Its backlog stays readable: what the partition cannot hold moves to R2. With `maxBacklog` set, sends are refused instead. | A message older than 4 days is removed whether or not the target received it.        |
+| Storage fails while scheduling work                    | Alarms are scheduled before the state they serve is stored, and the alarms that drive work never give up.                 | Nothing.                                                                             |
+| Orchestrator evicted mid-resize                        | The stored intent makes the next tick repeat the steps, each of which can be repeated.                                    | Nothing.                                                                             |
+| Orchestrator evicted between storing and pushing       | Every tick pushes the stored configuration and shares again.                                                              | Ticks run only while partitions report; an idle queue repairs on next use.           |
+| Limiter unreachable                                    | Its partitions cannot take permits and stop delivering; accepting is unaffected.                                          | Alerting on backlog without delivery.                                                |
+| Permit held by an evicted partition                    | Adopted when the target next has work, otherwise returned by a check a minute after it was granted.                       | Nothing.                                                                             |
+| A target that never succeeds during a resize           | It holds the old epoch until its messages are dead-lettered. Resizes go on, up to eight live epochs.                      | Pause, fix, or remove the target.                                                    |
 
 ## What the example leaves to you
 
@@ -444,8 +477,11 @@ ticking and can be evicted.
   longer sample interval first.
 - **Thresholds.** The autoscaler's target rates and cooldowns, and the request rate one
   limiter should carry, are starting points, not measurements of your workload.
-- **Retention.** A partition keeps messages for 4 days or 512 MB; targets that are behind
-  read from there. Only pull consumers have the longer, configurable retention of the
+- **Retention.** A message every target has settled is deleted from its partition a minute
+  later; the minute lets the partition recognise a repeated send and serve a target added
+  a moment ago. One that some target has not settled lives 4 days at most. A partition
+  holds up to 512 MB itself and keeps the rest of an undelivered backlog in R2; targets
+  that are behind read from both. Only pull consumers have the longer, configurable retention of the
   pull bucket.
 - **Pull consumer visibility.** The dashboard shows the pull target writing to the bucket,
   not how far each consumer has read.

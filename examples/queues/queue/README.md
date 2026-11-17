@@ -5,7 +5,7 @@ A queue service on Durable Objects, built from the [`durability`](https://github
 - **Ordered per key.** Messages that share a key reach each target in the order they were accepted. A retried message holds back only the later messages of its key.
 - **Consumers like Cloudflare Queues.** A Worker extends `QueueEntrypoint`, implements `queue(batch)`, and acknowledges or retries each message.
 - **Many in, many out.** Any number of producers; every target of a queue receives every message, at its own pace, with its own retries and dead letters.
-- **Autoscaling.** Partitions are added and removed with the accept rate and the backlog, without breaking order. Queues, targets, and limits are created at runtime: nothing is redeployed.
+- **Autoscaling.** Partitions are added and removed, up to 10,000 per queue, with what is sent to the queue and the backlog, without breaking order. Queues, targets, and limits are created at runtime: nothing is redeployed.
 - **Push or pull.** Targets are called with each batch. Turn pull consumers on and every message is also kept in R2, for up to 50 days, for consumers that ask for messages instead.
 - **Limits.** Messages per batch and per second per partition, and batches in flight across the whole queue.
 - **Dashboard.** Accepted and delivered messages per second over the last 30 minutes, backlog, in-flight work, retries, dead letters, partitions, and scaling events, live over a WebSocket. With the [load generator](../loadgen) deployed, it also starts and watches load tests.
@@ -24,19 +24,24 @@ import type { QueueBinding } from '@queues-example/queue';
 
 type Env = { QUEUE: Service<QueueBinding> };
 
-const outcome = await env.QUEUE.send('orders', [
-  { key: 'customer-42', body: { total: 12 } },
-  { key: 'customer-42', body: { total: 7 } },
-]);
-// { accepted: ['…', '…'], rejected: [] }
+const outcome = await env.QUEUE.send('orders', {
+  key: 'customer-42',
+  messages: [{ body: { total: 12 } }, { body: { total: 7 } }],
+});
+// { accepted: true, ids: ['…', '…'] }
+// or { accepted: false, error: { name: 'Backpressure', message: '…' } }
 ```
 
-`send` takes up to 1000 messages: `{ key: string, body: unknown, id?: string }`. A message without an `id` gets a random one. The outcome lists the accepted ids and, per rejected group, the ids and the reason:
+`send` takes one key and up to 1000 messages for it: `{ key: string, messages: { body: unknown, id?: string }[] }`. A message without an `id` gets a random one.
+
+**A send has one key.** The key decides the partition, so a send goes to one partition, which stores all of its messages or none. Messages of several keys are several sends. A send whose messages were spread over the queue's partitions would call most of them for one message each, and a partition can answer far fewer calls than it can store messages.
+
+The outcome is either accepted, with the ids in order, or rejected, with the reason:
 
 - **Accepted** means stored. Delivery happens afterwards.
-- **`Backpressure`**: a running target is `maxBacklog` messages behind. Retry later.
+- **`Backpressure`**: the partition cannot keep up, or the queue sets `maxBacklog` and a running target is that far behind. Nothing was stored. The message says that the queue is at capacity and adds partitions as demand grows, and the outcome has `retryAfterSeconds`: how long to wait before sending again. Over HTTP that is a `429` with `Retry-After`. A queue that refuses needs about half a minute to have more partitions accepting; the wait is between 20 and 40 seconds and differs from one refusal to the next, so that producers refused together do not all come back at the same moment. Wait longer after a second refusal. A partition cannot keep up when too much is waiting for it in the Worker, when a call waited over two seconds before the partition got to it, or when the runtime turned the call away from an overloaded object. What is refused counts as demand, so the queue adds partitions.
 - **`PartitionReplaced`** after three redirects: the queue is resizing. Retry shortly.
-- **A thrown call** is uncertain: the messages may or may not be stored. Retry **with the same `id`s**. A partition accepts an id once while it keeps the message, so only a retry that lands after a resize can store a message twice.
+- **A thrown call** is uncertain: the messages may or may not be stored. Retry **with the same `id`s**. A partition accepts an id once while it keeps the message, which is at least a minute, so retry soon. A retry that lands after a resize, or after the message was delivered to every target and deleted, stores the message again.
 
 ## Consume over RPC
 
@@ -135,16 +140,16 @@ A `2xx` answer acknowledges every message, except those its JSON body lists unde
 
 Target settings:
 
-| Setting             | Default    | Meaning                                                                                                       |
-| ------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
-| `maxBatchSize`      | 10         | Messages one partition hands the target at a time, 1 to 100.                                                  |
-| `maxRetries`        | 3          | Retries before a message is dead-lettered, so up to four deliveries.                                          |
-| `retryDelaySeconds` | 0          | Delay before a retried message is delivered again, unless the consumer gives one.                             |
-| `maxConcurrency`    | none       | Batches in flight for this target across the queue. Needs the queue's own `maxConcurrency`.                   |
-| `maxPerSecond`      | none       | Messages per second one partition hands the target.                                                           |
-| `attemptTimeoutMs`  | 10000      | How long one delivery may take, 100 to 30000.                                                                 |
-| `paused`            | `false`    | A paused target receives nothing and keeps its place.                                                         |
-| `startAt`           | `'latest'` | Where a target added to an existing queue starts: `'latest'`, or `'earliest'` for what partitions still hold. |
+| Setting             | Default    | Meaning                                                                                                                                                                      |
+| ------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxBatchSize`      | 10         | Messages one partition hands the target at a time, 1 to 100.                                                                                                                 |
+| `maxRetries`        | 3          | Retries before a message is dead-lettered, so up to four deliveries.                                                                                                         |
+| `retryDelaySeconds` | 0          | Delay before a retried message is delivered again, unless the consumer gives one.                                                                                            |
+| `maxConcurrency`    | none       | Batches in flight for this target across the queue. Needs the queue's own `maxConcurrency`.                                                                                  |
+| `maxPerSecond`      | none       | Messages per second one partition hands the target.                                                                                                                          |
+| `attemptTimeoutMs`  | 10000      | How long one delivery may take, 100 to 30000.                                                                                                                                |
+| `paused`            | `false`    | A paused target receives nothing and keeps its place.                                                                                                                        |
+| `startAt`           | `'latest'` | Where a target added to an existing queue starts: `'latest'`, or `'earliest'` for what partitions still hold: what another target has not received yet, and the last minute. |
 
 With the default `retryDelaySeconds` of 0, a consumer that keeps failing without asking for a delay uses up its retries quickly.
 
@@ -212,19 +217,19 @@ await env.QUEUE_ADMIN.updateSettings('orders', { maxBacklog: 50_000 });
 const overview = await env.QUEUE_ADMIN.overview('orders');
 ```
 
-| Method                               | Does                                                                                   |
-| ------------------------------------ | -------------------------------------------------------------------------------------- |
-| `list()`                             | The queues, for the dashboard.                                                         |
-| `create(queue, settings?)`           | Creates a queue.                                                                       |
-| `updateSettings(queue, changes)`     | Changes the settings given and keeps the rest, `partitions` included.                  |
-| `putTarget(queue, target, settings)` | Adds or replaces a target. Settings left out take their defaults.                      |
-| `pauseTarget(queue, target, paused)` | Pauses or resumes a target.                                                            |
-| `removeTarget(queue, target)`        | Removes a target.                                                                      |
-| `resize(queue, partitions)`          | Starts a resize, within `partitions.min` and `max`, once the previous one has drained. |
-| `overview(queue)`                    | Settings, targets, epochs, the latest sample of each partition, limiters, and points.  |
-| `delete(queue)`                      | Deletes the queue.                                                                     |
+| Method                               | Does                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `list()`                             | The queues, for the dashboard.                                                                  |
+| `create(queue, settings?, targets?)` | Creates a queue, with targets by name if given. Give them here when sends follow at once.       |
+| `updateSettings(queue, changes)`     | Changes the settings given and keeps the rest, `partitions` included.                           |
+| `putTarget(queue, target, settings)` | Adds or replaces a target. Settings left out take their defaults.                               |
+| `pauseTarget(queue, target, paused)` | Pauses or resumes a target.                                                                     |
+| `removeTarget(queue, target)`        | Removes a target.                                                                               |
+| `resize(queue, partitions)`          | Starts a resize, within `partitions.min` and `max`. It does not wait for earlier ones to drain. |
+| `overview(queue)`                    | Settings, targets, epochs, the latest sample of each partition, limiters, and points.           |
+| `delete(queue)`                      | Deletes the queue.                                                                              |
 
-Queue settings: `partitions` (`min` 1, `max` 16, `targetRate` 200 accepted messages per second per partition), `maxConcurrency` (batches in flight across the queue, `null` for no limit), `limitMode` (`strict` or `fast`), `limiterTargetRate` (200 permit requests per second per limiter), `maxBacklog` (100000 undelivered messages per partition), `pullConsumers`, and `pullRetentionDays`.
+Queue settings: `partitions` (`min` 1; `max`, where the autoscaler stops, `null` by default for no limit; `targetRate` 200 messages per second per partition), `maxConcurrency` (batches in flight across the queue, `null` for no limit), `limitMode` (`strict` or `fast`), `limiterTargetRate` (200 permit requests per second per limiter), `maxBacklog` (undelivered messages per partition before sends are refused; `null`, the default, for no limit), `pullConsumers`, and `pullRetentionDays`.
 
 ### HTTP
 
@@ -232,17 +237,17 @@ Clients that are not Workers send and pull over HTTP with bearer tokens, set as 
 
 The dashboard and the admin API under `/api` have **no sign-in of their own**. Anyone who can reach the Worker can create, reconfigure, and delete queues, so put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of it before you deploy; Access then decides who gets in, and the dashboard needs nothing more. The only check the Worker makes is that a request naming an origin names its own, so another site cannot act through a signed-in browser.
 
-| Route                                              | Token    | Does                                                                                     |
-| -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------- |
-| `POST /queues/<queue>/messages`                    | producer | `send`. `202` when all were accepted, `429` on backpressure, `503` for other rejections. |
-| `POST /queues/<queue>/consumers/<consumer>/pull`   | consumer | `pull`, with `{ batches?, visibilityMs? }`. `null` when caught up.                       |
-| `POST /queues/<queue>/consumers/<consumer>/ack`    | consumer | `ack` with `{ lease }`. `409` when the lease is no longer current. `nack` is the same.   |
-| `GET`, `POST /api/queues`                          | none     | `list`; `create` with `{ name, settings? }`.                                             |
-| `GET`, `PATCH`, `DELETE /api/queues/<queue>`       | none     | `overview`, `updateSettings`, `delete`.                                                  |
-| `PUT`, `DELETE /api/queues/<queue>/targets/<name>` | none     | `putTarget`, `removeTarget`.                                                             |
-| `POST /api/queues/<queue>/targets/<name>/pause`    | none     | `pauseTarget` with `{ paused }`.                                                         |
-| `POST /api/queues/<queue>/resize`                  | none     | `resize` with `{ partitions }`.                                                          |
-| `POST`, `GET /api/queues/<queue>/redrive`          | none     | `redrive` of the queue, `redriveStatus`. `POST …/targets/<name>/redrive` for one target. |
+| Route                                              | Token    | Does                                                                                                                         |
+| -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `POST /queues/<queue>/messages`                    | producer | `send`, with `{ key, messages }`. `202` when accepted, `429` with `Retry-After` on backpressure, `503` for other rejections. |
+| `POST /queues/<queue>/consumers/<consumer>/pull`   | consumer | `pull`, with `{ batches?, visibilityMs? }`. `null` when caught up.                                                           |
+| `POST /queues/<queue>/consumers/<consumer>/ack`    | consumer | `ack` with `{ lease }`. `409` when the lease is no longer current. `nack` is the same.                                       |
+| `GET`, `POST /api/queues`                          | none     | `list`; `create` with `{ name, settings? }`.                                                                                 |
+| `GET`, `PATCH`, `DELETE /api/queues/<queue>`       | none     | `overview`, `updateSettings`, `delete`.                                                                                      |
+| `PUT`, `DELETE /api/queues/<queue>/targets/<name>` | none     | `putTarget`, `removeTarget`.                                                                                                 |
+| `POST /api/queues/<queue>/targets/<name>/pause`    | none     | `pauseTarget` with `{ paused }`.                                                                                             |
+| `POST /api/queues/<queue>/resize`                  | none     | `resize` with `{ partitions }`.                                                                                              |
+| `POST`, `GET /api/queues/<queue>/redrive`          | none     | `redrive` of the queue, `redriveStatus`. `POST …/targets/<name>/redrive` for one target.                                     |
 
 `scripts/load.mjs` sends a steady stream over HTTP, which is the quickest way to watch the dashboard and the autoscaler:
 
@@ -277,18 +282,28 @@ The [architecture guide](https://durability.shirei.dev/compositions/fifo-queue/)
 
 **The partition list in KV has no expiry** and is written only by the orchestrator, when the partitions change.
 
-**Sends are merged per partition.** A send with many keys touches most partitions of its queue, so a partition would be called once per send however many partitions there are. The Worker makes one call to a partition at a time (`src/coalesce.ts`): a send that arrives while one is on its way waits, and goes together with the others that waited. The partition stores a call in one transaction, all of it or none. Nothing is held back to fill a batch, and there is no timeout: a slow partition shows as latency. What may wait is bounded instead, at 5,000 messages per partition and 100,000 per Worker isolate. Past that a send's share is rejected at once as backpressure (`429` over HTTP), because an isolate that kept everything a slow partition could not take would run out of memory and fail the sends that had been stored.
+**Nothing is kept that no target needs.** A message every target has acknowledged or given up on is deleted from its partition a minute later, by a sweep that runs every few seconds while there is something to delete. The minute is for two things only the partition can do: recognise a send repeated with the same ids, and hand a target added a moment ago what was sent after it. So a partition holds its backlog and about a minute of traffic. The same sweep deletes backlog objects in R2 once every target has passed them, and a deleted queue's partitions delete everything they hold, there and in R2.
+
+**A backlog can outgrow its partition.** The partition's log (`DurabilityLog`) is given R2 as cold storage. Once the partition holds more than 512 MB, or a message turns 4 days old, the log hands over its oldest messages: those every target has received, and those too old, are dropped; the rest are written to R2 as one object per run of up to 1,000. Delivery reads through both without knowing the difference. A sweep deletes the objects every target has passed.
+
+**A partition under too much load refuses instead of falling behind.** The Worker stamps each call with the time it made it. A partition that gets to a call more than two seconds later refuses it without touching storage, so it works through what is queued for it quickly and stays able to answer the orchestrator, report, and deliver. The Worker then leaves that partition alone for a quarter of a second, refusing its share of sends itself, and tells the partition with its next call how much it refused. Those refusals are in the partition's report, and the autoscaler counts them as demand: a queue too small for its traffic grows within seconds instead of looking quiet.
+
+**Partitions are placed around the world.** A Durable Object starts near whoever reaches it first, and for a partition that is the orchestrator. A queue's partitions would all start in its part of the world, several to a machine, and partitions that share a machine hold each other up. Each partition is therefore given a region by its index (`partitionRegion` in `src/layout.ts`), and every caller passes the same hint. With 3,000 partitions and the same load, that took failed sends from about 10% to 2–3%. The price is distance: a send may cross the world to its partition.
+
+**Sends are merged per partition.** A send goes to the one partition of its key, and a busy partition would be called once per send. The Worker makes one call to a partition at a time (`src/coalesce.ts`): a send that arrives while one is on its way waits, and goes together with the others that waited. The partition stores a call in one transaction, all of it or none. Nothing is held back to fill a batch, and there is no timeout: a slow partition shows as latency. What may wait is bounded instead, at 5,000 messages per partition and 100,000 per Worker isolate. Past that a send is rejected at once as backpressure (`429` over HTTP), because an isolate that kept everything a slow partition could not take would run out of memory and fail the sends that had been stored.
 
 **Two kinds of target.** For `rpc`, `webhook`, `service`, and `queue` targets, a partition records every message it hands out in a `pending` table. An acknowledged message is deleted from it; a retried one stays, with the time it is due again, and later messages of its key are held behind it. A message handed out and not settled within the timeout plus five seconds, for example because the partition was evicted mid-call, is delivered again. The `pull` and `archive` targets store whole batches instead: one range of offsets at a time, retried with backoff before the next, so the bucket holds each partition's messages in order. A whole batch is dead-lettered after `maxRetries`; the `pull` target allows 100.
 
 **Resizing without losing order.** A new partition count re-maps keys, so a resize starts a new _epoch_:
 
-1. The orchestrator tells the current partitions to stop accepting. From then on they refuse sends and answer with the new layout, so a Worker isolate holding an old partition list is redirected instead of accepted out of order.
+1. The orchestrator tells the current partitions to stop accepting, each on its own and again until it answers, because a partition under load turns calls away. A stopped partition refuses sends and answers with the new layout, so a Worker isolate holding an old partition list is redirected instead of accepted out of order. A key moves to the new layout only once its own partition has stopped: until then, another isolate can still store that key there. A Worker that one partition has redirected therefore tells the next old partition to stop before it moves that partition's key, so the stop travels with the sends themselves and does not wait for the orchestrator to get through to a busy partition.
 2. It publishes the new partitions. They accept at once.
 3. A target is delivered from the new partitions only once the old ones have nothing left for it: every message acknowledged or dead-lettered.
 4. Old partitions with nothing left for any target leave the queue.
 
-Accepting scales immediately; delivery follows when the old backlog is gone. Only one resize runs at a time, and a target that is paused or keeps retrying holds the previous epoch, and so the next resize, until it has worked through that epoch's messages.
+Accepting scales immediately; delivery follows when the old backlog is gone, one epoch after another. A resize does not wait for the ones before it to drain, so a queue can keep growing to accept while a slow or paused target is still working through older partitions. Each resize that has not drained keeps its partitions alive, which is why at most eight epochs are live at once.
+
+**Growing is quick, shrinking is slow.** The autoscaler (`src/scaling.ts`) judges a queue on its last five seconds, at least doubles it when the traffic does not fit, and may grow it again ten seconds later. It halves a queue only after half an hour in which half its partitions would have carried the traffic, and half an hour after its last resize, so a queue of 4,000 partitions takes about six hours to return to one. The traffic that needed the partitions tends to come back, and every resize makes delivery wait.
 
 **Concurrency.** With `maxConcurrency` set, a partition takes a permit from a limiter before it delivers and keeps it for up to ten seconds of continuous work. A queue starts with one limiter; the orchestrator adds limiters when their request rate exceeds `limiterTargetRate`, and splits the limit between them by demand. `limitMode` chooses how permits move between limiters:
 
@@ -297,20 +312,22 @@ Accepting scales immediately; delivery follows when the old backlog is gone. Onl
 
 A target's own `maxConcurrency` is split between limiters in the same proportion, so with several limiters it is approximate.
 
-**Metrics cost nothing per message.** A partition reports its log offset (accepted) and, for each target, its position minus the messages it has not settled (settled), about once a second while it is busy; the orchestrator turns successive samples into rates. The same samples drive the autoscaler.
+**Metrics cost nothing per message.** A partition reports its log offset (accepted) and, for each target, its position minus the messages it has not settled (settled), about once a second while it is busy, less often as a queue passes a hundred partitions so that one orchestrator can hear them all; the orchestrator turns successive samples into rates. The same samples drive the autoscaler.
 
 **Alarms first.** Every alarm is scheduled before the state it serves is stored, so a failure leaves nothing stored without the work that would act on it.
 
 ## Limits
 
-- A partition keeps messages for 4 days or 512 MB, whichever comes first; `pullRetentionDays` applies to the pull bucket only. A target that stays behind longer loses messages; `maxBacklog` rejects sends before that happens for running targets, not for paused ones.
-- One orchestrator receives every partition's samples, so the dashboard, not the queue, is what stops scaling first. Lengthen `sampleIntervalMs` in `src/partition.ts` for queues with many hundreds of busy partitions.
+- A message that some target has not settled lives 4 days at most; one that every target has settled is deleted after a minute. `pullRetentionDays` applies to the pull bucket only. A partition holds up to 512 MB itself. When a target is further behind than that, the partition's oldest messages move to R2 under `backlog/` in the `STORAGE` bucket and are read back as delivery reaches them, so a slow or paused target costs storage and latency instead of refused sends. Set `maxBacklog` to refuse sends instead.
+- One orchestrator receives every partition's samples, so the dashboard, not the queue, is what stops scaling first. Partitions report less often as their number grows, so the dashboard of a queue with thousands of them lags by tens of seconds. A queue has no partition limit of its own unless `partitions.max` is set, and then grows as far as its traffic asks. What stops it is what one orchestrator can hold, 10,000 partitions, which is as far as it was tried. The orchestrator calls 500 partitions at a time, so a resize away from a queue that large, or deleting it, takes minutes.
+- A new queue's partition list is in KV, which takes up to a minute to show it everywhere. Until then a send from another region is answered as if the queue did not exist.
+- One partition stores about 12,000 small messages a second at most, and comfortably half that. Beyond it the runtime turns calls away from the overloaded object, which the queue reports as backpressure. The queue takes the runtime's word that such a call never reached the partition; if one did, a producer that retries without its own ids has the message delivered twice.
 - The autoscaler's thresholds (`src/scaling.ts`) and `limiterTargetRate` are starting points, not measurements of your workload.
 - A message waiting for a retry is still subject to the 4 days: retries and delays that add up to more lose it without a dead letter. The partition reports it as the target's last error.
 - A delivery counts from when the partition picks the batch, as with a visibility timeout. A partition that restarts between picking a batch and calling the consumer has spent one of the message's attempts on a call that was never made, so with `maxRetries: 0` such a message goes to the dead letters undelivered.
 - A removed target's position is kept: a target created again under the same name continues where the old one stopped. Its messages that were waiting for a retry are given up when it is removed.
 - A target cannot change between an archive and a consumer; remove it and add it again.
-- Deleting a queue stops its partitions; their stored messages expire with retention.
+- Deleting a queue stops its partitions, which then delete their messages and backlog objects. Its dead letters and its batches in the pull bucket stay in R2: the pull batches until their retention ends, the dead letters until they are removed by hand.
 - The dashboard and admin API rely entirely on what stands in front of the Worker. The Worker does not verify the Access token itself, so a route to it that Access does not cover is an open admin API.
 - Webhook targets call any URL an admin enters, and the dashboard shows their signing secrets to every admin.
 

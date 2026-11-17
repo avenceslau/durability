@@ -36,7 +36,7 @@ const accept = sourceExcerpt(
   'accept',
   'Answer a producer',
   'const accept = async (queue: string, request: Request): Promise<Response> => {',
-  '  return Response.json(outcome, { status });\n};'
+  "    headers: { 'Retry-After': String(outcome.retryAfterSeconds) },\n  });\n};"
 );
 const layoutOf = sourceExcerpt(
   sendSource,
@@ -46,28 +46,20 @@ const layoutOf = sourceExcerpt(
   'const layoutOf = async (queue: string): Promise<Layout> => {',
   '  return published;\n};'
 );
-const groupByPartition = sourceExcerpt(
-  sendSource,
-  sendFile,
-  'group-by-partition',
-  'Hash keys to partitions',
-  'const groupByPartition = (',
-  '  return [...groups.values()];\n};'
-);
 const send = sourceExcerpt(
   sendSource,
   sendFile,
   'send',
   'Send, following a resize',
   'export const send = async (',
-  '  return outcome;\n};'
+  "      message: 'The queue is still resizing; retry shortly',\n    },\n  };\n};"
 );
 const append = sourceExcerpt(
   partitionSource,
   partitionFile,
   'append',
   'Accept a share of a send',
-  '  async append(inputs: AppendInput[]): Promise<AppendResult> {',
+  '  async append(call: AppendCall): Promise<AppendResult> {',
   '      ),\n    };\n  }'
 );
 const mergeSends = sourceExcerpt(
@@ -76,7 +68,7 @@ const mergeSends = sourceExcerpt(
   'merge-sends',
   'Merge sends that wait for a partition',
   'const createAppend = () => {',
-  '    keepAlive: waitUntil,\n  });\n};'
+  '    return merged(partition, input);\n  };\n};'
 );
 const stopAccepting = sourceExcerpt(
   partitionSource,
@@ -580,7 +572,7 @@ export const walkthrough = validateWalkthrough({
   details: {
     producer: {
       description:
-        'Anything that sends: another Worker bound to the QueueBinding entrypoint, or an HTTP client with the producer token. Each message is reported accepted once it is stored, or rejected, for example under backpressure; a call that fails without an answer is uncertain.',
+        'Anything that sends: another Worker bound to the QueueBinding entrypoint, or an HTTP client with the producer token. Each send has one key and is reported accepted once it is stored, or rejected, for example under backpressure; a call that fails without an answer is uncertain.',
       href: '/primitives/routing/',
       source: 'accept',
     },
@@ -592,7 +584,7 @@ export const walkthrough = validateWalkthrough({
     },
     worker: {
       description:
-        'Stateless. It reads the queue’s partition list, hashes each key, and calls one Partition per group of messages. It never calls the Orchestrator.',
+        'Stateless. It reads the queue’s partition list, hashes the send’s key, and calls that key’s Partition. It never calls the Orchestrator.',
       href: '/primitives/routing/',
       source: 'send',
     },
@@ -610,7 +602,7 @@ export const walkthrough = validateWalkthrough({
     },
     log: {
       description:
-        'The partition’s SQLite: messages by offset and one position per target. For targets that answer per message, a pending table holds every message handed out and not yet settled, and every message held behind a retried one of its key. Messages stay until retention removes them (4 days or 512 MB), whatever the positions are.',
+        'The partition’s SQLite: messages by offset and one position per target. For targets that answer per message, a pending table holds every message handed out and not yet settled, and every message held behind a retried one of its key. A message every target has settled is deleted a minute later; the others stay until retention removes them (4 days) or moves them to R2 (past 512 MB).',
       href: '/primitives/log/',
       source: 'claim',
     },
@@ -666,7 +658,6 @@ export const walkthrough = validateWalkthrough({
   excerpts: [
     accept,
     layoutOf,
-    groupByPartition,
     mergeSends,
     send,
     append,
@@ -731,28 +722,27 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'hash',
-          title: 'Hash each key to a partition',
+          title: 'Hash the key to a partition',
           description:
-            'A key always hashes to the same partition of an epoch, which is what puts messages of one key into one ordered log. The Worker groups the messages by partition and keeps their order within each group.',
+            'A send has one key, and a key always hashes to the same partition of an epoch, which is what puts messages of one key into one ordered log. So a send goes to one partition. A send spread over many partitions would call each of them for a message or two, and a partition can answer far fewer calls than it can store messages.',
           stage: ['focus:worker'],
           source: sourceFocus(
-            groupByPartition,
-            'const identity = partitionFor(queue, layout, message.key);',
-            'groups.set(identity.index, group);'
+            send,
+            'let identity = partitionOf(queue, published, input.key);'
           ),
-          durable: 'Nothing is written while grouping.',
-          volatile: 'The groups exist only in this request.',
+          durable: 'Nothing is written while hashing.',
+          volatile: 'The messages, in this request.',
           status: 'normal',
         },
         {
           id: 'merge',
           title: 'Go together with the sends already waiting',
           description:
-            'Every send touches most partitions of its queue, so a partition would be called once per send however many partitions the queue has. The Worker therefore makes one call to a partition at a time: a send that arrives while one is on its way waits, and goes together with the others that waited. Nothing is held back to fill a batch; batches grow only when the partition is slower than sends arrive.',
+            'A busy partition would be called once per send. The Worker therefore makes one call to a partition at a time: a send that arrives while one is on its way waits, and goes together with the others that waited. Nothing is held back to fill a batch; batches grow only when the partition is slower than sends arrive.',
           stage: ['focus:worker'],
           source: sourceFocus(
             mergeSends,
-            'return coalescer<AppendInput, Share>({',
+            'const merged = coalescer<AppendInput, Share>({',
             'maxWeight: maxMessagesPerAppend,'
           ),
           durable: 'Nothing is written while waiting.',
@@ -760,10 +750,26 @@ export const walkthrough = validateWalkthrough({
           status: 'normal',
         },
         {
-          id: 'refuse',
-          title: 'Refuse rather than drop',
+          id: 'late',
+          title: 'Refuse what waited too long',
           description:
-            'Retention removes old messages whether or not a target has received them. So a partition refuses new messages once a running target is maxBacklog behind, and the producer sees 429 instead of a later silent loss.',
+            'The Worker stamps each call with the time it made it. A partition that gets to a call more than two seconds later refuses it without touching storage. An overloaded partition works through what is queued for it quickly that way, and stays able to answer the Orchestrator, report, and deliver. The Worker then leaves that partition alone for a moment and tells it, with its next call, how much it refused meanwhile.',
+          stage: ['focus:partition'],
+          source: sourceFocus(
+            append,
+            'if (Date.now() - call.issuedAt > maxAppendLatenessMs) {',
+            "error: { name: 'Backpressure', message: atCapacityMessage },"
+          ),
+          durable:
+            'Nothing: the refusal is counted in memory until the next report.',
+          volatile: 'The count of refused messages since the last report.',
+          status: 'gap',
+        },
+        {
+          id: 'refuse',
+          title: 'Refuse only if the queue asks for it',
+          description:
+            'A queue may set maxBacklog: a partition then refuses new messages once a running target is that far behind, and the producer sees 429. By default there is no limit. A backlog that outgrows what the partition holds itself moves to R2, oldest first, and is read back as delivery reaches it.',
           stage: ['focus:partition'],
           source: sourceFocus(
             append,
@@ -803,15 +809,15 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'answer',
-          title: 'Answer for every partition',
+          title: 'Answer the producer',
           description:
-            'Each partition accepted or rejected its group on its own, so one send can be partly accepted; the outcome lists the ids either way, and over HTTP becomes 202, 429 for backpressure, or 503. A rejection is definite. A thrown call is not: the group may have been stored, and a retry must reuse the ids.',
+            'The partition stored the whole send or none of it, so the outcome is one answer: accepted, with the ids, or rejected, with the reason. Over HTTP that is 202, 429 with Retry-After for backpressure, or 503. A rejection is definite. A thrown call is not: the send may have been stored, and a retry must reuse the ids.',
           stage: ['focus:producer'],
           source: sourceFocus(
             accept,
-            'const status = outcome.rejected.length === 0 ? 202 : backpressure ? 429 : 503;'
+            "headers: { 'Retry-After': String(outcome.retryAfterSeconds) },"
           ),
-          durable: 'Whatever each partition stored.',
+          durable: 'Whatever the partition stored.',
           volatile: 'The outcome, known only to this request.',
           status: 'normal',
         },
@@ -1105,11 +1111,11 @@ export const walkthrough = validateWalkthrough({
           id: 'entry',
           title: 'Send through the queue, for one target',
           description:
-            'The Redriver sends the dead letter’s messages the way the Worker does: each key is hashed to a partition of the current epoch. The messages are marked for the target that gave up on them, and every other target skips them.',
+            'The Redriver sends the dead letter’s messages the way the Worker does, one send per key: each key is hashed to a partition of the current epoch. The messages are marked for the target that gave up on them, and every other target skips them.',
           stage: ['focus:partition'],
           source: sourceFocus(
             replayEntry,
-            'const outcome = await send(',
+            'const accepted = await sendEachKey(',
             '[target]'
           ),
           durable: 'The messages, appended as new ones.',
@@ -1124,7 +1130,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:storage'],
           source: sourceFocus(
             replayEntry,
-            'if (outcome.rejected.length > 0) {',
+            'if (accepted.size < entry.messages.length) {',
             'await env.STORAGE.delete(key);'
           ),
           durable: 'The dead letter is gone, or still there.',
@@ -1339,12 +1345,12 @@ export const walkthrough = validateWalkthrough({
           id: 'decide',
           title: 'Decide a new partition count',
           description:
-            'Every tick the Orchestrator compares the accept rate with what one partition should carry, and checks whether a running target would need more than 30 seconds to deliver its backlog. Growing at least doubles, because every resize has a cost.',
+            'Every tick the Orchestrator compares the accept rate with what one partition should carry, and checks whether a running target would need more than 30 seconds to deliver its backlog. Growing is quick: it looks at the last five seconds, at least doubles, and may grow again ten seconds later. Shrinking is slow: the queue halves only after half an hour in which half its partitions would have been enough.',
           stage: ['*', 'focus:orchestrator'],
           source: sourceFocus(
             planPartitions,
-            'const forRate = clamp(Math.ceil(load.acceptRate / load.targetRate));',
-            'const needsDelivery = backlogged && !load.waitingForPermits;'
+            'const forRate = Math.ceil(load.acceptRate / load.targetRate);',
+            'return moveTo(Math.ceil(load.current / 2));'
           ),
           durable: 'The points the rates are computed from.',
           volatile: 'The decision.',
@@ -1368,7 +1374,7 @@ export const walkthrough = validateWalkthrough({
           id: 'stop',
           title: 'Old partitions stop accepting',
           description:
-            'The Orchestrator calls every partition of the current epoch and waits for all of them. From then on each refuses sends and answers with the new layout. Nothing is published before this completes.',
+            'The Orchestrator calls every partition of the current epoch and waits for all of them, asking each again until it answers: a partition under load turns calls away. A stopped partition refuses sends and answers with the new layout. Nothing is published before all have stopped.',
           stage: ['focus:partition'],
           source: sourceFocus(
             stopAccepting,
@@ -1397,15 +1403,15 @@ export const walkthrough = validateWalkthrough({
           id: 'redirect',
           title: 'A Worker with the old list is redirected',
           description:
-            'KV is eventually consistent and isolates cache, so some Workers still hash with the old count. Their partition refuses and names the new layout; the Worker hashes again and sends there. A message is therefore never accepted into the old epoch after one of its key went to the new.',
+            'KV is eventually consistent and isolates cache, so some Workers still hash with the old count. Their partition refuses and names the new layout; the Worker hashes again and sends there. A key moves only once its own partition has stopped, so the Worker tells the next old partition to stop before it moves that partition’s key: the stop travels with the sends and does not wait for the Orchestrator to reach a busy partition. A message is therefore never accepted into the old epoch after one of its key went to the new.',
           stage: ['focus:worker'],
           source: sourceFocus(
             send,
-            "'next' in result.error ? (result.error.next as Layout) : undefined;",
-            'remaining.push(...messages);'
+            'const { name, message, next } = result.error;',
+            'identity = partitionOf(queue, next, input.key);'
           ),
           durable: 'Nothing: the refusal stored nothing.',
-          volatile: 'The layout this isolate learned from the refusal.',
+          volatile: 'The redirects this isolate was given, per partition.',
           status: 'recovery',
         },
         {
@@ -1454,16 +1460,17 @@ export const walkthrough = validateWalkthrough({
         },
         {
           id: 'stuck',
-          title: 'A target that cannot finish holds the epoch',
+          title:
+            'A target that cannot finish holds its epochs, not the resizes',
           description:
-            'Only one resize runs at a time. A target that is paused, or whose messages keep being retried, keeps the old epoch alive until it has acknowledged or dead-lettered every message in it, and no further resize starts before then.',
+            'A target that is paused, slow, or whose messages keep being retried keeps an old epoch alive until it has acknowledged or dead-lettered every message in it. Resizes do not wait for that: accepting has to be able to grow while delivery is behind. Each resize that has not drained keeps its partitions, so at most eight epochs are live at once.',
           stage: ['focus:orchestrator'],
           source: sourceFocus(
             startResize,
-            "if (epochs.length > 1 || this.kv.get<Layout>('resize')) {",
-            "throw new QueueError('The previous resize is still draining');"
+            'if (epochs.length >= maxLiveEpochs) {',
+            '`${epochs.length - 1} earlier resizes are still draining; wait for one to finish`'
           ),
-          durable: 'Two live epochs.',
+          durable: 'Up to eight live epochs.',
           volatile: 'Nothing.',
           status: 'gap',
         },

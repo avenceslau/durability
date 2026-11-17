@@ -15,6 +15,7 @@ import {
   namePattern,
   numberInput,
 } from './forms';
+import { maxPartitions } from './forms';
 import { loadTestSection } from './load';
 import { showQueue } from './queue';
 
@@ -41,11 +42,12 @@ const createQueueForm = (): HTMLFormElement => {
       ),
       field(
         'Min partitions',
-        numberInput('min', { min: 1, max: 256, value: 1 })
+        numberInput('min', { min: 1, max: maxPartitions, value: 1 })
       ),
       field(
         'Max partitions',
-        numberInput('max', { min: 1, max: 256, value: 16 })
+        numberInput('max', { min: 1, max: maxPartitions, placeholder: 'none' }),
+        'Empty means no limit'
       ),
       field(
         'Max concurrency',
@@ -69,7 +71,7 @@ const createQueueForm = (): HTMLFormElement => {
       settings: {
         partitions: {
           min: numberField(form, 'min') ?? 1,
-          max: numberField(form, 'max') ?? 16,
+          max: numberField(form, 'max') ?? null,
         },
         maxConcurrency: numberField(form, 'maxConcurrency') ?? null,
         limitMode: textField(form, 'limitMode') === 'fast' ? 'fast' : 'strict',
@@ -112,7 +114,7 @@ const allQueues = (summaries: QueueSummary[]): HTMLElement[] => {
       tile(
         'Partitions',
         compact(total((summary) => summary.partitions)),
-        resizing === 0 ? undefined : `${resizing} queues resizing`
+        resizing === 0 ? undefined : `${resizing} queues draining older ones`
       ),
       tile(
         'Accepted',
@@ -123,6 +125,11 @@ const allQueues = (summaries: QueueSummary[]): HTMLElement[] => {
         perSecond(total((summary) => summary.deliveredPerSecond))
       ),
       tile('Backlog', compact(total((summary) => summary.backlog))),
+      tile(
+        'Stored',
+        compact(total((summary) => summary.held)),
+        `${compact(total((summary) => summary.backlogObjects))} backlog objects in R2`
+      ),
       tile(
         'Rejected',
         perSecond(total((summary) => summary.rejectedPerSecond))
@@ -172,7 +179,7 @@ const allQueues = (summaries: QueueSummary[]): HTMLElement[] => {
               ),
               number(
                 summary.epochs > 1
-                  ? `${summary.partitions} (resizing)`
+                  ? `${summary.partitions} (${summary.epochs - 1} draining)`
                   : String(summary.partitions)
               ),
               number(perSecond(summary.acceptedPerSecond)),

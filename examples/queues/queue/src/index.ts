@@ -10,10 +10,10 @@ import {
   sendSchema,
   targetNameSchema,
   consumerNameSchema,
-  type MessageInput,
   type Overview,
   type PullBatch,
   type RedriveStatus,
+  type SendInput,
 } from './model';
 import { orchestrators, pullConsumers, redrivers } from './namespaces';
 import type { PullOptions } from './pull-consumer';
@@ -31,8 +31,9 @@ export { Redriver } from './redriver';
  * without a token or an HTTP round trip.
  */
 export class QueueBinding extends WorkerEntrypoint<Cloudflare.Env> {
-  send(queue: string, messages: MessageInput[]): Promise<SendOutcome> {
-    return send(queue, v.parse(sendSchema, messages));
+  /** One key's messages, in order: `{ key, messages: [{ body, id? }] }`. */
+  send(queue: string, input: SendInput): Promise<SendOutcome> {
+    return send(queue, v.parse(sendSchema, input));
   }
 
   /**
@@ -84,8 +85,13 @@ export class QueueAdmin extends WorkerEntrypoint<Cloudflare.Env> {
     return admin.listQueues();
   }
 
-  create(queue: string, settings?: admin.SettingsInput): Promise<void> {
-    return admin.createQueue(queue, settings);
+  /** `targets`, by name, are part of the queue before it accepts anything. */
+  create(
+    queue: string,
+    settings?: admin.SettingsInput,
+    targets?: Record<string, admin.TargetInput>
+  ): Promise<void> {
+    return admin.createQueue(queue, settings, targets);
   }
 
   /** Changes the settings that are given and keeps the rest. */
@@ -197,11 +203,16 @@ const name = <Schema extends v.GenericSchema>(
 
 const accept = async (queue: string, request: Request): Promise<Response> => {
   const outcome = await send(queue, await parse(sendSchema, request));
-  const backpressure = outcome.rejected.some(
-    (rejection) => rejection.error.name === 'Backpressure'
-  );
-  const status = outcome.rejected.length === 0 ? 202 : backpressure ? 429 : 503;
-  return Response.json(outcome, { status });
+  if (outcome.accepted) {
+    return Response.json(outcome, { status: 202 });
+  }
+  if (outcome.retryAfterSeconds === undefined) {
+    return Response.json(outcome, { status: 503 });
+  }
+  return Response.json(outcome, {
+    status: 429,
+    headers: { 'Retry-After': String(outcome.retryAfterSeconds) },
+  });
 };
 
 /** A pull consumer asks for messages, or settles the ones it was given. */
@@ -290,10 +301,15 @@ const queues = async (request: Request): Promise<Response> => {
     v.object({
       name: queueNameSchema,
       settings: v.optional(v.unknown(), {}),
+      targets: v.optional(v.unknown(), {}),
     }),
     request
   );
-  await admin.createQueue(input.name, input.settings as admin.SettingsInput);
+  await admin.createQueue(
+    input.name,
+    input.settings as admin.SettingsInput,
+    input.targets as Record<string, admin.TargetInput>
+  );
   return Response.json({ name: input.name }, { status: 201 });
 };
 

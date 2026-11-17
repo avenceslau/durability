@@ -23,22 +23,29 @@ export const pullTargetName = 'pull';
  */
 export const noTargetName = '_no-target';
 
-export const messageInputSchema = v.object({
-  /** Messages sharing a key are delivered in the order they were accepted. */
+export const sendSchema = v.object({
+  /**
+   * Messages sharing a key are delivered in the order they were accepted. A
+   * send has one key, so it goes to one partition, which stores all of it or
+   * none of it.
+   */
   key: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
-  body: v.unknown(),
-  /** Sending the same id again while the message is retained is a no-op. */
-  id: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
-});
-export type MessageInput = v.InferOutput<typeof messageInputSchema>;
-
-export const sendSchema = v.union([
-  v.pipe(v.array(messageInputSchema), v.minLength(1), v.maxLength(1_000)),
-  v.pipe(
-    messageInputSchema,
-    v.transform((message) => [message])
+  messages: v.pipe(
+    v.array(
+      v.object({
+        body: v.unknown(),
+        /**
+         * Sending the same id again is a no-op while the partition keeps the
+         * message: at least a minute, longer while a target still needs it.
+         */
+        id: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
+      })
+    ),
+    v.minLength(1),
+    v.maxLength(1_000)
   ),
-]);
+});
+export type SendInput = v.InferOutput<typeof sendSchema>;
 
 /** A message as a partition stores it. */
 export type Message = {
@@ -120,11 +127,34 @@ export const targetInputSchema = v.object({
 });
 export type TargetSettings = v.InferOutput<typeof targetInputSchema>;
 
+export const atCapacityMessage =
+  'The queue is at capacity and adds partitions as demand grows; retry later';
+
+/**
+ * How long a refused send should wait before it is sent again. A queue that
+ * refuses needs about half a minute to have more partitions accepting. The
+ * wait differs from one refusal to the next: producers that were refused
+ * together would otherwise all come back at the same moment.
+ */
+export const secondsUntilRetry = (): number =>
+  20 + Math.floor(Math.random() * 21);
+
+/**
+ * What one orchestrator can hold, not a limit of the queue's own: it hears
+ * from every partition and keeps the list of them. A queue without a `max`
+ * grows to this. Tried with 10,000.
+ */
+export const maxPartitions = 10_000;
+
 export const settingsInputSchema = v.object({
   partitions: v.optional(
     v.object({
-      min: v.optional(v.pipe(positive, v.maxValue(256)), 1),
-      max: v.optional(v.pipe(positive, v.maxValue(256)), 16),
+      min: v.optional(v.pipe(positive, v.maxValue(maxPartitions)), 1),
+      /** Where the autoscaler stops; omit for no limit. */
+      max: v.optional(
+        v.nullable(v.pipe(positive, v.maxValue(maxPartitions))),
+        null
+      ),
       /** Accepted messages per second one partition should carry. */
       targetRate: v.optional(positive, 200),
     }),
@@ -139,14 +169,21 @@ export const settingsInputSchema = v.object({
   limitMode: v.optional(v.picklist(['strict', 'fast']), 'strict'),
   /** Permit requests per second one limiter should carry. */
   limiterTargetRate: v.optional(positive, 200),
-  /** Undelivered messages one partition holds before it rejects sends. */
-  maxBacklog: v.optional(positive, 100_000),
+  /**
+   * Undelivered messages one partition holds before it rejects sends, or
+   * `null` for no limit: a backlog that outgrows a partition moves to R2 and
+   * is read back as delivery reaches it.
+   */
+  maxBacklog: v.optional(v.nullable(positive), null),
   /** Also writes every message to the pull bucket, for consumers that ask for messages. */
   pullConsumers: v.optional(v.boolean(), false),
   /** Days a message stays in the pull bucket. */
   pullRetentionDays: v.optional(v.pipe(positive, v.maxValue(50)), 7),
 });
 export type QueueSettings = v.InferOutput<typeof settingsInputSchema>;
+
+/** Targets given when a queue is created, by name. */
+export const targetsInputSchema = v.record(targetNameSchema, targetInputSchema);
 
 /** Which partitions a key hashes onto. A resize starts a new epoch. */
 export type Layout = { epoch: number; count: number };
@@ -161,6 +198,12 @@ export type PartitionTarget = Omit<TargetSettings, 'destination'> & {
    * across a resize.
    */
   deliverFromEpoch: number;
+  /**
+   * When the target was added, by the orchestrator's clock. A partition may
+   * hear of a target some time after that, and what it accepted in between
+   * is the target's. Absent on targets stored before this was recorded.
+   */
+  addedAt?: number;
 };
 
 /** What the orchestrator pushes to every partition. */
@@ -168,7 +211,12 @@ export type PartitionConfig = {
   targets: Record<string, PartitionTarget>;
   /** Limiter object names; empty when the queue has no concurrency limit. */
   limiters: string[];
-  maxBacklog: number;
+  maxBacklog: number | null;
+  /**
+   * How often a partition reports to the orchestrator. It grows with the
+   * number of partitions, so that one orchestrator can take all of them.
+   */
+  sampleIntervalMs: number;
   /** How long a batch stays in the pull bucket. */
   pullRetentionMs: number;
 };
@@ -194,6 +242,12 @@ export type PartitionSample = PartitionIdentity & {
   withoutTarget: number;
   /** False once a resize replaced this partition; it then only delivers. */
   accepting: boolean;
+  /**
+   * Messages in the partition's own storage, and objects of its backlog in
+   * R2. Absent on samples stored before these were reported.
+   */
+  held?: number;
+  backlogObjects?: number;
   targets: Record<string, TargetProgress>;
 };
 
@@ -271,6 +325,9 @@ export type Point = {
   /** Messages dead-lettered because the queue had no target to deliver them to. */
   withoutTarget: number;
   partitions: number;
+  /** What the partitions store: messages themselves, and backlog objects in R2. */
+  held?: number;
+  backlogObjects?: number;
   targets: Record<string, TargetTotals>;
   permits?: {
     limit: number;
@@ -298,6 +355,9 @@ export type QueueSummary = {
   deliveredPerSecond: number;
   backlog: number;
   deadLettered: number;
+  /** Messages in the partitions' own storage, and backlog objects in R2. */
+  held: number;
+  backlogObjects: number;
 };
 
 export type Overview = {

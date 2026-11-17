@@ -2,6 +2,7 @@ import { runInDurableObject, SELF } from 'cloudflare:test';
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import type { QueueAdmin, QueueBinding } from '../src/index';
+import { partitionFor, partitionName } from '../src/layout';
 import type {
   Overview,
   PartitionConfig,
@@ -68,15 +69,67 @@ const addTarget = async (
   );
 };
 
-const produce = async (
-  queue: string,
-  messages: { key: string; body: number; id?: string }[]
-) =>
+const sendOverHttp = (queue: string, body: unknown) =>
   SELF.fetch(`https://queue.test/queues/${queue}/messages`, {
     method: 'POST',
     headers: { Authorization: 'Bearer producer' },
-    body: JSON.stringify(messages),
+    body: JSON.stringify(body),
   });
+
+/**
+ * Sends as a producer would: a partition that is behind answers 429, which
+ * stored nothing, and the send is made again.
+ */
+const sendKey = async (
+  queue: string,
+  key: string,
+  messages: { body: number; id?: string }[],
+  remaining = 40
+): Promise<Response> => {
+  const response = await sendOverHttp(queue, { key, messages });
+  if (response.status !== 429 || remaining === 0) {
+    return response;
+  }
+  await response.body?.cancel();
+  await scheduler.wait(250);
+  return sendKey(queue, key, messages, remaining - 1);
+};
+
+/**
+ * A send has one key, and the tests list messages of several keys together:
+ * this makes one send per key, in the order the keys first appear. Resolves
+ * to the first answer that is not a 202, or to the last one.
+ */
+const produce = async (
+  queue: string,
+  messages: { key: string; body: number; id?: string }[]
+): Promise<Response> => {
+  const keys = [...new Set(messages.map((message) => message.key))];
+  let response: Response | undefined;
+  for (const key of keys) {
+    // eslint-disable-next-line no-await-in-loop
+    await response?.body?.cancel();
+    // eslint-disable-next-line no-await-in-loop
+    response = await sendKey(
+      queue,
+      key,
+      messages
+        .filter((message) => message.key === key)
+        .map(({ body, id }) => ({ body, ...(id === undefined ? {} : { id }) }))
+    );
+    if (response.status !== 202) {
+      break;
+    }
+  }
+  return response!;
+};
+
+const resume = async (queue: string, target: string) =>
+  expectOk(
+    await admin(`/queues/${queue}/targets/${target}/pause`, 'POST', {
+      paused: false,
+    })
+  );
 
 const overview = async (queue: string): Promise<Overview> =>
   (await expectOk(await admin(`/queues/${queue}`))).json();
@@ -432,6 +485,39 @@ describe('fifo queue', () => {
     ]);
   });
 
+  it('takes one key per send and stores it in one partition', async () => {
+    const queue = await createQueue({ partitions: { min: 4, max: 4 } });
+    await addTarget(queue, 'orders');
+
+    const response = await sendOverHttp(queue, {
+      key: 'k',
+      messages: [{ body: 1, id: 'first' }, { body: 2 }, { body: 3 }],
+    });
+    expect(response.status).toBe(202);
+    const outcome = await response.json<{ accepted: boolean; ids: string[] }>();
+    expect(outcome.accepted).toBe(true);
+    expect(outcome.ids).toHaveLength(3);
+    expect(outcome.ids[0]).toBe('first');
+
+    const state = await waitFor(
+      () => overview(queue),
+      (current) => current.partitions.some((entry) => entry.accepted === 3)
+    );
+    expect(state.partitions.filter((entry) => entry.accepted > 0)).toHaveLength(
+      1
+    );
+    expect(bodiesByKey(await received(queue, 'orders', 3))).toEqual({
+      k: [1, 2, 3],
+    });
+
+    // Messages of several keys are not one send.
+    const mixed = await sendOverHttp(queue, [
+      { key: 'a', body: 1 },
+      { key: 'b', body: 2 },
+    ]);
+    expect(mixed.status).toBe(400);
+  });
+
   it('holds back only the key of a retried message', async () => {
     const queue = await createQueue();
     await stores.getByName(queue).behave('orders', { retryOnce: [1] });
@@ -439,6 +525,8 @@ describe('fifo queue', () => {
       await admin(`/queues/${queue}/targets/orders`, 'PUT', {
         destination: { type: 'rpc', binding: 'RPC_SINK' },
         retryDelaySeconds: 1,
+        // Until both keys are stored, so that they share the batch.
+        paused: true,
       })
     );
 
@@ -450,6 +538,7 @@ describe('fifo queue', () => {
       { key: 'b', body: 3 },
       { key: 'b', body: 4 },
     ]);
+    await resume(queue, 'orders');
     const deliveries = await received(queue, 'orders', 4);
     expect(
       deliveries.map((entry) => [entry.keys, entry.bodies, entry.attempts])
@@ -466,20 +555,25 @@ describe('fifo queue', () => {
         [2, 1],
       ],
     ]);
-    expect(
-      (await overview(queue)).partitions[0]?.targets['orders']
-    ).toMatchObject({ retries: 1, deadLettered: 0 });
+    // A partition reports at most once a second, so the count follows.
+    const counted = await waitFor(
+      async () => (await overview(queue)).partitions[0]?.targets['orders'],
+      (target) => target?.retries === 1
+    );
+    expect(counted).toMatchObject({ retries: 1, deadLettered: 0 });
   });
 
   it('lets a POSTed target retry single messages in its answer', async () => {
     const queue = await createQueue();
-    await addTarget(queue, 'hook', {}, { retryOnce: [2] });
+    // Paused until all three are stored, so that they share the batch.
+    await addTarget(queue, 'hook', { paused: true }, { retryOnce: [2] });
 
     await produce(queue, [
       { key: 'a', body: 1 },
       { key: 'b', body: 2 },
       { key: 'c', body: 3 },
     ]);
+    await resume(queue, 'hook');
     const deliveries = await received(queue, 'hook', 3);
     expect(deliveries.map((entry) => [entry.bodies, entry.attempts])).toEqual([
       [
@@ -570,6 +664,149 @@ describe('fifo queue', () => {
     expect(await stores.getByName(queue).deliveries('held')).toEqual([]);
   });
 
+  const messagesHeld = (state: DurableObjectState): number =>
+    state.storage.sql
+      .exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM durability_log_records'
+      )
+      .one().count;
+
+  it('deletes messages once every target has acknowledged them', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'running');
+    await addTarget(queue, 'held', { paused: true });
+    await produce(queue, [
+      { key: 'k', body: 1 },
+      { key: 'k', body: 2 },
+      { key: 'k', body: 3 },
+    ]);
+    await received(queue, 'running', 3);
+    const partition = await partitionWith(queue, 3);
+    const settledBy = (target: string) =>
+      waitFor(
+        async () => (await overview(queue)).partitions[0]?.targets[target],
+        (progress) => progress?.settled === 3
+      );
+    await settledBy('running');
+
+    // A settled message is kept for a minute, so the test makes the messages
+    // older than that and runs the sweep itself.
+    const heldAfterSweep = () =>
+      runInDurableObject(partition, async (instance, state) => {
+        state.storage.sql.exec(
+          'UPDATE durability_log_records SET appended_at = appended_at - 120000'
+        );
+        await (
+          instance as unknown as { enforceRetention(): Promise<void> }
+        ).enforceRetention();
+        return messagesHeld(state);
+      });
+
+    // `held` has received none of them yet.
+    expect(await heldAfterSweep()).toBe(3);
+
+    await resume(queue, 'held');
+    await settledBy('held');
+    expect(await heldAfterSweep()).toBe(0);
+
+    // What is sent next follows what was deleted.
+    await produce(queue, [{ key: 'k', body: 4 }]);
+    const byKey = bodiesByKey(await received(queue, 'held', 4));
+    expect(byKey['k']).toEqual([1, 2, 3, 4]);
+  });
+
+  const gigabyte = 1024 ** 3;
+
+  /**
+   * A partition moves its oldest messages out once it holds more bytes than
+   * it should. A few test messages are far from that, so this tells the log
+   * it holds a gigabyte more for the length of one sweep.
+   */
+  const sweepAsIfFull = (partition: DurableObjectStub<Partition>) =>
+    runInDurableObject(partition, async (instance, state) => {
+      state.storage.sql.exec(
+        'UPDATE durability_log_seq SET total_bytes = total_bytes + ?',
+        gigabyte
+      );
+      await (
+        instance as unknown as { enforceRetention(): Promise<void> }
+      ).enforceRetention();
+      state.storage.sql.exec(
+        'UPDATE durability_log_seq SET total_bytes = MAX(0, total_bytes - ?)',
+        gigabyte
+      );
+      return state.storage.sql
+        .exec<{ count: number }>(
+          'SELECT COUNT(*) AS count FROM durability_log_records'
+        )
+        .one().count;
+    });
+
+  const backlogInBucket = async (queue: string) =>
+    (await env.STORAGE.list({ prefix: `backlog/${queue}/` })).objects.length;
+
+  it('keeps a backlog that outgrows its partition in R2 and delivers it in order', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'held', { paused: true });
+    await addTarget(queue, 'running');
+    const bodies = Array.from({ length: 30 }, (_, body) => body);
+    await produce(
+      queue,
+      bodies.map((body) => ({ key: `k${body % 3}`, body }))
+    );
+    await received(queue, 'running', 30);
+
+    // `held` has received none of them, so they are kept, in R2.
+    const partition = await partitionWith(queue, 30);
+    expect(await sweepAsIfFull(partition)).toBe(0);
+    expect(await backlogInBucket(queue)).toBe(1);
+
+    await expectOk(
+      await admin(`/queues/${queue}/targets/held/pause`, 'POST', {
+        paused: false,
+      })
+    );
+    const byKey = bodiesByKey(await received(queue, 'held', 30));
+    for (const key of ['k0', 'k1', 'k2']) {
+      expect(byKey[key]).toEqual(
+        bodies.filter((body) => `k${body % 3}` === key)
+      );
+    }
+
+    // Every target has them now, so a sweep deletes them from R2.
+    await waitFor(
+      async () => {
+        await sweepAsIfFull(partition);
+        return backlogInBucket(queue);
+      },
+      (segments) => segments === 0
+    );
+  });
+
+  it('drops what every target has received instead of keeping it', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'running');
+    await produce(
+      queue,
+      Array.from({ length: 10 }, (_, body) => ({ key: 'k', body }))
+    );
+    await received(queue, 'running', 10);
+    const partition = await partitionWith(queue, 10);
+    await waitFor(
+      async () =>
+        (await overview(queue)).partitions[0]?.targets['running']?.settled,
+      (settled) => settled === 10
+    );
+
+    expect(await sweepAsIfFull(partition)).toBe(0);
+    expect(await backlogInBucket(queue)).toBe(0);
+    // The queue goes on as before.
+    await produce(queue, [{ key: 'k', body: 10 }]);
+    expect(bodiesByKey(await received(queue, 'running', 11))['k']).toHaveLength(
+      11
+    );
+  });
+
   it('refuses to turn a consumer target into an archive', async () => {
     const queue = await createQueue();
     await addTarget(queue, 'orders');
@@ -578,6 +815,114 @@ describe('fifo queue', () => {
     });
     expect(response.status).toBe(409);
     await response.body?.cancel();
+  });
+
+  it('refuses a call that waited too long, without storing it', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'orders');
+    await produce(queue, [{ key: 'k', body: 1 }]);
+    await received(queue, 'orders', 1);
+    const partition = await partitionWith(queue, 1);
+    const { epochs } = await overview(queue);
+
+    // As the Worker would call it, ten seconds ago, having itself refused
+    // five messages since its previous call.
+    const late = await partition.append({
+      inputs: [
+        {
+          identity: { queue, epoch: epochs[0]!.epoch, index: 0 },
+          messages: [{ id: 'late', key: 'k', body: 2, sentAt: Date.now() }],
+        },
+      ],
+      issuedAt: Date.now() - 10_000,
+      refused: 5,
+    });
+    expect(late).toMatchObject({
+      success: false,
+      error: { name: 'Backpressure' },
+    });
+
+    // Nothing more was stored, and all six count as refused, which is what
+    // the autoscaler reads as demand.
+    const sample = await waitFor(
+      async () => (await overview(queue)).partitions[0],
+      (current) => current?.rejected === 6
+    );
+    expect(sample?.accepted).toBe(1);
+    expect(await stores.getByName(queue).deliveries('orders')).toHaveLength(1);
+  });
+
+  it('gives a target what was sent after it was added, however late a partition hears', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 1 } });
+    await addTarget(queue, 'first');
+    await produce(queue, [
+      { key: 'k', body: 1 },
+      { key: 'k', body: 2 },
+    ]);
+    await received(queue, 'first', 2);
+    await scheduler.wait(20);
+    const addedAt = Date.now();
+    await scheduler.wait(20);
+    await produce(queue, [
+      { key: 'k', body: 3 },
+      { key: 'k', body: 4 },
+    ]);
+    await received(queue, 'first', 4);
+
+    // The partition now hears of a target that was added between the two
+    // sends: the config reaches it after messages 3 and 4 did.
+    const partition = await partitionWith(queue, 4);
+    const { epochs } = await overview(queue);
+    await runInDurableObject(partition, async (instance, state) => {
+      const config = state.storage.kv.get<PartitionConfig>('config')!;
+      const version = state.storage.kv.get<number>('config:version')!;
+      await instance.configure(
+        { queue, epoch: epochs[0]!.epoch, index: 0 },
+        {
+          group: queue,
+          channel: 'config',
+          topologyVersion: 0,
+          version: version + 1_000,
+          value: {
+            ...config,
+            targets: {
+              ...config.targets,
+              late: { ...config.targets['first']!, addedAt },
+            },
+          },
+        }
+      );
+    });
+
+    const byKey = bodiesByKey(await received(queue, 'late', 2));
+    expect(byKey['k']).toEqual([3, 4]);
+  });
+
+  it('creates a queue together with its targets', async () => {
+    const queue = `q-${crypto.randomUUID()}`;
+    await queueAdmin.create(
+      queue,
+      { partitions: { min: 2, max: 2 } },
+      { orders: { destination: { type: 'service', binding: 'SINK' } } }
+    );
+    // Sent at once: no partition may take the queue for one without targets.
+    await produce(
+      queue,
+      Array.from({ length: 8 }, (_, body) => ({ key: `k${body}`, body }))
+    );
+    await received(queue, 'orders', 8);
+    const state = await overview(queue);
+    expect(Object.keys(state.targets)).toEqual(['orders']);
+    expect(state.partitions.map((entry) => entry.withoutTarget)).toEqual(
+      state.partitions.map(() => 0)
+    );
+
+    const reserved = await admin('/queues', 'POST', {
+      name: `q-${crypto.randomUUID()}`,
+      targets: { pull: { destination: { type: 'archive' } } },
+    });
+    expect(reserved.status).toBe(409);
+    await reserved.body?.cancel();
   });
 
   it('settles a batch the way Cloudflare Queues does', async () => {
@@ -625,6 +970,23 @@ describe('fifo queue', () => {
     });
   });
 
+  it('has no partition limit of its own unless one is set', async () => {
+    const queue = await createQueue();
+    const resizeTo = (count: number) =>
+      admin(`/queues/${queue}/resize`, 'POST', { partitions: count });
+    const count = async () => (await overview(queue)).epochs.at(-1)?.count;
+
+    await expectOk(await resizeTo(20));
+    expect(await count()).toBe(20);
+
+    // Setting a limit brings the queue back inside it.
+    await expectOk(
+      await admin(`/queues/${queue}`, 'PATCH', { partitions: { max: 4 } })
+    );
+    expect(await count()).toBe(4);
+    expect((await resizeTo(5)).status).toBe(409);
+  });
+
   it('configures queues over the admin binding', async () => {
     const queue = `q-${crypto.randomUUID()}`;
     await queueAdmin.create(queue, { partitions: { min: 2 } });
@@ -635,7 +997,8 @@ describe('fifo queue', () => {
 
     const state = await queueAdmin.overview(queue);
     expect(state.settings).toMatchObject({
-      partitions: { min: 2, max: 16 },
+      // No `max`: the queue grows as far as it needs to.
+      partitions: { min: 2, max: null },
       maxBacklog: 7,
     });
     expect(state.targets['orders']).toMatchObject({
@@ -646,7 +1009,7 @@ describe('fifo queue', () => {
       queue
     );
 
-    await queueBinding.send(queue, [{ key: 'k', body: 1 }]);
+    await queueBinding.send(queue, { key: 'k', messages: [{ body: 1 }] });
     expect(bodiesByKey(await received(queue, 'orders', 1))).toEqual({ k: [1] });
 
     await queueAdmin.delete(queue);
@@ -656,7 +1019,8 @@ describe('fifo queue', () => {
   });
 
   it('keeps every key in order across a resize', async () => {
-    const queue = await createQueue({ partitions: { min: 2, max: 8 } });
+    // Five at most, so the autoscaler cannot resize again behind the test.
+    const queue = await createQueue({ partitions: { min: 2, max: 5 } });
     await addTarget(queue, 'slow', { maxBatchSize: 2 }, { delayMs: 20 });
     const keys = Array.from({ length: 12 }, (_, index) => `key-${index}`);
     const send = (from: number, to: number) =>
@@ -691,6 +1055,107 @@ describe('fifo queue', () => {
     expect(settled.targets['slow']?.deliverFromEpoch).toBe(
       settled.epochs[0]?.epoch
     );
+  });
+
+  it("stops a partition before it moves the partition's key to the next epoch", async () => {
+    const queue = await createQueue({ partitions: { min: 2, max: 2 } });
+    await addTarget(queue, 'orders', { paused: true });
+    const layout = (await overview(queue)).epochs[0]!;
+    const next = { epoch: layout.epoch + 1, count: 2 };
+    const old = (index: number) => {
+      const identity = { queue, epoch: layout.epoch, index };
+      return {
+        identity,
+        stub: partitions.getByName(partitionName(identity)),
+        key: Array.from({ length: 100 }, (_, number) => `key-${number}`).find(
+          (key) => partitionFor(queue, layout, key).index === index
+        )!,
+      };
+    };
+    const [first, second] = [old(0), old(1)];
+
+    // A resize stops the old partitions one after another. Here the second
+    // has stopped and the orchestrator has not reached the first.
+    await second.stub.stopAccepting(second.identity, next);
+
+    // The second partition redirects its key, so this isolate now knows the
+    // epoch is being replaced.
+    const redirected = await produce(queue, [{ key: second.key, body: 1 }]);
+    expect(redirected.status).toBe(202);
+
+    // The first partition would still accept, from this isolate and from any
+    // other. A message of its key in the next epoch could then be stored
+    // before one the old partition accepts afterwards, and the old epoch is
+    // delivered first. So the Worker stops the partition before the key moves.
+    const moved = await produce(queue, [{ key: first.key, body: 1 }]);
+    expect(moved.status).toBe(202);
+
+    // As an isolate that has heard nothing would call it.
+    const late = await first.stub.append({
+      inputs: [
+        {
+          identity: first.identity,
+          messages: [
+            { id: 'late', key: first.key, body: 2, sentAt: Date.now() },
+          ],
+        },
+      ],
+      issuedAt: Date.now(),
+      refused: 0,
+    });
+    expect(late).toMatchObject({
+      success: false,
+      error: { name: 'PartitionReplaced', next },
+    });
+    const sample = await first.stub.stopAccepting(first.identity, next);
+    expect(sample.accepted).toBe(0);
+  });
+
+  it('resizes again while an earlier resize still drains, and keeps order', async () => {
+    const queue = await createQueue({ partitions: { min: 1, max: 8 } });
+    // Nothing drains while the target is paused, so every resize stays live.
+    await addTarget(queue, 'held', { paused: true });
+    const keys = Array.from({ length: 6 }, (_, index) => `key-${index}`);
+    const send = async (from: number, to: number) => {
+      for (let body = from; body < to; body += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        const response = await produce(
+          queue,
+          keys.map((key) => ({ key, body }))
+        );
+        expect(response.status).toBe(202);
+      }
+    };
+    const resizeTo = async (count: number) =>
+      expectOk(
+        await admin(`/queues/${queue}/resize`, 'POST', { partitions: count })
+      );
+
+    await send(0, 3);
+    await resizeTo(2);
+    await send(3, 6);
+    await resizeTo(5);
+    await send(6, 9);
+    await resizeTo(3);
+    await send(9, 12);
+    expect(
+      (await overview(queue)).epochs.map((layout) => layout.count)
+    ).toEqual([1, 2, 5, 3]);
+
+    await expectOk(
+      await admin(`/queues/${queue}/targets/held/pause`, 'POST', {
+        paused: false,
+      })
+    );
+    const byKey = bodiesByKey(await received(queue, 'held', keys.length * 12));
+    for (const key of keys) {
+      expect(byKey[key]).toEqual(Array.from({ length: 12 }, (_, n) => n));
+    }
+    const settled = await waitFor(
+      () => overview(queue),
+      (current) => current.epochs.length === 1
+    );
+    expect(settled.epochs[0]?.count).toBe(3);
   });
 
   it('never runs more batches at once than the queue limit', async () => {
@@ -734,8 +1199,20 @@ describe('fifo queue', () => {
       { key: 'k', body: 3 },
     ]);
     expect(first.status).toBe(202);
-    const second = await produce(queue, [{ key: 'k', body: 4 }]);
+    const second = await sendOverHttp(queue, {
+      key: 'k',
+      messages: [{ body: 4 }],
+    });
     expect(second.status).toBe(429);
+    // How long to wait differs from one refusal to the next.
+    const wait = Number(second.headers.get('Retry-After'));
+    expect(wait).toBeGreaterThanOrEqual(20);
+    expect(wait).toBeLessThanOrEqual(40);
+    expect(await second.json()).toMatchObject({
+      accepted: false,
+      error: { name: 'Backpressure' },
+      retryAfterSeconds: wait,
+    });
   });
 
   it('forwards to another queue as a target', async () => {
@@ -818,7 +1295,18 @@ describe('fifo queue', () => {
     await produce(queue, [{ key: 'k', body: 1 }]);
     await received(queue, 'kept', 1);
     expect(await stores.getByName(queue).deliveries('dropped')).toEqual([]);
+    const partition = await partitionWith(queue, 1);
 
+    await expectOk(await admin(`/queues/${queue}`, 'DELETE'));
+    // The partition deletes what it held, however recent.
+    await waitFor(
+      () =>
+        runInDurableObject(partition, (_instance, object) =>
+          messagesHeld(object)
+        ),
+      (held) => held === 0
+    );
+    // A deletion can be repeated, as after one that failed halfway.
     await expectOk(await admin(`/queues/${queue}`, 'DELETE'));
     expect((await admin(`/queues/${queue}`)).status).toBe(409);
     const names = await (await admin('/queues')).json<{ name: string }[]>();
@@ -832,7 +1320,7 @@ describe('fifo queue', () => {
         method: 'POST',
         headers:
           token === undefined ? {} : { Authorization: `Bearer ${token}` },
-        body: JSON.stringify([{ key: 'k', body: 1 }]),
+        body: JSON.stringify({ key: 'k', messages: [{ body: 1 }] }),
       });
     expect((await send()).status).toBe(401);
     expect((await send('consumer')).status).toBe(401);

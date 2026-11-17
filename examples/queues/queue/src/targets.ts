@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 import type { QueueDelivery, QueueSettlement } from './consumer';
 import { pullLogKey } from './layout';
 import { maxRetryDelaySeconds, type TargetDestination } from './model';
-import { send } from './send';
+import { sendEachKey } from './send';
 
 export type Delivery = QueueDelivery;
 export type Settlement = QueueSettlement;
@@ -198,7 +198,7 @@ const forward = async (
   // Stable across redeliveries, so the destination accepts each once.
   const forwardedId = (offset: number) =>
     `${delivery.target}/${delivery.partition}/${offset}`;
-  const outcome = await send(
+  const accepted = await sendEachKey(
     queue,
     delivery.messages.map((message) => ({
       key: message.key,
@@ -206,7 +206,6 @@ const forward = async (
       id: forwardedId(message.offset),
     }))
   );
-  const accepted = new Set(outcome.accepted);
   return settlementFrom(delivery, {
     acked: delivery.messages
       .filter((message) => accepted.has(forwardedId(message.offset)))

@@ -21,6 +21,26 @@ const hash = (text: string): number => {
 export const partitionName = (identity: PartitionIdentity): string =>
   `${identity.queue}/${identity.epoch}/${identity.index}`;
 
+const regions: DurableObjectLocationHint[] = [
+  'wnam',
+  'enam',
+  'sam',
+  'weur',
+  'eeur',
+  'apac',
+  'oc',
+  'afr',
+  'me',
+];
+
+/**
+ * Where a partition is placed. Left alone, every partition of a queue would
+ * start next to the orchestrator, which reaches each of them first.
+ */
+export const partitionRegion = (
+  identity: PartitionIdentity
+): DurableObjectLocationHint => regions[identity.index % regions.length]!;
+
 export const partitionFor = (
   queue: string,
   layout: Layout,

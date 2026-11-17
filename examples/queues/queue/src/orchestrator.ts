@@ -28,14 +28,16 @@ import {
   type Point,
   type QueueEvent,
   type QueueSummary,
+  maxPartitions,
   type QueueSettings,
   type Shares,
   type TargetSettings,
   type TargetTotals,
 } from './model';
-import { limiters, partitions } from './namespaces';
+import { limiters, partition } from './namespaces';
 import {
   planLimiters,
+  fitsInHalf,
   planPartitions,
   planShares,
   type ShareState,
@@ -71,10 +73,24 @@ export class QueueError extends Error {
 }
 
 const tickMs = 2_000;
+/**
+ * How long one attempt at a resize keeps asking the old partitions to stop,
+ * and how soon it asks one again that did not answer. The next tick resumes
+ * an attempt that ran out of time; a partition that has stopped answers at once.
+ */
+const stopWithinMs = 20_000;
+const stopRetryMs = 500;
 /** Ticks stop this long after the last partition reported. */
 const idleAfterMs = 30_000;
-const rateWindowMs = 30_000;
+/** Short, so that a queue that is refusing sends grows within seconds. */
+const rateWindowMs = 5_000;
 const summaryStaleMs = 15_000;
+/**
+ * A resize does not wait for the one before it: accepting has to be able to
+ * grow while a slow target still works through older partitions. Every
+ * resize that has not drained keeps its partitions, so their number is bounded.
+ */
+const maxLiveEpochs = 8;
 /** How far back the dashboard's charts go. */
 const pointsKeptMs = 30 * 60_000;
 const eventsKept = 100;
@@ -92,6 +108,38 @@ const noLimiters: LimiterState = {
   beforeLowering: {},
 };
 
+/**
+ * As many partitions as the orchestrator calls at once. With ten thousand
+ * calls in flight it ran out of memory.
+ */
+const partitionCallsAtOnce = 500;
+
+/** Runs `work` for every item, `atOnce` at a time, and keeps the order. */
+const forEach = async <Item, Result>(
+  items: readonly Item[],
+  atOnce: number,
+  work: (item: Item) => Promise<Result>
+): Promise<Result[]> => {
+  const results: Result[] = [];
+  let next = 0;
+  const takeItems = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      // eslint-disable-next-line no-await-in-loop
+      results[index] = await work(items[index]!);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(atOnce, items.length) }, takeItems)
+  );
+  return results;
+};
+
+/** A queue without a limit of its own grows to what one orchestrator can hold. */
+const mostPartitions = (settings: QueueSettings): number =>
+  settings.partitions.max ?? maxPartitions;
+
 const memberOf = (
   identity: PartitionIdentity
 ): TopologyMemberInput<PartitionMeta> => ({
@@ -102,6 +150,30 @@ const memberOf = (
     index: identity.index,
   },
 });
+
+const checkTarget = (
+  queue: string,
+  settings: QueueSettings,
+  name: string,
+  target: TargetSettings
+): void => {
+  if (name === pullTargetName) {
+    throw new QueueError(
+      `"${pullTargetName}" is the queue's own target; turn pull consumers on or off in the settings`
+    );
+  }
+  if (target.maxConcurrency !== undefined && settings.maxConcurrency === null) {
+    throw new QueueError(
+      'A target ceiling needs the queue to have maxConcurrency set'
+    );
+  }
+  if (
+    target.destination.type === 'queue' &&
+    target.destination.queue === queue
+  ) {
+    throw new QueueError('A queue cannot be its own target');
+  }
+};
 
 /**
  * The control plane of one queue. It decides which partitions and limiters
@@ -132,10 +204,10 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       config: {
         // Draining partitions still deliver, so they need target changes too.
         members: 'read',
-        deliver: (member, update) =>
-          partitions()
-            .getByName(member.id)
-            .configure({ queue: update.group, ...member.meta }, update),
+        deliver: (member, update) => {
+          const identity = { queue: update.group, ...member.meta };
+          return partition(identity).configure(identity, update);
+        },
       },
     },
   });
@@ -273,11 +345,18 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   }
 
   private partitionConfig(): PartitionConfig {
+    const partitionsAlive = this.epochs.reduce(
+      (all, layout) => all + layout.count,
+      0
+    );
     return {
       targets: this.targets,
       limiters: this.limiterState.active,
       maxBacklog: this.settings.maxBacklog,
       pullRetentionMs: this.settings.pullRetentionDays * dayMs,
+      // A second each up to a hundred partitions, then longer, so that this
+      // object hears about a hundred reports a second however many there are.
+      sampleIntervalMs: Math.max(1_000, partitionsAlive * 10),
     };
   }
 
@@ -308,6 +387,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
         paused: false,
         startAt: 'latest',
         deliverFromEpoch: epochs[epochs.length - 1]!.epoch,
+        addedAt: Date.now(),
       } satisfies PartitionTarget,
     });
   }
@@ -332,13 +412,25 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
     this.socket.changed(entry);
   }
 
-  create(queue: string, settings: QueueSettings): Promise<void> {
+  /**
+   * `targets` are part of the queue from its first moment. Added afterwards,
+   * a partition could hear of the queue before it heard of them, and treat
+   * what it accepted in between as having no target.
+   */
+  create(
+    queue: string,
+    settings: QueueSettings,
+    targets: Record<string, TargetSettings> = {}
+  ): Promise<void> {
     return this.exclusive(async () => {
       if (this.kv.get<string>('queue') !== undefined) {
         throw new QueueError(`Queue "${queue}" already exists`);
       }
-      if (settings.partitions.min > settings.partitions.max) {
+      if (settings.partitions.min > mostPartitions(settings)) {
         throw new QueueError('partitions.min must not exceed partitions.max');
+      }
+      for (const [name, target] of Object.entries(targets)) {
+        checkTarget(queue, settings, name, target);
       }
 
       // A deleted queue's partitions keep their names, so a queue created
@@ -349,7 +441,15 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       };
       this.kv.put('queue', queue);
       this.kv.put('settings', settings);
-      this.kv.put('targets', {});
+      this.kv.put(
+        'targets',
+        Object.fromEntries(
+          Object.entries(targets).map(([name, target]) => [
+            name,
+            { ...target, deliverFromEpoch: first.epoch, addedAt: Date.now() },
+          ])
+        )
+      );
       this.kv.put('epochs', [first]);
       this.kv.put('lastEpoch', first.epoch);
       this.kv.put('resizedAt', Date.now());
@@ -367,8 +467,9 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   /** Stops every partition and forgets the queue. Stored messages are dropped by retention. */
   delete(): Promise<void> {
     return this.exclusive(async () => {
+      // Already gone, for a caller that repeats a deletion it saw fail.
       if (this.kv.get<string>('queue') === undefined) {
-        throw new QueueError('Queue does not exist');
+        return;
       }
       // Stored first, with a tick scheduled: a deletion interrupted halfway
       // would otherwise leave a queue whose partitions refuse every send.
@@ -381,12 +482,10 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   /** Every step can be repeated. */
   private async finishDeletion(): Promise<void> {
     const queue = this.kv.get<string>('queue')!;
-    await Promise.all(
-      this.epochs
-        .flatMap((layout) => partitionsOf(queue, layout))
-        .map((identity) =>
-          partitions().getByName(partitionName(identity)).stopForDeletedQueue()
-        )
+    await forEach(
+      this.epochs.flatMap((layout) => partitionsOf(queue, layout)),
+      partitionCallsAtOnce,
+      (identity) => partition(identity).stopForDeletedQueue()
     );
     await this.topology.delete(queue);
     const { active, draining, created } = this.limiterState;
@@ -416,26 +515,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
   putTarget(name: string, target: TargetSettings): Promise<void> {
     return this.exclusive(async () => {
-      const queue = this.queue;
-      if (name === pullTargetName) {
-        throw new QueueError(
-          `"${pullTargetName}" is the queue's own target; turn pull consumers on or off in the settings`
-        );
-      }
-      if (
-        target.maxConcurrency !== undefined &&
-        this.settings.maxConcurrency === null
-      ) {
-        throw new QueueError(
-          'A target ceiling needs the queue to have maxConcurrency set'
-        );
-      }
-      if (
-        target.destination.type === 'queue' &&
-        target.destination.queue === queue
-      ) {
-        throw new QueueError('A queue cannot be its own target');
-      }
+      checkTarget(this.queue, this.settings, name, target);
 
       const epochs = this.epochs;
       const start =
@@ -457,6 +537,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
         [name]: {
           ...target,
           deliverFromEpoch: existing?.deliverFromEpoch ?? start.epoch,
+          addedAt: existing?.addedAt ?? Date.now(),
         },
       });
 
@@ -505,7 +586,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
   updateSettings(settings: QueueSettings): Promise<void> {
     return this.exclusive(async () => {
-      if (settings.partitions.min > settings.partitions.max) {
+      if (settings.partitions.min > mostPartitions(settings)) {
         throw new QueueError('partitions.min must not exceed partitions.max');
       }
       const capped = Object.entries(this.targets).find(
@@ -524,9 +605,10 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       this.record('settings', 'Queue settings saved');
 
       const epochs = this.epochs;
-      const { min, max } = settings.partitions;
-      const count = Math.min(max, Math.max(min, epochs[0]!.count));
-      if (epochs.length === 1 && count !== epochs[0]!.count) {
+      const { min } = settings.partitions;
+      const active = epochs[epochs.length - 1]!.count;
+      const count = Math.min(mostPartitions(settings), Math.max(min, active));
+      if (count !== active && epochs.length < maxLiveEpochs) {
         await this.startResize(count);
       }
     });
@@ -535,7 +617,8 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   /** Moves the queue to `count` partitions without waiting for the autoscaler. */
   resize(count: number): Promise<void> {
     return this.exclusive(async () => {
-      const { min, max } = this.settings.partitions;
+      const { min } = this.settings.partitions;
+      const max = mostPartitions(this.settings);
       if (!Number.isSafeInteger(count) || count < min || count > max) {
         throw new QueueError(`Partitions must stay between ${min} and ${max}`);
       }
@@ -546,8 +629,13 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
   private async startResize(count: number): Promise<void> {
     const epochs = this.epochs;
     const active = epochs[epochs.length - 1]!;
-    if (epochs.length > 1 || this.kv.get<Layout>('resize')) {
-      throw new QueueError('The previous resize is still draining');
+    if (this.kv.get<Layout>('resize')) {
+      throw new QueueError('A resize is already in progress');
+    }
+    if (epochs.length >= maxLiveEpochs) {
+      throw new QueueError(
+        `${epochs.length - 1} earlier resizes are still draining; wait for one to finish`
+      );
     }
     if (count === active.count) {
       return;
@@ -573,12 +661,14 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       (layout) => layout.epoch === next.epoch - 1
     )!;
 
-    const samples = await Promise.all(
-      partitionsOf(queue, active).map((identity) =>
-        partitions()
-          .getByName(partitionName(identity))
-          .stopAccepting(identity, next)
-      )
+    // Each partition is asked on its own until it answers. A partition under
+    // load turns calls away, and asking them all again in rounds would make
+    // every round wait for the slowest of them.
+    const until = Date.now() + stopWithinMs;
+    const samples = await forEach(
+      partitionsOf(queue, active),
+      partitionCallsAtOnce,
+      (identity) => this.stop(identity, next, until)
     );
     this.store(samples);
 
@@ -605,6 +695,24 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       `${active.count} to ${next.count} partitions (epoch ${next.epoch})`
     );
     await this.advanceEpochs();
+  }
+
+  private async stop(
+    identity: PartitionIdentity,
+    next: Layout,
+    until: number
+  ): Promise<PartitionSample> {
+    try {
+      return await partition(identity).stopAccepting(identity, next);
+    } catch (error) {
+      if (Date.now() >= until) {
+        throw error;
+      }
+    }
+    // An overloaded object should normally be left alone. This one call is
+    // what takes the load off it, among the hundreds of sends it is offered.
+    await scheduler.wait(stopRetryMs);
+    return this.stop(identity, next, until);
   }
 
   /** True once every partition of the epoch has handed the target all it holds. */
@@ -831,7 +939,13 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       ),
     };
 
-    for (const sample of this.samplesOf()) {
+    const samples = this.samplesOf();
+    point.held = samples.reduce((all, sample) => all + (sample.held ?? 0), 0);
+    point.backlogObjects = samples.reduce(
+      (all, sample) => all + (sample.backlogObjects ?? 0),
+      0
+    );
+    for (const sample of samples) {
       point.accepted += sample.accepted;
       point.rejected += sample.rejected;
       point.withoutTarget += sample.withoutTarget;
@@ -878,7 +992,7 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
 
   private async autoscale(point: Point): Promise<void> {
     const epochs = this.epochs;
-    if (epochs.length > 1) {
+    if (epochs.length >= maxLiveEpochs || this.kv.get<Layout>('resize')) {
       return;
     }
     const earlier = this.sql
@@ -920,20 +1034,46 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       );
 
     const { partitions: range } = this.settings;
-    const count = planPartitions({
-      current: epochs[0]!.count,
+    const load = {
+      current: epochs[epochs.length - 1]!.count,
       min: range.min,
-      max: range.max,
+      max: mostPartitions(this.settings),
       targetRate: range.targetRate,
-      acceptRate: (point.accepted - before.accepted) / seconds,
+      // What was refused is demand as well: a queue too small to accept
+      // would otherwise look quiet and stay small.
+      acceptRate:
+        (point.accepted + point.rejected - before.accepted - before.rejected) /
+        seconds,
       drainSeconds,
       waitingForPermits: (point.permits?.blocked ?? 0) > 0,
       now: point.at,
       lastResizeAt: this.kv.get<number>('resizedAt') ?? 0,
+    };
+    const count = planPartitions({
+      ...load,
+      quietSince: this.quietSince(load),
     });
     if (count !== undefined) {
       await this.startResize(count);
     }
+  }
+
+  /**
+   * Since when the queue has fitted in half its partitions without a break.
+   * Stored, because shrinking waits far longer than this object stays in memory.
+   */
+  private quietSince(load: Parameters<typeof fitsInHalf>[0] & { now: number }) {
+    const since = this.kv.get<number>('quietSince');
+    if (!fitsInHalf(load)) {
+      if (since !== undefined) {
+        this.kv.delete('quietSince');
+      }
+      return undefined;
+    }
+    if (since === undefined) {
+      this.kv.put('quietSince', load.now);
+    }
+    return since ?? load.now;
   }
 
   /**
@@ -1148,6 +1288,8 @@ export class Orchestrator extends DurableObject<Cloudflare.Env> {
       deliveredPerSecond: 0,
       backlog: 0,
       deadLettered: 0,
+      held: last?.held ?? 0,
+      backlogObjects: last?.backlogObjects ?? 0,
     };
     if (!last) {
       return summary;

@@ -14,12 +14,13 @@ import {
   type TopologyStateUpdate,
 } from 'durability/experimental';
 import { DurabilitySemaphoreQueue } from 'durability/experimental/semaphore';
-import { DurabilityRouting } from 'durability/routing';
+import { DurabilityRouting, type LoadSnapshot } from 'durability/routing';
 import { exponential, jitter } from 'durability/utils';
 import { neverGiveUp } from './alarm-policy';
 import { limiterFor, partitionName } from './layout';
 import { limiterClient } from './limiter';
 import {
+  atCapacityMessage,
   noTargetName,
   type Layout,
   type Message,
@@ -46,6 +47,15 @@ export type AppendInput = {
   messages: Message[];
 };
 
+/** One call from the Worker: the sends it merged, and what it knows. */
+export type AppendCall = {
+  inputs: AppendInput[];
+  /** When the Worker made the call, so the partition can tell how long it waited. */
+  issuedAt: number;
+  /** Messages the Worker refused for this partition since its last call. */
+  refused: number;
+};
+
 /** On success, the offsets of each input's messages, in the inputs' order. */
 export type AppendResult = EnqueueResult<
   number[][],
@@ -70,8 +80,25 @@ type Counters = {
 };
 
 const retentionMs = 4 * 24 * 60 * 60 * 1_000;
+/**
+ * What a partition keeps in its own storage. Past it, the oldest messages
+ * move to R2: those every target has received are dropped on the way, the
+ * rest are read back when delivery reaches them.
+ */
 const retentionBytes = 512 * 1024 * 1024;
+/** Returned for a run of messages nobody needs, so nothing is written for it. */
+const droppedSegment = 'dropped';
 const retentionSweepMs = 60_000;
+/**
+ * A message every target has acknowledged or given up on is deleted once it
+ * is this old. It is kept that long for two things only its partition can
+ * do: recognise a send repeated with the same ids, and hand a target that
+ * was added moments ago what was sent after it.
+ */
+const keepSettledMs = 60_000;
+/** Settled messages are deleted this often at most, and this many at a time. */
+const discardEveryMs = 5_000;
+const discardedPerPass = 20_000;
 /** Must outlast the longest target timeout, or a batch is redelivered while it runs. */
 const leaseMs = 60_000;
 /** One alarm run delivers for this long, then hands over to the next run. */
@@ -79,6 +106,15 @@ const deliveryRunMs = 20_000;
 /** A permit is returned after this long so other partitions get a turn. */
 const permitHoldMs = 10_000;
 const sampleIntervalMs = 1_000;
+/**
+ * A call that waited longer than this before the partition got to it is
+ * refused without touching storage. An overloaded partition works through
+ * what is queued for it quickly that way, and stays able to answer the
+ * orchestrator, report, and deliver. The runtime turns calls away on its own
+ * when an object is overloaded, and those never get here: under a load of
+ * large sends this check saw few late calls while the runtime failed many.
+ */
+const maxAppendLatenessMs = 2_000;
 const deadLetterRetryMs = 30_000;
 const shortWaitMs = 500;
 const deadLetterBatchSize = 100;
@@ -144,6 +180,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       maxAgeMs: retentionMs,
       maxBytes: retentionBytes,
     },
+    cold: {
+      write: (segment) => this.moveToBacklogBucket(segment.records),
+      read: (locator) => this.readFromBacklogBucket(locator),
+    },
     // One range per target at a time is what keeps delivery in order.
     leases: {
       maxParallelism: 1,
@@ -157,6 +197,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     handlers: {
       deliver: () => this.deliver(),
       enforceRetention: () => this.enforceRetention(),
+      sample: () => this.sampleNow(),
     },
     methods: {
       deliver: neverGiveUp,
@@ -213,6 +254,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   private requestedWhileDelivering = false;
   private deliveryScheduledFor: number | undefined;
   private sampledAt = 0;
+  private sampleScheduled = false;
+  /** Refused since the last sample; counting them must not cost a write each. */
+  private refusedSinceSample = 0;
+  private lastLoad: { at: number; load: LoadSnapshot } | undefined;
 
   constructor(ctx: DurableObjectState, bindings: Cloudflare.Env) {
     super(ctx, bindings);
@@ -240,6 +285,172 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       `CREATE INDEX IF NOT EXISTS pull_batches_by_time
        ON pull_batches (written_at)`
     );
+    this.sql.exec(
+      `CREATE TABLE IF NOT EXISTS backlog_segments (
+         first_offset INTEGER PRIMARY KEY,
+         last_offset INTEGER NOT NULL,
+         object_key TEXT NOT NULL,
+         newest_at INTEGER NOT NULL
+       )`
+    );
+  }
+
+  /**
+   * The lowest offset a target of the queue may still need: below it every
+   * target has received the message, or given up on it.
+   */
+  private async neededFrom(): Promise<number> {
+    if (this.ctx.storage.kv.get<boolean>('queueDeleted')) {
+      return Infinity;
+    }
+    const config = this.config;
+    if (!config) {
+      return 0;
+    }
+    const names = Object.keys(config.targets);
+    const targets = names.length > 0 ? names : [noTargetName];
+    const positions = await this.log.cursors();
+    // A target's position is past messages it is still retrying or holding.
+    const firstWaiting = (name: string): number =>
+      this.sql
+        .exec<{ first: number | null }>(
+          'SELECT MIN(message_offset) AS first FROM pending WHERE target = ?',
+          name
+        )
+        .one().first ?? Infinity;
+    return Math.min(
+      ...targets.map((name) =>
+        Math.min(positions[name] ?? 0, firstWaiting(name))
+      )
+    );
+  }
+
+  /**
+   * Called by the log for its oldest messages once the partition holds more
+   * than it should, or they are older than a message may get. What some
+   * target still needs is written to R2; the rest is dropped here.
+   */
+  private async moveToBacklogBucket(
+    records: LogRecord<Message>[]
+  ): Promise<string> {
+    const identity = this.identity;
+    if (!identity) {
+      throw new Error('A partition that has stored messages knows its name');
+    }
+    const neededFrom = await this.neededFrom();
+    const cutoff = Date.now() - retentionMs;
+    const kept = records.filter(
+      (record) => record.offset >= neededFrom && record.appendedAt >= cutoff
+    );
+    const newest = kept[kept.length - 1];
+    if (!newest) {
+      return droppedSegment;
+    }
+
+    // Named after the whole run, so the same run handed over again after a
+    // crash finds the copy already written and leaves it.
+    const first = records[0]!.offset;
+    const last = records[records.length - 1]!.offset;
+    const key = `backlog/${partitionName(identity)}/${first}-${last}`;
+    await env.STORAGE.put(key, JSON.stringify(kept), {
+      onlyIf: { etagDoesNotMatch: '*' },
+    });
+    this.sql.exec(
+      `INSERT OR REPLACE INTO backlog_segments
+         (first_offset, last_offset, object_key, newest_at)
+       VALUES (?, ?, ?, ?)`,
+      first,
+      last,
+      key,
+      newest.appendedAt
+    );
+    return key;
+  }
+
+  /** The segment delivery read last: a batch is a small part of one. */
+  private lastSegment:
+    | { key: string; records: LogRecord<Message>[] }
+    | undefined;
+
+  private async readFromBacklogBucket(
+    key: string
+  ): Promise<LogRecord<Message>[] | undefined> {
+    if (key === droppedSegment) {
+      return undefined;
+    }
+    if (this.lastSegment?.key === key) {
+      return this.lastSegment.records;
+    }
+    const stored = await env.STORAGE.get(key);
+    if (!stored) {
+      return undefined;
+    }
+    const records = await stored.json<LogRecord<Message>[]>();
+    this.lastSegment = { key, records };
+    return records;
+  }
+
+  /**
+   * Deletes the segments every target is past and those too old to keep,
+   * then tells the log where what it can still read begins. Resolves to when
+   * the next segment becomes too old.
+   */
+  private async dropBacklogSegments(): Promise<number | undefined> {
+    const neededFrom = await this.neededFrom();
+    const atOnce = 1_000;
+    const done = this.sql
+      .exec<{ first_offset: number; object_key: string }>(
+        `SELECT first_offset, object_key FROM backlog_segments
+         WHERE last_offset < ? OR newest_at < ?
+         ORDER BY first_offset LIMIT ?`,
+        // SQLite has no infinity to compare with.
+        Math.min(neededFrom, Number.MAX_SAFE_INTEGER),
+        Date.now() - retentionMs,
+        atOnce
+      )
+      .toArray();
+    if (done.length > 0) {
+      await env.STORAGE.delete(done.map((segment) => segment.object_key));
+      for (const segment of done) {
+        this.sql.exec(
+          'DELETE FROM backlog_segments WHERE first_offset = ?',
+          segment.first_offset
+        );
+      }
+    }
+
+    const oldest = this.sql
+      .exec<{ first_offset: number; newest_at: number }>(
+        `SELECT first_offset, newest_at FROM backlog_segments
+         ORDER BY first_offset LIMIT 1`
+      )
+      .toArray()[0];
+    // What was dropped is always older than what was kept, so everything
+    // before the oldest kept segment is gone.
+    const { hotOffset } = await this.log.bounds();
+    await this.log.forgetColdBefore(oldest?.first_offset ?? hotOffset);
+    if (done.length === atOnce) {
+      return Date.now() + 1;
+    }
+    return oldest === undefined
+      ? undefined
+      : oldest.newest_at + retentionMs + 1;
+  }
+
+  /**
+   * Where reading can resume after `offset` turned out to be gone: the next
+   * segment in R2, or what the partition still holds itself.
+   */
+  private async readableFrom(offset: number): Promise<number> {
+    const next = this.sql
+      .exec<{ first_offset: number }>(
+        `SELECT first_offset FROM backlog_segments
+         WHERE first_offset > ? ORDER BY first_offset LIMIT 1`,
+        offset
+      )
+      .toArray()[0];
+    const { hotOffset } = await this.log.bounds();
+    return Math.max(offset + 1, next?.first_offset ?? hotOffset);
   }
 
   /**
@@ -295,12 +506,27 @@ export class Partition extends DurableObject<Cloudflare.Env> {
    * they wait for this partition. They are stored in one transaction, all of
    * them or none, so the answer is the same for every send in the call.
    */
-  async append(inputs: AppendInput[]): Promise<AppendResult> {
+  async append(call: AppendCall): Promise<AppendResult> {
+    const { inputs } = call;
     const first = inputs[0];
     if (!first) {
       throw new RangeError('Nothing to append');
     }
     this.remember(first.identity);
+    const messages = inputs.flatMap((input) => input.messages);
+    this.refusedSinceSample += call.refused;
+
+    if (Date.now() - call.issuedAt > maxAppendLatenessMs) {
+      this.refusedSinceSample += messages.length;
+      // Owed, so the orchestrator hears of the refusals even if nothing else
+      // makes this partition report.
+      await this.stageSample(true);
+      return {
+        success: false,
+        error: { name: 'Backpressure', message: atCapacityMessage },
+        load: await this.recentLoad(),
+      };
+    }
 
     if (this.ctx.storage.kv.get<boolean>('queueDeleted')) {
       return {
@@ -326,13 +552,11 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       };
     }
 
-    const messages = inputs.flatMap((input) => input.messages);
     if (await this.overBacklog()) {
-      this.ctx.storage.kv.put('counters', {
-        ...this.counters,
-        rejected: this.counters.rejected + messages.length,
-      });
-      await this.stageSample();
+      this.refusedSinceSample += messages.length;
+      // Owed, so the orchestrator hears of the refusals even if nothing else
+      // makes this partition report.
+      await this.stageSample(true);
       return {
         success: false,
         error: {
@@ -368,6 +592,43 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * The offset of the first message stored at or after `time`, or the end of
+   * the log. Messages are stored in time order, so it is found by halving.
+   */
+  private async firstOffsetSince(
+    time: number | undefined,
+    within?: { from: number; to: number }
+  ): Promise<number> {
+    const { oldestOffset, nextOffset } = await this.log.bounds();
+    if (time === undefined) {
+      return nextOffset;
+    }
+    let from = within?.from ?? oldestOffset;
+    let to = within?.to ?? nextOffset;
+    while (from < to) {
+      const middle = Math.floor((from + to) / 2);
+      // eslint-disable-next-line no-await-in-loop
+      const record = await this.recordAt(middle);
+      // A message that is gone was stored before everything still here.
+      if (record && record.appendedAt >= time) {
+        to = middle;
+      } else {
+        from = middle + 1;
+      }
+    }
+    return from;
+  }
+
+  /** The log's load, read at most once a second: a refusal should cost nothing. */
+  private async recentLoad(): Promise<LoadSnapshot> {
+    const now = Date.now();
+    if (!this.lastLoad || now - this.lastLoad.at > 1_000) {
+      this.lastLoad = { at: now, load: await this.log.load() };
+    }
+    return this.lastLoad.load;
+  }
+
+  /**
    * Makes sure a retention sweep runs by `time`. Scheduling replaces the
    * pending sweep, so one that is already due sooner is left alone.
    */
@@ -383,12 +644,48 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Trims the log and the partition's batches in the pull bucket, then
-   * schedules the next sweep for whichever of the two is due first.
+   * Deletes what the partition still holds of the messages no target needs
+   * any more, once they are old enough. Resolves to when more of them will
+   * be, if any are left; a delivery asks for a sweep of its own.
+   */
+  private async discardSettled(): Promise<number | undefined> {
+    const { hotOffset, nextOffset } = await this.log.bounds();
+    const settledBelow = Math.min(await this.neededFrom(), nextOffset);
+    if (settledBelow <= hotOffset) {
+      return undefined;
+    }
+    // Nothing of a deleted queue will be sent again or handed to a target.
+    const through = this.ctx.storage.kv.get<boolean>('queueDeleted')
+      ? settledBelow
+      : await this.firstOffsetSince(Date.now() - keepSettledMs, {
+          from: hotOffset,
+          to: settledBelow,
+        });
+    const discarded = await this.log.discardBefore(through, discardedPerPass);
+    if (discarded === discardedPerPass) {
+      return Date.now() + 1;
+    }
+    const tooYoung =
+      through < settledBelow ? await this.recordAt(through) : undefined;
+    return tooYoung === undefined
+      ? undefined
+      : Math.max(
+          tooYoung.appendedAt + keepSettledMs,
+          Date.now() + discardEveryMs
+        );
+  }
+
+  /**
+   * Deletes settled messages, trims the log and the partition's batches in
+   * the pull bucket, then schedules the next sweep for whichever is due
+   * first.
    */
   private async enforceRetention(): Promise<void> {
     this.ctx.storage.kv.delete('sweepAt');
+    const { hotOffset: heldFrom } = await this.log.bounds();
+    const settledDue = await this.discardSettled();
     await this.log.trim();
+    const segmentsDue = await this.dropBacklogSegments();
     // A sweep that throws is retried a few times and then dropped, which
     // would leave the pull bucket unswept; try again with the next sweep.
     const pullLogDue = await this.expirePullLog().catch((error: unknown) => {
@@ -405,9 +702,19 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         ? undefined
         : Math.max(oldest.appendedAt + retentionMs, Date.now()) + 1;
 
-    const next = Math.min(logDue ?? Infinity, pullLogDue ?? Infinity);
+    const next = Math.min(
+      settledDue ?? Infinity,
+      logDue ?? Infinity,
+      pullLogDue ?? Infinity,
+      segmentsDue ?? Infinity
+    );
     if (Number.isFinite(next)) {
       await this.sweepBy(next);
+    }
+    // The partition holds less than it reported, and an idle one has
+    // nothing else to make it report again.
+    if (hotOffset !== heldFrom) {
+      await this.stageSample(true);
     }
   }
 
@@ -449,7 +756,8 @@ export class Partition extends DurableObject<Cloudflare.Env> {
    */
   private async overBacklog(): Promise<boolean> {
     const config = this.config;
-    if (!config) {
+    const limit = config?.maxBacklog ?? null;
+    if (!config || limit === null) {
       return false;
     }
     const { nextOffset } = await this.log.bounds();
@@ -459,7 +767,7 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       ([name, target]) =>
         !target.paused &&
         nextOffset - (positions[name] ?? 0) + (unsettled.get(name) ?? 0) >=
-          config.maxBacklog
+          limit
     );
   }
 
@@ -483,9 +791,14 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       }
       // A partition's first config lists targets that existed before it did,
       // so everything it holds is theirs. Only a target added later may skip
-      // what was accepted before it.
+      // what was accepted before it, and "before" is by when the target was
+      // added, not by when this partition heard: a send that followed the
+      // target may well have arrived here first.
       const start =
-        previous && target.startAt === 'latest' ? nextOffset : oldestOffset;
+        previous && target.startAt === 'latest'
+          ? // eslint-disable-next-line no-await-in-loop
+            await this.firstOffsetSince(target.addedAt)
+          : oldestOffset;
       // eslint-disable-next-line no-await-in-loop
       await this.log.commit(name, start);
     }
@@ -539,9 +852,16 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     return sample;
   }
 
-  /** The queue was deleted: stop delivering, reporting, and accepting. */
-  stopForDeletedQueue(): void {
+  /**
+   * The queue was deleted: stop delivering, reporting, and accepting, and
+   * delete what the partition holds, here and in R2. The sweeps do that, a
+   * part at a time.
+   */
+  async stopForDeletedQueue(): Promise<void> {
+    await this.sweepBy(Date.now());
     this.ctx.storage.kv.put('queueDeleted', true);
+    this.sql.exec('DELETE FROM pending');
+    this.unsettledCounts = undefined;
   }
 
   /**
@@ -606,6 +926,9 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     if (resumeAt !== undefined) {
       await this.requestDelivery(resumeAt);
     }
+    // Delivery has passed messages, and perhaps segments in R2 with them:
+    // the sweep deletes what no target needs any more.
+    await this.sweepBy(Date.now() + retentionSweepMs);
     await this.stageSample(true);
   }
 
@@ -852,7 +1175,19 @@ export class Partition extends DurableObject<Cloudflare.Env> {
         lastError: 'Retention removed messages before they were delivered',
       });
     }
-    const page = await this.log.read({ from: scanned, limit });
+    const page = await this.log
+      .read({ from: scanned, limit })
+      .catch(async (error: unknown) => {
+        if (!(error instanceof LogTruncatedError)) {
+          throw error;
+        }
+        // A segment in R2 is gone. The position moves to what can be read.
+        scanned = await this.readableFrom(scanned);
+        this.count(name, {
+          lastError: 'Retention removed messages before they were delivered',
+        });
+        return { records: [] };
+      });
     for (const record of page.records) {
       const { key, only } = record.body;
       const row = {
@@ -1099,7 +1434,14 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     if (offset < oldestOffset) {
       return undefined;
     }
-    const { records } = await this.log.read({ from: offset, limit: 1 });
+    const { records } = await this.log
+      .read({ from: offset, limit: 1 })
+      .catch((error: unknown) => {
+        if (!(error instanceof LogTruncatedError)) {
+          throw error;
+        }
+        return { records: [] };
+      });
     return records[0]?.offset === offset ? records[0] : undefined;
   }
 
@@ -1121,9 +1463,10 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       if (!(error instanceof LogTruncatedError)) {
         throw error;
       }
-      // Retention removed messages this target never received.
+      // Retention removed messages this target never received. Trying again
+      // at once would spin until the log has moved the target past them.
       this.count(name, { lastError: error.message });
-      return undefined;
+      return Date.now() + 1_000;
     }
     if (!lease) {
       // A range leased before a restart is still held until it expires.
@@ -1335,8 +1678,15 @@ export class Partition extends DurableObject<Cloudflare.Env> {
   }
 
   private async sample(identity: PartitionIdentity): Promise<PartitionSample> {
-    const { nextOffset } = await this.log.bounds();
+    const { hotOffset, nextOffset } = await this.log.bounds();
     const positions = await this.log.cursors();
+    if (this.refusedSinceSample > 0) {
+      this.ctx.storage.kv.put('counters', {
+        ...this.counters,
+        rejected: this.counters.rejected + this.refusedSinceSample,
+      });
+      this.refusedSinceSample = 0;
+    }
     const counters = this.counters;
     const unsettled = this.unsettled();
     const sequence =
@@ -1350,6 +1700,12 @@ export class Partition extends DurableObject<Cloudflare.Env> {
       rejected: counters.rejected,
       withoutTarget: counters.targets[noTargetName]?.deadLettered ?? 0,
       accepting: this.ctx.storage.kv.get<Layout>('replacedBy') === undefined,
+      held: nextOffset - hotOffset,
+      backlogObjects: this.sql
+        .exec<{
+          count: number;
+        }>('SELECT COUNT(*) AS count FROM backlog_segments')
+        .one().count,
       targets: Object.fromEntries(
         Object.keys(this.config?.targets ?? {}).map((name) => [
           name,
@@ -1366,18 +1722,37 @@ export class Partition extends DurableObject<Cloudflare.Env> {
     };
   }
 
-  private async stageSample(force = false): Promise<void> {
+  /**
+   * Stages a sample for the orchestrator, at most one per interval. `owed`
+   * says the state has to arrive even if one was just sent, as at the end of
+   * a delivery run, which the orchestrator waits for before it calls an
+   * epoch drained: such a sample is sent when the interval is over.
+   */
+  private async stageSample(owed = false): Promise<void> {
     const identity = this.identity;
+    if (!identity || this.ctx.storage.kv.get<boolean>('queueDeleted')) {
+      return;
+    }
     const now = Date.now();
-    if (
-      !identity ||
-      this.ctx.storage.kv.get<boolean>('queueDeleted') ||
-      (!force && now - this.sampledAt < sampleIntervalMs)
-    ) {
+    const interval = this.config?.sampleIntervalMs ?? sampleIntervalMs;
+    const wait = this.sampledAt + interval - now;
+    if (wait > 0) {
+      if (owed && !this.sampleScheduled) {
+        this.sampleScheduled = true;
+        await this.alarms.sample(now + wait).catch((error: unknown) => {
+          this.sampleScheduled = false;
+          throw error;
+        });
+      }
       return;
     }
     this.sampledAt = now;
     await this.samples.stage('sample', await this.sample(identity));
+  }
+
+  private async sampleNow(): Promise<void> {
+    this.sampleScheduled = false;
+    await this.stageSample(true);
   }
 
   override alarm(info?: AlarmInvocationInfo) {

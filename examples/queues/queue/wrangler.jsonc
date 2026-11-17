@@ -4,6 +4,10 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-07",
   "observability": { "enabled": true },
+  // A resize calls every partition of a queue from one invocation, more
+  // than once when a busy one turns the call away, and a queue may have
+  // thousands.
+  "limits": { "subrequests": 100000 },
   "assets": {
     "directory": "./public",
     "not_found_handling": "single-page-application",
