@@ -4,6 +4,7 @@ import { DurabilityScheduler } from '../../src';
 import {
   DurabilitySemaphore,
   DurabilitySemaphoreQueue,
+  type SemaphoreInput,
   type SemaphoreRequest,
 } from '../../src/semaphore';
 
@@ -110,12 +111,19 @@ export class JobShard extends DurableObject {
     name: QueueName = 'main'
   ) {
     return this.queues[name].enqueue(
-      jobs.map((job) => ({
-        id: job.id,
-        key: account,
-        body: job.id,
-        ...(job.group === undefined ? {} : { group: job.group }),
-      }))
+      jobs.map((job) => {
+        const input: SemaphoreInput<string> = {
+          id: job.id,
+          key: account,
+          body: job.id,
+        };
+
+        if (job.group !== undefined) {
+          input.group = job.group;
+        }
+
+        return input;
+      })
     );
   }
 

@@ -8,6 +8,7 @@ import {
   discardWithin,
   publishNow,
   stageWithin,
+  type DurabilityOutboxConfig,
   type DurabilityOutboxEvent,
   type OutboxEntry,
 } from '../outbox/index.js';
@@ -188,10 +189,16 @@ const outboxOptions = (
 ) => {
   const delay = options?.retries?.delay ?? fallback.retries?.delay;
 
-  return {
-    attemptTimeoutMs: Math.min(timeoutMs * 2, maxTimeoutMs),
-    ...(delay === undefined ? {} : { retries: { delay } }),
-  };
+  const outboxConfig: Pick<
+    DurabilityOutboxConfig<unknown>,
+    'attemptTimeoutMs' | 'retries'
+  > = { attemptTimeoutMs: Math.min(timeoutMs * 2, maxTimeoutMs) };
+
+  if (delay !== undefined) {
+    outboxConfig.retries = { delay };
+  }
+
+  return outboxConfig;
 };
 
 /**
@@ -847,13 +854,21 @@ export class DurabilityTopology<
 
       seen.add(id);
 
-      return {
-        id,
-        state,
-        ...(locationHint === undefined ? {} : { locationHint }),
-        ...(meta === undefined ? {} : { meta }),
-        joinedAt: joinedAt.get(id) ?? now,
-      } as unknown as TopologyMember<Meta>;
+      const member: v.InferOutput<typeof memberInputSchema> & {
+        joinedAt?: number;
+      } = { id, state };
+
+      if (locationHint !== undefined) {
+        member.locationHint = locationHint;
+      }
+
+      if (meta !== undefined) {
+        member.meta = meta;
+      }
+
+      member.joinedAt = joinedAt.get(id) ?? now;
+
+      return member as unknown as TopologyMember<Meta>;
     });
 
     return members.sort((a, b) => (a.id < b.id ? -1 : 1));

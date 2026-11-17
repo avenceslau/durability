@@ -5,6 +5,7 @@ import {
   type LogAppendInput,
   type LogColdStorage,
   type LogPage,
+  type LogReadOptions,
   type LogRecord,
 } from '../../src';
 
@@ -87,7 +88,13 @@ export class LogTestObject extends DurableObject<Env> {
   }
 
   read(from: number, limit?: number): Promise<LogPage<LogEvent>> {
-    return this.log.read({ from, ...(limit === undefined ? {} : { limit }) });
+    const options: LogReadOptions = { from };
+
+    if (limit !== undefined) {
+      options.limit = limit;
+    }
+
+    return this.log.read(options);
   }
 
   commit(consumer: string, offset: number) {

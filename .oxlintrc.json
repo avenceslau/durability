@@ -43,7 +43,7 @@
     "oxc/no-accumulating-spread": "error",
     "anti-slop/no-array-filter-map": "error",
     "anti-slop/no-chained-type-assertions": "warn",
-    "anti-slop/no-conditional-empty-object-spread": "warn",
+    "anti-slop/no-conditional-empty-object-spread": "error",
     "anti-slop/no-known-value-widening": "warn",
     "anti-slop/no-module-mocking": "error",
     "anti-slop/no-object-parameters": "warn",

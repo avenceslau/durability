@@ -221,13 +221,18 @@ export const socketCollectionOptions = <
       return handler({ ...params, rpc: connection.rpc, awaitSynced });
     };
 
-  return {
+  const options: CollectionConfig<
+    Row,
+    Key,
+    Schema,
+    SocketCollectionUtils<Row, Key>
+  > & {
+    id: string;
+    utils: SocketCollectionUtils<Row, Key>;
+  } = {
     ...base,
     getKey,
     utils,
-    ...(onInsert ? { onInsert: withContext(onInsert) } : {}),
-    ...(onUpdate ? { onUpdate: withContext(onUpdate) } : {}),
-    ...(onDelete ? { onDelete: withContext(onDelete) } : {}),
     sync: {
       rowUpdateMode: 'full',
       sync: ({ begin, write, commit, truncate, markError }) => {
@@ -338,4 +343,18 @@ export const socketCollectionOptions = <
       },
     },
   };
+
+  if (onInsert) {
+    options.onInsert = withContext(onInsert);
+  }
+
+  if (onUpdate) {
+    options.onUpdate = withContext(onUpdate);
+  }
+
+  if (onDelete) {
+    options.onDelete = withContext(onDelete);
+  }
+
+  return options;
 };

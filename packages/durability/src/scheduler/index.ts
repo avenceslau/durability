@@ -1068,14 +1068,16 @@ export class Engine {
     const info: AlarmRetryInfo = {
       error: serializeError(failure),
       retryInMs: this.alarmMinDelayMs,
-      ...(invocation === undefined
-        ? {}
-        : {
-            retryCount: invocation.retryCount,
-            isRetry: invocation.isRetry,
-          }),
-      ...(objectId === undefined ? {} : { objectId }),
     };
+
+    if (invocation !== undefined) {
+      info.retryCount = invocation.retryCount;
+      info.isRetry = invocation.isRetry;
+    }
+
+    if (objectId !== undefined) {
+      info.objectId = objectId;
+    }
 
     const report = (hookError: unknown): void =>
       reportFailure(
@@ -1246,15 +1248,24 @@ export class Engine {
 
         if (timestamp !== undefined) {
           this.notify(spec.table, key, row);
-          spec.emit({
+
+          const completed: Extract<
+            DurabilityLifecycleEvent,
+            { outcome: 'completed' }
+          > = {
             ...spec.entity,
             type: 'attempt_settled',
             timestamp,
             attempt,
             durationMs: Math.max(0, timestamp - startedAt),
             outcome: 'completed',
-            ...(spec.includeResult ? { result } : {}),
-          });
+          };
+
+          if (spec.includeResult) {
+            completed.result = result;
+          }
+
+          spec.emit(completed);
         }
       } catch (caught) {
         await this.settleFailure(spec, attempt, startedAt, caught);

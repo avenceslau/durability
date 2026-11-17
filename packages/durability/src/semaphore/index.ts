@@ -14,7 +14,7 @@ import {
   type DurableObjectTarget,
 } from '../durable-object-target.js';
 import { SemaphoreProtocolError } from '../errors.js';
-import { SemaphoreClient } from './client.js';
+import { SemaphoreClient, type SemaphoreClientConfig } from './client.js';
 import {
   type PermitGrant,
   type PermitRequest,
@@ -98,7 +98,7 @@ export class DurabilitySemaphore extends DurabilitySemaphoreServer {
   static client<Target extends Rpc.DurableObjectBranded>(
     config: DurabilitySemaphoreClientConfig<Target>
   ): TransformStub<SemaphoreSession> {
-    const client = new SemaphoreClient({
+    const clientConfig: SemaphoreClientConfig = {
       invoke: (address, message) => {
         const namespace = resolveNamespace(
           config,
@@ -114,10 +114,13 @@ export class DurabilitySemaphore extends DurabilitySemaphoreServer {
 
         return config.invoke(stub, message);
       },
-      ...(config.locationHint === undefined
-        ? {}
-        : { locationHint: config.locationHint }),
-    });
+    };
+
+    if (config.locationHint !== undefined) {
+      clientConfig.locationHint = config.locationHint;
+    }
+
+    const client = new SemaphoreClient(clientConfig);
 
     const session: SemaphoreSession = {
       request: (key, message) => client.request(key, message),

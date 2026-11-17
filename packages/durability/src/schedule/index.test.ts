@@ -45,10 +45,9 @@ const setup = (
   const outcomes: Array<[ScheduledOutcomeDelivery, ScheduledRunOutcome]> = [];
   const events: DurabilityScheduleEvent[] = [];
 
-  const schedule = new DurabilitySchedule({
+  const config: DurabilityScheduleConfig = {
     context: objectContext(storage),
     alarmMinDelayMs: 1_000,
-    ...(alarmHandoffMs === undefined ? {} : { alarmHandoffMs }),
     nextOccurrence: every,
     run: async () => undefined,
     onOutcome: (run, outcome) => {
@@ -58,7 +57,13 @@ const setup = (
       events.push(event);
     },
     ...overrides,
-  });
+  };
+
+  if (alarmHandoffMs !== undefined) {
+    config.alarmHandoffMs = alarmHandoffMs;
+  }
+
+  const schedule = new DurabilitySchedule(config);
 
   return { storage, schedule, outcomes, events };
 };

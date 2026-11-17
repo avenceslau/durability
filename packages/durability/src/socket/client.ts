@@ -293,13 +293,16 @@ class Connection {
 
     const names = [...this.#handlers.keys()];
 
-    const frame: SocketClientFrame = {
+    const frame: Extract<SocketClientFrame, { type: 'subscribe' }> = {
       v: socketProtocolVersion,
       type: 'subscribe',
       id: `subscribe:${++this.#nextId}`,
       names,
-      ...(this.#lastSeq === undefined ? {} : { since: this.#lastSeq }),
     };
+
+    if (this.#lastSeq !== undefined) {
+      frame.since = this.#lastSeq;
+    }
 
     this.#subscribes.set(frame.id, names);
     this.#ws?.send(JSON.stringify(frame));

@@ -1065,13 +1065,19 @@ export class DurabilitySchedule {
     }
 
     const entity = this.#entity(run.scheduledTime);
-    this.#emit({
+
+    const settled: Extract<DurabilityScheduleEvent, { type: 'settled' }> = {
       ...entity,
       type: 'settled',
       outcome: outcome.status,
       durationMs: Math.max(0, entity.timestamp - startedAt),
-      ...(error === undefined ? {} : { error }),
-    });
+    };
+
+    if (error !== undefined) {
+      settled.error = error;
+    }
+
+    this.#emit(settled);
     this.#deliver(run, outcome, 1);
   }
 
