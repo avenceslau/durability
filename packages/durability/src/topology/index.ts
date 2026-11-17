@@ -254,7 +254,8 @@ const deliveryKey = (group: string, member: string): string =>
 const isThenable = (value: unknown): boolean =>
   value !== null &&
   typeof value === 'object' &&
-  typeof Reflect.get(value, 'then') === 'function';
+  'then' in value &&
+  typeof value.then === 'function';
 
 const readGroup = (
   sql: SqlStorage,
@@ -791,8 +792,8 @@ export class DurabilityTopology<
       throw new TopologyError('update must return a draft object');
     }
 
-    const members: unknown = Reflect.get(draft, 'members');
-    const states: unknown = Reflect.get(draft, 'states') ?? {};
+    const members = 'members' in draft ? draft.members : undefined;
+    const states = ('states' in draft ? draft.states : undefined) ?? {};
 
     if (members !== undefined && !Array.isArray(members)) {
       throw new TopologyError('Draft members must be an array');

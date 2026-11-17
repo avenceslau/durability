@@ -1,5 +1,9 @@
 import { Err, Ok, Result, ResultDeserializationError } from 'better-result';
-import { defineTransform, type EmptyTransformContext } from '../define.js';
+import {
+  defineTransform,
+  type EmptyTransformContext,
+  type Members,
+} from '../define.js';
 
 const betterResultEnvelopeKey = '__durability_transforms_better_result_v1';
 
@@ -33,18 +37,20 @@ export const betterResultCodec = Object.assign(
           const value = await next();
 
           if (typeof value === 'object' && value !== null) {
-            const envelope = Reflect.get(value, betterResultEnvelopeKey);
+            const {
+              [betterResultEnvelopeKey]: envelope,
+            }: Members<typeof betterResultEnvelopeKey> = value;
 
             if (typeof envelope === 'object' && envelope !== null) {
-              if (Reflect.get(envelope, 'version') !== 1) {
+              const envelopeMembers: Members<'version' | 'result'> = envelope;
+
+              if (envelopeMembers.version !== 1) {
                 throw new TypeError(
                   'Unsupported Better Result envelope version'
                 );
               }
 
-              const result = Result.deserialize(
-                Reflect.get(envelope, 'result')
-              );
+              const result = Result.deserialize(envelopeMembers.result);
 
               if (
                 Result.isError(result) &&

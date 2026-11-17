@@ -257,9 +257,14 @@ export class RoutingError extends Error {
 
 export type SerializedError = { name: string; message: string };
 
-const readString = (value: object, property: string): string | undefined => {
+type ErrorFields = { name?: unknown; message?: unknown; stack?: unknown };
+
+const readString = (
+  value: ErrorFields,
+  property: keyof ErrorFields
+): string | undefined => {
   try {
-    const candidate = Reflect.get(value, property);
+    const candidate = value[property];
 
     return typeof candidate === 'string' && candidate.length > 0
       ? candidate
@@ -314,7 +319,7 @@ export const isNonRetryable = (error: unknown): boolean => {
   }
 
   try {
-    const constructor = Reflect.get(error, 'constructor');
+    const constructor = error.constructor;
 
     return (
       constructor !== null &&

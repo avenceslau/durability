@@ -3,6 +3,7 @@ import type {
   unstable_convertConfigBindingsToStartWorkerBindings,
   unstable_readConfig,
 } from 'wrangler';
+import type { Members } from '../define.js';
 
 // Bindings whose runtime values are not RPC-capable objects. Proxying module
 // blobs would also break identity checks such as `WebAssembly.instantiate`.
@@ -73,7 +74,14 @@ export function loadWranglerProject(
       ),
       stubBindingNames: new Set(
         Object.entries(startWorkerBindings).flatMap(([name, binding]) => {
-          const type: unknown = Reflect.get(Object(binding), 'type');
+          if (
+            (typeof binding !== 'object' && typeof binding !== 'function') ||
+            binding === null
+          ) {
+            return [];
+          }
+
+          const { type }: Members<'type'> = binding;
 
           return typeof type !== 'string' ||
             unwrappedBindingTypes.has(type) ||
