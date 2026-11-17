@@ -1,0 +1,11 @@
+{
+  "name": "do-transforms-test",
+  "main": "../../worker.ts",
+  "compatibility_date": "2026-07-07",
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["JobShards", "Mailbox", "AliasedMailbox"],
+    },
+  ],
+}

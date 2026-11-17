@@ -59,7 +59,11 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         options.wrangler ?? 'wrangler.jsonc'
       );
 
-      const project = await loadWranglerProject(wranglerPath);
+      const project = loadWranglerProject(
+        wranglerPath,
+        await import('wrangler')
+      );
+
       bindings = project.bindings;
 
       if (options.types === false || !project.config.main) {
