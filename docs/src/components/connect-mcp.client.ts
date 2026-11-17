@@ -15,7 +15,9 @@ function initConnectMcp(root: HTMLElement): () => void {
 
   const url = button?.dataset.copy;
 
-  if (!button || !label || !url) return () => {};
+  if (!button || !label || !url) {
+    return () => {};
+  }
 
   const idle = label.textContent;
   let timer: number | undefined;
@@ -29,19 +31,28 @@ function initConnectMcp(root: HTMLElement): () => void {
       copied = false;
     }
 
-    if (!root.isConnected) return;
+    if (!root.isConnected) {
+      return;
+    }
+
     label.textContent = copied ? 'Copied' : "Couldn't copy";
 
-    if (status)
+    if (status) {
       status.textContent = copied
         ? 'MCP server URL copied'
         : "Couldn't copy the MCP server URL";
+    }
 
-    if (timer !== undefined) window.clearTimeout(timer);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+    }
+
     timer = window.setTimeout(() => {
       label.textContent = idle;
 
-      if (status) status.textContent = '';
+      if (status) {
+        status.textContent = '';
+      }
     }, RESET_MS);
   };
 
@@ -50,7 +61,9 @@ function initConnectMcp(root: HTMLElement): () => void {
   return () => {
     button.removeEventListener('click', onCopy);
 
-    if (timer !== undefined) window.clearTimeout(timer);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+    }
   };
 }
 

@@ -26,12 +26,16 @@ function initSidebar(root: HTMLElement): () => void {
 
   const filterTeardown = initFilter(root);
 
-  if (filterTeardown) teardowns.push(filterTeardown);
+  if (filterTeardown) {
+    teardowns.push(filterTeardown);
+  }
 
   if (persist) {
     const persistTeardown = initPersistence(root);
 
-    if (persistTeardown) teardowns.push(persistTeardown);
+    if (persistTeardown) {
+      teardowns.push(persistTeardown);
+    }
   }
 
   return () => teardowns.forEach((t) => t());
@@ -55,7 +59,9 @@ function initFilter(root: HTMLElement): (() => void) | null {
     ) ??
     null;
 
-  if (!inputElement) return null;
+  if (!inputElement) {
+    return null;
+  }
 
   function handleInput() {
     const query = inputElement!.value.trim().toLowerCase();
@@ -116,7 +122,10 @@ function applyFilter(root: HTMLElement, query: string): void {
 
     const text = `${link.textContent ?? ''} ${method}`.toLowerCase();
 
-    if (!text.includes(query)) return;
+    if (!text.includes(query)) {
+      return;
+    }
+
     link.removeAttribute('data-nb-sidebar-hidden');
     revealAncestors(link, root);
   });
@@ -125,7 +134,10 @@ function applyFilter(root: HTMLElement, query: string): void {
     const label = group.querySelector(':scope > summary');
     const text = label?.textContent?.toLowerCase() ?? '';
 
-    if (!text.includes(query)) return;
+    if (!text.includes(query)) {
+      return;
+    }
+
     group.removeAttribute('data-nb-sidebar-hidden');
     openGroup(group);
     group
@@ -148,7 +160,10 @@ function revealAncestors(el: HTMLElement, scope: Element): void {
 }
 
 function openGroup(group: HTMLElement): void {
-  if (!(group instanceof HTMLDetailsElement) || group.open) return;
+  if (!(group instanceof HTMLDetailsElement) || group.open) {
+    return;
+  }
+
   group.setAttribute('data-nb-opened-by-filter', '');
   group.open = true;
 }
@@ -197,10 +212,16 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   function restoreScroll() {
     const scroll = savedScroll();
 
-    if (scroll !== null) scrollHost.scrollTop = scroll;
+    if (scroll !== null) {
+      scrollHost.scrollTop = scroll;
+    }
+
     const active = root.querySelector("[aria-current='page']");
 
-    if (!active) return;
+    if (!active) {
+      return;
+    }
+
     const box = scrollHost.getBoundingClientRect();
     const item = active.getBoundingClientRect();
 
@@ -218,7 +239,10 @@ function initPersistence(root: HTMLElement): (() => void) | null {
       : new ResizeObserver(() => {
           const nowVisible = scrollHost.clientHeight > 0;
 
-          if (nowVisible && !visible) restoreScroll();
+          if (nowVisible && !visible) {
+            restoreScroll();
+          }
+
           visible = nowVisible;
         });
 
@@ -237,16 +261,23 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   const handleToggle = (event: Event) => {
     const group = event.target as HTMLElement | null;
 
-    if (!(group instanceof HTMLDetailsElement)) return;
+    if (!(group instanceof HTMLDetailsElement)) {
+      return;
+    }
 
-    if (group.hasAttribute('data-nb-opened-by-filter')) return;
+    if (group.hasAttribute('data-nb-opened-by-filter')) {
+      return;
+    }
+
     save();
   };
 
   root.addEventListener('toggle', handleToggle, true);
 
   function handleVisibility() {
-    if (document.visibilityState === 'hidden') save();
+    if (document.visibilityState === 'hidden') {
+      save();
+    }
   }
 
   document.addEventListener('visibilitychange', handleVisibility);
@@ -276,12 +307,17 @@ function initPersistence(root: HTMLElement): (() => void) | null {
 // ---------------------------------------------------------------------------
 
 (function bindFilterShortcut() {
-  if (document.documentElement.hasAttribute('data-nb-sidebar-shortcut-bound'))
+  if (document.documentElement.hasAttribute('data-nb-sidebar-shortcut-bound')) {
     return;
+  }
+
   document.documentElement.setAttribute('data-nb-sidebar-shortcut-bound', '');
 
   document.addEventListener('keydown', (e) => {
-    if (e.key !== '/') return;
+    if (e.key !== '/') {
+      return;
+    }
+
     const active = document.activeElement as HTMLElement | null;
 
     if (
@@ -301,7 +337,10 @@ function initPersistence(root: HTMLElement): (() => void) | null {
       )
     ).find((candidate) => candidate.offsetParent !== null);
 
-    if (!input) return;
+    if (!input) {
+      return;
+    }
+
     e.preventDefault();
     input.focus();
   });

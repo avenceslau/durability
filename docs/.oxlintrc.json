@@ -29,7 +29,6 @@
         "src/components/connect-mcp.client.ts"
       ],
       "rules": {
-        "curly": "off",
         "no-underscore-dangle": "off",
         "no-shadow": "off"
       }

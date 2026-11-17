@@ -19,12 +19,16 @@ function initPageActions(root: HTMLElement): () => void {
 
   const mdUrl = root.dataset.mdUrl;
 
-  if (!copyBtn || !mdUrl) return () => {};
+  if (!copyBtn || !mdUrl) {
+    return () => {};
+  }
 
   let resetTimer: number | undefined;
 
   function showState(state: 'copied' | 'error') {
-    if (!copyIcon || !checkIcon || !label) return;
+    if (!copyIcon || !checkIcon || !label) {
+      return;
+    }
 
     if (state === 'copied') {
       copyIcon.classList.add('hidden');
@@ -34,7 +38,10 @@ function initPageActions(root: HTMLElement): () => void {
       label.textContent = "Couldn't copy";
     }
 
-    if (resetTimer) window.clearTimeout(resetTimer);
+    if (resetTimer) {
+      window.clearTimeout(resetTimer);
+    }
+
     resetTimer = window.setTimeout(() => {
       copyIcon.classList.remove('hidden');
       checkIcon.classList.add('hidden');
@@ -44,7 +51,9 @@ function initPageActions(root: HTMLElement): () => void {
 
   async function handleCopyPage() {
     const markdown = fetch(mdUrl!).then(async (res) => {
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) {
+        throw new Error(`${res.status}`);
+      }
 
       return new Blob([await res.text()], { type: 'text/plain' });
     });
@@ -71,7 +80,10 @@ function initPageActions(root: HTMLElement): () => void {
   copyBtn.addEventListener('click', handleCopyPage);
 
   return () => {
-    if (resetTimer) window.clearTimeout(resetTimer);
+    if (resetTimer) {
+      window.clearTimeout(resetTimer);
+    }
+
     copyBtn.removeEventListener('click', handleCopyPage);
   };
 }

@@ -34,7 +34,7 @@
     "no-undef": "warn",
     "no-empty": "warn",
     "no-console": "off",
-    "curly": "warn",
+    "curly": "error",
     "no-debugger": "warn",
     "no-underscore-dangle": ["warn", { "allow": ["__DURABILITY_DEV__"] }],
     "no-unreachable": "warn",

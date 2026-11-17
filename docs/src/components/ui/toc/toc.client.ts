@@ -19,7 +19,9 @@ function initToc(root: HTMLElement): () => void {
 
   const links = root.querySelectorAll<HTMLElement>('[data-nb-toc-link]');
 
-  if (!nav || !activePath || links.length === 0) return () => {};
+  if (!nav || !activePath || links.length === 0) {
+    return () => {};
+  }
 
   const scrollHost =
     root.closest<HTMLElement>('[data-nb-toc-scroll-host]') ?? root;
@@ -33,7 +35,9 @@ function initToc(root: HTMLElement): () => void {
     .map((slug, index) => ({ el: document.getElementById(slug), index }))
     .filter((o): o is { el: HTMLElement; index: number } => o.el !== null);
 
-  if (observed.length === 0) return () => {};
+  if (observed.length === 0) {
+    return () => {};
+  }
 
   const indexOfEl = new Map<HTMLElement, number>(
     observed.map((o) => [o.el, o.index])
@@ -123,7 +127,9 @@ function initToc(root: HTMLElement): () => void {
   function applyActive(index: number, instant: boolean) {
     const seg = segments[index];
 
-    if (!seg) return;
+    if (!seg) {
+      return;
+    }
 
     if (instant) {
       activePath!.setAttribute('data-initial', 'true');
@@ -161,7 +167,10 @@ function initToc(root: HTMLElement): () => void {
   }
 
   function setActive(index: number) {
-    if (index === currentIndex) return;
+    if (index === currentIndex) {
+      return;
+    }
+
     currentIndex = index;
 
     currentLink?.removeAttribute('aria-current');
@@ -169,7 +178,9 @@ function initToc(root: HTMLElement): () => void {
     activeLink?.setAttribute('aria-current', 'true');
     currentLink = activeLink;
 
-    if (activeLink) revealActiveLink(activeLink);
+    if (activeLink) {
+      revealActiveLink(activeLink);
+    }
 
     applyActive(index, !hasApplied);
     hasApplied = true;
@@ -197,13 +208,21 @@ function initToc(root: HTMLElement): () => void {
       for (const entry of entries) {
         const i = indexOfEl.get(entry.target as HTMLElement);
 
-        if (i === undefined) continue;
+        if (i === undefined) {
+          continue;
+        }
 
-        if (entry.isIntersecting) inBand.add(i);
-        else inBand.delete(i);
+        if (entry.isIntersecting) {
+          inBand.add(i);
+        } else {
+          inBand.delete(i);
+        }
       }
 
-      if (inBand.size > 0) observedIndex = Math.max(...inBand);
+      if (inBand.size > 0) {
+        observedIndex = Math.max(...inBand);
+      }
+
       resolve();
     },
     { rootMargin: `0px 0px -${(1 - READING_BAND) * 100}% 0px`, threshold: 0 }
@@ -230,15 +249,21 @@ function initToc(root: HTMLElement): () => void {
     let nextIndex = 0;
 
     for (const o of observed) {
-      if (o.el.getBoundingClientRect().top <= bandBottom) nextIndex = o.index;
-      else break;
+      if (o.el.getBoundingClientRect().top <= bandBottom) {
+        nextIndex = o.index;
+      } else {
+        break;
+      }
     }
 
     observedIndex = nextIndex;
   }
 
   function releaseStalePin() {
-    if (pinnedIndex === null) return;
+    if (pinnedIndex === null) {
+      return;
+    }
+
     const heading = document.getElementById(slugs[pinnedIndex]);
 
     if (!heading) {
@@ -266,7 +291,10 @@ function initToc(root: HTMLElement): () => void {
   let ticking = false;
 
   function onScroll() {
-    if (ticking) return;
+    if (ticking) {
+      return;
+    }
+
     ticking = true;
     requestAnimationFrame(() => {
       updateObservedIndex();
@@ -288,7 +316,9 @@ function initToc(root: HTMLElement): () => void {
       applyActive(currentIndex, true);
       const activeLink = links[currentIndex];
 
-      if (activeLink) revealActiveLink(activeLink);
+      if (activeLink) {
+        revealActiveLink(activeLink);
+      }
     }
   }
 
@@ -304,17 +334,24 @@ function initToc(root: HTMLElement): () => void {
         e.ctrlKey ||
         e.shiftKey ||
         e.altKey
-      )
+      ) {
         return;
+      }
 
       const link = (e.target as Element).closest<HTMLElement>(
         '[data-nb-toc-link]'
       );
 
-      if (!link) return;
+      if (!link) {
+        return;
+      }
+
       const i = slugs.indexOf(link.dataset.nbSlug!);
 
-      if (i === -1) return;
+      if (i === -1) {
+        return;
+      }
+
       pinnedIndex = i;
       const heading = document.getElementById(slugs[i]);
       const rect = heading?.getBoundingClientRect();
@@ -327,7 +364,10 @@ function initToc(root: HTMLElement): () => void {
 
   // Hand-driven scrolling releases the pin and resumes auto-tracking.
   function releasePin() {
-    if (pinnedIndex === null) return;
+    if (pinnedIndex === null) {
+      return;
+    }
+
     pinnedIndex = null;
     pinnedEnteredViewport = false;
     resolve();
@@ -355,7 +395,9 @@ function initToc(root: HTMLElement): () => void {
   window.addEventListener(
     'keydown',
     (e) => {
-      if (NAV_KEYS.has(e.key)) releasePin();
+      if (NAV_KEYS.has(e.key)) {
+        releasePin();
+      }
     },
     { signal: controller.signal }
   );
@@ -375,17 +417,26 @@ function initToc(root: HTMLElement): () => void {
     () => {
       let added = false;
       slugs.forEach((slug, index) => {
-        if (observed.some((o) => o.index === index)) return;
+        if (observed.some((o) => o.index === index)) {
+          return;
+        }
+
         const el = document.getElementById(slug);
 
-        if (!el) return;
+        if (!el) {
+          return;
+        }
+
         observed.push({ el, index });
         indexOfEl.set(el, index);
         spy.observe(el);
         added = true;
       });
 
-      if (!added) return;
+      if (!added) {
+        return;
+      }
+
       observed.sort((a, b) => a.index - b.index);
       onLayoutChange();
     },

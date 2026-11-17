@@ -64,7 +64,9 @@ const defaultFilters: PagefindFilters | undefined =
 
 export const provider: SearchProvider = {
   async init() {
-    if (pagefind) return;
+    if (pagefind) {
+      return;
+    }
 
     // `searchIndex.bundle` is the site's bundle (`/pagefind/`, under the
     // base when there is one); a site built in slices (`NIMBUS_BUILD_ONLY`)
@@ -92,9 +94,13 @@ export const provider: SearchProvider = {
   },
 
   async search(query) {
-    if (!pagefind) await this.init?.();
+    if (!pagefind) {
+      await this.init?.();
+    }
 
-    if (!pagefind) return [];
+    if (!pagefind) {
+      return [];
+    }
 
     const search = await pagefind.search(
       query,

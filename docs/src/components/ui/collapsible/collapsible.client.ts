@@ -11,7 +11,9 @@ function initCollapsible(root: HTMLElement): () => void {
     '[data-nb-collapsible-content]'
   );
 
-  if (!trigger || !content) return () => {};
+  if (!trigger || !content) {
+    return () => {};
+  }
 
   const defaultOpen = root.dataset.nbDefaultOpen === 'true';
 
