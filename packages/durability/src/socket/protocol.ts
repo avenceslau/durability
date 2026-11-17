@@ -124,15 +124,13 @@ export type SocketCall<Metadata> = {
 };
 
 /**
- * An inbound handler: a bare function that takes no input (or `unknown`
- * input it validates itself), or a validated `{ input, handle }` pair.
+ * An inbound handler: a Standard Schema that validates the call's input, and
+ * `handle`, which receives the validated value.
  */
-export type SocketInboundHandler<Metadata> =
-  | ((input: unknown, call: SocketCall<Metadata>) => unknown)
-  | {
-      input: StandardSchemaV1;
-      handle: (input: never, call: SocketCall<Metadata>) => unknown;
-    };
+export type SocketInboundHandler<Metadata> = {
+  input: StandardSchemaV1;
+  handle: (input: never, call: SocketCall<Metadata>) => unknown;
+};
 
 export type SocketInboundMap<Metadata = never> = Record<
   string,
@@ -143,9 +141,7 @@ type HandlerMetadata<Handler> = Handler extends {
   handle: (input: never, call: SocketCall<infer Metadata>) => unknown;
 }
   ? Metadata
-  : Handler extends (input: never, call: SocketCall<infer Metadata>) => unknown
-    ? Metadata
-    : unknown;
+  : unknown;
 
 type UnionToIntersection<Union> = (
   Union extends unknown ? (value: Union) => void : never
@@ -168,23 +164,39 @@ export type SocketOutboundMap = Record<string, SocketOutboundEvent<unknown>>;
 /** Declares an outbound event with the given payload type. */
 export const event = <Payload>(): SocketOutboundEvent<Payload> => ({});
 
+/** The schema of each inbound handler, by method. */
+export type SocketInboundSchemas<Inbound extends SocketInboundMap> = {
+  [Name in keyof Inbound]: Inbound[Name]['input'];
+};
+
+/**
+ * Requires each handler to accept its schema's output. `Schemas` is inferred
+ * from the schemas alone, so `handle` parameters need no annotation.
+ */
+export type SocketValidatedInbound<
+  Inbound extends SocketInboundMap,
+  Schemas extends Record<keyof Inbound, StandardSchemaV1>,
+> = {
+  [Name in keyof Schemas]: {
+    input: Schemas[Name];
+    handle: (
+      input: StandardSchemaV1.InferOutput<Schemas[Name]>,
+      call: SocketCall<never>
+    ) => ReturnType<Inbound[Name & keyof Inbound]['handle']>;
+  };
+};
+
 export type SocketInboundInput<Handler> = Handler extends {
   input: infer Schema extends StandardSchemaV1;
 }
   ? StandardSchemaV1.InferInput<Schema>
-  : Handler extends (...args: infer Args) => unknown
-    ? Args extends []
-      ? void
-      : Args[0]
-    : never;
+  : never;
 
 export type SocketInboundOutput<Handler> = Handler extends {
   handle: (...args: never[]) => infer Result;
 }
   ? Awaited<Result>
-  : Handler extends (...args: never[]) => infer Result
-    ? Awaited<Result>
-    : never;
+  : never;
 
 export type SocketOutboundPayload<Event> =
   Event extends SocketOutboundEvent<infer Payload> ? Payload : never;

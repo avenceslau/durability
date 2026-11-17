@@ -51,9 +51,12 @@ type Todo = { id: string; title: string };
 type TestSocket = {
   readonly [socketMessageMaps]: SocketMessageMaps<
     {
-      list: () => Todo[];
+      list: { input: StandardSchemaV1<undefined>; handle: () => Todo[] };
       create: { input: StandardSchemaV1<Todo>; handle: (todo: Todo) => string };
-      echo: (input: unknown) => unknown;
+      echo: {
+        input: StandardSchemaV1<string>;
+        handle: (text: string) => string;
+      };
     },
     {
       created: { readonly payload?: Todo };
@@ -132,7 +135,7 @@ describe('DurabilitySocketClient', () => {
       (input: Todo) => Promise<string>
     >();
     expectTypeOf(conn.rpc.echo).toEqualTypeOf<
-      (input?: unknown) => Promise<unknown>
+      (input: string) => Promise<string>
     >();
     expectTypeOf(conn.on.created)
       .parameter(0)

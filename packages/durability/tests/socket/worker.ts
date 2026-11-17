@@ -30,8 +30,11 @@ const createLibrarySocket = (context: DurableObjectState, channel: string) => {
     context,
     channel,
     inbound: {
-      whoami: (_input: unknown, call: SocketCall<{ user: string }>) =>
-        `${JSON.stringify(channel)}:${call.metadata.user}`,
+      whoami: {
+        input: v.undefined(),
+        handle: (_input, call: SocketCall<{ user: string }>) =>
+          `${JSON.stringify(channel)}:${call.metadata.user}`,
+      },
       toggle: {
         input: v.string(),
         handle: (id: string) => {
@@ -73,10 +76,13 @@ export class SocketTestObject extends DurableObject<Env> {
   readonly socket = new DurabilitySocket({
     context: this.ctx,
     inbound: {
-      list: () => [...this.todos.values()],
-      work: () => this.tracker.records(),
-      whoami: (_input: unknown, call: SocketCall<{ user: string }>) =>
-        call.metadata.user,
+      list: { input: v.undefined(), handle: () => [...this.todos.values()] },
+      work: { input: v.undefined(), handle: () => this.tracker.records() },
+      whoami: {
+        input: v.undefined(),
+        handle: (_input, call: SocketCall<{ user: string }>) =>
+          call.metadata.user,
+      },
       create: {
         input: v.object({ id: v.string(), payload: todoSchema }),
         handle: this.durability.create,

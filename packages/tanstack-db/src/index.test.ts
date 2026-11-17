@@ -14,7 +14,7 @@ type Todo = { id: string; title: string; done: boolean };
 type TestSocket = {
   readonly [socketMessageMaps]: SocketMessageMaps<
     {
-      list: () => Todo[];
+      list: { input: StandardSchemaV1<undefined>; handle: () => Todo[] };
       create: { input: StandardSchemaV1<Todo>; handle: (todo: Todo) => Todo };
       remove: { input: StandardSchemaV1<string>; handle: (id: string) => void };
     },

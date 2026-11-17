@@ -49,7 +49,7 @@ export class TodoList extends DurableObject<Env> {
   readonly socket = new DurabilitySocket({
     context: this.ctx,
     inbound: {
-      list: () => this.list(),
+      list: { input: v.undefined(), handle: () => this.list() },
       createTodo: {
         input: v.object({ id: v.string(), payload: todoSchema }),
         handle: this.durability.createTodo,

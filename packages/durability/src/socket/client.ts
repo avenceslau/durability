@@ -91,9 +91,7 @@ export type DurabilitySocketClientConfig = {
 
 type RpcMethod<Input, Output> = [Input] extends [void]
   ? () => Promise<Output>
-  : unknown extends Input
-    ? (input?: unknown) => Promise<Output>
-    : (input: Input) => Promise<Output>;
+  : (input: Input) => Promise<Output>;
 
 type RpcMethods<Inbound> = {
   [Method in keyof Inbound]: RpcMethod<

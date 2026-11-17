@@ -80,8 +80,11 @@ const createSocket = (storage = new FakeStorage()) => {
   const socket = new DurabilitySocket({
     context,
     inbound: {
-      list: () => todos,
-      echo: (input) => input,
+      list: { input: v.undefined(), handle: () => todos },
+      echo: {
+        input: v.optional(v.array(v.union([v.number(), v.string()]))),
+        handle: (input) => input,
+      },
       create: {
         input: todoSchema,
         handle: (todo: Todo, call: SocketCall<{ userId: string }>) => {
@@ -155,13 +158,13 @@ describe('DurabilitySocket', () => {
     >().toEqualTypeOf<Todo[]>();
     expectTypeOf<
       SocketInboundInput<InboundOf<Socket>['list']>
-    >().toEqualTypeOf<void>();
+    >().toEqualTypeOf<undefined>();
     expectTypeOf<
       SocketInboundInput<InboundOf<Socket>['create']>
     >().toEqualTypeOf<Todo>();
-    expectTypeOf<
-      SocketInboundInput<InboundOf<Socket>['echo']>
-    >().toEqualTypeOf<unknown>();
+    expectTypeOf<SocketInboundInput<InboundOf<Socket>['echo']>>().toEqualTypeOf<
+      (number | string)[] | undefined
+    >();
     expectTypeOf<OutboundOf<Socket>['removed']>().toEqualTypeOf<{
       readonly payload?: string;
     }>();
@@ -259,7 +262,51 @@ describe('DurabilitySocket', () => {
     ]);
   });
 
-  it('passes raw input to bare handlers and omits undefined output', async () => {
+  it('types handler input from its schema and rejects handlers without one', () => {
+    const context = socketContextFor(new FakeStorage());
+
+    const socket = new DurabilitySocket({
+      context,
+      inbound: {
+        rename: {
+          input: v.object({ id: v.string(), title: v.string() }),
+          handle: (todo) => {
+            expectTypeOf(todo).toEqualTypeOf<{ id: string; title: string }>();
+
+            return todo.title.length;
+          },
+        },
+      },
+      outbound: {},
+    });
+
+    expectTypeOf<
+      SocketInboundOutput<InboundOf<typeof socket>['rename']>
+    >().toEqualTypeOf<number>();
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        // @ts-expect-error every handler needs an input schema
+        bare: () => 'untyped',
+      },
+      outbound: {},
+    });
+
+    new DurabilitySocket({
+      context: socketContextFor(new FakeStorage()),
+      inbound: {
+        mismatched: {
+          input: v.string(),
+          // @ts-expect-error `handle` must accept the schema's output
+          handle: (count: number) => count,
+        },
+      },
+      outbound: {},
+    });
+  });
+
+  it('passes validated input to handlers and omits undefined output', async () => {
     const { context, socket } = createSocket();
     await connect(socket);
     const ws = serverSide(context);
@@ -285,8 +332,11 @@ describe('DurabilitySocket', () => {
     const socket = new DurabilitySocket({
       context,
       inbound: {
-        fail: () => {
-          throw new RangeError('out of range');
+        fail: {
+          input: v.undefined(),
+          handle: () => {
+            throw new RangeError('out of range');
+          },
         },
       },
       outbound: {},
@@ -518,10 +568,13 @@ const createChannelSocket = (
     context,
     ...channelOption,
     inbound: {
-      whoami: (_input: unknown, call: SocketCall<{ user: string }>) => {
-        calls.push(label);
+      whoami: {
+        input: v.undefined(),
+        handle: (_input, call: SocketCall<{ user: string }>) => {
+          calls.push(label);
 
-        return `${label}:${call.metadata.user}`;
+          return `${label}:${call.metadata.user}`;
+        },
       },
       publish: {
         input: v.string(),
