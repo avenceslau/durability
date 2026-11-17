@@ -70,8 +70,7 @@ function stages(definition: ArchitectureDefinition = limiter): ReadonlyArray<Sta
 
 function edgeEnds(state: StageState): ReadonlyArray<string> {
   return [...state.ends]
-    .filter(([id]) => state.visible.has(id))
-    .map(([, [from, to]]) => `${from}->${to}`)
+    .flatMap(([id, [from, to]]) => (state.visible.has(id) ? [`${from}->${to}`] : []))
     .sort()
 }
 

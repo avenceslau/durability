@@ -923,9 +923,9 @@ export class DurabilityTopology<
 
     for (const [name, channel] of this.#channels) {
       const previous = new Set(
-        before
-          .filter((member) => inRole(member, channel.role))
-          .map(({ id }) => id)
+        before.flatMap((member) =>
+          inRole(member, channel.role) ? [member.id] : []
+        )
       );
 
       const targets = after.filter((member) => inRole(member, channel.role));

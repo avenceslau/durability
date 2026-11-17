@@ -539,9 +539,9 @@ interface Parts {
 
 /** What decides a stage's layout; stages that differ only in spotlight share one. */
 function layoutKey(visible: ReadonlySet<string>, views: ReadonlyMap<string, NodeView>): string {
-  const sizes = [...views]
-    .filter(([id]) => visible.has(id))
-    .map(([id, view]) => `${id}:${view.size.join("x")}:${view.replicas ?? 1}`)
+  const sizes = [...views].flatMap(([id, view]) =>
+    visible.has(id) ? [`${id}:${view.size.join("x")}:${view.replicas ?? 1}`] : [],
+  )
 
   return [...[...visible].sort(), ...sizes].join("|")
 }

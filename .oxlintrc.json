@@ -41,7 +41,7 @@
     "@typescript-eslint/no-explicit-any": "warn",
     "vitest/require-mock-type-parameters": "off",
     "oxc/no-accumulating-spread": "error",
-    "anti-slop/no-array-filter-map": "warn",
+    "anti-slop/no-array-filter-map": "error",
     "anti-slop/no-chained-type-assertions": "warn",
     "anti-slop/no-conditional-empty-object-spread": "warn",
     "anti-slop/no-known-value-widening": "warn",
