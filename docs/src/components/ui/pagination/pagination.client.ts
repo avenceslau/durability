@@ -8,8 +8,10 @@ function warm(href: string) {
     document.head.querySelector(
       `link[rel="prefetch"][href="${CSS.escape(href)}"]`
     )
-  )
+  ) {
     return;
+  }
+
   const link = document.createElement('link');
   link.rel = 'prefetch';
   link.href = href;
@@ -32,7 +34,10 @@ function initPagination(root: HTMLElement): () => void {
   const show = (item: HTMLElement) => {
     current = item;
 
-    if (!highlight) return;
+    if (!highlight) {
+      return;
+    }
+
     highlight.style.left = `${item.offsetLeft}px`;
     highlight.style.width = `${item.offsetWidth}px`;
     highlight.dataset.state = 'visible';
@@ -41,7 +46,9 @@ function initPagination(root: HTMLElement): () => void {
   const hide = () => {
     current = null;
 
-    if (highlight) highlight.dataset.state = 'hidden';
+    if (highlight) {
+      highlight.dataset.state = 'hidden';
+    }
   };
 
   for (const item of items) {
@@ -58,8 +65,11 @@ function initPagination(root: HTMLElement): () => void {
           title.scrollWidth > title.clientWidth ||
           title.scrollHeight > title.clientHeight;
 
-        if (cut) item.title = title.textContent?.trim() ?? '';
-        else item.removeAttribute('title');
+        if (cut) {
+          item.title = title.textContent?.trim() ?? '';
+        } else {
+          item.removeAttribute('title');
+        }
       }
     };
 
@@ -74,7 +84,9 @@ function initPagination(root: HTMLElement): () => void {
   const onLeave = () => hide();
 
   const onFocusOut = (e: FocusEvent) => {
-    if (!root.contains(e.relatedTarget as Node)) hide();
+    if (!root.contains(e.relatedTarget as Node)) {
+      hide();
+    }
   };
 
   root.addEventListener('pointerleave', onLeave);
@@ -82,7 +94,9 @@ function initPagination(root: HTMLElement): () => void {
 
   // The highlight follows its half when the layout shifts under it.
   const resize = new ResizeObserver(() => {
-    if (current) show(current);
+    if (current) {
+      show(current);
+    }
   });
 
   resize.observe(root);
@@ -91,11 +105,16 @@ function initPagination(root: HTMLElement): () => void {
   // so single-key shortcuts never fire from elsewhere on the page (WCAG
   // 2.1.4), and never with a modifier held.
   const onKey = (e: KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || e.defaultPrevented)
+    if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || e.defaultPrevented) {
       return;
+    }
+
     const item = items.find((i) => i.dataset.nbPaginationKey === e.key);
 
-    if (!item) return;
+    if (!item) {
+      return;
+    }
+
     e.preventDefault();
     warm(item.href);
     item
@@ -108,11 +127,13 @@ function initPagination(root: HTMLElement): () => void {
   const listens = root.dataset.keys !== 'false';
 
   if (listens) {
-    for (const item of items)
+    for (const item of items) {
       item.setAttribute(
         'aria-keyshortcuts',
         item.dataset.nbPaginationKey ?? ''
       );
+    }
+
     root.addEventListener('keydown', onKey);
   }
 
@@ -122,7 +143,9 @@ function initPagination(root: HTMLElement): () => void {
     root.removeEventListener('focusout', onFocusOut);
     resize.disconnect();
 
-    if (listens) root.removeEventListener('keydown', onKey);
+    if (listens) {
+      root.removeEventListener('keydown', onKey);
+    }
   };
 }
 

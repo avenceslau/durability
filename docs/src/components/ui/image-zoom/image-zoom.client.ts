@@ -18,14 +18,17 @@ mount('[data-nb-image-zoom]', (root) => {
   const content = document.querySelector<HTMLElement>('article.docs-content');
   const initial = dialog.querySelector<HTMLElement>('.nb-zoom-img');
 
-  if (!content || !initial) return () => {};
+  if (!content || !initial) {
+    return () => {};
+  }
 
   let media: HTMLElement = initial;
   let opener: HTMLElement | null = null;
 
   const worthZooming = (img: HTMLImageElement): boolean => {
-    if (img.closest(`a, button:not(${TRIGGER}), [data-nb-zoom="off"]`))
+    if (img.closest(`a, button:not(${TRIGGER}), [data-nb-zoom="off"]`)) {
       return false;
+    }
 
     // The dialog shows the file at its own size, which can beat the attribute.
     const width = Math.max(
@@ -38,10 +41,15 @@ mount('[data-nb-image-zoom]', (root) => {
       img.naturalHeight
     );
 
-    if (!width || !height) return false;
+    if (!width || !height) {
+      return false;
+    }
+
     const shown = img.getBoundingClientRect().width;
 
-    if (!shown) return false;
+    if (!shown) {
+      return false;
+    }
 
     const fit = Math.min(
       (innerWidth * 0.95) / width,
@@ -91,15 +99,20 @@ mount('[data-nb-image-zoom]', (root) => {
     });
 
     for (const { img, trigger, zoom, display } of plan) {
-      if (zoom && !trigger) wrap(img, display);
-      else if (!zoom && trigger) trigger.replaceWith(...trigger.childNodes);
+      if (zoom && !trigger) {
+        wrap(img, display);
+      } else if (!zoom && trigger) {
+        trigger.replaceWith(...trigger.childNodes);
+      }
     }
   };
 
   const open = (trigger: HTMLElement) => {
     const img = trigger.querySelector('img');
 
-    if (!img) return;
+    if (!img) {
+      return;
+    }
 
     // A clone of the image or its <picture>, sized for the viewport, so the
     // browser picks the largest source that fits.
@@ -112,11 +125,15 @@ mount('[data-nb-image-zoom]', (root) => {
       clone instanceof HTMLImageElement ? clone : clone.querySelector('img')!;
 
     for (const el of [clone, ...clone.querySelectorAll('source, img')]) {
-      if (el.hasAttribute('srcset')) el.setAttribute('sizes', '100vw');
+      if (el.hasAttribute('srcset')) {
+        el.setAttribute('sizes', '100vw');
+      }
     }
 
-    for (const name of ['loading', 'width', 'height', 'style', 'class'])
+    for (const name of ['loading', 'width', 'height', 'style', 'class']) {
       view.removeAttribute(name);
+    }
+
     view.className = 'nb-zoom-img';
     media.replaceWith(clone);
     media = clone;
@@ -128,7 +145,9 @@ mount('[data-nb-image-zoom]', (root) => {
   const onContentClick = (event: MouseEvent) => {
     const trigger = (event.target as Element).closest<HTMLElement>(TRIGGER);
 
-    if (trigger && content.contains(trigger)) open(trigger);
+    if (trigger && content.contains(trigger)) {
+      open(trigger);
+    }
   };
 
   // Esc, the close button, or a click anywhere closes it.
@@ -151,7 +170,9 @@ mount('[data-nb-image-zoom]', (root) => {
 
   const observer = new ResizeObserver(schedule);
 
-  for (const img of images) observer.observe(img);
+  for (const img of images) {
+    observer.observe(img);
+  }
 
   content.addEventListener('click', onContentClick);
   dialog.addEventListener('click', onDialogClick);

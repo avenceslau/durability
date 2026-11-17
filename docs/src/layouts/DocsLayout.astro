@@ -152,10 +152,15 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
               try {
                 const sidebar = document.querySelector("[data-nb-sidebar-tree]");
 
-                if (!sidebar) return;
+                if (!sidebar) {
+                  return;
+                }
+
                 const content = sidebar.querySelector("[data-nb-sidebar]");
 
-                if (!content) return;
+                if (!content) {
+                  return;
+                }
 
                 // State saved for a different sidebar is ignored entirely.
                 const raw = JSON.parse(sessionStorage.getItem("sidebar-state") || "null");
@@ -184,7 +189,9 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
 
                 // Scroll only applies while the tree is visible (the rail
                 // on desktop); the drawer restores it again when it opens.
-                if (sidebar.clientHeight === 0) return;
+                if (sidebar.clientHeight === 0) {
+                  return;
+                }
 
                 if (state && typeof state.scroll === "number") {
                   sidebar.scrollTop = state.scroll;
@@ -193,7 +200,9 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
                     const sr = sidebar.getBoundingClientRect();
                     const ar = active.getBoundingClientRect();
 
-                    if (ar.top < sr.top || ar.bottom > sr.bottom) centerActive(sidebar, active);
+                    if (ar.top < sr.top || ar.bottom > sr.bottom) {
+                      centerActive(sidebar, active);
+                    }
                   }
                 } else if (active) {
                   centerActive(sidebar, active);
@@ -334,7 +343,9 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
     mount("[data-mobile-sidebar]", (root) => {
       const trigger = document.querySelector<HTMLElement>("[data-menu-btn]");
 
-      if (!(root instanceof HTMLDialogElement) || !trigger) return () => {};
+      if (!(root instanceof HTMLDialogElement) || !trigger) {
+        return () => {};
+      }
 
       const dialog = root;
 
@@ -345,11 +356,16 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
       const prefersReducedMotion = () =>
         window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-      if (!dialog.id) dialog.id = generateId("nb-mobile-sidebar");
+      if (!dialog.id) {
+        dialog.id = generateId("nb-mobile-sidebar");
+      }
+
       trigger.setAttribute("aria-controls", dialog.id);
       trigger.setAttribute("aria-expanded", "false");
 
-      if (!trigger.hasAttribute("aria-haspopup")) trigger.setAttribute("aria-haspopup", "dialog");
+      if (!trigger.hasAttribute("aria-haspopup")) {
+        trigger.setAttribute("aria-haspopup", "dialog");
+      }
 
       const clearTimer = () => {
         if (closeTimer) {
@@ -367,11 +383,15 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
       const drawerSlot = dialog.querySelector<HTMLElement>("[data-nb-sidebar-drawer-slot]");
 
       const moveTreeToDrawer = () => {
-        if (tree && drawerSlot && tree.parentElement !== drawerSlot) drawerSlot.append(tree);
+        if (tree && drawerSlot && tree.parentElement !== drawerSlot) {
+          drawerSlot.append(tree);
+        }
       };
 
       const moveTreeToRail = () => {
-        if (tree && rail && tree.parentElement !== rail) rail.prepend(tree);
+        if (tree && rail && tree.parentElement !== rail) {
+          rail.prepend(tree);
+        }
       };
 
       const openSidebar = () => {
@@ -379,7 +399,9 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
 
         if (dialog.open) {
           // Reclaim a drawer caught mid-slide-out rather than stranding it open.
-          if (dialog.dataset.state === "closing") dialog.dataset.state = "open";
+          if (dialog.dataset.state === "closing") {
+            dialog.dataset.state = "open";
+          }
 
           return;
         }
@@ -400,13 +422,18 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
 
       // Immediate close (no slide-out): reduced motion, or the viewport reaching desktop.
       const closeNow = () => {
-        if (!dialog.open) return;
+        if (!dialog.open) {
+          return;
+        }
+
         clearTimer();
         dialog.close();
       };
 
       const closeSidebar = () => {
-        if (!dialog.open || dialog.dataset.state === "closing") return;
+        if (!dialog.open || dialog.dataset.state === "closing") {
+          return;
+        }
 
         if (prefersReducedMotion()) {
           closeNow();
@@ -439,17 +466,23 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
         .forEach((el) => el.addEventListener("click", closeSidebar, { signal }));
 
       dialog.addEventListener("click", (e) => {
-        if (e.target === dialog) closeSidebar();
+        if (e.target === dialog) {
+          closeSidebar();
+        }
       }, { signal });
 
       // The hamburger is hidden past the desktop breakpoint; dismiss an open
       // drawer so it can't strand focus once its trigger disappears.
       const mql = window.matchMedia(DESKTOP_QUERY);
       mql.addEventListener("change", (event) => {
-        if (event.matches) closeNow();
+        if (event.matches) {
+          closeNow();
+        }
       }, { signal });
 
-      if (mql.matches) closeNow();
+      if (mql.matches) {
+        closeNow();
+      }
 
       return () => {
         controller.abort();
@@ -458,7 +491,9 @@ const showToc = headings !== false && (hasToc || headings.length > 0);
         trigger.setAttribute("aria-expanded", "false");
 
         // A swap while open never fires `close`; balance the scroll lock.
-        if (dialog.open) unlockScroll();
+        if (dialog.open) {
+          unlockScroll();
+        }
       };
     });
   </script>

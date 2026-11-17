@@ -88,7 +88,9 @@ const resolvedMarkdownUrl =
         let unsaved = null;
 
         const readPref = () => {
-          if (unsaved) return unsaved;
+          if (unsaved) {
+            return unsaved;
+          }
 
           try {
             const v = localStorage.getItem(KEY);
@@ -105,8 +107,12 @@ const resolvedMarkdownUrl =
           const root = document.documentElement;
           const mode = resolveMode();
 
-          if (mode === "dark") root.setAttribute("data-mode", "dark");
-          else root.removeAttribute("data-mode");
+          if (mode === "dark") {
+            root.setAttribute("data-mode", "dark");
+          } else {
+            root.removeAttribute("data-mode");
+          }
+
           root.style.colorScheme = mode;
           document.querySelectorAll("[data-nb-theme-toggle]").forEach((b) => {
             b.setAttribute("data-nb-state", mode);
@@ -117,15 +123,22 @@ const resolvedMarkdownUrl =
         applyTheme();
         document.addEventListener("astro:after-swap", applyTheme);
         media.addEventListener("change", () => {
-          if (!readPref()) applyTheme();
+          if (!readPref()) {
+            applyTheme();
+          }
         });
         window.addEventListener("storage", (e) => {
-          if (e.key === KEY) applyTheme();
+          if (e.key === KEY) {
+            applyTheme();
+          }
         });
 
         // The toggle passes a mode only when storage refused it.
         window.__nbApplyTheme = (mode) => {
-          if (mode === "dark" || mode === "light") unsaved = mode;
+          if (mode === "dark" || mode === "light") {
+            unsaved = mode;
+          }
+
           applyTheme();
         };
       })();

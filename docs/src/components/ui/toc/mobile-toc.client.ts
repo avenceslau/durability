@@ -33,7 +33,9 @@ function initMobileToc(root: HTMLElement): () => void {
     '[data-nb-mobile-toc-select]'
   );
 
-  if (!select) return () => {};
+  if (!select) {
+    return () => {};
+  }
 
   // Paired so slug/element indices stay aligned; `inBand` indexes into this.
   type Heading = { slug: string; el: HTMLElement };
@@ -52,7 +54,9 @@ function initMobileToc(root: HTMLElement): () => void {
   let suppressTimer: ReturnType<typeof setTimeout> | undefined;
 
   function setActive(slug: string) {
-    if (select!.value !== slug) select!.value = slug;
+    if (select!.value !== slug) {
+      select!.value = slug;
+    }
   }
 
   // select → page
@@ -93,7 +97,9 @@ function initMobileToc(root: HTMLElement): () => void {
   const inBand = new Set<number>();
 
   function resolve() {
-    if (suppress) return;
+    if (suppress) {
+      return;
+    }
 
     if (inBand.size > 0) {
       // Topmost in-band heading (smallest document-order index).
@@ -123,10 +129,15 @@ function initMobileToc(root: HTMLElement): () => void {
       for (const entry of entries) {
         const i = headings.findIndex((h) => h.el === entry.target);
 
-        if (i === -1) continue;
+        if (i === -1) {
+          continue;
+        }
 
-        if (entry.isIntersecting) inBand.add(i);
-        else inBand.delete(i);
+        if (entry.isIntersecting) {
+          inBand.add(i);
+        } else {
+          inBand.delete(i);
+        }
       }
 
       resolve();
@@ -134,7 +145,10 @@ function initMobileToc(root: HTMLElement): () => void {
     { rootMargin: ROOT_MARGIN, threshold: 0 }
   );
 
-  for (const { el } of headings) observer.observe(el);
+  for (const { el } of headings) {
+    observer.observe(el);
+  }
+
   resolve(); // initial sync before the observer's first async callback
 
   return () => {

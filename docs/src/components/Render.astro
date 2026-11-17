@@ -83,15 +83,24 @@ const { Content } = await render(partial);
 
 /** Levenshtein distance — inlined to keep this component dep-free. */
 function distance(a: string, b: string): number {
-  if (a === b) return 0;
+  if (a === b) {
+    return 0;
+  }
 
-  if (!a.length) return b.length;
+  if (!a.length) {
+    return b.length;
+  }
 
-  if (!b.length) return a.length;
+  if (!b.length) {
+    return a.length;
+  }
+
   const v0 = new Array<number>(b.length + 1);
   const v1 = new Array<number>(b.length + 1);
 
-  for (let i = 0; i <= b.length; i++) v0[i] = i;
+  for (let i = 0; i <= b.length; i++) {
+    v0[i] = i;
+  }
 
   for (let i = 0; i < a.length; i++) {
     v1[0] = i + 1;
@@ -101,7 +110,9 @@ function distance(a: string, b: string): number {
       v1[j + 1] = Math.min(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
     }
 
-    for (let j = 0; j <= b.length; j++) v0[j] = v1[j];
+    for (let j = 0; j <= b.length; j++) {
+      v0[j] = v1[j];
+    }
   }
 
   return v1[b.length];
@@ -114,7 +125,9 @@ function closest(target: string, candidates: string[], maxDist = 3): string | nu
   for (const c of candidates) {
     const d = distance(t, c.toLowerCase());
 
-    if (d <= maxDist && (!best || d < best.dist)) best = { name: c, dist: d };
+    if (d <= maxDist && (!best || d < best.dist)) {
+      best = { name: c, dist: d };
+    }
   }
 
   return best?.name ?? null;

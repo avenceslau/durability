@@ -59,7 +59,10 @@ function initPackageManager(container: HTMLElement): () => void {
           );
           btn.setAttribute('aria-label', copied ? 'Copied' : "Couldn't copy");
 
-          if (handlerInfo.timer) window.clearTimeout(handlerInfo.timer);
+          if (handlerInfo.timer) {
+            window.clearTimeout(handlerInfo.timer);
+          }
+
           handlerInfo.timer = window.setTimeout(() => {
             btn.replaceChildren(cloneIcon(copyTpl));
             btn.setAttribute('aria-label', 'Copy to clipboard');
@@ -76,7 +79,9 @@ function initPackageManager(container: HTMLElement): () => void {
     copyHandlers.forEach(({ btn, handler, timer }) => {
       btn.removeEventListener('click', handler);
 
-      if (timer) window.clearTimeout(timer);
+      if (timer) {
+        window.clearTimeout(timer);
+      }
     });
   };
 }

@@ -10,7 +10,9 @@ const KEY_PREFIX = 'nb-banner-dismissed-';
 function initBanner(banner: HTMLElement): () => void {
   const id = banner.dataset.nbBannerDismiss;
 
-  if (!id) return () => {};
+  if (!id) {
+    return () => {};
+  }
 
   const key = `${KEY_PREFIX}${id}`;
 
@@ -34,7 +36,9 @@ function initBanner(banner: HTMLElement): () => void {
 
   const btn = banner.querySelector<HTMLButtonElement>('[data-nb-banner-close]');
 
-  if (!btn) return () => {};
+  if (!btn) {
+    return () => {};
+  }
 
   function handleClick() {
     const days = Number(banner.dataset.nbBannerDays) || 0;

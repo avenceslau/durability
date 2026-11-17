@@ -39,7 +39,10 @@ function initTabContainer(container: HTMLElement): () => void {
         (p) => p.dataset.nbValue === trigger.dataset.nbValue
       );
 
-      if (!panel) return;
+      if (!panel) {
+        return;
+      }
+
       trigger.id ||= `${id}-tab-${i}`;
       panel.id ||= `${id}-panel-${i}`;
       trigger.setAttribute('aria-controls', panel.id);
@@ -87,13 +90,18 @@ function initTabContainer(container: HTMLElement): () => void {
     // scrollIntoView, which would also scroll the page vertically), which
     // works in both directions; RTL scrollLeft runs negative.
     onActivate: (index) => {
-      if (!tablist) return;
+      if (!tablist) {
+        return;
+      }
 
       const trigger = tablist.querySelectorAll<HTMLElement>(
         '[data-nb-tabs-trigger]'
       )[index];
 
-      if (!trigger) return;
+      if (!trigger) {
+        return;
+      }
+
       const list = tablist.getBoundingClientRect();
       const tab = trigger.getBoundingClientRect();
 
@@ -107,7 +115,10 @@ function initTabContainer(container: HTMLElement): () => void {
 
   // Mark which edges have tabs scrolled out of view, for the fade in TabsList.
   const markOverflow = () => {
-    if (!tablist) return;
+    if (!tablist) {
+      return;
+    }
+
     const max = tablist.scrollWidth - tablist.clientWidth;
     // RTL scrollLeft runs from 0 down to -max, so measure the distance.
     const scrolled = Math.abs(tablist.scrollLeft);
@@ -115,8 +126,11 @@ function initTabContainer(container: HTMLElement): () => void {
     const end = scrolled < max - 1;
     const state = start && end ? 'both' : start ? 'start' : end ? 'end' : null;
 
-    if (state) tablist.dataset.overflow = state;
-    else delete tablist.dataset.overflow;
+    if (state) {
+      tablist.dataset.overflow = state;
+    } else {
+      delete tablist.dataset.overflow;
+    }
   };
 
   const resize = tablist ? new ResizeObserver(markOverflow) : null;
