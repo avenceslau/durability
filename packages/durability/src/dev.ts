@@ -98,8 +98,13 @@ export const traceFunction = <Args extends unknown[], Result>(
   };
 };
 
+type ClassPrototype = { readonly constructor: Function };
+
 /** Wraps every method on a class prototype with {@link traceFunction}. */
-export const traceMethods = (prototype: object, owner: string): void => {
+export const traceMethods = (
+  prototype: ClassPrototype,
+  owner: string
+): void => {
   if (!devMode) {
     return;
   }
@@ -179,10 +184,12 @@ const proxyStorage = <Storage extends object>(
         const forwarded =
           key === 'transaction' && typeof args[0] === 'function'
             ? [
-                (transaction: object) =>
-                  (args[0] as (transaction: object) => unknown)(
-                    proxyStorage(transaction, 'transaction')
-                  ),
+                (transaction: DurableObjectTransaction) =>
+                  (
+                    args[0] as (
+                      transaction: DurableObjectTransaction
+                    ) => unknown
+                  )(proxyStorage(transaction, 'transaction')),
                 ...args.slice(1),
               ]
             : args;

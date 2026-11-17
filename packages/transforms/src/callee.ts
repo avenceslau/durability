@@ -21,6 +21,9 @@ type DOClass<TTarget extends object> = abstract new (
   ...args: never[]
 ) => TTarget;
 
+/** Instance of a transformed class, or a prototype in its chain; callee transforms receive its `env` and `ctx`. */
+type TransformedInstance = Members<'env' | 'ctx'>;
+
 type ConfiguredCalleeTransform = (
   context: RuntimeTransformContext & {
     instance: object;
@@ -44,8 +47,8 @@ const installedTransforms = new WeakMap<object, InstalledTransforms>();
  * the instance's most-derived one again.
  */
 function dispatchWithContext(
-  instance: object,
-  startPrototype: object,
+  instance: TransformedInstance,
+  startPrototype: TransformedInstance,
   method: string,
   args: unknown[],
   context: TransformContext
@@ -87,15 +90,13 @@ function dispatchWithContext(
       return Promise.resolve(original.apply(instance, args));
     }
 
-    const instanceMembers: Members<'env' | 'ctx'> = instance;
-
     return transform({
       instance,
       method,
       args,
       context: currentContext,
-      env: instanceMembers.env,
-      state: instanceMembers.ctx,
+      env: instance.env,
+      state: instance.ctx,
       next: (input) =>
         run(
           index + 1,
@@ -324,7 +325,7 @@ export function applyTransforms<
       installed.originals.set(method, original);
       Object.defineProperty(prototype, method, {
         ...descriptor,
-        value: function (this: object, ...args: unknown[]) {
+        value: function (this: TransformedInstance, ...args: unknown[]) {
           return dispatchWithContext(this, prototype, method, args, {});
         },
       });

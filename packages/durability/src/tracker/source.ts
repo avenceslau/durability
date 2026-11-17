@@ -1,3 +1,6 @@
+import type { AnyDurabilityAlarms } from '../alarms/index.js';
+import type { AnyDurability } from '../operations/index.js';
+
 /** Result types keyed by record name: operation, alarm name, or custom names. */
 export type TrackedResults = Record<string, unknown>;
 
@@ -100,12 +103,15 @@ export type UntypedSource = {
 // experimental contract never appears on their public types.
 const builtInSources = new WeakMap<object, UntypedSource>();
 
+type BuiltInSourceOwner = AnyDurability | AnyDurabilityAlarms;
+
 export const registerTrackedSource = (
-  owner: object,
+  owner: BuiltInSourceOwner,
   source: UntypedSource
 ): void => {
   builtInSources.set(owner, source);
 };
 
-export const trackedSourceOf = (owner: object): UntypedSource | undefined =>
-  builtInSources.get(owner);
+export const trackedSourceOf = (
+  owner: BuiltInSourceOwner | UntypedSource
+): UntypedSource | undefined => builtInSources.get(owner);
