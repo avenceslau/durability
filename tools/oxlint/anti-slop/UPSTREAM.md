@@ -24,3 +24,9 @@ Local deviations:
   the file, and in-file instantiations such as `Members<string>`, are
   still reported, as is `Record` with any key. The check is
   `isFiniteMappedKey` in `shared/dictionary-types.ts`.
+- `rules/no-unknown-returns.ts` skips function types inside the `extends`
+  clause of a conditional type, as in
+  `Handler extends (...args: infer Args) => unknown ? Args : never`. Such a
+  type is a pattern that other types are matched against; no value is ever
+  given it, so it exposes nothing to a caller. Function types in the checked
+  type and in either branch are still reported.

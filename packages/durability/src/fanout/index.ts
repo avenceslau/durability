@@ -1232,11 +1232,11 @@ export class DurabilityFanout<Body = unknown> {
     return [...first, ...retries];
   }
 
-  async #deadline(
-    run: () => Promise<unknown>,
+  #deadline<Result>(
+    run: () => Promise<Result>,
     timeoutMs: number
-  ): Promise<void> {
-    await this.#engine.timer.withTimeout(
+  ): Promise<Result> {
+    return this.#engine.timer.withTimeout(
       Promise.resolve().then(run),
       timeoutMs,
       () => new FanoutTimeoutError(timeoutMs)

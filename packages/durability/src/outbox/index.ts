@@ -625,8 +625,8 @@ export class DurabilityOutbox<Value = unknown> {
     return infrastructureRetryMs;
   }
 
-  async #deadline(run: () => unknown): Promise<void> {
-    await this.#engine.timer.withTimeout(
+  #deadline<Result>(run: () => Result | Promise<Result>): Promise<Result> {
+    return this.#engine.timer.withTimeout(
       Promise.resolve().then(run),
       this.#attemptTimeoutMs,
       () => new OutboxTimeoutError(this.#attemptTimeoutMs)

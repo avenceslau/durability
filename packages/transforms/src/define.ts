@@ -1,5 +1,3 @@
-type AsyncMethod = (...args: never[]) => Promise<unknown>;
-
 /** Members of a stub, namespace, or registration, read by name before their type is checked. */
 export type Members<Name extends string> = { readonly [Key in Name]?: unknown };
 
@@ -38,7 +36,11 @@ export const reservedRpcMethods = new Set<string>([
 
 export type AsyncMethodKey<TTarget extends object> = Exclude<
   {
-    [TKey in keyof TTarget]-?: TTarget[TKey] extends AsyncMethod ? TKey : never;
+    [TKey in keyof TTarget]-?: TTarget[TKey] extends (
+      ...args: never[]
+    ) => Promise<unknown>
+      ? TKey
+      : never;
   }[keyof TTarget] &
     string,
   ReservedRpcMethod
@@ -290,7 +292,12 @@ export type RegisteredTransform<TTransform extends TransformIdentity> = {
  */
 export function registerTransform<TTransform extends TransformIdentity>(
   transform: TTransform & {
-    calleeFactory: (options: CalleeOptions<TTransform>) => unknown;
+    calleeFactory: (
+      options: CalleeOptions<TTransform>
+    ) => CalleeTransformHandler<
+      TransformTargetOf<TTransform>,
+      TransformContextOf<TTransform>
+    >;
   },
   ...options: TransformOptionsArguments<CalleeOptions<TTransform>>
 ): RegisteredTransform<TTransform> {

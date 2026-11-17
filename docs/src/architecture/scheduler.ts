@@ -123,7 +123,7 @@ const execute = sourceExcerpt(
   schedulerFile,
   'execute',
   'Claim, run, and settle one attempt',
-  '  startExecution(spec: ExecutionSpec, eagerPermit?: () => void): Promise<void> {',
+  '  startExecution<Result>(\n    spec: ExecutionSpec<Result>,',
   '    return execution;\n  }'
 );
 

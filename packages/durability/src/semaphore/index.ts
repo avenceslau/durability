@@ -70,7 +70,10 @@ export type SemaphoreSession = {
   request(key: string, message: PermitRequest): Promise<PermitGrant>;
   sync(key: string, message: PermitSync): Promise<PermitSyncResult>;
   setContext(context: TransformContext): {
-    invoke(method: string, args: unknown[]): Promise<unknown>;
+    invoke(
+      method: string,
+      args: unknown[]
+    ): Promise<PermitGrant | PermitSyncResult>;
   };
 };
 

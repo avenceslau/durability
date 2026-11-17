@@ -391,11 +391,11 @@ class DurabilitySocketCore<
     }
   }
 
-  async #validate(
+  async #validate<Output>(
     method: string,
-    schema: StandardSchemaV1,
+    schema: StandardSchemaV1<unknown, Output>,
     input: unknown
-  ): Promise<unknown> {
+  ): Promise<Output> {
     const result = await schema['~standard'].validate(input);
 
     if (result.issues) {

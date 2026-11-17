@@ -171,7 +171,7 @@ export const assertChannel = (helper: string, channel: unknown): string => {
  * executed row because some tables delete it on success; other changes pass
  * nothing and listeners re-read storage.
  */
-export type SettlementListener = (completed?: ExecutionSpec['row']) => void;
+export type SettlementListener = (completed?: ExecutionRow) => void;
 
 export type ActiveExecution = {
   generation: string;
@@ -180,11 +180,13 @@ export type ActiveExecution = {
   controller?: AbortController;
 };
 
+type ExecutionRow = { generation_id: string; created_at: number };
+
 /** Everything that differs between running a durable operation and a named alarm attempt. */
-export type ExecutionSpec = {
+export type ExecutionSpec<Result> = {
   table: DurableTable;
   key: string;
-  row: { generation_id: string; created_at: number };
+  row: ExecutionRow;
   label: string;
   entity: LifecycleEntity;
   active: Map<string, ActiveExecution>;
@@ -194,13 +196,13 @@ export type ExecutionSpec = {
   includeResult?: boolean;
   exhaustedError: () => Error;
   timeoutError: () => Error;
-  invoke: (attempt: number, signal: AbortSignal) => unknown;
+  invoke: (attempt: number, signal: AbortSignal) => Result | Promise<Result>;
   /**
    * Persists a successful attempt and returns its settlement timestamp, or
    * undefined when a newer generation won. May throw to turn the success into
    * a failure.
    */
-  complete: (result: unknown, attempt: number) => number | undefined;
+  complete: (result: Result, attempt: number) => number | undefined;
   /** Kind-specific terminal rule beyond non-retryable errors and exhausted attempts. */
   isTerminal: (error: unknown) => boolean;
 };
@@ -217,8 +219,8 @@ type RetryDecision = {
   nextAttemptAt: number;
 };
 
-const decideRetry = (
-  spec: ExecutionSpec,
+const decideRetry = <Result>(
+  spec: ExecutionSpec<Result>,
   attempt: number,
   error: unknown
 ): RetryDecision => {
@@ -932,11 +934,7 @@ export class Engine {
   }
 
   /** Call only after the change has committed. */
-  notify(
-    table: DurableTable,
-    key: string,
-    completed?: ExecutionSpec['row']
-  ): void {
+  notify(table: DurableTable, key: string, completed?: ExecutionRow): void {
     for (const listener of this.watchers.get(tableOwner(table))?.get(key) ??
       []) {
       listener(completed);
@@ -1172,7 +1170,10 @@ export class Engine {
    * settled: nothing can stop a handler, and one that never settles would
    * otherwise keep its retry from ever starting.
    */
-  startExecution(spec: ExecutionSpec, eagerPermit?: () => void): Promise<void> {
+  startExecution<Result>(
+    spec: ExecutionSpec<Result>,
+    eagerPermit?: () => void
+  ): Promise<void> {
     const { key, row, policy } = spec;
     let settleActive!: () => void;
 
@@ -1299,7 +1300,9 @@ export class Engine {
     return execution;
   }
 
-  private async failExhausted(spec: ExecutionSpec): Promise<void> {
+  private async failExhausted<Result>(
+    spec: ExecutionSpec<Result>
+  ): Promise<void> {
     const { key, row, policy } = spec;
     const exhausted = serializeError(spec.exhaustedError());
 
@@ -1335,8 +1338,8 @@ export class Engine {
     });
   }
 
-  private async settleFailure(
-    spec: ExecutionSpec,
+  private async settleFailure<Result>(
+    spec: ExecutionSpec<Result>,
     attempt: number,
     startedAt: number,
     caught: unknown

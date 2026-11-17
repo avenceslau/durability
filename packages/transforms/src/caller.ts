@@ -1,6 +1,7 @@
 import type { Result as BetterResult } from 'better-result';
 import type {
   CallerOptions,
+  CallerTransformHandler,
   Members,
   RuntimeTransformContext,
   TransformContext,
@@ -9,10 +10,6 @@ import type {
   TransformOptionsArguments,
   TransformTargetOf,
 } from './define.js';
-
-type TransformContextInvoker = {
-  invoke(method: string, args: unknown[]): Promise<unknown>;
-};
 
 // A transform typed for a Durable Object reads `actorId`, so it may only be
 // attached to a stub that carries one. The tuple keeps a union target from
@@ -31,7 +28,9 @@ type RequireSetContext<TTarget, TTransform> =
           setContext(context: infer AcceptedContext): infer ContextTarget;
         }
       ? TransformContextOf<TTransform> extends AcceptedContext
-        ? ContextTarget extends TransformContextInvoker
+        ? ContextTarget extends {
+            invoke(method: string, args: unknown[]): Promise<unknown>;
+          }
           ? unknown
           : { readonly setContextMustReturnTransformTarget: never }
         : { readonly setContextMustAcceptTransformContext: never }
@@ -90,7 +89,12 @@ export type TransformWith<TTarget extends object> = {
       TransformIdentity &
       RequireSetContext<TTarget, TTransform> &
       RequireDurableObjectStub<TTarget, TTransform> & {
-        callerFactory: (options: CallerOptions<TTransform>) => unknown;
+        callerFactory: (
+          options: CallerOptions<TTransform>
+        ) => CallerTransformHandler<
+          TransformTargetOf<TTransform>,
+          TransformContextOf<TTransform>
+        >;
       },
     ...options: TransformOptionsArguments<CallerOptions<TTransform>>
   ): TransformStub<ApplyCallerResult<TTarget, TTransform>>;
@@ -164,11 +168,7 @@ function pipelined(node: PipelineNode) {
       ) {
         const promise = node.resolve();
 
-        const method = Reflect.get(promise, property) as (
-          ...args: unknown[]
-        ) => unknown;
-
-        return method.bind(promise);
+        return promise[property].bind(promise);
       }
 
       if (typeof property === 'symbol') {
