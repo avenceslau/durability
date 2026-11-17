@@ -15,7 +15,6 @@ import {
   libraryDeadLetterPrefix,
   routing,
   type BatchRequest,
-  type DeliveryObject,
   type RouteContext,
   type TestMessage,
 } from './worker';
@@ -28,9 +27,7 @@ declare global {
   }
 }
 
-const namespace = (workerExports as Record<string, unknown>)[
-  'DeliveryObject'
-] as DurableObjectNamespace<DeliveryObject>;
+const namespace = workerExports.DeliveryObject;
 
 const waitFor = async (
   assertion: () => Promise<void>,

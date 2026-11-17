@@ -1,5 +1,6 @@
 import type { ESTree } from "@oxlint/plugins";
 
+import { lexicalTypeParameterNames } from "./lexical-type-parameters.ts";
 import {
 	createTypeAliasEnvironment,
 	hasVisibleTypeBinding,
@@ -246,7 +247,14 @@ function dictionaryValueTypes(
 	}
 
 	if (unwrapped.type === "TSMappedType") {
-		return unwrapped.typeAnnotation === null
+		return unwrapped.typeAnnotation === null ||
+			isFiniteMappedKey(
+				unwrapped.nameType ?? unwrapped.constraint,
+				unwrapped,
+				environment,
+				substitutions,
+				new Set(),
+			)
 			? []
 			: [{ type: unwrapped.typeAnnotation, substitutions }];
 	}
@@ -291,6 +299,52 @@ function dictionaryValueTypes(
 	const nextResolving = new Set(resolvingAliases);
 	nextResolving.add(name);
 	return dictionaryValueTypes(alias.typeAnnotation, environment, nextSubstitutions, nextResolving);
+}
+
+/**
+ * A mapped type over literal keys, or over a type parameter not instantiated in
+ * this file, is an object with named members rather than a dictionary. A type
+ * parameter instantiated with a broad key here resolves through `substitutions`
+ * and stays a dictionary; keys that cannot be resolved locally also stay one.
+ */
+function isFiniteMappedKey(
+	type: ESTree.TSType,
+	mapped: ESTree.TSMappedType,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): boolean {
+	const unwrapped = unwrapTransparentType(type);
+	if (unwrapped.type === "TSLiteralType") return true;
+	if (unwrapped.type === "TSUnionType") {
+		return unwrapped.types.every((member) =>
+			isFiniteMappedKey(member, mapped, environment, substitutions, resolvingAliases),
+		);
+	}
+	if (unwrapped.type !== "TSTypeReference") return false;
+	const name = typeReferenceName(unwrapped);
+	if (name === null || resolvingAliases.has(name)) return false;
+	const substitution = substitutions.get(name);
+	if (substitution !== undefined) {
+		return (
+			!isUnappliedReferenceTo(substitution, name) &&
+			isFiniteMappedKey(substitution, mapped, environment, substitutions, resolvingAliases)
+		);
+	}
+	if (lexicalTypeParameterNames(mapped, environment.typeAliases.visitorKeys).has(name)) {
+		return true;
+	}
+	const alias = visibleTypeAlias(name, unwrapped, environment.typeAliases);
+	if (alias === null || (alias.typeParameters?.params.length ?? 0) > 0) return false;
+	const nextResolving = new Set(resolvingAliases);
+	nextResolving.add(name);
+	return isFiniteMappedKey(
+		alias.typeAnnotation,
+		mapped,
+		environment,
+		substitutions,
+		nextResolving,
+	);
 }
 
 export function classifyUnsafeDictionaryValue(

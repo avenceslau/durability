@@ -15,10 +15,16 @@ import {
   SocketProtocolError,
   SocketRemoteError,
   SocketTimeoutError,
+  type SocketCallLog,
   type SocketStatus,
 } from './client';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
-import type { SocketServerFrame, SocketShape, socketShape } from './protocol';
+import type {
+  SocketClientFrame,
+  SocketServerFrame,
+  SocketShape,
+  socketShape,
+} from './protocol';
 
 /** A frame without `v`, which `receive` adds. */
 type Unversioned<Frame> = Frame extends unknown ? Omit<Frame, 'v'> : never;
@@ -96,7 +102,7 @@ class FakeSocket extends EventTarget {
     );
   }
 
-  frames(): Record<string, unknown>[] {
+  frames(): SocketClientFrame[] {
     return this.sent.map((text) => JSON.parse(text));
   }
 }
@@ -432,7 +438,7 @@ describe('DurabilitySocketClient', () => {
 
   it('applies transforms in order and lets them replace the input', async () => {
     const order: string[] = [];
-    const logs: Record<string, unknown>[] = [];
+    const logs: SocketCallLog[] = [];
 
     const conn = createClient()
       .with(async ({ input, next }) => {

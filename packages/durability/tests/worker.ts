@@ -22,6 +22,29 @@ export { LiveScheduleObject, ScheduleObject } from './schedule/worker';
 
 export { LiveTimersObject } from './live-timers/worker';
 
+declare global {
+  namespace Cloudflare {
+    interface GlobalProps {
+      mainModule: typeof import('./worker');
+      durableNamespaces:
+        | 'ChannelsTestObject'
+        | 'DeliveryObject'
+        | 'JobShard'
+        | 'LimitObject'
+        | 'LiveScheduleObject'
+        | 'LiveTimersObject'
+        | 'LogTestObject'
+        | 'NamedAlarmTestObject'
+        | 'OutboxObject'
+        | 'ScheduleObject'
+        | 'SocketTestObject'
+        | 'TopologyCoordinator'
+        | 'TopologyShard'
+        | 'TrackerTestObject';
+    }
+  }
+}
+
 export default {
   fetch(request: Request, env: Parameters<typeof socketWorker.fetch>[1]) {
     if (new URL(request.url).pathname.startsWith('/socket/')) {

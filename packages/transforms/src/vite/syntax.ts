@@ -33,8 +33,8 @@ export type SyntaxNode = {
   source?: unknown;
   start?: number | null;
   superClass?: unknown;
+  typeAnnotation?: unknown;
   value?: unknown;
-  [key: string]: unknown;
 };
 
 export const memberExpressionTypes = new Set([

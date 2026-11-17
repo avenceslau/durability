@@ -15,3 +15,12 @@ Local deviations:
 - `rules/no-reflect-apply.ts` likewise allows `Reflect.apply` directly inside
   the `apply` trap of a `new Proxy(target, { apply })` handler literal. Both
   rules share the check in `shared/proxy-trap.ts`.
+- `rules/no-unsafe-dictionary-type.ts` no longer treats a mapped type over a
+  finite key set as a dictionary: literal keys, unions of them, local aliases
+  of them, or a type parameter not instantiated in the file, as in
+  `{ readonly [Key in Name]?: unknown }`. Mapped types over `string`,
+  `number`, `symbol`, `PropertyKey`, template literals, `keyof`, keys
+  remapped with `as` to anything but literals, keys that cannot be resolved in
+  the file, and in-file instantiations such as `Members<string>`, are
+  still reported, as is `Record` with any key. The check is
+  `isFiniteMappedKey` in `shared/dictionary-types.ts`.

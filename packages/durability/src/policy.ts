@@ -105,10 +105,10 @@ export type PolicyResolver<Method> = (
   name: string
 ) => AttemptPolicy & { method: Method | undefined };
 
-export const createPolicyResolver = <Method extends MethodPolicy>(
+export const createPolicyResolver = <Input, Method extends MethodPolicy>(
   options: ExecutionPolicyOptions,
-  methods: Record<string, unknown>,
-  methodSchema: v.GenericSchema<unknown, Method>
+  methods: Partial<Record<string, NoInfer<Input>>>,
+  methodSchema: v.GenericSchema<Input, Method>
 ): PolicyResolver<Method> => {
   const attemptTimeoutMs = options.attemptTimeoutMs ?? 5 * 60_000;
   const retries = v.parse(retryOptionsSchema, options.retries ?? {});

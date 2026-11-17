@@ -1,3 +1,5 @@
+import type { Json } from './serialization.js';
+
 /**
  * Marks a handler failure as terminal so it is persisted without another retry.
  *
@@ -331,9 +333,12 @@ export const isNonRetryable = (error: unknown): boolean => {
   }
 };
 
+/** Fields logged with a failure to identify the work that failed. */
+type FailureDetails = { readonly [field: string]: Json };
+
 export const reportFailure = (
   event: string,
-  details: Record<string, unknown>,
+  details: FailureDetails,
   error: unknown
 ): void => {
   try {

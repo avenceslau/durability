@@ -519,7 +519,9 @@ describe('Durability', () => {
     const durability = new Durability({
       context: contextFor(new FakeStorage()),
       handlers: {
-        send: async ({ payload }: DurableCall<Record<string, unknown>>) => {
+        send: async ({
+          payload,
+        }: DurableCall<{ meta: { a: number; b: number }; token?: string }>) => {
           calls.push(payload);
 
           return 'ok';

@@ -2,25 +2,10 @@ import { exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject } from 'cloudflare:test';
 import { scheduler } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import type { LogTestObject } from './worker';
-
-const namespaceFor = (name: string) => {
-  const candidate = (workerExports as Record<string, unknown>)[name];
-
-  if (
-    (typeof candidate !== 'object' && typeof candidate !== 'function') ||
-    candidate === null ||
-    !('getByName' in candidate)
-  ) {
-    throw new Error(`Loopback namespace "${name}" is unavailable`);
-  }
-
-  return candidate as DurableObjectNamespace<LogTestObject>;
-};
 
 describe('durable log', () => {
   const objectFor = (name: string) =>
-    namespaceFor('LogTestObject').getByName(name);
+    workerExports.LogTestObject.getByName(name);
 
   it('retains records across eviction so a consumer replays history', async () => {
     const name = crypto.randomUUID();

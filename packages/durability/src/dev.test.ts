@@ -47,9 +47,9 @@ const runOperation = async (dev: boolean | undefined) => {
     });
   });
 
-  return debug.mock.calls.map(
-    ([entry]) =>
-      entry as { event: string; seq: number } & Record<string, unknown>
+  return v.parse(
+    v.array(traceEntrySchema),
+    debug.mock.calls.map(([entry]) => entry)
   );
 };
 

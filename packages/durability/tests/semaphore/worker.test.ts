@@ -2,15 +2,10 @@ import { exports as workerExports } from 'cloudflare:workers';
 import { timeout } from '@durability/transforms';
 import { describe, expect, it } from 'vitest';
 import type { PermitGrant } from '../../src/semaphore';
-import { limits, type JobShard, type LimitObject } from './worker';
+import { limits } from './worker';
 
-const namespace = (workerExports as Record<string, unknown>)[
-  'LimitObject'
-] as DurableObjectNamespace<LimitObject>;
-
-const shards = (workerExports as Record<string, unknown>)[
-  'JobShard'
-] as DurableObjectNamespace<JobShard>;
+const namespace = workerExports.LimitObject;
+const shards = workerExports.JobShard;
 
 describe('semaphore in workerd', () => {
   it('routes requests to the holder by key through caller transforms', async () => {

@@ -17,7 +17,7 @@ interface Props {
   /** Partial ID — path relative to src/content/partials/ without extension. */
   file: string;
   /** Parameters passed to the partial as props. */
-  params?: Record<string, unknown>;
+  params?: Record<string, string>;
 }
 
 const { file, params } = Astro.props;

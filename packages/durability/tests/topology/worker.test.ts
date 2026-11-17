@@ -1,12 +1,7 @@
 import { env, exports as workerExports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { DurabilityTopology } from '../../src/experimental';
-import {
-  secondaryKey,
-  topologyKey,
-  type TopologyCoordinator,
-  type TopologyShard,
-} from './worker';
+import { secondaryKey, topologyKey } from './worker';
 
 declare global {
   namespace Cloudflare {
@@ -16,11 +11,8 @@ declare global {
   }
 }
 
-const namespaceFor = <T extends Rpc.DurableObjectBranded>(name: string) =>
-  (workerExports as Record<string, unknown>)[name] as DurableObjectNamespace<T>;
-
-const coordinators = namespaceFor<TopologyCoordinator>('TopologyCoordinator');
-const shards = namespaceFor<TopologyShard>('TopologyShard');
+const coordinators = workerExports.TopologyCoordinator;
+const shards = workerExports.TopologyShard;
 
 const waitFor = async (
   assertion: () => Promise<void>,
