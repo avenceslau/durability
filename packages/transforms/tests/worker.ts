@@ -43,6 +43,7 @@ export class ContextDO extends DurableObject {
   async abortOnce(key: string): Promise<string> {
     if (!abortedKeys.has(key)) {
       abortedKeys.add(key);
+      await this.ctx.storage.sync();
       this.ctx.abort('broken');
     }
 
@@ -50,6 +51,7 @@ export class ContextDO extends DurableObject {
   }
 
   async abort(reason: string): Promise<void> {
+    await this.ctx.storage.sync();
     this.ctx.abort(reason);
   }
 

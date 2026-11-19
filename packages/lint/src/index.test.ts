@@ -606,3 +606,112 @@ describe('durability-migrations-only', () => {
     expect(result).toEqual({ status: 0, output: '' });
   });
 });
+
+describe('abort-after-sync', () => {
+  it.each([
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.put('key', 'value');
+          await this.ctx.storage.sync();
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      async function reset(state: DurableObjectState) {
+        state.storage.sql.exec('DELETE FROM jobs');
+        await state.storage.sync();
+        state.abort();
+      }
+    `,
+    `
+      class Example {
+        async alarm() {
+          switch (await this.ctx.storage.get('mode')) {
+            case 'reset':
+              await this.ctx.storage.sync();
+              this.ctx.abort('reset');
+          }
+        }
+      }
+    `,
+    `
+      const controller = new AbortController();
+      controller.abort();
+    `,
+  ])('accepts an abort directly after awaiting storage sync', (source) => {
+    const result = lint(source, 'abort-after-sync');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        reset() {
+          this.ctx.storage.put('key', 'value');
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.put('key', 'value');
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          void this.ctx.storage.sync();
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.sync();
+          this.ctx.storage.put('key', 'value');
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset(other: DurableObjectState) {
+          await other.storage.sync();
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.sync();
+          queueMicrotask(() => this.ctx.abort('reset'));
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.sync();
+          if (this.broken) {
+            this.ctx.abort('reset');
+          }
+        }
+      }
+    `,
+  ])('rejects an abort that can discard pending writes', (source) => {
+    const result = lint(source, 'abort-after-sync');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'ctx.abort() discards storage writes that have not been flushed'
+    );
+  });
+});

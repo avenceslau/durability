@@ -16,12 +16,26 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
 {
   "jsPlugins": [{ "name": "durability", "specifier": "@durability/lint" }],
   "rules": {
+    "durability/abort-after-sync": "error",
     "durability/alarm-runner-only": "error",
     "durability/durability-migrations-only": "error",
     "durability/transform-next-once": "error"
   }
 }
 ```
+
+## `abort-after-sync`
+
+`ctx.abort()` resets the Durable Object before its pending storage writes are flushed, and those writes are discarded. That includes `put()`, `delete()`, `setAlarm()`, `deleteAlarm()`, synchronous `kv` and SQL writes, `transactionSync()`, and `put()` calls that were awaited, because awaiting a write does not wait for it to be flushed. Awaiting a storage read or yielding a microtask does not flush writes either. The statement directly before every `abort()` on a `ctx` or `state` receiver must await that object's `storage.sync()`:
+
+```ts
+async reset() {
+  await this.ctx.storage.sync();
+  this.ctx.abort('reset');
+}
+```
+
+Writes made after `sync()` resolves are not covered, so anything between the two statements, an abort inside a callback such as `queueMicrotask(() => this.ctx.abort())`, and an abort in a branch after the `sync()` are rejected. Abort calls on other receivers, such as `AbortController`, are ignored.
 
 ## `alarm-runner-only`
 

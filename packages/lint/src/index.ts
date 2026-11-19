@@ -8,6 +8,8 @@ type AstNode = {
   arguments?: AstNode[];
   body?: AstNode | AstNode[];
   callee?: AstNode;
+  computed?: boolean;
+  consequent?: AstNode[];
   expression?: AstNode;
   expressions?: AstNode[];
   id?: AstNode;
@@ -53,6 +55,7 @@ type RuleContext = {
   report: (input: {
     node: AstNode;
     messageId:
+      | 'abortAfterSync'
       | 'delegateOnly'
       | 'missingAlarm'
       | 'physicalAlarm'
@@ -902,9 +905,112 @@ const durabilityMigrationsRule = {
   },
 };
 
+const durableObjectStateNames = new Set(['ctx', 'state']);
+
+/**
+ * `this.ctx` or `state` as a dotted path, so the receivers of `sync()` and
+ * `abort()` can be compared. Computed and call-based receivers have no path.
+ */
+const receiverPath = (node: AstNode | undefined): string | undefined => {
+  if (node?.type === 'ThisExpression') {
+    return 'this';
+  }
+
+  if (node?.type === 'Identifier') {
+    return node.name;
+  }
+
+  if (node?.type !== 'MemberExpression' || node.computed) {
+    return undefined;
+  }
+
+  const object = receiverPath(node.object);
+  const property = propertyName(node.property);
+
+  return object === undefined || property === undefined
+    ? undefined
+    : `${object}.${property}`;
+};
+
+const isStorageSyncAwait = (statement: AstNode | undefined, state: string) => {
+  const awaited =
+    statement?.type === 'ExpressionStatement' &&
+    statement.expression?.type === 'AwaitExpression'
+      ? statement.expression.argument
+      : undefined;
+
+  if (
+    awaited?.type !== 'CallExpression' ||
+    awaited.callee?.type !== 'MemberExpression' ||
+    propertyName(awaited.callee.property) !== 'sync'
+  ) {
+    return false;
+  }
+
+  return receiverPath(awaited.callee.object) === `${state}.storage`;
+};
+
+const statementList = (node: AstNode | undefined): AstNode[] => {
+  if (node?.type === 'SwitchCase') {
+    return node.consequent ?? [];
+  }
+
+  return Array.isArray(node?.body) ? node.body : [];
+};
+
+const abortAfterSyncRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      abortAfterSync:
+        'ctx.abort() discards storage writes that have not been flushed, including awaited put() calls; the statement directly before it must be await ctx.storage.sync().',
+    },
+  },
+  create(context: RuleContext) {
+    return {
+      CallExpression(node: AstNode) {
+        if (
+          node.callee?.type !== 'MemberExpression' ||
+          propertyName(node.callee.property) !== 'abort'
+        ) {
+          return;
+        }
+
+        const receiver = node.callee.object;
+
+        const stateName =
+          receiver?.type === 'MemberExpression'
+            ? propertyName(receiver.property)
+            : receiver?.name;
+
+        const state = receiverPath(receiver);
+
+        if (!state || !durableObjectStateNames.has(stateName ?? '')) {
+          return;
+        }
+
+        const statement = node.parent;
+        const statements = statementList(statement?.parent);
+        const index = statement ? statements.indexOf(statement) : -1;
+
+        const synced =
+          statement?.type === 'ExpressionStatement' &&
+          index > 0 &&
+          isStorageSyncAwait(statements[index - 1], state);
+
+        if (!synced) {
+          context.report({ node, messageId: 'abortAfterSync' });
+        }
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: 'durability' },
   rules: {
+    'abort-after-sync': abortAfterSyncRule,
     'alarm-runner-only': alarmRunnerRule,
     'durability-migrations-only': durabilityMigrationsRule,
     'transform-next-once': transformNextOnceRule,

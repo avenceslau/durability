@@ -26,6 +26,10 @@
     {
       "name": "anti-slop",
       "specifier": "./tools/oxlint/anti-slop/index.ts"
+    },
+    {
+      "name": "durability",
+      "specifier": "./packages/lint/src/index.ts"
     }
   ],
   "rules": {
@@ -58,6 +62,7 @@
     "anti-slop/no-unsafe-dictionary-type": "warn",
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-readable-spacing": "error",
-    "anti-slop/require-safety-comment-for-type-assertion": "error"
+    "anti-slop/require-safety-comment-for-type-assertion": "error",
+    "durability/abort-after-sync": "error"
   }
 }
