@@ -606,3 +606,386 @@ describe('durability-migrations-only', () => {
     expect(result).toEqual({ status: 0, output: '' });
   });
 });
+
+describe('abort-after-sync', () => {
+  it.each([
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.put('key', 'value');
+          await this.ctx.storage.sync();
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      async function reset(state: DurableObjectState) {
+        state.storage.sql.exec('DELETE FROM jobs');
+        await state.storage.sync();
+        state.abort();
+      }
+    `,
+    `
+      class Example {
+        async alarm() {
+          switch (await this.ctx.storage.get('mode')) {
+            case 'reset':
+              await this.ctx.storage.sync();
+              this.ctx.abort('reset');
+          }
+        }
+      }
+    `,
+    `
+      const controller = new AbortController();
+      controller.abort();
+    `,
+  ])('accepts an abort directly after awaiting storage sync', (source) => {
+    const result = lint(source, 'abort-after-sync');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        reset() {
+          this.ctx.storage.put('key', 'value');
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.put('key', 'value');
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          void this.ctx.storage.sync();
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.sync();
+          this.ctx.storage.put('key', 'value');
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset(other: DurableObjectState) {
+          await other.storage.sync();
+          this.ctx.abort('reset');
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.sync();
+          queueMicrotask(() => this.ctx.abort('reset'));
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.sync();
+          if (this.broken) {
+            this.ctx.abort('reset');
+          }
+        }
+      }
+    `,
+  ])('rejects an abort that can discard pending writes', (source) => {
+    const result = lint(source, 'abort-after-sync');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'ctx.abort() discards storage writes that have not been flushed'
+    );
+  });
+});
+
+describe('transaction-sync-callback', () => {
+  it('accepts a synchronous callback', () => {
+    const result = lint(
+      `
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec('DELETE FROM jobs');
+        });
+      `,
+      'transaction-sync-callback'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      this.ctx.storage.transactionSync(async () => {
+        this.ctx.storage.sql.exec('DELETE FROM jobs');
+        await flush();
+      });
+    `,
+    `
+      storage.transactionSync(async function () {
+        storage.sql.exec('DELETE FROM jobs');
+      });
+    `,
+  ])('rejects an async callback', (source) => {
+    const result = lint(source, 'transaction-sync-callback');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'transactionSync() commits when its callback returns'
+    );
+  });
+});
+
+describe('no-deferred-storage-writes', () => {
+  it.each([
+    `
+      class Example {
+        submit(job: Job) {
+          void this.ctx.storage.put('job', job);
+          return 'accepted';
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          this.ctx.waitUntil(this.ctx.storage.put('job', job));
+          this.ctx.waitUntil(
+            (async () => {
+              await this.ctx.storage.put('job', job);
+            })()
+          );
+        }
+      }
+    `,
+    `
+      class Example {
+        async submit(job: Job) {
+          await (async () => {
+            const result = await render(job);
+            await this.ctx.storage.put('result', result);
+          })();
+          await render(job).then((result) => this.ctx.storage.put('result', result));
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          setTimeout(() => this.ctx.storage.sql.exec('SELECT * FROM jobs'), 10);
+          setTimeout(() => cache.put('job', job), 10);
+        }
+      }
+    `,
+  ])('accepts writes issued before the response', (source) => {
+    const result = lint(source, 'no-deferred-storage-writes');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        submit(job: Job) {
+          this.ctx.waitUntil(
+            (async () => {
+              const result = await this.env.RENDERER.render(job);
+              await this.ctx.storage.put('result', result);
+            })()
+          );
+          return 'accepted';
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          void (async () => {
+            await render(job);
+            this.ctx.storage.sql.exec("UPDATE jobs SET state = 'done'");
+          })();
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          (async () => {
+            for (const item of await render(job)) {
+              this.ctx.storage.kv.put(item.id, item);
+            }
+          })();
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          setTimeout(() => void this.ctx.storage.put('job', job), 1_000);
+        }
+      }
+    `,
+    `
+      function submit(storage: DurableObjectStorage, job: Job) {
+        setInterval(async () => {
+          await storage.setAlarm(Date.now());
+        }, 1_000);
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          this.ctx.waitUntil(
+            render(job).then((result) => this.ctx.storage.put('result', result))
+          );
+          void render(job)
+            .catch(() => undefined)
+            .finally(() => this.ctx.storage.delete('pending'));
+        }
+      }
+    `,
+  ])('rejects writes that start after the request can respond', (source) => {
+    const result = lint(source, 'no-deferred-storage-writes');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'This storage write starts after the request can respond'
+    );
+  });
+});
+
+describe('no-alarm-changes-in-alarm-handler', () => {
+  it.each([
+    `
+      class Example {
+        async alarm() {
+          await this.durability.alarms.set('next', Date.now() + 1_000);
+        }
+
+        async start() {
+          await this.ctx.storage.setAlarm(Date.now() + 1_000);
+        }
+      }
+    `,
+    `
+      class Example {
+        static alarm(storage: DurableObjectStorage) {
+          return storage.setAlarm(Date.now());
+        }
+      }
+    `,
+  ])('accepts alarm changes outside the alarm handler', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-alarm-handler');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        async alarm() {
+          await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        }
+      }
+    `,
+    `
+      class Example {
+        async alarm() {
+          await this.ctx.storage.transaction(async (txn) => {
+            await txn.deleteAlarm();
+          });
+        }
+      }
+    `,
+    `
+      class Example {
+        alarm = async () => {
+          const { storage } = this.ctx;
+          await storage.setAlarm(Date.now() + 60_000);
+        };
+      }
+    `,
+  ])('rejects alarm changes inside the alarm handler', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-alarm-handler');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'Calling setAlarm() or deleteAlarm() inside alarm() replaces the retry'
+    );
+  });
+});
+
+describe('no-delete-all-in-transaction', () => {
+  it('accepts deleteAll() outside a transaction', () => {
+    const result = lint(
+      `
+        class Example {
+          async reset() {
+            await this.ctx.storage.deleteAll();
+            await this.ctx.storage.transaction(async (txn) => {
+              await txn.put('state', 'empty');
+            });
+          }
+        }
+      `,
+      'no-delete-all-in-transaction'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.transaction(async (txn) => {
+            await txn.deleteAll();
+            await txn.put('state', 'empty');
+          });
+        }
+      }
+    `,
+    `
+      class Example {
+        reset() {
+          this.ctx.storage.transactionSync(() => {
+            void this.ctx.storage.deleteAll();
+            this.ctx.storage.sql.exec('CREATE TABLE jobs (id TEXT)');
+          });
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset(keys: string[]) {
+          await this.ctx.storage.transaction(async () => {
+            await Promise.all(keys.map(() => this.ctx.storage.deleteAll()));
+          });
+        }
+      }
+    `,
+  ])('rejects deleteAll() inside a transaction', (source) => {
+    const result = lint(source, 'no-delete-all-in-transaction');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'deleteAll() cannot run inside a transaction'
+    );
+  });
+});

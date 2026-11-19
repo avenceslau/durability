@@ -281,7 +281,8 @@ export class ScheduleObject extends DurableObject {
     return this.schedule.get()?.nextAt;
   }
 
-  abort(): void {
+  async abort(): Promise<void> {
+    await this.ctx.storage.sync();
     this.ctx.abort('reset');
   }
 

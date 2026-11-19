@@ -88,7 +88,8 @@ export class LiveTimersObject extends DurableObject {
     return this.ctx.storage.getAlarm();
   }
 
-  abort(): void {
+  async abort(): Promise<void> {
+    await this.ctx.storage.sync();
     this.ctx.abort('reset');
   }
 

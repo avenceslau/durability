@@ -16,12 +16,30 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
 {
   "jsPlugins": [{ "name": "durability", "specifier": "@durability/lint" }],
   "rules": {
+    "durability/abort-after-sync": "error",
     "durability/alarm-runner-only": "error",
     "durability/durability-migrations-only": "error",
+    "durability/no-alarm-changes-in-alarm-handler": "error",
+    "durability/no-delete-all-in-transaction": "error",
+    "durability/no-deferred-storage-writes": "error",
+    "durability/transaction-sync-callback": "error",
     "durability/transform-next-once": "error"
   }
 }
 ```
+
+## `abort-after-sync`
+
+`ctx.abort()` resets the Durable Object before its pending storage writes are flushed, and those writes are discarded. That includes `put()`, `delete()`, `setAlarm()`, `deleteAlarm()`, synchronous `kv` and SQL writes, `transactionSync()`, and `put()` calls that were awaited, because awaiting a write does not wait for it to be flushed. Awaiting a storage read or yielding a microtask does not flush writes either. The statement directly before every `abort()` on a `ctx` or `state` receiver must await that object's `storage.sync()`:
+
+```ts
+async reset() {
+  await this.ctx.storage.sync();
+  this.ctx.abort('reset');
+}
+```
+
+Writes made after `sync()` resolves are not covered, so anything between the two statements, an abort inside a callback such as `queueMicrotask(() => this.ctx.abort())`, and an abort in a branch after the `sync()` are rejected. Abort calls on other receivers, such as `AbortController`, are ignored.
 
 ## `alarm-runner-only`
 
@@ -38,6 +56,64 @@ class ImageJobs extends DurableObject<Env> {
 ```
 
 When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead. Helpers imported from `durability` under another name (`import { Durability as Jobs }`) or through a namespace import (`new durability.Durability(...)`) are recognized too.
+
+## `no-alarm-changes-in-alarm-handler`
+
+A failing `alarm()` is retried with backoff. Calling `setAlarm()` or `deleteAlarm()` inside the handler replaces that retry: an error thrown afterwards is not retried before the new alarm time, an earlier alarm reruns the handler as a fresh alarm with no backoff and no retry limit, and after `deleteAlarm()` the failed run never happens again. Every `setAlarm()` and `deleteAlarm()` call inside an `alarm` method or class field is rejected, including calls on a transaction handle. Schedule follow-up work through durability instead:
+
+```ts
+class Reports extends DurableObject<Env> {
+  private readonly durability = new Durability({ context: this.ctx, handlers });
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.durability.alarm(info);
+  }
+}
+```
+
+The rule checks calls written inside the handler; a helper method called from it is not followed.
+
+## `no-delete-all-in-transaction`
+
+`deleteAll()` cannot be part of a transaction. Inside `transaction()`, through `ctx.storage` or the transaction handle, it rejects with `Cannot call deleteAll() within a transaction`. Inside `transactionSync()` it runs immediately, outside the transaction: the call fails with an internal error, but the data, the alarm and the SQL tables stay deleted even when the callback throws. The rule rejects `deleteAll()` anywhere inside a `transaction()` or `transactionSync()` callback. Call it before or after the transaction:
+
+```ts
+await this.ctx.storage.deleteAll();
+await this.ctx.storage.transaction(async (txn) => {
+  await txn.put('state', 'empty');
+});
+```
+
+Writing after `deleteAll()` outside a transaction works. SQLite-backed objects lose their tables, so recreate the schema before inserting again.
+
+## `no-deferred-storage-writes`
+
+The output gate holds a response until the storage writes issued before it are stored. A write that starts later, in work the request does not await, is not covered: the caller is told the request succeeded, and the write is lost if the object resets first, for example during a deploy or an eviction. The rule rejects storage writes (`put()`, `delete()`, `deleteAll()`, `setAlarm()`, `deleteAlarm()`, `transaction()`, `transactionSync()`, `kv.put()`, `kv.delete()` and `sql.exec()` other than a static `SELECT`) in:
+
+- `setTimeout()` and `setInterval()` callbacks;
+- `.then()`, `.catch()` and `.finally()` callbacks on a promise that is discarded with `void`, left as a statement, or passed to `waitUntil()`;
+- an async function invoked in place and discarded the same way, when the write comes after any `await` in it.
+
+```ts
+this.ctx.waitUntil(
+  (async () => {
+    const result = await this.env.RENDERER.render(job);
+    await this.ctx.storage.put('result', result); // rejected
+  })()
+);
+```
+
+A write issued before the request returns is held by the output gate even when it is not awaited, so `void this.ctx.storage.put('job', job)` and `this.ctx.waitUntil(this.ctx.storage.put('job', job))` are accepted. Await the work, or store what is needed before responding and finish the work from an alarm. Best-effort writes that may be lost can be exempted with an `oxlint-disable-next-line` comment. Storage is recognised by a receiver named `storage`, and writes inside a separately declared function or method that is called without being awaited are not followed.
+
+## `transaction-sync-callback`
+
+`transactionSync()` commits when its callback returns. An async callback returns at its first `await`: the statements before it are committed, the rest run outside the transaction, and a later error rolls nothing back. The rule rejects an `async` function passed to `transactionSync()`.
+
+```ts
+this.ctx.storage.transactionSync(() => {
+  this.ctx.storage.sql.exec('UPDATE jobs SET state = ?', 'done');
+});
+```
 
 ## `transform-next-once`
 
