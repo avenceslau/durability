@@ -930,3 +930,62 @@ describe('no-alarm-changes-in-alarm-handler', () => {
     );
   });
 });
+
+describe('no-delete-all-in-transaction', () => {
+  it('accepts deleteAll() outside a transaction', () => {
+    const result = lint(
+      `
+        class Example {
+          async reset() {
+            await this.ctx.storage.deleteAll();
+            await this.ctx.storage.transaction(async (txn) => {
+              await txn.put('state', 'empty');
+            });
+          }
+        }
+      `,
+      'no-delete-all-in-transaction'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        async reset() {
+          await this.ctx.storage.transaction(async (txn) => {
+            await txn.deleteAll();
+            await txn.put('state', 'empty');
+          });
+        }
+      }
+    `,
+    `
+      class Example {
+        reset() {
+          this.ctx.storage.transactionSync(() => {
+            void this.ctx.storage.deleteAll();
+            this.ctx.storage.sql.exec('CREATE TABLE jobs (id TEXT)');
+          });
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset(keys: string[]) {
+          await this.ctx.storage.transaction(async () => {
+            await Promise.all(keys.map(() => this.ctx.storage.deleteAll()));
+          });
+        }
+      }
+    `,
+  ])('rejects deleteAll() inside a transaction', (source) => {
+    const result = lint(source, 'no-delete-all-in-transaction');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'deleteAll() cannot run inside a transaction'
+    );
+  });
+});

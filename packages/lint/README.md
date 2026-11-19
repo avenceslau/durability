@@ -20,6 +20,7 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
     "durability/alarm-runner-only": "error",
     "durability/durability-migrations-only": "error",
     "durability/no-alarm-changes-in-alarm-handler": "error",
+    "durability/no-delete-all-in-transaction": "error",
     "durability/no-deferred-storage-writes": "error",
     "durability/transaction-sync-callback": "error",
     "durability/transform-next-once": "error"
@@ -71,6 +72,19 @@ class Reports extends DurableObject<Env> {
 ```
 
 The rule checks calls written inside the handler; a helper method called from it is not followed.
+
+## `no-delete-all-in-transaction`
+
+`deleteAll()` cannot be part of a transaction. Inside `transaction()`, through `ctx.storage` or the transaction handle, it rejects with `Cannot call deleteAll() within a transaction`. Inside `transactionSync()` it runs immediately, outside the transaction: the call fails with an internal error, but the data, the alarm and the SQL tables stay deleted even when the callback throws. The rule rejects `deleteAll()` anywhere inside a `transaction()` or `transactionSync()` callback. Call it before or after the transaction:
+
+```ts
+await this.ctx.storage.deleteAll();
+await this.ctx.storage.transaction(async (txn) => {
+  await txn.put('state', 'empty');
+});
+```
+
+Writing after `deleteAll()` outside a transaction works. SQLite-backed objects lose their tables, so recreate the schema before inserting again.
 
 ## `no-deferred-storage-writes`
 

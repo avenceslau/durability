@@ -65,6 +65,7 @@
     "anti-slop/require-safety-comment-for-type-assertion": "error",
     "durability/abort-after-sync": "error",
     "durability/no-alarm-changes-in-alarm-handler": "error",
+    "durability/no-delete-all-in-transaction": "error",
     "durability/no-deferred-storage-writes": "error",
     "durability/transaction-sync-callback": "error"
   }

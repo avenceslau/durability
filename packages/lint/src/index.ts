@@ -62,6 +62,7 @@ type RuleContext = {
       | 'asyncTransactionSync'
       | 'deferredWrite'
       | 'delegateOnly'
+      | 'deleteAllInTransaction'
       | 'missingAlarm'
       | 'physicalAlarm'
       | 'nextOnce'
@@ -1311,6 +1312,51 @@ const alarmHandlerRule = {
   },
 };
 
+const transactionMethods = new Set(['transaction', 'transactionSync']);
+
+const deleteAllInTransactionRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      deleteAllInTransaction:
+        'deleteAll() cannot run inside a transaction: transaction() rejects it, and transactionSync() applies it immediately outside the transaction, so a later error does not roll it back. Call deleteAll() before or after the transaction.',
+    },
+  },
+  create(context: RuleContext) {
+    return {
+      CallExpression(node: AstNode) {
+        if (
+          node.callee?.type !== 'MemberExpression' ||
+          propertyName(node.callee.property) !== 'deleteAll'
+        ) {
+          return;
+        }
+
+        let owner = enclosingFunction(node);
+
+        while (owner) {
+          const { child, parent } = unwrappedParent(owner);
+
+          const transactionCallback =
+            parent?.type === 'CallExpression' &&
+            parent.arguments?.[0] === child &&
+            parent.callee?.type === 'MemberExpression' &&
+            transactionMethods.has(propertyName(parent.callee.property) ?? '');
+
+          if (transactionCallback) {
+            context.report({ node, messageId: 'deleteAllInTransaction' });
+
+            return;
+          }
+
+          owner = enclosingFunction(owner);
+        }
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: 'durability' },
   rules: {
@@ -1318,6 +1364,7 @@ export default {
     'alarm-runner-only': alarmRunnerRule,
     'no-alarm-changes-in-alarm-handler': alarmHandlerRule,
     'durability-migrations-only': durabilityMigrationsRule,
+    'no-delete-all-in-transaction': deleteAllInTransactionRule,
     'no-deferred-storage-writes': deferredStorageWritesRule,
     'transaction-sync-callback': transactionSyncCallbackRule,
     'transform-next-once': transformNextOnceRule,
