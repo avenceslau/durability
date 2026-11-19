@@ -63,6 +63,9 @@
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-readable-spacing": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
-    "durability/abort-after-sync": "error"
+    "durability/abort-after-sync": "error",
+    "durability/no-alarm-changes-in-alarm-handler": "error",
+    "durability/no-deferred-storage-writes": "error",
+    "durability/transaction-sync-callback": "error"
   }
 }

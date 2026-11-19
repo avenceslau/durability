@@ -6,6 +6,8 @@ type AstNode = {
   value?: string | number | boolean | null | AstNode | TemplateElementValue;
   argument?: AstNode;
   arguments?: AstNode[];
+  async?: boolean;
+  await?: boolean;
   body?: AstNode | AstNode[];
   callee?: AstNode;
   computed?: boolean;
@@ -56,6 +58,9 @@ type RuleContext = {
     node: AstNode;
     messageId:
       | 'abortAfterSync'
+      | 'alarmChangeInAlarm'
+      | 'asyncTransactionSync'
+      | 'deferredWrite'
       | 'delegateOnly'
       | 'missingAlarm'
       | 'physicalAlarm'
@@ -1007,12 +1012,314 @@ const abortAfterSyncRule = {
   },
 };
 
+const transactionSyncCallbackRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      asyncTransactionSync:
+        'transactionSync() commits when its callback returns; an async callback commits the writes before its first await and runs the rest outside the transaction, and its errors do not roll anything back.',
+    },
+  },
+  create(context: RuleContext) {
+    return {
+      CallExpression(node: AstNode) {
+        if (
+          node.callee?.type !== 'MemberExpression' ||
+          propertyName(node.callee.property) !== 'transactionSync'
+        ) {
+          return;
+        }
+
+        const callback = node.arguments?.[0];
+
+        if (callback?.async) {
+          context.report({ node: callback, messageId: 'asyncTransactionSync' });
+        }
+      },
+    };
+  },
+};
+
+const functionTypes = new Set([
+  'ArrowFunctionExpression',
+  'FunctionDeclaration',
+  'FunctionExpression',
+]);
+
+const transparentWrappers = new Set([
+  'ChainExpression',
+  'ParenthesizedExpression',
+  'TSAsExpression',
+  'TSNonNullExpression',
+  'TSSatisfiesExpression',
+]);
+
+const promiseCallbackMethods = new Set(['catch', 'finally', 'then']);
+const timerFunctions = new Set(['setInterval', 'setTimeout']);
+
+const storageMethods = new Set([
+  'delete',
+  'deleteAlarm',
+  'deleteAll',
+  'put',
+  'setAlarm',
+  'transaction',
+  'transactionSync',
+]);
+
+const endsWithSegment = (path: string, suffix: string) =>
+  path === suffix || path.endsWith(`.${suffix}`);
+
+const isStorageWrite = (node: AstNode) => {
+  if (node.callee?.type !== 'MemberExpression') {
+    return false;
+  }
+
+  const method = propertyName(node.callee.property) ?? '';
+  const receiver = receiverPath(node.callee.object) ?? '';
+
+  if (endsWithSegment(receiver, 'storage')) {
+    return storageMethods.has(method);
+  }
+
+  if (endsWithSegment(receiver, 'storage.kv')) {
+    return method === 'put' || method === 'delete';
+  }
+
+  if (!endsWithSegment(receiver, 'storage.sql') || method !== 'exec') {
+    return false;
+  }
+
+  const query = staticStringValue(node.arguments?.[0]);
+
+  return query === undefined || !/^\s*SELECT\b/i.test(query);
+};
+
+const enclosingFunction = (node: AstNode) => {
+  let current = node.parent;
+
+  while (current && !functionTypes.has(current.type)) {
+    current = current.parent;
+  }
+
+  return current;
+};
+
+const isAncestor = (ancestor: AstNode, node: AstNode) => {
+  let current = node.parent;
+
+  while (current) {
+    if (current === ancestor) {
+      return true;
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+};
+
+/**
+ * Whether the promise produced by `node` is dropped instead of awaited or
+ * returned: discarded with `void`, left as a statement, or handed to
+ * `waitUntil()`, so the response can be sent before the work finishes.
+ * `.then()`, `.catch()` and `.finally()` chained onto it are followed.
+ */
+const isDetached = (node: AstNode): boolean => {
+  let current = node;
+
+  while (current.parent) {
+    const parent: AstNode = current.parent;
+
+    if (transparentWrappers.has(parent.type)) {
+      current = parent;
+      continue;
+    }
+
+    const chained =
+      parent.type === 'MemberExpression' &&
+      parent.object === current &&
+      promiseCallbackMethods.has(propertyName(parent.property) ?? '') &&
+      parent.parent?.type === 'CallExpression' &&
+      parent.parent.callee === parent;
+
+    if (!chained) {
+      break;
+    }
+
+    current = parent.parent ?? parent;
+  }
+
+  const parent = current.parent;
+
+  if (parent?.type === 'UnaryExpression' && parent.operator === 'void') {
+    return true;
+  }
+
+  if (parent?.type === 'ExpressionStatement') {
+    return true;
+  }
+
+  return (
+    parent?.type === 'CallExpression' &&
+    parent.callee?.type === 'MemberExpression' &&
+    propertyName(parent.callee.property) === 'waitUntil' &&
+    parent.arguments?.includes(current) === true
+  );
+};
+
+const unwrappedParent = (node: AstNode) => {
+  let current = node;
+
+  while (current.parent && transparentWrappers.has(current.parent.type)) {
+    current = current.parent;
+  }
+
+  return { child: current, parent: current.parent };
+};
+
+const deferredStorageWritesRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      deferredWrite:
+        'This storage write starts after the request can respond, so the output gate does not hold the response for it and the write is lost if the object resets first. Await the work, or persist it before responding and finish it from an alarm.',
+    },
+  },
+  create(context: RuleContext) {
+    const writes: AstNode[] = [];
+    const awaitsByFunction = new Map<AstNode, AstNode[]>();
+
+    const recordAwait = (node: AstNode) => {
+      const owner = enclosingFunction(node);
+
+      if (!owner) {
+        return;
+      }
+
+      const awaits = awaitsByFunction.get(owner) ?? [];
+      awaits.push(node);
+      awaitsByFunction.set(owner, awaits);
+    };
+
+    const awaitsBefore = (owner: AstNode, write: AstNode) =>
+      (awaitsByFunction.get(owner) ?? []).some(
+        (awaited) =>
+          !isAncestor(awaited, write) &&
+          (awaited.range?.[1] ?? Infinity) <= (write.range?.[1] ?? 0)
+      );
+
+    const runsLater = (owner: AstNode, write: AstNode) => {
+      const { child, parent } = unwrappedParent(owner);
+
+      if (parent?.type !== 'CallExpression') {
+        return false;
+      }
+
+      if (parent.arguments?.includes(child)) {
+        const calleeName = propertyName(
+          parent.callee?.type === 'MemberExpression'
+            ? parent.callee.property
+            : parent.callee
+        );
+
+        if (timerFunctions.has(calleeName ?? '')) {
+          return true;
+        }
+
+        return (
+          promiseCallbackMethods.has(calleeName ?? '') && isDetached(parent)
+        );
+      }
+
+      return (
+        parent.callee === child &&
+        owner.async === true &&
+        isDetached(parent) &&
+        awaitsBefore(owner, write)
+      );
+    };
+
+    return {
+      AwaitExpression: recordAwait,
+      ForOfStatement(node: AstNode) {
+        if (node.await) {
+          recordAwait(node);
+        }
+      },
+      CallExpression(node: AstNode) {
+        if (isStorageWrite(node)) {
+          writes.push(node);
+        }
+      },
+      'Program:exit'() {
+        for (const write of writes) {
+          let owner = enclosingFunction(write);
+
+          while (owner && !runsLater(owner, write)) {
+            owner = enclosingFunction(owner);
+          }
+
+          if (owner) {
+            context.report({ node: write, messageId: 'deferredWrite' });
+          }
+        }
+      },
+    };
+  },
+};
+
+const alarmHandlerRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      alarmChangeInAlarm:
+        'Calling setAlarm() or deleteAlarm() inside alarm() replaces the retry of a failed run: an error after it is never retried, or is rerun with no backoff and no retry limit. Schedule follow-up work through durability instead.',
+    },
+  },
+  create(context: RuleContext) {
+    return {
+      CallExpression(node: AstNode) {
+        if (node.callee?.type !== 'MemberExpression') {
+          return;
+        }
+
+        const method = propertyName(node.callee.property);
+
+        if (method !== 'setAlarm' && method !== 'deleteAlarm') {
+          return;
+        }
+
+        let member = node.parent;
+
+        while (
+          member &&
+          member.type !== 'MethodDefinition' &&
+          member.type !== 'PropertyDefinition'
+        ) {
+          member = member.parent;
+        }
+
+        if (member && !member.static && propertyName(member.key) === 'alarm') {
+          context.report({ node, messageId: 'alarmChangeInAlarm' });
+        }
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: 'durability' },
   rules: {
     'abort-after-sync': abortAfterSyncRule,
     'alarm-runner-only': alarmRunnerRule,
+    'no-alarm-changes-in-alarm-handler': alarmHandlerRule,
     'durability-migrations-only': durabilityMigrationsRule,
+    'no-deferred-storage-writes': deferredStorageWritesRule,
+    'transaction-sync-callback': transactionSyncCallbackRule,
     'transform-next-once': transformNextOnceRule,
   },
 };

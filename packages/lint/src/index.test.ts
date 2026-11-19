@@ -715,3 +715,218 @@ describe('abort-after-sync', () => {
     );
   });
 });
+
+describe('transaction-sync-callback', () => {
+  it('accepts a synchronous callback', () => {
+    const result = lint(
+      `
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec('DELETE FROM jobs');
+        });
+      `,
+      'transaction-sync-callback'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      this.ctx.storage.transactionSync(async () => {
+        this.ctx.storage.sql.exec('DELETE FROM jobs');
+        await flush();
+      });
+    `,
+    `
+      storage.transactionSync(async function () {
+        storage.sql.exec('DELETE FROM jobs');
+      });
+    `,
+  ])('rejects an async callback', (source) => {
+    const result = lint(source, 'transaction-sync-callback');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'transactionSync() commits when its callback returns'
+    );
+  });
+});
+
+describe('no-deferred-storage-writes', () => {
+  it.each([
+    `
+      class Example {
+        submit(job: Job) {
+          void this.ctx.storage.put('job', job);
+          return 'accepted';
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          this.ctx.waitUntil(this.ctx.storage.put('job', job));
+          this.ctx.waitUntil(
+            (async () => {
+              await this.ctx.storage.put('job', job);
+            })()
+          );
+        }
+      }
+    `,
+    `
+      class Example {
+        async submit(job: Job) {
+          await (async () => {
+            const result = await render(job);
+            await this.ctx.storage.put('result', result);
+          })();
+          await render(job).then((result) => this.ctx.storage.put('result', result));
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          setTimeout(() => this.ctx.storage.sql.exec('SELECT * FROM jobs'), 10);
+          setTimeout(() => cache.put('job', job), 10);
+        }
+      }
+    `,
+  ])('accepts writes issued before the response', (source) => {
+    const result = lint(source, 'no-deferred-storage-writes');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        submit(job: Job) {
+          this.ctx.waitUntil(
+            (async () => {
+              const result = await this.env.RENDERER.render(job);
+              await this.ctx.storage.put('result', result);
+            })()
+          );
+          return 'accepted';
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          void (async () => {
+            await render(job);
+            this.ctx.storage.sql.exec("UPDATE jobs SET state = 'done'");
+          })();
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          (async () => {
+            for (const item of await render(job)) {
+              this.ctx.storage.kv.put(item.id, item);
+            }
+          })();
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          setTimeout(() => void this.ctx.storage.put('job', job), 1_000);
+        }
+      }
+    `,
+    `
+      function submit(storage: DurableObjectStorage, job: Job) {
+        setInterval(async () => {
+          await storage.setAlarm(Date.now());
+        }, 1_000);
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          this.ctx.waitUntil(
+            render(job).then((result) => this.ctx.storage.put('result', result))
+          );
+          void render(job)
+            .catch(() => undefined)
+            .finally(() => this.ctx.storage.delete('pending'));
+        }
+      }
+    `,
+  ])('rejects writes that start after the request can respond', (source) => {
+    const result = lint(source, 'no-deferred-storage-writes');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'This storage write starts after the request can respond'
+    );
+  });
+});
+
+describe('no-alarm-changes-in-alarm-handler', () => {
+  it.each([
+    `
+      class Example {
+        async alarm() {
+          await this.durability.alarms.set('next', Date.now() + 1_000);
+        }
+
+        async start() {
+          await this.ctx.storage.setAlarm(Date.now() + 1_000);
+        }
+      }
+    `,
+    `
+      class Example {
+        static alarm(storage: DurableObjectStorage) {
+          return storage.setAlarm(Date.now());
+        }
+      }
+    `,
+  ])('accepts alarm changes outside the alarm handler', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-alarm-handler');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        async alarm() {
+          await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        }
+      }
+    `,
+    `
+      class Example {
+        async alarm() {
+          await this.ctx.storage.transaction(async (txn) => {
+            await txn.deleteAlarm();
+          });
+        }
+      }
+    `,
+    `
+      class Example {
+        alarm = async () => {
+          const { storage } = this.ctx;
+          await storage.setAlarm(Date.now() + 60_000);
+        };
+      }
+    `,
+  ])('rejects alarm changes inside the alarm handler', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-alarm-handler');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'Calling setAlarm() or deleteAlarm() inside alarm() replaces the retry'
+    );
+  });
+});
