@@ -19,7 +19,7 @@
     "release": "pnpm build && changeset publish",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "version-packages": "changeset version && pnpm install --lockfile-only"
+    "version-packages": "changeset version && pnpm install --lockfile-only && pnpm format"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",
