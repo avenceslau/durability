@@ -1,6 +1,7 @@
 {
   "extends": "@durability/typescript-config/base.json",
   "include": ["**/*.ts"],
+  "exclude": ["node_modules", "queues"],
   "compilerOptions": {
     "exactOptionalPropertyTypes": true,
     "noEmit": true,

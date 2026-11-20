@@ -1,0 +1,469 @@
+---
+title: Partitioned FIFO queue
+description: Accept messages into partitions, deliver every key in order to several targets, resize without losing order, and share one concurrency limit.
+tableOfContents: false
+---
+
+This design is a queue service rather than a recipe: queues, targets, and limits are
+created at runtime, partitions are added and removed with the load, and a dashboard shows
+what is moving. It is built from a stateless Worker and five kinds of Durable Object (a
+sixth only lists the queues for the dashboard).
+This page explains how they fit together and why; it does not go into the primitives
+underneath, which have their own pages.
+
+The complete application is the
+[`queues` example](https://github.com/avenceslau/durability/tree/main/examples/queues):
+three Workers in their own workspace. `queue` is the service, with its own tests and a
+[README](https://github.com/avenceslau/durability/blob/main/examples/queues/queue/README.md)
+that covers the API. `push_consumer` sends orders to it and consumes them over RPC.
+`loadgen` is optional: it loads many queues at once from inside Cloudflare, started from
+the dashboard.
+
+## What it promises
+
+- **Order per key, per target.** Messages that share a key reach a target in the order
+  they were accepted, including across a resize. A retried message holds back only the
+  later messages of its key.
+- **Every target gets every message**, at its own pace, with its own retries and dead
+  letters. A slow or failing target does not slow the others.
+- **Per-message settlement.** A consumer acknowledges or retries each message of a batch,
+  as with Cloudflare Queues.
+- **At least once.** A message is delivered again after a retry, a failed call, a
+  timeout, or a crash mid-delivery. Receivers deduplicate on the message `id`, which is
+  the same on every delivery.
+- **A ceiling on batches in flight** across the whole queue, when one is configured.
+- **Push and pull.** Targets are called; pull consumers ask. Both see every message in
+  per-key order.
+
+It does not promise order between different keys, a global order across partitions, or
+exactly-once effects. A message that exhausts its retries is written to R2 and skipped, so
+order no longer covers it, nor a redriven copy of it.
+
+## Architecture
+
+<ArchitectureWalkthrough example="fifo-queue">
+
+<Render file="architecture-help" />
+
+</ArchitectureWalkthrough>
+
+## Who owns what
+
+The design splits into a data plane that messages pass through and a control plane that
+they never touch. That split is what lets the queue grow: adding partitions adds capacity,
+and nothing a message does waits on a single object.
+
+| Piece          | How many             | Owns                                                                                                       | Sees messages     |
+| -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------- |
+| Worker         | stateless            | Nothing. Serves the entrypoints and the HTTP API, reads the partition list, hashes keys, calls partitions. | Yes               |
+| `Partition`    | N per queue          | An ordered log of messages, one position per target, and every message a target has not settled yet.       | Yes               |
+| `Limiter`      | none, or L per queue | A share of the queue's concurrency limit and the permits handed out under it.                              | No                |
+| `Orchestrator` | one per queue        | Settings, targets, the list of partitions and limiters, each partition's latest sample, dashboard points.  | No                |
+| `Redriver`     | one per queue        | The redrive in progress: which dead letters are left to replay, and what it has replayed so far.           | Dead letters only |
+| `PullConsumer` | one per consumer     | That consumer's position in each partition's stored batches, and the range it has been handed.             | Reads the bucket  |
+| Pull bucket    | one, when enabled    | Every batch of queues with pull consumers, by partition and offset, until its retention ends.              | Yes               |
+| KV entry       | one per queue        | The published partition list. Written only by the orchestrator, no expiry.                                 | No                |
+
+A partition is named `queue/epoch/index`. The epoch is a generation of the queue's
+partition set: a resize does not change partitions, it starts a new epoch beside the old
+one.
+
+Other Workers reach the queue through two service binding entrypoints. `QueueBinding`
+sends, pulls, and redrives. `QueueAdmin` creates queues, changes settings, adds, pauses,
+and removes targets, resizes, and deletes. They are separate so that a Worker bound only
+to produce cannot reconfigure a queue. Both go through the same validation as the HTTP API,
+which remains for the dashboard and for clients that are not Workers.
+
+The bindings run both ways in the example: the consumer Worker binds the two entrypoints,
+and the queue binds the consumer's class, which an `rpc` target then names.
+
+```jsonc
+// push_consumer/wrangler.jsonc
+"services": [
+  { "binding": "QUEUE", "service": "fifo-queue", "entrypoint": "QueueBinding" },
+  { "binding": "QUEUE_ADMIN", "service": "fifo-queue", "entrypoint": "QueueAdmin" }
+]
+
+// queue/wrangler.jsonc
+"services": [
+  { "binding": "ORDERS", "service": "push-consumer", "entrypoint": "Orders" }
+]
+```
+
+```ts
+import type { QueueAdmin, QueueBinding } from '@queues-example/queue';
+
+type Env = {
+  QUEUE: Service<QueueBinding>;
+  QUEUE_ADMIN: Service<QueueAdmin>;
+};
+
+await env.QUEUE_ADMIN.create('orders', { partitions: { min: 1, max: 8 } });
+await env.QUEUE_ADMIN.putTarget('orders', 'billing', {
+  // The name of the queue's service binding to `Orders`.
+  destination: { type: 'rpc', binding: 'ORDERS' },
+  maxBatchSize: 10,
+  maxRetries: 3,
+});
+```
+
+## Accepting a message
+
+```ts
+const outcome = await env.QUEUE.send('orders', [
+  // One customer's orders stay in order.
+  { key: 'customer-42', body: { total: 12 } },
+  { key: 'customer-42', body: { total: 7 } },
+]);
+// outcome.accepted: the ids stored; outcome.rejected: [{ ids, error }]
+```
+
+1. A producer calls `send` on its `QueueBinding`, or POSTs to the HTTP API. The Worker
+   reads the queue's partition list. The list lives in KV because every send
+   needs it and no send should wait on the orchestrator; the Worker caches it in memory.
+2. It hashes each message's key to a partition of the current epoch and groups the
+   messages by partition, keeping their order. A send with many keys touches most
+   partitions, so the Worker makes one call to a partition at a time: groups that arrive
+   while one is on its way wait and go together in the next call.
+3. Each partition schedules a delivery run, then appends what the call carries to its log
+   in one transaction, all of it or none. An append assigns the next offsets, and the offset is the order: everything
+   after this point follows it. Scheduling comes first so that a stored message always has
+   a run coming to deliver it.
+4. The partition answers. **Accepted means stored**, not delivered.
+
+A partition refuses a send in two cases. If a resize replaced it, it answers with the new
+layout and the Worker sends there instead. If a running target is more than `maxBacklog`
+behind, it answers with backpressure, which HTTP reports as `429`: messages are removed by
+retention whether or not a target received them, so refusing early is what prevents a
+silent loss later.
+
+A send that fails without an answer is uncertain. Sending again with the same message
+`id`s is safe within a partition, which accepts an id once. It is not safe across a
+resize: the retry goes to a partition of the new epoch, which has never seen the id.
+
+## Delivering in order
+
+A partition runs one delivery loop per target, all inside the object's alarm. Targets are
+of two kinds, because they need different things from the log.
+
+**Targets that answer per message**: `rpc`, `webhook`, `service`, and `queue`. For these
+the partition tracks every message it hands out in a `pending` table, one row per target
+and message. Each batch is chosen in the same order:
+
+1. **Retries that are due.** A retried message is due once its delay has passed, and only
+   the first waiting message of a key can be. Each is followed by the messages of its key
+   held behind it.
+2. **New messages** after the target's position fill the rest, up to `maxBatchSize`. A
+   message whose key still has a message waiting outside the batch is not delivered: it
+   gets a row and is held behind that message. Other keys keep flowing.
+
+The rows, their attempt counts, and the moved position are stored in one transaction
+before the call. Then the consumer answers for each message:
+
+- **Acknowledged:** the row is deleted, and the next message of its key can go.
+- **Retried:** the row stays, due again after the consumer's `delaySeconds` or the
+  target's `retryDelaySeconds`. Later messages of its key wait for this target.
+- **Later messages of a retried key in the same batch** are held behind it whatever the
+  consumer answered for them, and that delivery does not count against them. A consumer
+  that acknowledged one sees it again; one that cares about order stops working on a key
+  at its first failure.
+- **Out of retries:** after `maxRetries` retries the message is written to R2 as its own
+  dead letter and then forgotten, which frees the messages behind it. A
+  [redrive](#replaying-dead-letters) sends it through the queue again. The dead letter is
+  written first and the row deleted second, so a crash between the two repeats the write,
+  which leaves the first copy in place.
+
+A call that throws or times out tells the partition nothing, so every message in the batch
+is retried. A crash mid-call leaves the rows as they were stored: they become due again
+once the target's timeout plus five seconds has passed, and the messages are delivered
+again.
+
+**Targets that store whole batches**: the queue's own `pull` target and `archive`
+targets. Pull consumers read the pull bucket in offset order, so the bucket must hold a
+partition's messages in that order. For these the partition leases one range of offsets
+from the log at a time, writes it as one object, and moves the position only once it is
+written. A failed write is retried with backoff before anything after it, and after
+`maxRetries` the whole batch is dead-lettered.
+
+Positions are per target either way: one target's retries do not move or block another
+target's position, and other partitions are separate objects. `maxBatchSize` bounds a
+batch, and `maxPerSecond` spaces the batches out.
+
+A queue with no target at all has nobody to deliver to. Rather than leave its messages in
+the partitions until retention removes them, each partition writes them straight to the
+dead letters, and a redrive of the whole queue delivers them to every target the queue has
+by then.
+
+## Consuming over RPC
+
+An `rpc` target names a service binding in the queue's `wrangler.jsonc`, to a class in
+another Worker that extends `QueueEntrypoint`. The consumer implements `queue(batch)`, as
+it would for Cloudflare Queues. This one, from `push_consumer`, acknowledges each order it
+charges, and at the first failure of a customer retries that order and skips the rest of
+the customer's orders, which the queue would deliver again after it anyway:
+
+```ts
+import {
+  QueueEntrypoint,
+  type MessageBatch,
+} from '@queues-example/queue/consumer';
+
+export class Orders extends QueueEntrypoint<Env, Order> {
+  async queue(batch: MessageBatch<Order>): Promise<void> {
+    const failedKeys = new Set<string>();
+    for (const message of batch.messages) {
+      if (failedKeys.has(message.key)) {
+        continue;
+      }
+      try {
+        await charge(message.body);
+        message.ack();
+      } catch {
+        failedKeys.add(message.key);
+        // After the target's maxRetries the message is dead-lettered.
+        message.retry({ delaySeconds: 2 ** message.attempts });
+      }
+    }
+  }
+}
+```
+
+The queue makes one RPC call per batch, `deliverQueueBatch`, which the base class owns.
+It builds the batch, runs `queue()`, and returns which messages were acknowledged and
+which retried, so settling costs no call back to the queue per message. The first
+`ack()` or `retry()` on a message wins, and a call on a message beats `ackAll()` and
+`retryAll()`. When `queue()` returns, the messages it left alone are acknowledged; when it
+throws, those not acknowledged are retried.
+
+The partition treats the answer as untrusted: only messages of the batch count, and one
+neither acknowledged nor retried is retried. An RPC call cannot be cancelled, so when it
+outlasts the target's `attemptTimeoutMs` the messages are retried while the consumer may
+still be working on them.
+
+Webhook and service targets get the same batch as a JSON `POST`. A `2xx` answer
+acknowledges every message except those its body lists under `retried`, by id or with a
+delay; a `2xx` without such a body acknowledges them all. Any other answer retries them
+all, after `Retry-After` when one is given.
+
+```json
+{ "retried": ["<id>", { "id": "<id>", "delaySeconds": 30 }] }
+```
+
+## Pull consumers
+
+A target is called with each batch. A pull consumer asks for messages when it wants them,
+which a partition cannot serve cheaply: every poll would wake an object whose job is to
+accept and deliver. So pulling is built beside the partitions rather than into them.
+
+- **One more target.** Turning `pullConsumers` on gives the queue a target of its own that
+  writes every batch to a second R2 bucket, under the partition's name and the batch's
+  offsets. It stores whole batches in offset order, as described above, and is an ordinary
+  target in every other respect, which is where its guarantees come from: it has its own
+  position in each partition, it is retried, and across a resize a new epoch's partitions
+  write nothing until the old epoch is completely written.
+- **One object per consumer.** A `PullConsumer` reads the bucket and stores how far that
+  consumer got in each partition. It finds epochs and partitions by listing the bucket, so
+  it needs neither the partition list nor the orchestrator, and no pull reaches a
+  partition.
+- **Leases instead of deliveries.** A pull returns consecutive messages of one partition
+  and records a lease on them. Until the consumer acknowledges, or the lease ends, that
+  partition hands this consumer nothing else, which keeps keys in order while different
+  partitions are pulled in parallel. A lease that ends is handed out again under a new
+  name, so a late acknowledgement of the old one is refused.
+- **Epochs in order.** A later epoch appearing in the bucket proves the current one will
+  get nothing more. The consumer finishes it, partition by partition, before reading the
+  next.
+
+A consumer pulls under a name, works through the messages, and acknowledges the lease, or
+gives it back with `nack` to have the messages handed out again at once:
+
+```ts
+for (;;) {
+  const batch = await env.QUEUE.pull('orders', 'reports', { batches: 10 });
+  if (!batch) {
+    break; // caught up
+  }
+  try {
+    await handle(batch.messages);
+  } catch (error) {
+    await env.QUEUE.nack('orders', 'reports', batch.lease);
+    throw error;
+  }
+  // false when the lease ran out and the messages went to another pull.
+  await env.QUEUE.ack('orders', 'reports', batch.lease);
+}
+```
+
+How long a message can be pulled is a queue setting, up to 50 days. Each partition records
+in its own storage when it wrote each batch, deletes the batches whose time is over, and
+schedules its next sweep for when the oldest remaining one ends, so it never lists the
+bucket to find them. Retention does not wait for
+consumers, and a slow pull consumer causes no backpressure: one that falls further behind
+than the retention misses messages.
+
+## Replaying dead letters
+
+```ts
+// Starts a job for the dead letters of `billing` and returns at once. Leave
+// the target out to replay every target's. One job runs per queue: a call
+// made while it runs starts nothing and returns that job's status.
+await env.QUEUE.redrive('orders', 'billing');
+
+// How far the job got.
+const status = await env.QUEUE.redriveStatus('orders');
+// { running: false, startedAt, finishedAt, redriven: 240, left: 0 }
+```
+
+`redrive` on the queue's service binding, or the admin API, replays every dead letter of
+a queue or of one target. The work is not done by the caller, a partition, or the
+orchestrator. It goes to a `Redriver`, one object per queue, for two reasons:
+
+- **Size.** A set of dead letters can be far larger than one request may read and
+  re-send. The redriver treats a redrive as a job: the call stores it and returns, and
+  each alarm run handles one page of a hundred dead letters, then schedules the next.
+- **Isolation.** Listing R2 and re-sending is work the partitions and the orchestrator
+  should not do. Partitions keep delivering and the orchestrator keeps ticking while a
+  redrive of any size runs; they see it only as ordinary sends.
+
+The redriver sends the way the Worker does, so each message is hashed to a partition of
+the current epoch. The messages are marked for the target that gave up on them, and every
+other target skips them. A dead letter is deleted only after the queue accepted its
+messages; one the queue refused stays for the next redrive.
+
+Two rules keep a redrive from misbehaving. It replays only dead letters whose failure
+time, stamped by the partition, is before it started, so a target that still fails cannot
+make it replay its own output forever. And it stores its position after every dead letter,
+so a crash sends at most one entry again, under the same deduplication key, which the
+partition accepts once.
+
+Redriven messages keep their `id`, so a consumer can recognise them, but are stored as
+new messages: they get new offsets, after everything the target
+received since they failed, and a fresh set of attempts. Order does not cover them.
+
+## Resizing without losing order
+
+Changing the partition count changes which partition a key hashes to. If old and new
+partitions both accepted and delivered freely, a later message of a key could overtake an
+earlier one. The queue therefore moves to a new epoch in a fixed order:
+
+1. **Store the intent.** The orchestrator records the next epoch before calling anything,
+   so an interrupted resize is finished by its next tick.
+2. **Stop the old partitions accepting.** It calls every partition of the current epoch
+   and waits for all of them. Each now refuses sends and answers with the new layout.
+3. **Publish the new partitions.** Only then does the list in KV change.
+4. **Hold delivery.** New partitions accept at once, but each target carries the oldest
+   epoch that still holds messages for it, and partitions of a later epoch skip that
+   target.
+5. **Advance.** When every old partition reports that a target has settled everything its
+   log accepted, the target moves to the next epoch and its new partitions start
+   delivering.
+6. **Drop the old epoch** once no target reads it.
+
+Step 2 before step 3 is the whole argument. KV is eventually consistent and Workers
+cache, so for a while some Workers hash with the old count. Because every old partition
+already refuses, such a Worker is redirected rather than accepted: nothing can be stored
+in the old epoch after a message of the same key went to the new one. Step 4 then makes
+sure the old epoch's messages are delivered first.
+
+The cost is that accepting scales immediately while delivery of new messages waits for
+the old backlog. The autoscaler accounts for that by at least doubling when it grows, and
+by not shrinking while a target is behind.
+
+**One resize runs at a time.** A target that is paused, or whose messages keep being
+retried, holds the old epoch until every message in it is acknowledged or dead-lettered,
+and no further resize starts before then.
+
+## One limit, several limiters
+
+`maxConcurrency` caps the batches in flight across all partitions and targets. A single
+object holding that limit would see a request from every busy partition, so the limit is
+split:
+
+- A `Limiter` holds a **share** of the limit and hands out permits within it. The shares
+  the orchestrator publishes never add up to more than the limit.
+- A partition finds its limiter by hashing its own name against the limiter names and
+  taking the highest score. No assignment is stored, and adding a limiter moves only the
+  partitions that now rank it first.
+- A target keeps its permit across batches while it has work, for at most ten seconds,
+  so permits cost a request per busy period rather than per batch.
+- Every tick the orchestrator asks the limiters what is in use and what is still asked
+  for, and moves shares towards the demand. It adds a limiter when the rate of permit
+  requests exceeds what the current ones should carry, which is the only scaling signal.
+
+Moving a share between limiters has one subtlety: lowering a share does not stop work a
+limiter already admitted. `limitMode` chooses what to do about it.
+
+| Mode     | How a share moves                                                                                  | Result                                                                   |
+| -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `strict` | Lower one limiter, wait until it reports the lower share applied and its work done, raise another. | The limit is never exceeded; a busy limiter waits for another to finish. |
+| `fast`   | Lower and raise in the same change.                                                                | Shares follow demand within seconds; the queue can briefly run above it. |
+
+## Metrics from positions
+
+Nothing is counted per message. A partition's log already knows how many messages it
+accepted (its next offset), and a target has settled its position minus the rows it still
+has in the `pending` table: the position moves past messages that are still waiting to be
+retried. A busy partition
+sends those numbers to the orchestrator about once a second, keeping only the newest
+sample when several are waiting. The orchestrator adds the samples into one point of
+cumulative counters every two seconds, stores it, and pushes it to connected dashboards,
+which turn consecutive points into rates.
+
+The same samples drive everything else the control plane decides: whether an epoch has
+nothing left for a target, how the accept rate compares with the partition count, and
+whether a target is falling behind. When partitions stop reporting, the orchestrator stops
+ticking and can be evicted.
+
+## Failure and recovery decisions
+
+| Failure or edge                                        | What the design does                                                                                      | Still yours to decide                                                                |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Send fails without an answer                           | Uncertain. A retry with the same ids is stored once by the same partition.                                | Producer retry limits; a retry after a resize can store a message twice.             |
+| Worker holds an old partition list                     | The replaced partition refuses and names the new layout; the Worker sends there.                          | Nothing.                                                                             |
+| Consumer retries a message                             | It is delivered again after its delay; later messages of its key wait for that target, other keys flow.   | `maxRetries`, `retryDelaySeconds`, and whether a long hold on one key is acceptable. |
+| Consumer acknowledges a later message of a retried key | That message is delivered again after the retried one; the delivery is not counted against it.            | Stopping at a key's first failure, and receiver deduplication.                       |
+| Call throws or times out                               | Every message of the batch is retried. An RPC call keeps running after the timeout.                       | The timeout, and work that is safe to run twice at once.                             |
+| Queue has no targets                                   | Messages go straight to the dead letters; a redrive of the queue delivers them to every later target.     | Whether to redrive once a target exists.                                             |
+| Pull consumer does not acknowledge                     | The lease ends and the same messages are handed out again, with a higher attempt.                         | The lease length, and receiver deduplication.                                        |
+| Pull consumer falls behind retention                   | Its batches are deleted; it continues with the oldest that remain.                                        | The retention, up to 50 days, and monitoring of consumer progress.                   |
+| Message exhausts its retries                           | Written to R2 as its own dead letter, then forgotten. Redrive sends it again for that target only.        | When to redrive, and that order no longer covers that message.                       |
+| Partition evicted during a delivery                    | The messages become due again after the target's timeout plus five seconds, and are delivered again.      | Receiver deduplication on the message `id`.                                          |
+| Pull or archive write fails                            | The same batch is retried with backoff before anything after it; after `maxRetries` it is dead-lettered.  | Nothing; the pull target allows 100 retries.                                         |
+| Target falls behind retention                          | Sends are refused at `maxBacklog` for running targets, before retention can remove undelivered messages.  | A paused target is not protected: it loses what expires while it is paused.          |
+| Storage fails while scheduling work                    | Alarms are scheduled before the state they serve is stored, and the alarms that drive work never give up. | Nothing.                                                                             |
+| Orchestrator evicted mid-resize                        | The stored intent makes the next tick repeat the steps, each of which can be repeated.                    | Nothing.                                                                             |
+| Orchestrator evicted between storing and pushing       | Every tick pushes the stored configuration and shares again.                                              | Ticks run only while partitions report; an idle queue repairs on next use.           |
+| Limiter unreachable                                    | Its partitions cannot take permits and stop delivering; accepting is unaffected.                          | Alerting on backlog without delivery.                                                |
+| Permit held by an evicted partition                    | Adopted when the target next has work, otherwise returned by a check a minute after it was granted.       | Nothing.                                                                             |
+| A target that never succeeds during a resize           | It holds the old epoch, and the next resize, until its messages are dead-lettered.                        | Pause, fix, or remove the target.                                                    |
+
+## What the example leaves to you
+
+- **Scale of the control plane.** One orchestrator receives every partition's samples.
+  The queue's data plane keeps growing with partitions; the dashboard is what needs a
+  longer sample interval first.
+- **Thresholds.** The autoscaler's target rates and cooldowns, and the request rate one
+  limiter should carry, are starting points, not measurements of your workload.
+- **Retention.** A partition keeps messages for 4 days or 512 MB; targets that are behind
+  read from there. Only pull consumers have the longer, configurable retention of the
+  pull bucket.
+- **Pull consumer visibility.** The dashboard shows the pull target writing to the bucket,
+  not how far each consumer has read.
+- **Access.** The dashboard and the HTTP admin API have no sign-in of their own: anyone who
+  reaches the Worker can reconfigure a queue. Put Cloudflare Access in front of them, and
+  treat webhook URLs as something an admin can point anywhere.
+- **Consumers.** Exactly-once effects need the receiver's own record of what it applied,
+  keyed by message `id`. Adding an `rpc` target for a new Worker needs a service binding,
+  and so a redeploy of the queue.
+
+## Primitive map
+
+Partitions compose a [`log`](/primitives/log/), with its leases for whole batches and a
+SQLite table of unsettled messages for the rest, with named
+[`alarms`](/primitives/alarms/), an [`outbox`](/primitives/outbox/) for samples, and a
+[`semaphore queue`](/primitives/semaphore-queue/) for permits. Limiters hold a
+[`semaphore`](/primitives/semaphore/). The redriver is one named alarm, and a pull consumer is plain SQLite storage. The orchestrator uses two
+[`topology`](/primitives/topology/) instances, one for partitions and one for limiters,
+and a [`socket`](/primitives/socket/) for the dashboard. The Worker uses the topology
+client and [`routing`](/primitives/routing/). Each object has one shared
+[`scheduler`](/primitives/scheduler/).

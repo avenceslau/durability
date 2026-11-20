@@ -24,6 +24,8 @@ To build and deploy it, see [docs/README.md](./docs/README.md).
 
 Each package has its own API documentation. Complete example Workers for every primitive live in [`examples/`](./examples); they are type-checked as part of the validation suite.
 
+[`examples/queues`](./examples/queues) is a larger example with its own small workspace: a queue service and a consumer for it, as two Workers.
+
 ## Development
 
 This repository uses pnpm. Libraries require Node.js 22 or newer; building the docs site requires Node.js 22.23.4 or newer.

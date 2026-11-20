@@ -158,6 +158,7 @@ test('Nimbus publishes readable walkthrough fallbacks for agents', async () => {
       'compositions/job-dashboard',
       'compositions/account-concurrency',
       'compositions/event-stream',
+      'compositions/fifo-queue',
       ...primitives.map((primitive) => `primitives/${primitive}`),
     ].map(async (slug) => {
       const markdown = await readFile(

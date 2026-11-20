@@ -1,0 +1,53 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "fifo-queue-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-07-07",
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Partition",
+        "Limiter",
+        "Orchestrator",
+        "Directory",
+        "Redriver",
+        "PullConsumer",
+        "SinkStore",
+      ],
+    },
+  ],
+  "kv_namespaces": [{ "binding": "TOPOLOGY", "id": "topology-test" }],
+  "r2_buckets": [
+    { "binding": "STORAGE", "bucket_name": "fifo-queue-test" },
+    { "binding": "PULL", "bucket_name": "fifo-queue-pull-test" },
+  ],
+  "services": [
+    { "binding": "SINK", "service": "fifo-queue-test", "entrypoint": "Sink" },
+    {
+      "binding": "RPC_SINK",
+      "service": "fifo-queue-test",
+      "entrypoint": "RpcSink",
+    },
+    {
+      "binding": "SCRIPTED",
+      "service": "fifo-queue-test",
+      "entrypoint": "ScriptedConsumer",
+    },
+    {
+      "binding": "ADMIN",
+      "service": "fifo-queue-test",
+      "entrypoint": "QueueAdmin",
+    },
+    // What another Worker would declare to call the queue without HTTP.
+    {
+      "binding": "QUEUE",
+      "service": "fifo-queue-test",
+      "entrypoint": "QueueBinding",
+    },
+  ],
+  "vars": {
+    "PRODUCER_TOKEN": "producer",
+    "CONSUMER_TOKEN": "consumer",
+  },
+}

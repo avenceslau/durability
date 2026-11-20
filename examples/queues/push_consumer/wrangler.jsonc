@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "push-consumer",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-07",
+  "observability": { "enabled": true },
+  "services": [
+    // Sending and pulling.
+    {
+      "binding": "QUEUE",
+      "service": "fifo-queue",
+      "entrypoint": "QueueBinding",
+    },
+    // Creating the queue and registering this Worker as its target.
+    {
+      "binding": "QUEUE_ADMIN",
+      "service": "fifo-queue",
+      "entrypoint": "QueueAdmin",
+    },
+  ],
+}
