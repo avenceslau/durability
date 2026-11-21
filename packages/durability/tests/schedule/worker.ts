@@ -42,7 +42,7 @@ export class ScheduleObject extends DurableObject {
   private active = 0;
   private maxActive = 0;
   private queuedRuns = 0;
-  private runsHangUntilReset = false;
+  private shouldHangRunsUntilReset = false;
 
   protected get liveTimers(): boolean {
     return false;
@@ -79,7 +79,7 @@ export class ScheduleObject extends DurableObject {
       );
       const runMs = (await this.ctx.storage.get<number>('run-ms')) ?? 0;
 
-      if (runMs < 0 || this.runsHangUntilReset) {
+      if (runMs < 0 || this.shouldHangRunsUntilReset) {
         await new Promise(() => undefined);
       }
 
@@ -182,18 +182,19 @@ export class ScheduleObject extends DurableObject {
 
   /**
    * Runs `count` ticks `every` ms apart and counts rows and alarm writes from
-   * then on; a negative `runMs` never settles, and `runsHangUntilReset` makes
-   * every run this instance starts never settle, while runs after a reset do.
+   * then on; a negative `runMs` never settles, and `shouldHangRunsUntilReset`
+   * makes every run this instance starts never settle, while runs after a
+   * reset do.
    */
   async start(
     every: number,
     count: number,
     runMs: number,
-    runsHangUntilReset = false,
+    shouldHangRunsUntilReset = false,
     jitterMs = 0
   ): Promise<number> {
     await this.ctx.storage.put('run-ms', runMs);
-    this.runsHangUntilReset = runsHangUntilReset;
+    this.shouldHangRunsUntilReset = shouldHangRunsUntilReset;
 
     let version = 0;
     let first: number;
