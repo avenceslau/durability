@@ -12,11 +12,9 @@ declare global {
   }
 }
 
-type Firing = { scheduled_time: number; due_at: number; started_at: number };
+type Stub = DurableObjectStub<ScheduleObject>;
 
-const expectScheduleFinished = async (
-  stub: DurableObjectStub<ScheduleObject>
-) => {
+const expectScheduleFinished = async (stub: Stub) => {
   await expect
     .poll(
       async () =>
@@ -26,16 +24,27 @@ const expectScheduleFinished = async (
     .toBe(true);
 };
 
+const expectFourRowsPerRun = async (stub: Stub, runs: number) => {
+  expect(await stub.rowsWritten()).toBe(
+    4 * runs + (await stub.queuedRunCount())
+  );
+};
+
 /**
- * A schedule collapses ticks whose firing time has passed into one run, so a
- * slow host can skip ticks, but only ticks already due when the run before
- * them was reserved, which is no later than that run started.
+ * Runs the window to the end and returns its firings. A schedule collapses
+ * ticks whose firing time has passed into one run, so a slow host can skip
+ * ticks, but only ticks already due when the run before them was reserved,
+ * which is no later than that run started.
  */
-const expectTicksFired = (
-  firings: Firing[],
-  window: { first: number; every: number; count: number; jitterMs?: number }
+const runScheduleWindow = async (
+  stub: Stub,
+  window: { every: number; count: number; runMs: number; jitterMs?: number }
 ) => {
-  const { first, every, count, jitterMs = 0 } = window;
+  const { every, count, runMs, jitterMs = 0 } = window;
+  const first = await stub.start(every, count, runMs, false, jitterMs);
+  await expectScheduleFinished(stub);
+
+  const firings = await stub.firings();
 
   const ticks = Array.from(
     { length: count },
@@ -47,39 +56,37 @@ const expectTicksFired = (
   for (const [index, firing] of firings.entries()) {
     const nextFired = firings[index + 1]?.scheduled_time ?? Infinity;
 
-    const skipped = ticks.filter(
-      (tick) => tick > firing.scheduled_time && tick < nextFired
+    const covered = ticks.filter(
+      (tick) => tick >= firing.scheduled_time && tick < nextFired
     );
 
     expect(ticks).toContain(firing.scheduled_time);
     expect(firing.due_at).toBe(firing.scheduled_time + jitterMs);
-    expect(firing.started_at).toBeGreaterThanOrEqual(firing.due_at);
 
-    for (const tick of skipped) {
+    for (const tick of covered) {
       expect(firing.started_at).toBeGreaterThanOrEqual(tick + jitterMs);
     }
   }
+
+  return firings;
 };
 
 describe('schedule in workerd', { timeout: 20_000 }, () => {
   it('writes four rows per run and keeps nothing once outcomes are delivered', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
-    const every = 40;
-    const count = 5;
 
-    const first = await stub.start(every, count, 5);
-    await expectScheduleFinished(stub);
+    const firings = await runScheduleWindow(stub, {
+      every: 40,
+      count: 5,
+      runMs: 5,
+    });
 
-    const firings = await stub.firings();
     const outcomes = await stub.outcomes();
-    expectTicksFired(firings, { first, every, count });
     expect(outcomes.map((row) => row.scheduled_time)).toEqual(
       firings.map((row) => row.scheduled_time)
     );
     expect(outcomes.every((row) => row.status === 'complete')).toBe(true);
-    expect(await stub.rowsWritten()).toBe(
-      4 * firings.length + (await stub.queuedRunCount())
-    );
+    await expectFourRowsPerRun(stub, firings.length);
   });
 
   it('arms the physical alarm once per run when ticks are further apart than alarmMinDelayMs', async () => {
@@ -90,28 +97,23 @@ describe('schedule in workerd', { timeout: 20_000 }, () => {
 
     const runs = (await stub.outcomes()).length;
     expect(await stub.setAlarmCalls()).toBe(runs);
-    expect(await stub.rowsWritten()).toBe(
-      4 * runs + (await stub.queuedRunCount())
-    );
+    await expectFourRowsPerRun(stub, runs);
   });
 
   it('fires each tick at its nominal time plus jitterMs with four rows per run', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
-    const every = 60;
-    const count = 4;
-    const jitterMs = 35;
 
-    const first = await stub.start(every, count, 5, false, jitterMs);
-    await expectScheduleFinished(stub);
+    const firings = await runScheduleWindow(stub, {
+      every: 60,
+      count: 4,
+      runMs: 5,
+      jitterMs: 35,
+    });
 
-    const firings = await stub.firings();
-    expectTicksFired(firings, { first, every, count, jitterMs });
     expect((await stub.outcomes()).map((row) => row.scheduled_time)).toEqual(
       firings.map((row) => row.scheduled_time)
     );
-    expect(await stub.rowsWritten()).toBe(
-      4 * firings.length + (await stub.queuedRunCount())
-    );
+    await expectFourRowsPerRun(stub, firings.length);
   });
 
   it('keeps a random jitter when the version is resent and re-rolls it for a new version', async () => {
@@ -142,14 +144,11 @@ describe('schedule in workerd', { timeout: 20_000 }, () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
     const every = 30;
     const count = 6;
+    const runMs = 200;
 
-    // Each run outlasts the whole window, so every tick is due while the
-    // first run still holds its slot.
-    const first = await stub.start(every, count, 200);
-    await expectScheduleFinished(stub);
+    expect(runMs).toBeGreaterThan((count - 1) * every);
 
-    const firings = await stub.firings();
-    expectTicksFired(firings, { first, every, count });
+    const firings = await runScheduleWindow(stub, { every, count, runMs });
     expect(await stub.observedMaxActive()).toBe(2);
     expect(
       (await stub.outcomes()).map(({ status, attempt }) => ({
