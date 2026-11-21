@@ -1,5 +1,20 @@
 # durability-examples
 
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies [2c7f65e]
+- Updated dependencies [2c7f65e]
+- Updated dependencies [2c7f65e]
+- Updated dependencies [2c7f65e]
+- Updated dependencies [2c7f65e]
+- Updated dependencies [2c7f65e]
+- Updated dependencies [2c7f65e]
+  - durability@5.4.0
+  - @durability/tanstack-db@1.1.0
+  - @durability/transforms@0.7.0
+
 ## 0.0.5
 
 ### Patch Changes
