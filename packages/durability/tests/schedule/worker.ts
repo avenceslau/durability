@@ -42,7 +42,7 @@ export class ScheduleObject extends DurableObject {
   private active = 0;
   private maxActive = 0;
   private queuedRuns = 0;
-  private hangUntilReset = false;
+  private runsHangUntilReset = false;
 
   protected get liveTimers(): boolean {
     return false;
@@ -79,7 +79,7 @@ export class ScheduleObject extends DurableObject {
       );
       const runMs = (await this.ctx.storage.get<number>('run-ms')) ?? 0;
 
-      if (runMs < 0 || this.hangUntilReset) {
+      if (runMs < 0 || this.runsHangUntilReset) {
         await new Promise(() => undefined);
       }
 
@@ -182,23 +182,27 @@ export class ScheduleObject extends DurableObject {
 
   /**
    * Runs `count` ticks `every` ms apart and counts rows and alarm writes from
-   * then on; a negative `runMs` never settles, and `hangUntilReset` makes every
-   * run this instance starts never settle, while runs after a reset do.
+   * then on; a negative `runMs` never settles, and `runsHangUntilReset` makes
+   * every run this instance starts never settle, while runs after a reset do.
    */
   async start(
     every: number,
     count: number,
     runMs: number,
-    hangUntilReset = false,
+    runsHangUntilReset = false,
     jitterMs = 0
   ): Promise<number> {
     await this.ctx.storage.put('run-ms', runMs);
-    this.hangUntilReset = hangUntilReset;
+    this.runsHangUntilReset = runsHangUntilReset;
+
+    let version = 0;
+    let first: number;
 
     // Time passes between picking the first tick and storing the schedule, so
     // a slow host can store a later one; a newer version picks again.
-    for (let version = 1; ; version += 1) {
-      const first = (Math.floor(Date.now() / every) + 1) * every;
+    do {
+      version += 1;
+      first = (Math.floor(Date.now() / every) + 1) * every;
       const until = first + (count - 1) * every;
 
       // eslint-disable-next-line no-await-in-loop
@@ -207,15 +211,13 @@ export class ScheduleObject extends DurableObject {
         version,
         jitterMs,
       });
+    } while (this.schedule.get()?.nextAt !== first);
 
-      if (this.schedule.get()?.nextAt === first) {
-        // Counting starts after `set`, before the first tick can fire.
-        this.cursors.length = 0;
-        this.setAlarmCount = 0;
+    // Counting starts after `set`, before the first tick can fire.
+    this.cursors.length = 0;
+    this.setAlarmCount = 0;
 
-        return first;
-      }
-    }
+    return first;
   }
 
   async configure(definition: ScheduleDefinition) {
@@ -239,7 +241,6 @@ export class ScheduleObject extends DurableObject {
     return this.ctx.storage.getAlarm();
   }
 
-  /** Runs that waited for a free slot, each costing one more row write. */
   queuedRunCount(): number {
     return this.queuedRuns;
   }
