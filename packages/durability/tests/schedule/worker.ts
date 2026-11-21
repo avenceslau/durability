@@ -41,6 +41,8 @@ export class ScheduleObject extends DurableObject {
   private setAlarmCount = 0;
   private active = 0;
   private maxActive = 0;
+  private queuedRuns = 0;
+  private hangUntilReset = false;
 
   protected get liveTimers(): boolean {
     return false;
@@ -76,9 +78,8 @@ export class ScheduleObject extends DurableObject {
         Date.now()
       );
       const runMs = (await this.ctx.storage.get<number>('run-ms')) ?? 0;
-      const hangAt = await this.ctx.storage.get<number>('hang-at');
 
-      if (runMs < 0 || scheduledTime === hangAt) {
+      if (runMs < 0 || this.hangUntilReset) {
         await new Promise(() => undefined);
       }
 
@@ -86,6 +87,11 @@ export class ScheduleObject extends DurableObject {
       this.maxActive = Math.max(this.maxActive, this.active);
       await scheduler.wait(runMs);
       this.active -= 1;
+    },
+    onLifecycleEvent: (event) => {
+      if (event.type === 'due' && event.queued) {
+        this.queuedRuns += 1;
+      }
     },
     onOutcome: (run, outcome) => {
       this.ctx.storage.sql.exec(
@@ -176,34 +182,40 @@ export class ScheduleObject extends DurableObject {
 
   /**
    * Runs `count` ticks `every` ms apart and counts rows and alarm writes from
-   * then on; a negative `runMs` never settles, and `hangFirst` makes only the
-   * first run never settle.
+   * then on; a negative `runMs` never settles, and `hangUntilReset` makes every
+   * run this instance starts never settle, while runs after a reset do.
    */
   async start(
     every: number,
     count: number,
     runMs: number,
-    hangFirst = false,
+    hangUntilReset = false,
     jitterMs = 0
   ): Promise<number> {
     await this.ctx.storage.put('run-ms', runMs);
-    const first = (Math.floor(Date.now() / every) + 1) * every;
+    this.hangUntilReset = hangUntilReset;
 
-    if (hangFirst) {
-      await this.ctx.storage.put('hang-at', first);
+    // Time passes between picking the first tick and storing the schedule, so
+    // a slow host can store a later one; a newer version picks again.
+    for (let version = 1; ; version += 1) {
+      const first = (Math.floor(Date.now() / every) + 1) * every;
+      const until = first + (count - 1) * every;
+
+      // eslint-disable-next-line no-await-in-loop
+      await this.schedule.set({
+        expression: JSON.stringify({ every, until } satisfies Window),
+        version,
+        jitterMs,
+      });
+
+      if (this.schedule.get()?.nextAt === first) {
+        // Counting starts after `set`, before the first tick can fire.
+        this.cursors.length = 0;
+        this.setAlarmCount = 0;
+
+        return first;
+      }
     }
-
-    const until = first + (count - 1) * every;
-    await this.schedule.set({
-      expression: JSON.stringify({ every, until } satisfies Window),
-      version: 1,
-      jitterMs,
-    });
-    // Counting starts after `set`, before the first tick can fire.
-    this.cursors.length = 0;
-    this.setAlarmCount = 0;
-
-    return first;
   }
 
   async configure(definition: ScheduleDefinition) {
@@ -225,6 +237,11 @@ export class ScheduleObject extends DurableObject {
 
   physicalAlarm(): Promise<number | null> {
     return this.ctx.storage.getAlarm();
+  }
+
+  /** Runs that waited for a free slot, each costing one more row write. */
+  queuedRunCount(): number {
+    return this.queuedRuns;
   }
 
   observedMaxActive(): number {

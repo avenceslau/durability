@@ -12,71 +12,106 @@ declare global {
   }
 }
 
-describe('schedule in workerd', () => {
+type Firing = { scheduled_time: number; due_at: number; started_at: number };
+
+const expectScheduleFinished = async (
+  stub: DurableObjectStub<ScheduleObject>
+) => {
+  await expect
+    .poll(
+      async () =>
+        (await stub.nextAt()) === undefined && (await stub.pendingRuns()) === 0,
+      { timeout: 10_000 }
+    )
+    .toBe(true);
+};
+
+/**
+ * A schedule collapses ticks whose firing time has passed into one run, so a
+ * slow host can skip ticks, but only ticks already due when the run before
+ * them was reserved, which is no later than that run started.
+ */
+const expectTicksFired = (
+  firings: Firing[],
+  window: { first: number; every: number; count: number; jitterMs?: number }
+) => {
+  const { first, every, count, jitterMs = 0 } = window;
+
+  const ticks = Array.from(
+    { length: count },
+    (_, index) => first + index * every
+  );
+
+  expect(firings[0]?.scheduled_time).toBe(first);
+
+  for (const [index, firing] of firings.entries()) {
+    const nextFired = firings[index + 1]?.scheduled_time ?? Infinity;
+
+    const skipped = ticks.filter(
+      (tick) => tick > firing.scheduled_time && tick < nextFired
+    );
+
+    expect(ticks).toContain(firing.scheduled_time);
+    expect(firing.due_at).toBe(firing.scheduled_time + jitterMs);
+    expect(firing.started_at).toBeGreaterThanOrEqual(firing.due_at);
+
+    for (const tick of skipped) {
+      expect(firing.started_at).toBeGreaterThanOrEqual(tick + jitterMs);
+    }
+  }
+};
+
+describe('schedule in workerd', { timeout: 20_000 }, () => {
   it('writes four rows per run and keeps nothing once outcomes are delivered', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
-    const runs = 5;
+    const every = 40;
+    const count = 5;
 
-    const first = await stub.start(40, runs, 5);
-    await expect
-      .poll(() => stub.outcomes(), { timeout: 5_000 })
-      .toHaveLength(runs);
-    await expect.poll(() => stub.pendingRuns()).toBe(0);
+    const first = await stub.start(every, count, 5);
+    await expectScheduleFinished(stub);
 
-    expect(await stub.nextAt()).toBeUndefined();
-    expect((await stub.outcomes()).map((row) => row.scheduled_time)).toEqual(
-      Array.from({ length: runs }, (_, index) => first + index * 40)
+    const firings = await stub.firings();
+    const outcomes = await stub.outcomes();
+    expectTicksFired(firings, { first, every, count });
+    expect(outcomes.map((row) => row.scheduled_time)).toEqual(
+      firings.map((row) => row.scheduled_time)
     );
-    expect(
-      (await stub.outcomes()).every((row) => row.status === 'complete')
-    ).toBe(true);
-    expect((await stub.rowsWritten()) / runs).toBe(4);
+    expect(outcomes.every((row) => row.status === 'complete')).toBe(true);
+    expect(await stub.rowsWritten()).toBe(
+      4 * firings.length + (await stub.queuedRunCount())
+    );
   });
 
   it('arms the physical alarm once per run when ticks are further apart than alarmMinDelayMs', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
-    const runs = 3;
 
-    await stub.start(1_500, runs, 5);
-    await expect
-      .poll(() => stub.outcomes(), { timeout: 10_000 })
-      .toHaveLength(runs);
-    await expect.poll(() => stub.pendingRuns()).toBe(0);
+    await stub.start(1_500, 3, 5);
+    await expectScheduleFinished(stub);
 
+    const runs = (await stub.outcomes()).length;
     expect(await stub.setAlarmCalls()).toBe(runs);
-    expect((await stub.rowsWritten()) / runs).toBe(4);
+    expect(await stub.rowsWritten()).toBe(
+      4 * runs + (await stub.queuedRunCount())
+    );
   });
 
   it('fires each tick at its nominal time plus jitterMs with four rows per run', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
-    const runs = 4;
     const every = 60;
+    const count = 4;
     const jitterMs = 35;
 
-    const first = await stub.start(every, runs, 5, false, jitterMs);
-    await expect
-      .poll(() => stub.outcomes(), { timeout: 5_000 })
-      .toHaveLength(runs);
-    await expect.poll(() => stub.pendingRuns()).toBe(0);
+    const first = await stub.start(every, count, 5, false, jitterMs);
+    await expectScheduleFinished(stub);
 
     const firings = await stub.firings();
-    expect(
-      firings.map(({ scheduled_time, due_at }) => [scheduled_time, due_at])
-    ).toEqual(
-      Array.from({ length: runs }, (_, index) => [
-        first + index * every,
-        first + index * every + jitterMs,
-      ])
-    );
-
-    for (const { due_at, started_at } of firings) {
-      expect(started_at).toBeGreaterThanOrEqual(due_at);
-    }
-
+    expectTicksFired(firings, { first, every, count, jitterMs });
     expect((await stub.outcomes()).map((row) => row.scheduled_time)).toEqual(
       firings.map((row) => row.scheduled_time)
     );
-    expect((await stub.rowsWritten()) / runs).toBe(4);
+    expect(await stub.rowsWritten()).toBe(
+      4 * firings.length + (await stub.queuedRunCount())
+    );
   });
 
   it('keeps a random jitter when the version is resent and re-rolls it for a new version', async () => {
@@ -105,21 +140,23 @@ describe('schedule in workerd', () => {
 
   it('overlaps runs up to maxConcurrentRuns and reports every one', async () => {
     const stub = env.SCHEDULE_TEST.get(env.SCHEDULE_TEST.newUniqueId());
-    const runs = 6;
+    const every = 30;
+    const count = 6;
 
-    await stub.start(30, runs, 120);
-    await expect
-      .poll(() => stub.outcomes(), { timeout: 5_000 })
-      .toHaveLength(runs);
-    await expect.poll(() => stub.pendingRuns()).toBe(0);
+    // Each run outlasts the whole window, so every tick is due while the
+    // first run still holds its slot.
+    const first = await stub.start(every, count, 200);
+    await expectScheduleFinished(stub);
 
+    const firings = await stub.firings();
+    expectTicksFired(firings, { first, every, count });
     expect(await stub.observedMaxActive()).toBe(2);
     expect(
       (await stub.outcomes()).map(({ status, attempt }) => ({
         status,
         attempt,
       }))
-    ).toEqual(Array(runs).fill({ status: 'complete', attempt: 1 }));
+    ).toEqual(Array(firings.length).fill({ status: 'complete', attempt: 1 }));
   });
 
   it('reports a run interrupted by an object reset as errored instead of re-running it', async () => {
@@ -167,9 +204,16 @@ describe('schedule in workerd', () => {
       const every = 1_200;
 
       const first = await stub.start(every, 2, 5, true);
-      await expect.poll(() => stub.runs(), { timeout: 3_000 }).toHaveLength(1);
-      // While the run is in flight the next tick is its eviction fallback.
-      expect(await stub.physicalAlarm()).toBe(first + every);
+      await expect
+        .poll(async () => (await stub.runs()).length, { timeout: 3_000 })
+        .toBeGreaterThan(0);
+      // While the run is in flight the next tick is its eviction fallback,
+      // which the scheduler never arms sooner than alarmMinDelayMs from now.
+      const fallback = await stub.physicalAlarm();
+      expect(fallback).toBeGreaterThanOrEqual(first + every);
+      expect(fallback).toBeLessThanOrEqual(
+        Math.max(first + every, Date.now() + 1_000)
+      );
 
       const aborted = await stub.abort().then(
         () => false,
@@ -180,26 +224,32 @@ describe('schedule in workerd', () => {
       const recovered = namespace.get(id);
       await runDurableObjectAlarm(recovered);
 
-      await expect
-        .poll(() => recovered.outcomes(), { timeout: 5_000 })
-        .toEqual([
-          {
-            scheduled_time: first,
-            attempt: 1,
-            status: 'errored',
-            error_name: 'ScheduledRunInterruptedError',
-          },
-          {
-            scheduled_time: first + every,
-            attempt: 1,
-            status: 'complete',
-            error_name: null,
-          },
-        ]);
-      expect(
-        (await recovered.runs()).map(({ scheduled_time }) => scheduled_time)
-      ).toEqual([first, first + every]);
-      await expect.poll(() => recovered.pendingRuns()).toBe(0);
+      await expectScheduleFinished(recovered);
+
+      const interrupted = {
+        attempt: 1,
+        status: 'errored',
+        error_name: 'ScheduledRunInterruptedError',
+      };
+
+      const completed = { attempt: 1, status: 'complete', error_name: null };
+
+      // A slow host can start the second tick before the reset; it is then
+      // interrupted too. Either way each run is reported once, in order.
+      const outcomes = await recovered.outcomes();
+
+      const interruptedCount = outcomes.filter(
+        (row) => row.status === 'errored'
+      ).length;
+
+      expect(outcomes).toEqual(
+        (await recovered.runs()).map(({ scheduled_time }, index) => ({
+          scheduled_time,
+          ...(index < interruptedCount ? interrupted : completed),
+        }))
+      );
+      expect(outcomes[0]?.scheduled_time).toBe(first);
+      expect(interruptedCount).toBeGreaterThan(0);
       expect(await runDurableObjectAlarm(recovered)).toBe(false);
     }
   );
