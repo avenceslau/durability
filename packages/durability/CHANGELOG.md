@@ -1,5 +1,70 @@
 # durability
 
+## 5.4.0
+
+### Minor Changes
+
+- 2c7f65e: Type the results of callbacks that the helpers await but ignore as `void | Promise<void>` instead of `unknown`. This covers `DurableAlarmHandler`, fanout `deliver`, outbox `publish`, schedule `run` and `onOutcome`, semaphore queue `admit`, topology `deliver`, and the topology publisher's `write` and `delete` (now `Promise<void>`). Runtime behaviour is unchanged: these results were always discarded, and the new types make that explicit.
+
+  A callback that returns a value now fails to typecheck. Wrap its body in a block and await instead of returning, for example `admit: async (items) => { await Promise.all(items.map(start)); }` instead of `admit: (items) => Promise.all(items.map(start))`.
+
+- 2c7f65e: Rename the socket's phantom type exports from `durability/client` to say what they carry. This is a breaking rename of type-level API with no runtime change: the symbol is still `Symbol('durability.socket')`.
+  - `socketShape` → `socketMessageMaps`, the `unique symbol` key whose property type holds a socket's inbound and outbound message maps.
+  - `SocketShape<Inbound, Outbound>` → `SocketMessageMaps<Inbound, Outbound>`.
+  - `AnySocketShape` → `AnyDurabilitySocket`, the constraint for any `DurabilitySocket`.
+
+  The old names are removed, not aliased; replace them in your imports and type annotations. `@durability/tanstack-db` now constrains `socketCollectionOptions` with `AnyDurabilitySocket`, so upgrade both packages together.
+
+- 2c7f65e: Require a schema for every `DurabilitySocket` inbound handler. Bare function handlers, which received the raw `unknown` input, are removed: each handler is now `{ input, handle }`, and `handle` receives the schema's output, so its parameter no longer needs an annotation and a mismatched one does not compile. Client `rpc` methods take the schema's input type; methods whose input was `unknown` no longer accept an optional `unknown` argument.
+
+  Wrap each bare handler in a schema. A method that takes no input uses a schema for `undefined`, and the client still calls it without arguments:
+
+  ```ts
+  inbound: {
+    // Before: list: () => this.list(),
+    list: { input: v.undefined(), handle: () => this.list() },
+    // Before: whoami: (_input: unknown, call: SocketCall<Metadata>) => call.metadata.user,
+    whoami: {
+      input: v.undefined(),
+      handle: (_input, call: SocketCall<Metadata>) => call.metadata.user,
+    },
+    // Before: echo: (input) => input,
+    echo: { input: v.unknown(), handle: (input) => input },
+  },
+  ```
+
+  Use `v.unknown()` only when a handler really accepts any value. A method with a `v.undefined()` schema now rejects calls that send an input with `SocketInputError`, where a bare handler ignored it. The wire protocol, error frames, and channels are unchanged.
+
+- 2c7f65e: Require `metadata` on a `DurabilitySocket` whose handlers need it. `metadata` was always optional, so a handler annotated with `SocketCall<{ user: string }>` could receive `undefined` when the option was left out. It is now required whenever any handler's `SocketCall<…>` metadata excludes `undefined`, and stays optional when every handler admits `undefined` or declares no metadata. A handler whose metadata is a union such as `User | undefined` no longer collapses the socket's metadata type to `never`, so such a socket can now set `metadata`.
+
+  Each WebSocket attachment now records whether its metadata was captured. A connection accepted before the socket had `metadata`, such as one still open from before the deploy that added it, is closed with code `1012` on its next frame, before any handler runs; the browser client reconnects with backoff and the new upgrade captures metadata. Its in-flight call rejects with `SocketConnectionLostError`. Attachments written by earlier versions stay readable and count as captured when they hold metadata.
+
+  To migrate, add `metadata` to each socket that no longer compiles, or widen its handlers' annotations to admit `undefined`:
+
+  ```ts
+  new DurabilitySocket({
+    context: this.ctx,
+    inbound: {
+      whoami: {
+        input: v.undefined(),
+        handle: (_input, call: SocketCall<{ user: string }>) =>
+          call.metadata.user,
+      },
+    },
+    outbound: {},
+    metadata: (request) => ({
+      user: request.headers.get('x-user') ?? 'anonymous',
+    }),
+  });
+  ```
+
+### Patch Changes
+
+- 2c7f65e: Accept any WebSocket implementation in the socket client's `webSocket` option whose instances have `send`, `close` and `addEventListener`, the only members the client uses. Implementations that previously had to satisfy the full `WebSocket` interface still work.
+- Updated dependencies [2c7f65e]
+- Updated dependencies [2c7f65e]
+  - @durability/transforms@0.7.0
+
 ## 5.3.0
 
 ### Minor Changes

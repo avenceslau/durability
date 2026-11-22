@@ -1,6 +1,6 @@
 {
   "name": "@durability/tanstack-db",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "TanStack DB collections synced over a DurabilitySocket",
   "type": "module",
   "license": "ISC",

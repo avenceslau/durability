@@ -1,5 +1,15 @@
 # @durability/transforms
 
+## 0.7.0
+
+### Minor Changes
+
+- 2c7f65e: Narrow `TransformContext` from `Record<string, unknown>` to `Record<string, TransformContextValue>`. A non-empty context reaches the callee through `setContext` over Cloudflare RPC, so its values must survive structured cloning; the type now says so. `TransformContextValue`, newly exported, covers primitives (including `undefined` and `bigint`), `Date`, `RegExp`, `Error`, `ArrayBuffer` and typed-array views, and arrays, `Map`s, `Set`s, and plain objects of those values.
+
+  Contexts of strings, numbers, and other plain data compile unchanged. A context type with a field outside that set, such as a function or a class instance, no longer satisfies `defineTransform<Target, Context>()`. To migrate, send serializable data instead, for example an ID the callee resolves to the object. Nested object types inside a context must, like the context itself, be `type` aliases rather than interfaces.
+
+- 2c7f65e: Type `createRestorableStubFactory`'s arguments. The namespace is now `RestorableNamespace | undefined`, newly exported, which every Durable Object namespace binding satisfies, and the method is `'get' | 'getByName'`, the two calls the Vite plugin rewrites. Passing an `unknown` value or another method name no longer type-checks; pass the namespace binding itself. Runtime behaviour is unchanged: a missing namespace or method still returns `undefined`.
+
 ## 0.6.2
 
 ### Patch Changes
