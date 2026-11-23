@@ -95,6 +95,7 @@ const discardedRowSchema = v.object({
   count: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
+
 const totalBytesRowSchema = v.object({
   total_bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
@@ -352,6 +353,7 @@ const discardBelow = (
 ): number => {
   // Records leave from the oldest end only, so the ones held are consecutive.
   const end = Math.min(through, readBounds(sql, channel).hotOffset + limit);
+
   const held = v.parse(
     discardedRowSchema,
     sql
@@ -364,9 +366,11 @@ const discardBelow = (
       )
       .toArray()[0]
   );
+
   if (held.count === 0) {
     return 0;
   }
+
   sql.exec(
     `DELETE FROM durability_log_records WHERE channel = ? AND "offset" < ?`,
     channel,
@@ -378,6 +382,7 @@ const discardBelow = (
     held.bytes,
     channel
   );
+
   return held.count;
 };
 
@@ -1157,7 +1162,9 @@ export class DurabilityLog<Body = unknown> {
     if (!Number.isInteger(offset) || offset < 0) {
       throw new LogAppendError('Offset must be a non-negative integer');
     }
+
     assertPositiveInteger('limit', limit);
+
     return this.#engine.transactionSync((sql) =>
       discardBelow(sql, this.#channel, offset, limit)
     );
