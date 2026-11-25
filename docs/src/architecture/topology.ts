@@ -466,7 +466,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             transaction,
             'const result = await this.storage.transaction(async (transaction) => {',
-            'nextPendingAt = await this.reconcile(transaction);'
+            'await this.reconcile(transaction);'
           ),
           durable:
             'Group rows, outbox rows, and the alarm commit together or not at all.',

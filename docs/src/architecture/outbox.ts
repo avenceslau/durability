@@ -126,7 +126,7 @@ const reconcile = sourceExcerpt(
   'reconcile',
   'Set the object alarm',
   '  private async reconcile(',
-  '    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);\n  }'
+  '    if (\n      currentAlarm === null ||\n      currentAlarm < physicalNextAt ||\n      currentAlarm > target\n    ) {\n      await physicalAlarm.setAlarm(target);\n    }\n  }'
 );
 
 export const walkthrough = validateWalkthrough({
@@ -385,7 +385,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             transaction,
             'const result = await this.storage.transaction(async (transaction) => {',
-            'nextPendingAt = await this.reconcile(transaction);'
+            'await this.reconcile(transaction);'
           ),
           durable:
             'The counter, the outbox row, and its version commit together.',

@@ -673,13 +673,11 @@ export class DurabilitySchedule {
         this.#loop = undefined;
       }
 
-      // A loop that outlived its alarm invocation republishes the in-memory
-      // timer it suppressed while holding.
-      void this.#engine
-        .scheduleNextAlarm()
-        .catch((error) =>
-          reportFailure('durability.schedule.refresh_failed', {}, error)
-        );
+      try {
+        this.#engine.refreshEarlyAlarm();
+      } catch (error) {
+        reportFailure('durability.schedule.refresh_failed', {}, error);
+      }
     });
 
     this.#loop = loop;

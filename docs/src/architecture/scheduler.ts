@@ -79,7 +79,7 @@ const reconcile = sourceExcerpt(
   'reconcile',
   'Set the object alarm from every table',
   '  private async reconcile(',
-  '    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);\n  }'
+  '    if (\n      currentAlarm === null ||\n      currentAlarm < physicalNextAt ||\n      currentAlarm > target\n    ) {\n      await physicalAlarm.setAlarm(target);\n    }\n  }'
 );
 
 const earlyTimer = sourceExcerpt(
@@ -412,7 +412,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             transaction,
             'const result = await this.storage.transaction(async (transaction) => {',
-            'this.scheduleEarlyAlarm(nextPendingAt);'
+            'this.refreshEarlyAlarm();'
           ),
           durable: 'The row and the alarm commit or roll back together.',
           volatile: 'The early timer, if one is needed.',

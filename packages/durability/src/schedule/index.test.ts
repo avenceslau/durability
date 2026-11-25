@@ -1502,4 +1502,63 @@ describe('DurabilitySchedule channels', () => {
       },
     ]);
   });
+
+  it('does not write a redundant alarm or trailing transaction when constructed inside alarm()', async () => {
+    start();
+    const storage = new FakeStorage();
+    const initial = setup({}, storage);
+    await initial.schedule.set({ expression: '60000', version: 1 });
+
+    vi.setSystemTime(60_000);
+    storage.alarmAt = null;
+
+    const pending: Promise<unknown>[] = [];
+
+    const context = {
+      ...objectContext(storage),
+      waitUntil: (promise: Promise<unknown>) => {
+        pending.push(promise);
+      },
+    };
+
+    const setAlarm = vi.spyOn(storage, 'setAlarm');
+    const transaction = vi.spyOn(storage, 'transaction');
+
+    const woken = setup({ context }, storage);
+    await woken.schedule.alarm();
+    await Promise.allSettled(pending);
+
+    expect(setAlarm).toHaveBeenCalledTimes(1);
+    expect(setAlarm).toHaveBeenCalledWith(120_000);
+    expect(transaction).toHaveBeenCalledTimes(4);
+    expect(woken.outcomes).toHaveLength(1);
+    expect(storage.alarmAt).toBe(120_000);
+  });
+
+  it('skips opening a transaction on wake when the physical alarm is already aligned', async () => {
+    start();
+    const storage = new FakeStorage();
+    const initial = setup({}, storage);
+    await initial.schedule.set({ expression: '60000', version: 1 });
+    expect(storage.alarmAt).toBe(60_000);
+
+    const pending: Promise<unknown>[] = [];
+
+    const context = {
+      ...objectContext(storage),
+      waitUntil: (promise: Promise<unknown>) => {
+        pending.push(promise);
+      },
+    };
+
+    const setAlarm = vi.spyOn(storage, 'setAlarm');
+    const transaction = vi.spyOn(storage, 'transaction');
+
+    setup({ context }, storage);
+    await Promise.allSettled(pending);
+
+    expect(setAlarm).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+    expect(storage.alarmAt).toBe(60_000);
+  });
 });

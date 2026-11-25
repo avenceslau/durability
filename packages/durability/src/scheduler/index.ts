@@ -302,6 +302,7 @@ export class Engine {
   private readonly permitWaiters: Array<(release: () => void) => void> = [];
   private alarmRefresh: Promise<void> | undefined;
   private alarmRefreshRequested = false;
+  private activeAlarms = 0;
   private failedRuns = 0;
   private earlyAlarm: { timestamp: number; cancel: () => void } | undefined;
   private readonly watchers = new Map<
@@ -452,8 +453,6 @@ export class Engine {
     });
 
     if (participant.nextPendingAt !== undefined) {
-      // Missing custom channels are dormant. Defer until construction finishes,
-      // then restore their alarm without requiring a new application write.
       const onError = (cause: unknown) =>
         reportFailure(
           'durability.channel_resume_failed',
@@ -462,12 +461,34 @@ export class Engine {
         );
 
       const resumed = Promise.resolve()
-        .then(() => {
-          if (participant.nextPendingAt?.(this.sql) !== undefined) {
-            return this.scheduleNextAlarm();
+        .then(async () => {
+          if (this.activeAlarms > 0) {
+            return undefined;
           }
 
-          return undefined;
+          const nextAt = participant.nextPendingAt?.(this.sql);
+
+          if (nextAt === undefined) {
+            return undefined;
+          }
+
+          const currentAlarm = await this.storage.getAlarm();
+
+          if (this.activeAlarms > 0) {
+            return undefined;
+          }
+
+          const now = Date.now();
+
+          if (
+            !this.liveTimers &&
+            nextAt >= now + this.alarmMinDelayMs &&
+            currentAlarm === nextAt
+          ) {
+            return undefined;
+          }
+
+          return this.scheduleNextAlarm();
         })
         .catch(async (cause: unknown) => {
           if (await this.armFallbackAlarm()) {
@@ -622,16 +643,14 @@ export class Engine {
    * transaction, then publishes the in-memory timer only after commit.
    */
   async transaction<T>(write: (sql: SqlStorage) => T): Promise<T> {
-    let nextPendingAt: number | undefined;
-
     const result = await this.storage.transaction(async (transaction) => {
       const value = write(this.sql);
-      nextPendingAt = await this.reconcile(transaction);
+      await this.reconcile(transaction);
 
       return value;
     });
 
-    this.scheduleEarlyAlarm(nextPendingAt);
+    this.refreshEarlyAlarm();
 
     return result;
   }
@@ -743,21 +762,14 @@ export class Engine {
    * Arms the physical alarm from the earliest pending time (the eviction
    * fallback) and returns the earliest time the in-memory timer should fire.
    */
-  private async reconcile(
-    physicalAlarm: PhysicalAlarm
-  ): Promise<number | undefined> {
+  private async reconcile(physicalAlarm: PhysicalAlarm): Promise<void> {
     const physicalTimes: number[] = [];
-    const timerTimes: number[] = [];
 
     for (const participant of this.participants) {
-      const { physical, timer } = this.pendingTimes(participant);
+      const { physical } = this.pendingTimes(participant);
 
       if (physical !== undefined) {
         physicalTimes.push(physical);
-      }
-
-      if (timer !== undefined) {
-        timerTimes.push(timer);
       }
     }
 
@@ -771,7 +783,7 @@ export class Engine {
         await physicalAlarm.deleteAlarm();
       }
 
-      return undefined;
+      return;
     }
 
     const target = Math.max(physicalNextAt, Date.now() + this.alarmMinDelayMs);
@@ -784,8 +796,6 @@ export class Engine {
     ) {
       await physicalAlarm.setAlarm(target);
     }
-
-    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);
   }
 
   private scheduleEarlyAlarm(timestamp: number | undefined): void {
@@ -831,6 +841,22 @@ export class Engine {
     }, delay);
 
     this.earlyAlarm = { timestamp, cancel };
+  }
+
+  refreshEarlyAlarm(): void {
+    const timerTimes: number[] = [];
+
+    for (const participant of this.participants) {
+      const { timer } = this.pendingTimes(participant);
+
+      if (timer !== undefined) {
+        timerTimes.push(timer);
+      }
+    }
+
+    this.scheduleEarlyAlarm(
+      timerTimes.length === 0 ? undefined : Math.min(...timerTimes)
+    );
   }
 
   /** Coalesces refreshes without dropping requests arriving after the pending-work read. */
@@ -1101,21 +1127,22 @@ export class Engine {
    */
   private async runAlarm(info?: AlarmInvocationInfo): Promise<void> {
     const startedAt = Date.now();
-
-    const execution = Promise.all(
-      this.participants.map((participant) =>
-        participant.runDue(startedAt, info)
-      )
-    ).then(() => undefined);
-
-    void execution.catch(() => undefined);
-
     const handoff = Symbol('alarm handoff');
-    const remaining = this.alarmHandoffMs - (Date.now() - startedAt);
     let cancelTimeout: (() => void) | undefined;
     let result: void | typeof handoff;
+    this.activeAlarms += 1;
 
     try {
+      const execution = Promise.all(
+        this.participants.map((participant) =>
+          participant.runDue(startedAt, info)
+        )
+      ).then(() => undefined);
+
+      void execution.catch(() => undefined);
+
+      const remaining = this.alarmHandoffMs - (Date.now() - startedAt);
+
       result = await Promise.race([
         execution,
         new Promise<typeof handoff>((resolve) => {
@@ -1127,6 +1154,7 @@ export class Engine {
       ]);
     } finally {
       cancelTimeout?.();
+      this.activeAlarms -= 1;
     }
 
     if (result === handoff) {

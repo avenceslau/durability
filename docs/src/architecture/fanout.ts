@@ -117,7 +117,7 @@ const reconcile = sourceExcerpt(
   'reconcile',
   'Set the object alarm',
   '  private async reconcile(',
-  '    return timerTimes.length === 0 ? undefined : Math.min(...timerTimes);\n  }'
+  '    if (\n      currentAlarm === null ||\n      currentAlarm < physicalNextAt ||\n      currentAlarm > target\n    ) {\n      await physicalAlarm.setAlarm(target);\n    }\n  }'
 );
 
 export const walkthrough = validateWalkthrough({
