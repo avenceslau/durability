@@ -281,3 +281,126 @@ it('reconciles a channel attached while an earlier refresh is committing', async
   expect(run).toHaveBeenCalledTimes(1);
   expect(storage.alarmAt).toBeNull();
 });
+
+it('skips channel resume when alarm() starts synchronously after registration', async () => {
+  vi.useFakeTimers();
+  const storage = new FakeStorage();
+  const pending: Promise<unknown>[] = [];
+
+  const context = {
+    ...contextFor(storage),
+    waitUntil: (promise: Promise<unknown>) => {
+      pending.push(promise);
+    },
+  };
+
+  const scheduler = new DurabilityScheduler({
+    context,
+    alarmMinDelayMs: 1_000,
+  });
+
+  const engine = engineFor({ scheduler });
+  const now = Date.now();
+  storage.sql.exec(
+    'CREATE TABLE custom_work (channel TEXT, id INTEGER, next_at INTEGER)'
+  );
+  storage.sql.exec("INSERT INTO custom_work VALUES ('default', 1, ?)", now);
+
+  const setAlarm = vi.spyOn(storage, 'setAlarm');
+
+  engine.registerChannel({
+    table: { name: 'custom_work', key: 'id' },
+    channel: 'default',
+    helper: 'Custom',
+    runDue: async () => {
+      storage.sql.exec(
+        "UPDATE custom_work SET next_at = ? WHERE channel = 'default'",
+        now + 60_000
+      );
+    },
+    nextPendingAt: () =>
+      storage.sql
+        .exec<{ next_at: number | null }>(
+          "SELECT next_at FROM custom_work WHERE channel = 'default'"
+        )
+        .one().next_at ?? undefined,
+  });
+
+  await scheduler.alarm();
+  await Promise.allSettled(pending);
+
+  expect(setAlarm).toHaveBeenCalledTimes(1);
+  expect(setAlarm).toHaveBeenCalledWith(now + 60_000);
+});
+
+it('skips channel resume if alarm() begins while getAlarm() is in flight', async () => {
+  vi.useFakeTimers();
+  const storage = new FakeStorage();
+  const pending: Promise<unknown>[] = [];
+
+  const context = {
+    ...contextFor(storage),
+    waitUntil: (promise: Promise<unknown>) => {
+      pending.push(promise);
+    },
+  };
+
+  const scheduler = new DurabilityScheduler({
+    context,
+    alarmMinDelayMs: 1_000,
+  });
+
+  const engine = engineFor({ scheduler });
+  const now = Date.now();
+  storage.sql.exec(
+    'CREATE TABLE custom_work (channel TEXT, id INTEGER, next_at INTEGER)'
+  );
+  storage.sql.exec("INSERT INTO custom_work VALUES ('default', 1, ?)", now);
+
+  let releaseGetAlarm!: () => void;
+
+  const gate = new Promise<void>((resolve) => {
+    releaseGetAlarm = resolve;
+  });
+
+  let getAlarmStarted!: () => void;
+
+  const started = new Promise<void>((resolve) => {
+    getAlarmStarted = resolve;
+  });
+
+  vi.spyOn(storage, 'getAlarm').mockImplementationOnce(async () => {
+    getAlarmStarted();
+    await gate;
+
+    return storage.alarmAt;
+  });
+
+  const setAlarm = vi.spyOn(storage, 'setAlarm');
+
+  engine.registerChannel({
+    table: { name: 'custom_work', key: 'id' },
+    channel: 'default',
+    helper: 'Custom',
+    runDue: async () => {
+      releaseGetAlarm();
+      storage.sql.exec(
+        "UPDATE custom_work SET next_at = ? WHERE channel = 'default'",
+        now + 60_000
+      );
+    },
+    nextPendingAt: () =>
+      storage.sql
+        .exec<{ next_at: number | null }>(
+          "SELECT next_at FROM custom_work WHERE channel = 'default'"
+        )
+        .one().next_at ?? undefined,
+  });
+
+  await started;
+  await scheduler.alarm();
+  await Promise.allSettled(pending);
+
+  expect(setAlarm).toHaveBeenCalledTimes(1);
+  expect(setAlarm).toHaveBeenCalledWith(now + 60_000);
+});
