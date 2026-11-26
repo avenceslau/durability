@@ -137,6 +137,13 @@ export function propertyName(node: SyntaxNode): string | undefined {
   return isIdentifier(property) ? property.name : undefined;
 }
 
+/** The name of a non-computed object property key, written as an identifier or a string. */
+export function propertyKeyName(property: SyntaxNode): string | undefined {
+  const key = syntaxNode(property.key);
+
+  return identifierName(key) ?? (isStringLiteral(key) ? key.value : undefined);
+}
+
 export function identifierName(
   node: SyntaxNode | undefined
 ): string | undefined {

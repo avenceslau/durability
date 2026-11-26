@@ -4,21 +4,21 @@ import {
   CachedCallError,
   workerCacheTier,
   type WorkerCacheRead,
+  type WorkerCacheTierOptions,
 } from '../src/cache/index';
 import { cacheDOPlan } from './worker';
 
 type SentRequest = { url: string; cache: RequestInit['cache'] };
 
-/** A service binding that records each request and answers with `respond`. */
 function fakeBinding(
   sent: SentRequest[],
-  respond: () => Response | Promise<Response>
+  respond: (init: RequestInit | undefined) => Response | Promise<Response>
 ): Fetcher {
   return {
     async fetch(input: RequestInfo | URL, init?: RequestInit) {
       sent.push({ url: String(input), cache: init?.cache });
 
-      return respond();
+      return respond(init);
     },
     connect() {
       throw new Error('connect is not used by the cache tier');
@@ -26,9 +26,13 @@ function fakeBinding(
   };
 }
 
-function cacheTier(reads: WorkerCacheRead[]) {
+function cacheTier(
+  reads: WorkerCacheRead[],
+  options: Omit<Partial<WorkerCacheTierOptions>, 'onRead'> = {}
+) {
   return workerCacheTier(cacheDOPlan, {
     binding: () => env.CACHE_READS,
+    ...options,
     onRead: (read) => reads.push(read),
   });
 }
@@ -38,8 +42,8 @@ describe('workerCacheTier through a generated entrypoint', () => {
     const reads: WorkerCacheRead[] = [];
     const stub = env.CACHE_DO.getByName('planned').with(cacheTier(reads));
 
-    await expect(stub.getValue('a')).resolves.toEqual({ key: 'a', calls: 1 });
-    expect(reads).toEqual([{ method: 'getValue', outcome: 'cache' }]);
+    await expect(stub.countRead('a')).resolves.toEqual({ key: 'a', reads: 1 });
+    expect(reads).toEqual([{ method: 'countRead', outcome: 'cache' }]);
   });
 
   it('keeps an undefined result distinct from null', async () => {
@@ -54,12 +58,9 @@ describe('workerCacheTier through a generated entrypoint', () => {
     const reads: WorkerCacheRead[] = [];
     const stub = env.CACHE_DO.getByName('direct').with(cacheTier(reads));
 
-    await stub.setValue('abc');
+    await stub.setReadCount(3);
 
-    await expect(stub.with(cacheTier(reads)).getValue('x')).resolves.toEqual({
-      key: 'x',
-      calls: 4,
-    });
+    await expect(stub.countRead('x')).resolves.toEqual({ key: 'x', reads: 4 });
     expect(reads.map((read) => read.outcome)).toEqual(['direct', 'cache']);
   });
 
@@ -67,12 +68,12 @@ describe('workerCacheTier through a generated entrypoint', () => {
     const reads: WorkerCacheRead[] = [];
     const stub = env.CACHE_DO.getByName('failing').with(cacheTier(reads));
 
-    await expect(stub.failValue('k')).rejects.toThrow('No value for k');
+    await expect(stub.failRead('k')).rejects.toThrow('No value for k');
     expect(reads).toEqual([
       {
-        method: 'failValue',
+        method: 'failRead',
         outcome: 'fallback',
-        error: new CachedCallError('failValue', 503),
+        error: new CachedCallError('failRead', 503),
       },
     ]);
   });
@@ -82,25 +83,22 @@ describe('workerCacheTier requests', () => {
   it('addresses one Durable Object, method and canonical arguments', async () => {
     const sent: SentRequest[] = [];
 
-    const tier = workerCacheTier(cacheDOPlan, {
+    const tier = cacheTier([], {
       binding: () =>
         fakeBinding(sent, () =>
-          Response.json({ value: { key: 'k', calls: 9 } })
+          Response.json({ value: { key: 'k', reads: 9 } })
         ),
     });
 
-    const stub = env.CACHE_DO.getByName('addressed');
-
-    await expect(stub.with(tier).getValue('k')).resolves.toEqual({
-      key: 'k',
-      calls: 9,
-    });
+    await expect(
+      env.CACHE_DO.getByName('addressed').with(tier).countRead('k')
+    ).resolves.toEqual({ key: 'k', reads: 9 });
 
     const id = env.CACHE_DO.idFromName('addressed').toString();
 
     expect(sent).toEqual([
       {
-        url: `https://cache.invalid/v1/1/${id}/getValue?args=${encodeURIComponent('["k"]')}`,
+        url: `https://cache.invalid/v1/1/${id}/countRead?args=${encodeURIComponent('["k"]')}`,
         cache: undefined,
       },
     ]);
@@ -109,7 +107,7 @@ describe('workerCacheTier requests', () => {
   it('passes the per-call cache mode as RequestInit.cache', async () => {
     const sent: SentRequest[] = [];
 
-    const tier = workerCacheTier(cacheDOPlan, {
+    const tier = cacheTier([], {
       binding: () => fakeBinding(sent, () => Response.json({})),
     });
 
@@ -124,10 +122,10 @@ describe('workerCacheTier requests', () => {
     ]);
   });
 
-  it('reports the cache status header', async () => {
+  it('reports the CF-Cache-Status header', async () => {
     const reads: WorkerCacheRead[] = [];
 
-    const tier = workerCacheTier(cacheDOPlan, {
+    const tier = cacheTier(reads, {
       binding: () =>
         fakeBinding(
           [],
@@ -136,46 +134,66 @@ describe('workerCacheTier requests', () => {
               headers: { 'cf-cache-status': 'HIT' },
             })
         ),
-      onRead: (read) => reads.push(read),
     });
 
     await env.CACHE_DO.getByName('status').with(tier).getNothing();
 
     expect(reads).toEqual([
-      { method: 'getNothing', outcome: 'cache', cacheStatus: 'HIT' },
+      { method: 'getNothing', outcome: 'cache', cfCacheStatus: 'HIT' },
     ]);
   });
 
   it('throws CachedCallError instead of falling back when asked to', async () => {
     const reads: WorkerCacheRead[] = [];
 
-    const tier = workerCacheTier(cacheDOPlan, {
+    const tier = cacheTier(reads, {
       binding: () => fakeBinding([], () => new Response(null, { status: 500 })),
       fallback: 'throw',
-      onRead: (read) => reads.push(read),
     });
 
-    const call = env.CACHE_DO.getByName('throws').with(tier).getValue('a');
+    const call = env.CACHE_DO.getByName('throws').with(tier).countRead('a');
 
     await expect(call).rejects.toBeInstanceOf(CachedCallError);
     await expect(call).rejects.toMatchObject({
-      method: 'getValue',
+      method: 'countRead',
       status: 500,
     });
     expect(reads.map((read) => read.outcome)).toEqual(['failed']);
   });
 
-  it('falls back when the cached body is not a cached result', async () => {
+  it('falls back when the cached request times out', async () => {
     const reads: WorkerCacheRead[] = [];
 
-    const tier = workerCacheTier(cacheDOPlan, {
-      binding: () => fakeBinding([], () => new Response('[1, 2]')),
-      onRead: (read) => reads.push(read),
+    const tier = cacheTier(reads, {
+      timeoutMs: 10,
+      binding: () =>
+        fakeBinding(
+          [],
+          (init) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () =>
+                reject(init.signal?.reason)
+              );
+            })
+        ),
     });
 
     await expect(
-      env.CACHE_DO.getByName('invalid-body').with(tier).getValue('a')
-    ).resolves.toEqual({ key: 'a', calls: 1 });
+      env.CACHE_DO.getByName('timeout').with(tier).countRead('a')
+    ).resolves.toEqual({ key: 'a', reads: 1 });
+    expect(reads.map((read) => read.outcome)).toEqual(['fallback']);
+  });
+
+  it('falls back when the cached body is not a cached result', async () => {
+    const reads: WorkerCacheRead[] = [];
+
+    const tier = cacheTier(reads, {
+      binding: () => fakeBinding([], () => new Response('[1, 2]')),
+    });
+
+    await expect(
+      env.CACHE_DO.getByName('invalid-body').with(tier).countRead('a')
+    ).resolves.toEqual({ key: 'a', reads: 1 });
     expect(reads.map((read) => read.outcome)).toEqual(['fallback']);
   });
 
@@ -183,16 +201,15 @@ describe('workerCacheTier requests', () => {
     const sent: SentRequest[] = [];
     const reads: WorkerCacheRead[] = [];
 
-    const tier = workerCacheTier(cacheDOPlan, {
+    const tier = cacheTier(reads, {
       binding: () => fakeBinding(sent, () => Response.json({})),
-      onRead: (read) => reads.push(read),
     });
 
     const key = 'k'.repeat(5_000);
 
     await expect(
-      env.CACHE_DO.getByName('long').with(tier).getValue(key)
-    ).resolves.toEqual({ key, calls: 1 });
+      env.CACHE_DO.getByName('long').with(tier).countRead(key)
+    ).resolves.toEqual({ key, reads: 1 });
     expect(sent).toEqual([]);
     expect(reads.map((read) => read.outcome)).toEqual(['direct']);
   });

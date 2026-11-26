@@ -4,19 +4,17 @@ import { canonicalJson, toJson, type Json } from './json.js';
 const cacheOrigin = 'https://cache.invalid';
 const protocolVersion = 'v1';
 
-/** Instance segment for targets that are not Durable Objects. */
-export const noInstance = '_';
+export const nonDurableObjectInstance = '_';
 
-/** One method call, as {@link workerCacheTier} sends it and {@link serveCached} answers it. */
+/** One cached method call, as `serveCached` passes it to `onError`. */
 export type CachedCall = {
   planVersion: number;
-  /** Durable Object ID, or {@link noInstance}. */
+  /** Durable Object ID, or `_` for targets that are not Durable Objects. */
   instance: string;
   method: string;
   args: Json[];
 };
 
-/** The cache URL of `call`. Arguments are encoded with sorted keys, so key order does not split entries. */
 export function cachedCallUrl(call: CachedCall): string {
   const path = [
     protocolVersion,
@@ -30,7 +28,6 @@ export function cachedCallUrl(call: CachedCall): string {
   return `${cacheOrigin}/${path}?args=${encodeURIComponent(canonicalJson(call.args))}`;
 }
 
-/** Reads a URL built by {@link cachedCallUrl}, or returns `undefined` for any other URL. */
 export function parseCachedCall(url: string): CachedCall | undefined {
   try {
     const parsed = new URL(url);

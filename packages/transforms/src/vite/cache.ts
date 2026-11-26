@@ -3,6 +3,7 @@ import { durableObjectExportName } from './routing.js';
 import {
   identifierName,
   isStringLiteral,
+  propertyKeyName,
   syntaxNode,
   unwrapExpression,
   type SyntaxNode,
@@ -13,19 +14,16 @@ import { unusedName } from './wrap.js';
 const cacheModule = '@durability/transforms/cache';
 const identifierPattern = /^[A-Z_$][\w$]*$/i;
 
-/** An entrypoint to generate for one `cachePlan` declared in the main module. */
 type CacheEntrypoint = {
   entrypointName: string;
   planName: string;
-  /** Export name of the plan's Durable Object class. */
-  targetExportName: string;
+  durableObjectExportName: string;
 };
 
 const nodeList = (value: unknown): SyntaxNode[] =>
   Array.isArray(value) ? value.flatMap((item) => syntaxNode(item) ?? []) : [];
 
-/** Local names `program` imports `cachePlan` under, ignoring type-only imports. */
-function cachePlanNames(program: SyntaxNode): Set<string> {
+function cachePlanValueImportNames(program: SyntaxNode): Set<string> {
   const names = new Set<string>();
 
   for (const statement of nodeList(program.body)) {
@@ -57,7 +55,6 @@ function cachePlanNames(program: SyntaxNode): Set<string> {
   return names;
 }
 
-/** The `const` declarators at the top level of `program`, exported or not. */
 function topLevelConstants(program: SyntaxNode): SyntaxNode[] {
   return nodeList(program.body).flatMap((statement) => {
     const declaration =
@@ -72,7 +69,6 @@ function topLevelConstants(program: SyntaxNode): SyntaxNode[] {
   });
 }
 
-/** The class named by the single type argument of `cachePlan<Target>(...)`. */
 function planTargetName(planName: string, call: SyntaxNode): string {
   const typeArguments = syntaxNode(call.typeArguments ?? call.typeParameters);
   const [typeArgument, ...rest] = nodeList(typeArguments?.params);
@@ -91,10 +87,6 @@ function planTargetName(planName: string, call: SyntaxNode): string {
   return targetName;
 }
 
-/**
- * The `entrypoint` option of `cachePlan<Target>({ entrypoint })`: a name,
- * `false`, or `undefined` when the option is absent.
- */
 function entrypointOption(
   planName: string,
   call: SyntaxNode
@@ -117,22 +109,27 @@ function entrypointOption(
     (property) =>
       property.type === 'ObjectProperty' &&
       property.computed !== true &&
-      (identifierName(syntaxNode(property.key)) ??
-        syntaxNode(property.key)?.value) === 'entrypoint'
+      propertyKeyName(property) === 'entrypoint'
   );
 
   if (entrypoint === undefined) {
     return undefined;
   }
 
-  const value = unwrapExpression(syntaxNode(entrypoint.value));
+  const entrypointValue = unwrapExpression(syntaxNode(entrypoint.value));
 
-  if (value?.type === 'BooleanLiteral' && value.value === false) {
+  if (
+    entrypointValue?.type === 'BooleanLiteral' &&
+    entrypointValue.value === false
+  ) {
     return false;
   }
 
-  if (isStringLiteral(value) && identifierPattern.test(value.value)) {
-    return value.value;
+  if (
+    isStringLiteral(entrypointValue) &&
+    identifierPattern.test(entrypointValue.value)
+  ) {
+    return entrypointValue.value;
   }
 
   throw new Error(
@@ -162,13 +159,12 @@ function assertCacheEnabled(
   );
 }
 
-/** Finds every `cachePlan<Target>()(...)` in the main module that needs a generated entrypoint. */
 export function collectCacheEntrypoints(
   program: SyntaxNode,
   rootScope: Scope,
   project: WranglerProject
 ): CacheEntrypoint[] {
-  const planFactories = cachePlanNames(program);
+  const planFactories = cachePlanValueImportNames(program);
 
   if (planFactories.size === 0) {
     return [];
@@ -223,13 +219,16 @@ export function collectCacheEntrypoints(
 
     assertCacheEnabled(project, planName, entrypointName);
 
-    entrypoints.push({ entrypointName, planName, targetExportName });
+    entrypoints.push({
+      entrypointName,
+      planName,
+      durableObjectExportName: targetExportName,
+    });
   }
 
   return entrypoints;
 }
 
-/** Module code that declares and exports one cache entrypoint for each planned entry. */
 export function cacheEntrypointCode(
   code: string,
   entrypoints: CacheEntrypoint[]
@@ -239,11 +238,11 @@ export function cacheEntrypointCode(
   const serve = unusedName(code, '__durabilityServeCached');
 
   const classes = entrypoints.map(
-    ({ entrypointName, planName, targetExportName }) => `
+    ({ entrypointName, planName, durableObjectExportName }) => `
 export class ${entrypointName} extends ${entrypointClass} {
   fetch(request) {
     return ${serve}(request, ${planName}, {
-      namespace: ${workerExports}[${JSON.stringify(targetExportName)}],
+      namespace: ${workerExports}[${JSON.stringify(durableObjectExportName)}],
     });
   }
 }

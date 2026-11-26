@@ -1,5 +1,10 @@
-import { noInstance, parseCachedCall, type CachedCall } from './call.js';
-import { encodeResult, type Json } from './json.js';
+import { isFunction } from '../predicates.js';
+import {
+  nonDurableObjectInstance,
+  parseCachedCall,
+  type CachedCall,
+} from './call.js';
+import { encodeResult } from './json.js';
 import { cacheControl, methodPolicy, type CachePlan } from './plan.js';
 
 type ServeCachedReporting = {
@@ -13,7 +18,6 @@ type DurableObjectNamespaceBinding = {
   get(id: DurableObjectId): object;
 };
 
-/** Where {@link serveCached} sends a call: a Durable Object namespace, or any other RPC target. */
 export type ServeCachedOptions<Target> = ServeCachedReporting &
   ({ namespace: DurableObjectNamespaceBinding } | { target: Target });
 
@@ -28,7 +32,7 @@ function resolveTarget<Target extends object>(
   instance: string
 ): object | undefined {
   if ('target' in options) {
-    return instance === noInstance ? options.target : undefined;
+    return instance === nonDurableObjectInstance ? options.target : undefined;
   }
 
   try {
@@ -39,10 +43,10 @@ function resolveTarget<Target extends object>(
 }
 
 /**
- * Answers a request sent by {@link workerCacheTier}: calls the planned method
- * on the target and returns its result with a `Cache-Control` header built from
- * the plan. Call it from the `fetch` handler of an entrypoint that has the
- * Workers cache enabled. The Vite plugin can generate that entrypoint.
+ * Answers a request sent by `workerCacheTier`: calls the planned method on the
+ * target and returns its result with a `Cache-Control` header built from the
+ * plan. Call it from the `fetch` handler of an entrypoint that has the Workers
+ * cache enabled. The Vite plugin can generate that entrypoint.
  *
  * Requests for methods outside the plan, malformed requests, and calls that
  * throw are answered with `no-store`, so the cache never keeps them.
@@ -88,17 +92,24 @@ export async function serveCached<
     return notCached(400);
   }
 
-  // SAFETY: the method name is in the plan, which only lists async methods of
-  // Target that take JSON arguments.
-  const methods = target as Record<
-    string,
-    (...args: Json[]) => Promise<unknown>
-  >;
+  // SAFETY: only reads one property, and the value is checked before use.
+  const method = (target as Record<string, unknown>)[call.method];
+
+  if (!isFunction(method)) {
+    return notCached(404);
+  }
 
   let body: string;
 
   try {
-    body = encodeResult(await methods[call.method]!(...call.args));
+    // RPC stubs answer every property, `apply` included, with a remote member.
+    const methodResult: unknown = await Function.prototype.apply.call(
+      method,
+      target,
+      call.args
+    );
+
+    body = encodeResult(methodResult);
   } catch (error) {
     options.onError?.(error, call);
 

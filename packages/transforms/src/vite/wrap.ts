@@ -32,7 +32,6 @@ type Wrapper = {
     | undefined;
 };
 
-/** `name`, followed by underscores until it does not appear in `code`. */
 export function unusedName(code: string, name: string): string {
   let candidate = name;
 

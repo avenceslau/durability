@@ -170,13 +170,13 @@ export class Account extends DurableObject<Env> {
 
 export const accountCache = cachePlan<Account>({ version: 1 })({
   getMetadata: {
-    location: { fresh: 60_000, stale: 86_400_000 },
-    staleIfError: 86_400_000,
+    location: { freshMs: 60_000, staleMs: 86_400_000 },
+    staleIfErrorMs: 86_400_000,
   },
 });
 ```
 
-Only async methods whose arguments and result round-trip through JSON can be planned; anything else is a type error. `fresh` is how long a result answers without calling the object, and `stale` is how long it keeps answering while one request refreshes it. Bump `version` when a cached result changes shape.
+Only async methods whose arguments and result round-trip through JSON can be planned; anything else is a type error. `freshMs` is how long a result answers without calling the object, and `staleMs` is how long it keeps answering while one request refreshes it. Bump `version` when a cached result changes shape.
 
 With `cacheEntrypoints: true`, the Vite plugin generates a `WorkerEntrypoint` named `AccountReads` (the target's export name followed by `Reads`) for every plan declared at the top level of the main module. Enable the Workers cache for it in Wrangler:
 
@@ -241,11 +241,11 @@ await account.with(accountReads).setPlan(accountId, 'pro');
 ```
 
 - Methods outside the plan are called directly. Pass `{ cache: 'no-cache' }` to refresh the cached result before answering, or `{ cache: 'no-store' }` to skip the cache for one call.
-- When the cached request fails, the call goes to the object directly. Set `fallback: 'throw'` to get a `CachedCallError` instead.
+- When the cached request fails or takes longer than `timeoutMs` (5 seconds by default), the call goes to the object directly. Set `fallback: 'throw'` to get a `CachedCallError` instead.
 - Results come back as JSON whichever path answered, and `onRead` reports which one did, with the `CF-Cache-Status` header when present.
 - Calls whose arguments do not encode as JSON, or encode into a URL over 4 KiB, go to the object directly.
 - Attach the tier only to stubs of the plan's Durable Object class: transforms do not check the stub's class, and the entrypoint addresses objects by ID in the plan's namespace.
-- A cached result can be up to `stale` old, so cache only reads that tolerate it. Writes through the object do not update cached results.
+- A cached result can be up to `staleMs` old, so cache only reads that tolerate it. Writes through the object do not update cached results.
 
 ## Manual wrapping
 

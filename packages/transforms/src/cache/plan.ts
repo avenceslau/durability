@@ -1,18 +1,18 @@
 import type { IsJson } from './json.js';
 
-/** How long a cached result is used, in milliseconds since the target returned it. */
+/** Ages of a cached result, measured from when the target returned it. */
 export type CacheWindows = {
   /** Answered from the cache without calling the target. At least one second. */
-  fresh: number;
-  /** Answered from the cache while one request refreshes it. At least `fresh`. */
-  stale: number;
+  freshMs: number;
+  /** Answered from the cache while one request refreshes it. At least `freshMs`. */
+  staleMs: number;
 };
 
 export type MethodCachePolicy = {
   /** Windows for the Workers cache, which is shared by every caller in a location. */
   location: CacheWindows;
-  /** How long a cached result may still answer while refreshing it fails. Defaults to `location.stale`. */
-  staleIfError?: number;
+  /** How long a cached result may still answer while refreshing it fails. Defaults to `location.staleMs`. */
+  staleIfErrorMs?: number;
 };
 
 type PlatformMethod =
@@ -61,7 +61,6 @@ export type CachePlanOptions = {
   entrypoint?: string | false;
 };
 
-/** The methods of `Target` to cache and how long, created by {@link cachePlan}. */
 export type CachePlan<Target, Methods extends string = string> = {
   readonly version: number;
   readonly methods: Readonly<Record<Methods, MethodCachePolicy>>;
@@ -69,7 +68,8 @@ export type CachePlan<Target, Methods extends string = string> = {
   readonly target?: Target;
 };
 
-const minimumFreshMs = 1_000;
+const millisecondsPerSecond = 1_000;
+const minimumFreshMs = millisecondsPerSecond;
 
 function checkWindow(
   method: string,
@@ -91,7 +91,7 @@ function checkWindow(
  * @example
  * ```ts
  * export const accountCache = cachePlan<Account>()({
- *   getMetadata: { location: { fresh: 60_000, stale: 86_400_000 } },
+ *   getMetadata: { location: { freshMs: 60_000, staleMs: 86_400_000 } },
  * });
  * ```
  */
@@ -108,22 +108,14 @@ export function cachePlan<Target extends object>(
 
   return (methods) => {
     for (const [method, policy] of Object.entries<MethodCachePolicy>(methods)) {
+      const { freshMs, staleMs } = policy.location;
+
+      checkWindow(method, 'location.freshMs', freshMs, minimumFreshMs);
+      checkWindow(method, 'location.staleMs', staleMs, freshMs);
       checkWindow(
         method,
-        'location.fresh',
-        policy.location.fresh,
-        minimumFreshMs
-      );
-      checkWindow(
-        method,
-        'location.stale',
-        policy.location.stale,
-        policy.location.fresh
-      );
-      checkWindow(
-        method,
-        'staleIfError',
-        policy.staleIfError ?? policy.location.stale,
+        'staleIfErrorMs',
+        policy.staleIfErrorMs ?? staleMs,
         0
       );
     }
@@ -141,16 +133,16 @@ export function methodPolicy<Target>(
     : undefined;
 }
 
-const toSeconds = (ms: number): number => Math.floor(ms / 1_000);
+const toSeconds = (ms: number): number =>
+  Math.floor(ms / millisecondsPerSecond);
 
-/** The `Cache-Control` header that makes the Workers cache follow `policy`. */
 export function cacheControl(policy: MethodCachePolicy): string {
-  const { fresh, stale } = policy.location;
+  const { freshMs, staleMs } = policy.location;
 
   return [
     'public',
-    `max-age=${toSeconds(fresh)}`,
-    `stale-while-revalidate=${toSeconds(stale - fresh)}`,
-    `stale-if-error=${toSeconds(policy.staleIfError ?? stale)}`,
+    `max-age=${toSeconds(freshMs)}`,
+    `stale-while-revalidate=${toSeconds(staleMs - freshMs)}`,
+    `stale-if-error=${toSeconds(policy.staleIfErrorMs ?? staleMs)}`,
   ].join(', ');
 }
