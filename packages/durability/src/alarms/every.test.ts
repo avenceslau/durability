@@ -25,8 +25,7 @@ const startClock = (): void => {
   vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
 };
 
-// Advances to the earliest pending occurrence and runs the due work there.
-const runNext = async (
+const runNextOccurrence = async (
   storage: FakeStorage,
   alarms: { alarm: () => Promise<void> }
 ): Promise<void> => {
@@ -41,6 +40,28 @@ const runNext = async (
   vi.setSystemTime(next);
   storage.alarmAt = null;
   await alarms.alarm();
+};
+
+const startBlockedSweep = async (storage: FakeStorage) => {
+  let finish: () => void = () => undefined;
+
+  const running = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+
+  const alarms = new DurabilityAlarms({
+    context: contextFor(storage),
+    activity: (): Level => 'active',
+    handlers: { sweep: every({ active: 30_000 }, () => running) },
+  });
+
+  const start = Date.now();
+  await alarms.sweep(start);
+  storage.alarmAt = null;
+  const pass = alarms.alarm();
+  await vi.waitFor(() => expect(readAlarms(storage)[0]?.attempt).toBe(1));
+
+  return { alarms, start, finish, pass };
 };
 
 afterEach(() => {
@@ -114,11 +135,11 @@ describe('every', () => {
 
     const start = Date.now();
     await alarms.sweep(start);
-    await runNext(storage, alarms);
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
+    await runNextOccurrence(storage, alarms);
     level = 'active';
-    await runNext(storage, alarms);
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
+    await runNextOccurrence(storage, alarms);
 
     expect(runs).toEqual([
       { at: start, level: 'draining' },
@@ -149,11 +170,11 @@ describe('every', () => {
     });
 
     await alarms.sweep(Date.now());
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
     expect(sweep).toHaveBeenCalledTimes(1);
 
     level = 'inactive';
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
 
     expect(sweep).toHaveBeenCalledTimes(1);
     expect(readAlarms(storage)).toEqual([]);
@@ -179,7 +200,7 @@ describe('every', () => {
     const start = Date.now();
     await alarms.snapshot(start);
     await alarms.heartbeat(start);
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
 
     expect(
       readAlarms(storage).map(({ name, next_attempt_at }) => ({
@@ -257,7 +278,7 @@ describe('every', () => {
 
     const start = Date.now();
     await alarms.sweep(start);
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
     await alarms.raiseActivity('active');
 
     expect(readAlarms(storage)).toEqual([
@@ -292,9 +313,9 @@ describe('every', () => {
 
     const start = Date.now();
     await alarms.sweep(start);
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
     const failedGeneration = readAlarms(storage)[0]?.generation_id;
-    await runNext(storage, alarms);
+    await runNextOccurrence(storage, alarms);
 
     expect(failures).toBe(2);
     expect(readAlarms(storage)).toEqual([
@@ -320,26 +341,10 @@ describe('every', () => {
   it('lets a replacement scheduled during a run win over the next occurrence', async () => {
     startClock();
     const storage = new FakeStorage();
-    let finish: (() => void) | undefined;
-
-    const running = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-
-    const alarms = new DurabilityAlarms({
-      context: contextFor(storage),
-      activity: (): Level => 'active',
-      handlers: { sweep: every({ active: 30_000 }, () => running) },
-    });
-
-    const start = Date.now();
-    await alarms.sweep(start);
-    storage.alarmAt = null;
-    const pass = alarms.alarm();
-    await vi.waitFor(() => expect(readAlarms(storage)[0]?.attempt).toBe(1));
+    const { alarms, start, finish, pass } = await startBlockedSweep(storage);
 
     await alarms.sweep(start + 120_000);
-    finish?.();
+    finish();
     await pass;
 
     expect(readAlarms(storage)).toEqual([
@@ -350,25 +355,10 @@ describe('every', () => {
   it('stops recurring once cancelled during a run', async () => {
     startClock();
     const storage = new FakeStorage();
-    let finish: (() => void) | undefined;
-
-    const running = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-
-    const alarms = new DurabilityAlarms({
-      context: contextFor(storage),
-      activity: (): Level => 'active',
-      handlers: { sweep: every({ active: 30_000 }, () => running) },
-    });
-
-    await alarms.sweep(Date.now());
-    storage.alarmAt = null;
-    const pass = alarms.alarm();
-    await vi.waitFor(() => expect(readAlarms(storage)[0]?.attempt).toBe(1));
+    const { alarms, finish, pass } = await startBlockedSweep(storage);
 
     await alarms.sweep.cancel();
-    finish?.();
+    finish();
     await pass;
 
     expect(readAlarms(storage)).toEqual([]);
