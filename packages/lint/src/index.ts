@@ -199,8 +199,8 @@ const durabilityImportName = (
     : undefined;
 };
 
-// An unimported bare name, or one imported through a local re-export, is
-// still recognized by its spelling.
+// durabilityImportName only follows direct imports from durability, so a class
+// imported through a local re-export falls back to its spelling.
 const helperClassName = (context: RuleContext, node: AstNode | undefined) => {
   if (node?.type !== 'NewExpression' || !node.callee) {
     return undefined;
