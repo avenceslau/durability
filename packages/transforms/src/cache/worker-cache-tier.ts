@@ -1,10 +1,11 @@
 import { defineTransform } from '../define.js';
-import { cachedCallUrl, noInstance } from './call.js';
+import { cachedCallUrl, nonDurableObjectInstance } from './call.js';
 import { decodeResult, encodeResult, toJson, type Json } from './json.js';
 import { methodPolicy, type CachePlan } from './plan.js';
 
 // Keeps cache URLs well under common URL length limits.
 const maxCacheUrlBytes = 4_096;
+const defaultTimeoutMs = 5_000;
 
 export type WorkerCacheRead = {
   method: string;
@@ -16,16 +17,17 @@ export type WorkerCacheRead = {
    * - `failed`: the cached request failed and `fallback` is `'throw'`.
    */
   outcome: 'cache' | 'direct' | 'fallback' | 'failed';
-  /** The `CF-Cache-Status` response header, when present. */
-  cacheStatus?: string;
+  cfCacheStatus?: string;
   error?: unknown;
 };
 
 export type WorkerCacheTierOptions = {
-  /** Service binding to the entrypoint that answers with {@link serveCached}. */
+  /** Service binding to the entrypoint that answers with `serveCached`. */
   binding: () => Fetcher;
   /** Calls the target directly (`'rpc'`, the default) or throws {@link CachedCallError} when a cached request fails. */
   fallback?: 'rpc' | 'throw';
+  /** Aborts a cached request after this many milliseconds, then applies `fallback`. Defaults to 5000. */
+  timeoutMs?: number;
   /** Called once for every call the transform handles. */
   onRead?: (read: WorkerCacheRead) => void;
 };
@@ -57,6 +59,11 @@ export class CachedCallError extends Error {
   }
 }
 
+type CachedResponse = {
+  cachedResult: Json | undefined;
+  cfCacheStatus: string | null;
+};
+
 function cacheUrl<Target>(
   plan: CachePlan<Target>,
   instance: string,
@@ -85,12 +92,31 @@ function cacheUrl<Target>(
     : url;
 }
 
+async function fetchCachedResult(
+  binding: Fetcher,
+  url: string,
+  method: string,
+  init: RequestInit
+): Promise<CachedResponse> {
+  const response = await binding.fetch(url, init);
+
+  if (!response.ok) {
+    await response.body?.cancel();
+
+    throw new CachedCallError(method, response.status);
+  }
+
+  return {
+    cachedResult: decodeResult(await response.text()),
+    cfCacheStatus: response.headers.get('cf-cache-status'),
+  };
+}
+
 /**
  * Caller transform that answers the plan's methods through the Workers cache.
- * Each call becomes a `GET` to an entrypoint that answers with
- * {@link serveCached}, so every caller in a location shares one cached result
- * per Durable Object, method and arguments, and concurrent misses reach the
- * target once.
+ * Each call becomes a `GET` to an entrypoint that answers with `serveCached`,
+ * so every caller in a location shares one cached result per Durable Object,
+ * method and arguments.
  *
  * Methods outside the plan are called directly. Results always come back as
  * JSON, whichever path answered.
@@ -109,6 +135,7 @@ export function workerCacheTier<Target extends object, Methods extends string>(
   options: WorkerCacheTierOptions
 ) {
   const fallback = options.fallback ?? 'rpc';
+  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
 
   return defineTransform<Target>().caller(
     (callOptions: WorkerCacheCallOptions | undefined) => async (context) => {
@@ -118,12 +145,12 @@ export function workerCacheTier<Target extends object, Methods extends string>(
         options.onRead?.({ method, ...read });
 
       // Caller transforms receive the Durable Object ID of the stub, and
-      // `undefined` for other targets.
+      // `undefined` for other targets; a generic Target cannot type it.
       const actorId = 'actorId' in context ? context.actorId : undefined;
 
       const url = cacheUrl(
         plan,
-        actorId === undefined ? noInstance : String(actorId),
+        actorId === undefined ? nonDurableObjectInstance : String(actorId),
         method,
         args
       );
@@ -134,23 +161,19 @@ export function workerCacheTier<Target extends object, Methods extends string>(
         return next();
       }
 
-      let result: Json | undefined;
-      let cacheStatus: string | null;
+      const signal = AbortSignal.timeout(timeoutMs);
+
+      let cached: CachedResponse;
 
       try {
-        const response =
+        cached = await fetchCachedResult(
+          options.binding(),
+          url,
+          method,
           callOptions?.cache === undefined
-            ? await options.binding().fetch(url)
-            : await options.binding().fetch(url, { cache: callOptions.cache });
-
-        if (!response.ok) {
-          await response.body?.cancel();
-
-          throw new CachedCallError(method, response.status);
-        }
-
-        result = decodeResult(await response.text());
-        cacheStatus = response.headers.get('cf-cache-status');
+            ? { signal }
+            : { signal, cache: callOptions.cache }
+        );
       } catch (error) {
         if (fallback === 'throw') {
           report({ outcome: 'failed', error });
@@ -168,12 +191,12 @@ export function workerCacheTier<Target extends object, Methods extends string>(
       }
 
       report(
-        cacheStatus === null
+        cached.cfCacheStatus === null
           ? { outcome: 'cache' }
-          : { outcome: 'cache', cacheStatus }
+          : { outcome: 'cache', cfCacheStatus: cached.cfCacheStatus }
       );
 
-      return result;
+      return cached.cachedResult;
     }
   );
 }

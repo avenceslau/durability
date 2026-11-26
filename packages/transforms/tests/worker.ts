@@ -159,29 +159,31 @@ export class PipelineDO extends DurableObject {
 }
 
 export class CacheDO extends DurableObject {
-  #calls = 0;
+  #reads = 0;
 
-  async getValue(key: string): Promise<{ key: string; calls: number }> {
-    this.#calls += 1;
+  async countRead(key: string): Promise<{ key: string; reads: number }> {
+    this.#reads += 1;
 
-    return { key, calls: this.#calls };
+    return { key, reads: this.#reads };
   }
 
   async getNothing(): Promise<string | undefined> {
     return undefined;
   }
 
-  async failValue(key: string): Promise<string> {
+  async failRead(key: string): Promise<string> {
     throw new Error(`No value for ${key}`);
   }
 
-  async setValue(key: string): Promise<void> {
-    this.#calls = key.length;
+  async setReadCount(count: number): Promise<void> {
+    this.#reads = count;
   }
 }
 
+const cacheDOPolicy = { location: { freshMs: 60_000, staleMs: 120_000 } };
+
 export const cacheDOPlan = cachePlan<CacheDO>()({
-  getValue: { location: { fresh: 60_000, stale: 120_000 } },
-  getNothing: { location: { fresh: 60_000, stale: 120_000 } },
-  failValue: { location: { fresh: 60_000, stale: 120_000 } },
+  countRead: cacheDOPolicy,
+  getNothing: cacheDOPolicy,
+  failRead: cacheDOPolicy,
 });

@@ -4,6 +4,7 @@ import {
   hasRange,
   identifierName,
   memberExpressionTypes,
+  propertyKeyName,
   propertyName,
   syntaxNode,
   unwrapExpression,
@@ -29,15 +30,10 @@ const objectHasProperty = (object: SyntaxNode, name: string): boolean => {
 
     return property.computed === true
       ? key?.type === 'StringLiteral' && key.value === name
-      : (identifierName(key) ?? key?.value) === name;
+      : propertyKeyName(property) === name;
   });
 };
 
-/**
- * The name under which `program` exports the local class `targetName`, which
- * must be a Durable Object class declared in the Wrangler configuration.
- * Errors name the class as `subject` and suggest `remedy`.
- */
 export function durableObjectExportName(
   program: SyntaxNode,
   targetName: string,

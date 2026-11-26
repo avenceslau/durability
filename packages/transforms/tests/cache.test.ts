@@ -1,7 +1,12 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { cachedCallUrl, parseCachedCall } from '../src/cache/call';
-import { cachePlan, serveCached, type IsJson } from '../src/cache/index';
+import {
+  cachePlan,
+  serveCached,
+  type IsJson,
+  type Json,
+} from '../src/cache/index';
 import { decodeResult, encodeResult, toJson } from '../src/cache/json';
 import { cacheControl } from '../src/cache/plan';
 import { cacheDOPlan } from './worker';
@@ -44,35 +49,41 @@ class Account {
 
 function assertPlanTypes() {
   cachePlan<Account>()({
-    getMetadata: { location: { fresh: 1_000, stale: 1_000 } },
-    getInterface: { location: { fresh: 1_000, stale: 1_000 } },
-    findMetadata: { location: { fresh: 1_000, stale: 1_000 } },
+    getMetadata: { location: { freshMs: 1_000, staleMs: 1_000 } },
+    getInterface: { location: { freshMs: 1_000, staleMs: 1_000 } },
+    findMetadata: { location: { freshMs: 1_000, staleMs: 1_000 } },
   });
 
   cachePlan<Account>()({
     // @ts-expect-error a Date result does not round-trip through JSON
-    getCreatedAt: { location: { fresh: 1_000, stale: 1_000 } },
+    getCreatedAt: { location: { freshMs: 1_000, staleMs: 1_000 } },
   });
 
   cachePlan<Account>()({
     // @ts-expect-error a method that returns nothing has nothing to cache
-    setPlan: { location: { fresh: 1_000, stale: 1_000 } },
+    setPlan: { location: { freshMs: 1_000, staleMs: 1_000 } },
   });
 
   cachePlan<Account>()({
     // @ts-expect-error a Date argument does not round-trip through JSON
-    byDate: { location: { fresh: 1_000, stale: 1_000 } },
+    byDate: { location: { freshMs: 1_000, staleMs: 1_000 } },
   });
 
   cachePlan<Account>()({
     // @ts-expect-error only async methods are cacheable
-    getSync: { location: { fresh: 1_000, stale: 1_000 } },
+    getSync: { location: { freshMs: 1_000, staleMs: 1_000 } },
   });
 
   const isJson: IsJson<{ nested: { values: number[] } }> = true;
+  const interfaceIsJson: IsJson<MetadataInterface> = true;
+  const metadata: MetadataInterface = { id: 1 };
+  // @ts-expect-error interfaces are not assignable to Json, which IsJson accepts
+  const interfaceAsJson: Json = metadata;
   const isNotJson: IsJson<{ callback: () => void }> = false;
 
   void isJson;
+  void interfaceIsJson;
+  void interfaceAsJson;
   void isNotJson;
 }
 
@@ -83,32 +94,32 @@ describe('cachePlan', () => {
     const plan = cachePlan<Account>();
 
     expect(() =>
-      plan({ getMetadata: { location: { fresh: 500, stale: 1_000 } } })
+      plan({ getMetadata: { location: { freshMs: 500, staleMs: 1_000 } } })
     ).toThrow(RangeError);
     expect(() =>
-      plan({ getMetadata: { location: { fresh: 2_000, stale: 1_000 } } })
-    ).toThrow('location.stale of getMetadata');
+      plan({ getMetadata: { location: { freshMs: 2_000, staleMs: 1_000 } } })
+    ).toThrow('location.staleMs of getMetadata');
     expect(() =>
       plan({
         getMetadata: {
-          location: { fresh: 1_000, stale: 1_000 },
-          staleIfError: Number.NaN,
+          location: { freshMs: 1_000, staleMs: 1_000 },
+          staleIfErrorMs: Number.NaN,
         },
       })
-    ).toThrow('staleIfError of getMetadata');
+    ).toThrow('staleIfErrorMs of getMetadata');
     expect(() => cachePlan<Account>({ version: 0 })).toThrow(RangeError);
   });
 
   it('builds Cache-Control from the location windows', () => {
     expect(
       cacheControl({
-        location: { fresh: 60_000, stale: 86_400_000 },
-        staleIfError: 3_600_500,
+        location: { freshMs: 60_000, staleMs: 86_400_000 },
+        staleIfErrorMs: 3_600_500,
       })
     ).toBe(
       'public, max-age=60, stale-while-revalidate=86340, stale-if-error=3600'
     );
-    expect(cacheControl({ location: { fresh: 1_000, stale: 1_000 } })).toBe(
+    expect(cacheControl({ location: { freshMs: 1_000, staleMs: 1_000 } })).toBe(
       'public, max-age=1, stale-while-revalidate=0, stale-if-error=1'
     );
   });
@@ -186,7 +197,7 @@ describe('serveCached', () => {
       cachedCallUrl({
         planVersion: 1,
         instance: id(),
-        method: 'getValue',
+        method: 'countRead',
         args: ['a'],
       })
     );
@@ -195,7 +206,7 @@ describe('serveCached', () => {
     expect(response.headers.get('cache-control')).toBe(
       'public, max-age=60, stale-while-revalidate=60, stale-if-error=120'
     );
-    expect(decodeResult(await response.text())).toEqual({ key: 'a', calls: 1 });
+    expect(decodeResult(await response.text())).toEqual({ key: 'a', reads: 1 });
   });
 
   it('answers everything else with no-store', async () => {
@@ -203,12 +214,12 @@ describe('serveCached', () => {
       cachedCallUrl({ planVersion, instance, method, args: ['a'] });
 
     const responses = await Promise.all([
-      request(planned('getValue'), 'POST'),
+      request(planned('countRead'), 'POST'),
       request('https://cache.invalid/other'),
-      request(planned('getValue', 2)),
-      request(planned('setValue')),
-      request(planned('getValue', 1, 'not-an-id')),
-      request(planned('failValue')),
+      request(planned('countRead', 2)),
+      request(planned('setReadCount')),
+      request(planned('countRead', 1, 'not-an-id')),
+      request(planned('failRead')),
     ]);
 
     expect(responses.map((response) => response.status)).toEqual([
@@ -228,7 +239,7 @@ describe('serveCached', () => {
         cachedCallUrl({
           planVersion: 1,
           instance: id(),
-          method: 'failValue',
+          method: 'failRead',
           args: ['k'],
         })
       ),
@@ -247,7 +258,7 @@ describe('serveCached', () => {
 
   it('calls targets that are not Durable Objects without an instance', async () => {
     const plan = cachePlan<Account>()({
-      getMetadata: { location: { fresh: 1_000, stale: 1_000 } },
+      getMetadata: { location: { freshMs: 1_000, staleMs: 1_000 } },
     });
 
     const url = (instance: string) =>

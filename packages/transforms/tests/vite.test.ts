@@ -618,19 +618,19 @@ ${plan}
 `;
 
   it('appends an entrypoint that serves the plan from the target namespace', async () => {
-    const result = await generate(
+    const generated = await generate(
       accountModule(
         'export const accountCache = cachePlan<Account>()({ getMetadata: policy });'
       )
     );
 
-    expect(result).toContain(
+    expect(generated).toContain(
       "import { WorkerEntrypoint as __durabilityWorkerEntrypoint, exports as __durabilityWorkerExports } from 'cloudflare:workers';"
     );
-    expect(result).toContain(
+    expect(generated).toContain(
       "import { serveCached as __durabilityServeCached } from '@durability/transforms/cache';"
     );
-    expect(result).toContain(`
+    expect(generated).toContain(`
 export class AccountReads extends __durabilityWorkerEntrypoint {
   fetch(request) {
     return __durabilityServeCached(request, accountCache, {
@@ -641,17 +641,19 @@ export class AccountReads extends __durabilityWorkerEntrypoint {
   });
 
   it('uses the entrypoint name from the plan options and skips entrypoint: false', async () => {
-    const result = await generate(
+    const generated = await generate(
       accountModule(`
 const accountCache = cachePlan<Account>({ version: 2, entrypoint: 'CustomReads' })({});
 const handWritten = cachePlan<Account>({ entrypoint: false })({});
 `)
     );
 
-    expect(result).toContain('export class CustomReads extends');
-    expect(result).toContain('__durabilityServeCached(request, accountCache,');
-    expect(result).not.toContain('handWritten,');
-    expect(result).not.toContain('AccountReads');
+    expect(generated).toContain('export class CustomReads extends');
+    expect(generated).toContain(
+      '__durabilityServeCached(request, accountCache,'
+    );
+    expect(generated).not.toContain('handWritten,');
+    expect(generated).not.toContain('AccountReads');
   });
 
   it('skips every check for a plan with entrypoint: false', async () => {
@@ -665,14 +667,14 @@ const serviceCache = cachePlan<Service>({ entrypoint: false })({});
   });
 
   it('supports an aliased cachePlan import', async () => {
-    const result = await generate(`
+    const generated = await generate(`
 import { DurableObject } from 'cloudflare:workers';
 import { cachePlan as plan } from '@durability/transforms/cache';
 export class Account extends DurableObject {}
 const accountCache = plan<Account>()({});
 `);
 
-    expect(result).toContain('export class AccountReads extends');
+    expect(generated).toContain('export class AccountReads extends');
   });
 
   it('leaves modules other than the main module and other cachePlan imports alone', async () => {

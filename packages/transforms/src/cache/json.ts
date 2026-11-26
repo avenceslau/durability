@@ -1,6 +1,6 @@
 import { isBoolean, isNumber, isObject, isString } from '../predicates.js';
 
-/** A value that reads back unchanged after a JSON round trip. */
+/** A value JSON text can represent. */
 export type Json =
   | string
   | number
@@ -26,8 +26,8 @@ type JsonCheck<T> = T extends string | number | boolean | null
         : false;
 
 /**
- * `true` when every value of `T` reads back unchanged after a JSON round trip.
- * Unlike assigning to {@link Json}, interfaces pass this check.
+ * `true` when `T` is made only of strings, numbers, booleans, null, arrays and
+ * plain objects. Interfaces pass, although they are not assignable to {@link Json}.
  */
 export type IsJson<T> = false extends JsonCheck<T> ? false : true;
 
@@ -41,10 +41,6 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return prototype === Object.prototype || prototype === null;
 };
 
-/**
- * Returns `value` as JSON with `undefined` object properties dropped. Throws a
- * `TypeError` naming `path` for anything else JSON cannot hold.
- */
 export function toJson(value: unknown, path: string): Json {
   if (value === null || isString(value) || isBoolean(value)) {
     return value;
@@ -72,31 +68,28 @@ export function toJson(value: unknown, path: string): Json {
   throw new TypeError(`${path} is not a JSON value`);
 }
 
-/** JSON text with object keys sorted at every depth, so equal values encode equally. */
-export function canonicalJson(value: Json): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`;
+export function canonicalJson(json: Json): string {
+  if (Array.isArray(json)) {
+    return `[${json.map(canonicalJson).join(',')}]`;
   }
 
-  if (value === null || !isObject(value)) {
-    return JSON.stringify(value);
+  if (json === null || !isObject(json)) {
+    return JSON.stringify(json);
   }
 
-  const members = Object.keys(value)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`);
+  const members = Object.entries(json)
+    .sort(([left], [right]) => (left < right ? -1 : 1))
+    .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`);
 
   return `{${members.join(',')}}`;
 }
 
-/** Encodes a method result, keeping an `undefined` result distinct from `null`. */
 export function encodeResult(value: unknown): string {
   return JSON.stringify(
     value === undefined ? {} : { value: toJson(value, 'result') }
   );
 }
 
-/** Reads a result written by {@link encodeResult}. Throws a `TypeError` on anything else. */
 export function decodeResult(text: string): Json | undefined {
   const parsed: unknown = JSON.parse(text);
 

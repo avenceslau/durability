@@ -36,6 +36,12 @@ export type DoTransformsPluginOptions = {
   cacheEntrypoints?: boolean;
 };
 
+const noBindings: WranglerBindings = {
+  durableObjectBindingNames: new Set(),
+  stubBindingNames: new Set(),
+  durableObjectClassNames: new Set(),
+};
+
 /**
  * Adds caller transform support to every object binding in the Wrangler config.
  *
@@ -56,12 +62,6 @@ export type DoTransformsPluginOptions = {
  * ```
  */
 export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
-  let bindings: WranglerBindings = {
-    durableObjectBindingNames: new Set(),
-    stubBindingNames: new Set(),
-    durableObjectClassNames: new Set(),
-  };
-
   let project: WranglerProject | undefined;
   let mainPath: string | undefined;
 
@@ -75,7 +75,6 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
       );
 
       project = loadWranglerProject(wranglerPath, await import('wrangler'));
-      bindings = project.bindings;
 
       if (!project.config.main) {
         return;
@@ -95,6 +94,7 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
     },
     transform(code, id) {
       const cleanId = id.split('?')[0] ?? id;
+      const bindings = project?.bindings ?? noBindings;
 
       const mayWrapBindings =
         bindings.durableObjectBindingNames.size > 0 ||
