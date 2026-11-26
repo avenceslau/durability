@@ -72,7 +72,7 @@ const rehydrate = sourceExcerpt(
   'rehydrate',
   'Read a flushed segment back',
   '  async #rehydrate(',
-  '      .slice(0, limit);\n  }'
+  '      maxBytes\n    );\n  }'
 );
 
 const commitCursor = sourceExcerpt(
@@ -90,7 +90,7 @@ const trim = sourceExcerpt(
   'trim',
   'Flush or delete the oldest records',
   '  async trim(): Promise<number> {',
-  '      if (deleted < expiring.length) {\n        return removed;\n      }\n    }\n  }'
+  '      if (deleted < batch.length) {\n        return removed;\n      }\n    }\n  }'
 );
 
 const claimExpired = sourceExcerpt(
@@ -278,7 +278,7 @@ export const walkthrough = validateWalkthrough({
     },
     sqlite: {
       description:
-        'Every log table is keyed by channel first. durability_log_records holds the hot window by channel and offset, with a deduplication key unique per channel; durability_log_seq one row per channel with the next offset and byte count; durability_log_cursors one row per channel and consumer; durability_log_segments the cold index by channel and first offset. Leases add durability_log_leases and durability_log_allocations.',
+        'Every log table is keyed by channel first. durability_log_records holds the hot window by channel and offset, with a deduplication key unique per channel; durability_log_parts the rest of any payload over 1 MiB, by channel, offset, and part; durability_log_seq one row per channel with the next offset and byte count; durability_log_cursors one row per channel and consumer; durability_log_segments the cold index by channel and first offset. Leases add durability_log_leases and durability_log_allocations.',
       href: '/reference/storage/',
       source: 'construct',
     },
@@ -411,7 +411,11 @@ export const walkthrough = validateWalkthrough({
           description:
             'An offset still in the object is read from durability_log_records; only an offset below the hot window goes to cold storage. The page reports the next offset and the lag behind the newest record.',
           stage: ['focus:log'],
-          source: sourceFocus(read, 'const records =', 'this.#record(row)'),
+          source: sourceFocus(
+            read,
+            'const records = await this.#readFrom(',
+            '      options.maxBytes'
+          ),
           durable: 'Rows are read, not changed.',
           volatile: 'The decoded records in this page.',
           status: 'normal',
@@ -620,7 +624,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             trim,
             'insertSegment(this.#engine.sql, this.#channel, {',
-            'trimThrough(sql, this.#channel, last.offset + 1, expiring.length)'
+            'trimThrough(sql, this.#channel, last.offset + 1, batch.length)'
           ),
           durable:
             'The segment row, then fewer records and a smaller byte count.',

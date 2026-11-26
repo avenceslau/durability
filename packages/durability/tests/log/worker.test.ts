@@ -181,4 +181,42 @@ describe('durable log', () => {
       )
     ).toEqual(['default']);
   });
+
+  it('stores a record larger than one SQLite row and flushes it whole', async () => {
+    const name = crypto.randomUUID();
+    const stub = objectFor(name);
+    const topic = 'large\u{1F600}'.repeat(300_000);
+
+    expect(
+      await stub.append([
+        { body: { topic, value: 1 } },
+        { body: { topic: 'small', value: 2 } },
+      ])
+    ).toMatchObject({ success: true, value: [0, 1] });
+    expect(await stub.countParts()).toBeGreaterThan(0);
+
+    await evictDurableObject(stub);
+    const revived = objectFor(name);
+    const page = await revived.read(0);
+    expect(page.records.map((record) => record.body)).toEqual([
+      { topic, value: 1 },
+      { topic: 'small', value: 2 },
+    ]);
+
+    const lease = await revived.lease('search', 2);
+
+    if (!lease) {
+      throw new Error('Expected a lease');
+    }
+
+    expect(lease.records[0]?.body.topic).toBe(topic);
+    await revived.ackLease('search', lease.batchId);
+
+    await revived.append(
+      [3, 4, 5].map((value) => ({ body: { topic: 'small', value } }))
+    );
+    expect(await revived.trim()).toBe(2);
+    expect(await revived.countParts()).toBe(0);
+    expect((await revived.read(0, 1)).records[0]?.body.topic).toBe(topic);
+  });
 });

@@ -46,6 +46,7 @@ export {
   type LogColdStorage,
   type LogLease,
   type LogLeaseOptions,
+  type LogLeaseReadOptions,
   type LogPage,
   type LogReadOptions,
   type LogRecord,

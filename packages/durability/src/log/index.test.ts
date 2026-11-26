@@ -785,6 +785,300 @@ describe('log', () => {
       nextOffset: 5,
     });
   });
+
+  const partBytes = 1024 * 1024;
+  const encoder = new TextEncoder();
+
+  const payloadBytes = (body: string) =>
+    encoder.encode(serialize(body)).byteLength;
+
+  const threePartPayload = 'abc'.repeat(750_000);
+
+  const bodyOfSerializedBytes = (bytes: number) =>
+    'x'.repeat(bytes - payloadBytes(''));
+
+  const splitSurrogatePairAtBoundary = /^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/;
+
+  const defined = <T>(lease: T | undefined): T => {
+    if (lease === undefined) {
+      throw new Error('Expected a lease');
+    }
+
+    return lease;
+  };
+
+  const partRows = (storage: FakeStorage) =>
+    storage.sql
+      .exec<{ offset: number; part: number; data: string }>(
+        `SELECT "offset", part, data FROM durability_log_parts
+         ORDER BY "offset", part`
+      )
+      .toArray();
+
+  const recordParts = (storage: FakeStorage) =>
+    storage.sql
+      .exec(
+        'SELECT "offset", parts FROM durability_log_records ORDER BY "offset"'
+      )
+      .toArray();
+
+  const heldBytes = (storage: FakeStorage) =>
+    storage.sql
+      .exec(
+        "SELECT total_bytes FROM durability_log_seq WHERE channel = 'default'"
+      )
+      .one()['total_bytes'];
+
+  it('round-trips a payload larger than one row through read and lease', async () => {
+    const { log, storage } = fixture({ leases: {} });
+    expect(await offsetsOf(log, ['before', threePartPayload, 'after'])).toEqual(
+      [0, 1, 2]
+    );
+
+    expect(recordParts(storage)).toEqual([
+      { offset: 0, parts: 0 },
+      { offset: 1, parts: 2 },
+      { offset: 2, parts: 0 },
+    ]);
+    expect(partRows(storage).map(({ offset, part }) => [offset, part])).toEqual(
+      [
+        [1, 1],
+        [1, 2],
+      ]
+    );
+    expect(heldBytes(storage)).toBe(
+      payloadBytes('before') +
+        payloadBytes(threePartPayload) +
+        payloadBytes('after')
+    );
+
+    const page = await log.read({ from: 0 });
+    expect(page.records.map((record) => record.body)).toEqual([
+      'before',
+      threePartPayload,
+      'after',
+    ]);
+    expect(page.nextOffset).toBe(3);
+
+    const lease = await log.lease('worker');
+    expect(lease?.records.map((record) => record.body)).toEqual([
+      'before',
+      threePartPayload,
+      'after',
+    ]);
+  });
+
+  it('splits multi-byte characters and emoji only between code points', async () => {
+    const { log, storage } = fixture();
+    const prefixBytes = payloadBytes('') - '"}'.length;
+    const bytesBeforePartBoundary = 2;
+
+    const body = [
+      'a'.repeat(partBytes - prefixBytes - bytesBeforePartBoundary),
+      '\u{1F600}'.repeat(1_000),
+      '\u00e9\u4e2d'.repeat(300_000),
+      '\u{1F680}'.repeat(10),
+    ].join('');
+
+    await offsetsOf(log, [body]);
+
+    const inline = storage.sql
+      .exec<{ payload: string }>('SELECT payload FROM durability_log_records')
+      .one().payload;
+
+    const pieces = [inline, ...partRows(storage).map(({ data }) => data)];
+    expect(pieces).toHaveLength(3);
+
+    for (const piece of pieces) {
+      expect(encoder.encode(piece).byteLength).toBeLessThanOrEqual(partBytes);
+      expect(piece).not.toMatch(splitSurrogatePairAtBoundary);
+    }
+
+    expect(encoder.encode(inline).byteLength).toBe(
+      partBytes - bytesBeforePartBoundary
+    );
+    expect((await log.read({ from: 0 })).records[0]?.body).toBe(body);
+    expect(heldBytes(storage)).toBe(payloadBytes(body));
+  });
+
+  it('keeps a payload of exactly one part inline', async () => {
+    const { log, storage } = fixture();
+    const exact = bodyOfSerializedBytes(partBytes);
+    const over = bodyOfSerializedBytes(partBytes + 1);
+    await offsetsOf(log, [exact, over]);
+
+    expect(recordParts(storage)).toEqual([
+      { offset: 0, parts: 0 },
+      { offset: 1, parts: 1 },
+    ]);
+    expect(partRows(storage)).toEqual([{ offset: 1, part: 1, data: '}' }]);
+    expect(
+      (await log.read({ from: 0 })).records.map((record) => record.body)
+    ).toEqual([exact, over]);
+  });
+
+  it('writes no parts for a deduplicated large record', async () => {
+    const { log, storage } = fixture();
+
+    expect(
+      await log.append([
+        { deduplicationKey: 'large', body: threePartPayload },
+        { deduplicationKey: 'large', body: threePartPayload },
+      ])
+    ).toMatchObject({ success: true, value: [0, 0] });
+    expect(
+      await log.append({
+        deduplicationKey: 'large',
+        body: threePartPayload,
+      })
+    ).toMatchObject({ success: true, value: [0] });
+
+    expect(partRows(storage)).toHaveLength(2);
+    expect(heldBytes(storage)).toBe(payloadBytes(threePartPayload));
+  });
+
+  it('deletes parts with discarded records', async () => {
+    const { log, storage } = fixture();
+    await offsetsOf(log, [threePartPayload, threePartPayload, 'small']);
+
+    expect(await log.discardBefore(1)).toBe(1);
+    expect(partRows(storage).map(({ offset }) => offset)).toEqual([1, 1]);
+    expect(await log.discardBefore(3)).toBe(2);
+    expect(partRows(storage)).toEqual([]);
+    expect(heldBytes(storage)).toBe(0);
+  });
+
+  it('deletes parts with records trimmed without cold storage', async () => {
+    const { log, storage } = fixture({ retention: { maxRecords: 1 } });
+    await offsetsOf(log, [threePartPayload, threePartPayload, 'small']);
+
+    expect(await log.trim()).toBe(2);
+    expect(partRows(storage)).toEqual([]);
+    expect(heldBytes(storage)).toBe(payloadBytes('small'));
+  });
+
+  it('flushes reassembled payloads to cold storage and deletes their parts', async () => {
+    const cold = coldStore();
+    const { log, storage } = fixture({ retention: { maxRecords: 1 }, cold });
+    await offsetsOf(log, [threePartPayload, 'small', threePartPayload]);
+
+    expect(await log.trim()).toBe(2);
+    expect(
+      [...cold.segments.values()].flat().map((record) => record.body)
+    ).toEqual([threePartPayload, 'small']);
+    expect(partRows(storage).map(({ offset }) => offset)).toEqual([2, 2]);
+    expect(heldBytes(storage)).toBe(payloadBytes(threePartPayload));
+
+    expect(
+      (await log.read({ from: 0 })).records.map((record) => record.body)
+    ).toEqual([threePartPayload, 'small']);
+  });
+
+  it('bounds each cold segment by payload bytes', async () => {
+    const cold = coldStore();
+    const { log } = fixture({ retention: { maxRecords: 1 }, cold });
+    const segmentHalf = 'h'.repeat(33 * 1024 * 1024);
+    await offsetsOf(log, ['small', segmentHalf, segmentHalf, 'last']);
+
+    expect(await log.trim()).toBe(3);
+    expect(
+      [...cold.segments.values()].map((records) =>
+        records.map((record) => record.offset)
+      )
+    ).toEqual([[0, 1], [2]]);
+  });
+
+  it('refuses to downgrade while a record is split into parts', async () => {
+    const { log, storage } = fixture();
+    const context = contextFor(storage);
+    await offsetsOf(log, [threePartPayload, 'small']);
+
+    expect(() =>
+      DurabilityLog.migrate(context, 'durability_0019_log_channels')
+    ).toThrow(/cannot_downgrade_split_payloads/);
+    expect(partRows(storage)).toHaveLength(2);
+
+    await log.discardBefore(1);
+    expect(
+      DurabilityLog.migrate(context, 'durability_0019_log_channels').rolledBack
+    ).toEqual(['durability_0025_log_parts']);
+    expect(
+      storage.sql
+        .exec(
+          "SELECT name FROM sqlite_master WHERE name = 'durability_log_parts'"
+        )
+        .toArray()
+    ).toEqual([]);
+    expect(
+      storage.sql.exec('SELECT * FROM durability_log_records').toArray()
+    ).toMatchObject([{ offset: 1 }]);
+  });
+
+  const sizedBodies = ['a'.repeat(100), 'b'.repeat(100), 'c'.repeat(100)];
+  const sizedBytes = payloadBytes('a'.repeat(100));
+
+  it('stops a read at its byte budget but returns at least one record', async () => {
+    const { log } = fixture();
+    await offsetsOf(log, sizedBodies);
+
+    const fitting = await log.read({ from: 0, maxBytes: sizedBytes * 2 + 1 });
+    expect(fitting.records.map((record) => record.offset)).toEqual([0, 1]);
+    expect(fitting).toMatchObject({ nextOffset: 2, lag: 1 });
+
+    const oversized = await log.read({ from: 1, maxBytes: 1 });
+    expect(oversized.records.map((record) => record.offset)).toEqual([1]);
+    expect(oversized).toMatchObject({ nextOffset: 2, lag: 1 });
+
+    const limited = await log.read({ from: 0, limit: 1, maxBytes: 1_000_000 });
+    expect(limited.records.map((record) => record.offset)).toEqual([0]);
+
+    await expect(log.read({ from: 0, maxBytes: 0 })).rejects.toThrow(
+      /maxBytes/
+    );
+  });
+
+  it('applies the byte budget to records read back from cold storage', async () => {
+    const cold = coldStore();
+    const { log } = fixture({ retention: { maxRecords: 1 }, cold });
+    await offsetsOf(log, [...sizedBodies, 'last']);
+    expect(await log.trim()).toBe(3);
+
+    const page = await log.read({ from: 0, maxBytes: sizedBytes * 2 });
+    expect(page.records.map((record) => record.offset)).toEqual([0, 1]);
+    expect(page.nextOffset).toBe(2);
+
+    const single = await log.read({ from: 0, maxBytes: 1 });
+    expect(single.records.map((record) => record.offset)).toEqual([0]);
+  });
+
+  it('ends a leased range where its byte budget stopped it', async () => {
+    const { log } = fixture({ leases: { maxParallelism: 2 } });
+    await offsetsOf(log, sizedBodies);
+
+    const first = await log.lease('worker', undefined, {
+      maxBytes: sizedBytes * 2,
+    });
+
+    expect(first).toMatchObject({ firstOffset: 0, lastOffset: 1 });
+    expect(first?.records.map((record) => record.offset)).toEqual([0, 1]);
+
+    const second = await log.lease('worker', 10, { maxBytes: 1 });
+
+    expect(second).toMatchObject({ firstOffset: 2, lastOffset: 2 });
+
+    await log.ack('worker', defined(first).batchId);
+    expect(await log.cursor('worker')).toBe(2);
+
+    await log.nack('worker', defined(second).batchId);
+    const redelivered = await log.lease('worker');
+    expect(redelivered).toMatchObject({
+      firstOffset: 2,
+      lastOffset: 2,
+      attempt: 2,
+    });
+    await log.ack('worker', defined(redelivered).batchId);
+    expect(await log.cursor('worker')).toBe(3);
+  });
 });
 
 describe('log channels', () => {
@@ -1239,6 +1533,7 @@ describe('log channels', () => {
       ).rolledBack
     ).toEqual(['durability_0024_log_lease_channels']);
     expect(DurabilityLog.migrate(context, beforeChannels).rolledBack).toEqual([
+      'durability_0025_log_parts',
       'durability_0019_log_channels',
     ]);
     expect(
