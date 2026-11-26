@@ -15,7 +15,7 @@ import {
   largeObjectStream,
   registerTransform,
 } from '@durability/transforms';
-import { cachePlan } from '@durability/transforms/cache';
+import { cachePlan, durableTier } from '@durability/transforms/cache';
 
 export type TestContext = {
   requestId?: string;
@@ -201,3 +201,30 @@ export const cacheDOPlan = cachePlan<CacheDO>()({
   getNothing: cacheDOPolicy,
   failRead: cacheDOPolicy,
 });
+
+export const durablePlan = cachePlan<CacheDO>({ entrypoint: false })({
+  countRead: { durable: { freshMs: 60_000, staleMs: 120_000 } },
+});
+
+export class CacheCallerDO extends DurableObject {
+  readonly #durable = durableTier(durablePlan, this.ctx.storage);
+
+  /** Reads through this object's tier, or through a new tier on the same storage. */
+  async readThroughStorage(
+    target: string,
+    key: string,
+    newTier: boolean
+  ): Promise<{ key: string; reads: number }> {
+    const tier = newTier
+      ? durableTier(durablePlan, this.ctx.storage)
+      : this.#durable;
+
+    return this.env.CACHE_DO.getByName(target).with(tier).countRead(key);
+  }
+
+  async storedKeys(): Promise<string[]> {
+    const stored = await this.ctx.storage.list({ prefix: 'durability-cache:' });
+
+    return [...stored.keys()];
+  }
+}

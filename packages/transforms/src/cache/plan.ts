@@ -14,13 +14,15 @@ export type MethodCachePolicy = {
   memory?: CacheWindows;
   /** Windows for the Workers cache, which is shared by every caller in a location. */
   location?: CacheWindows;
+  /** Windows for `durableTier`, which is per calling Durable Object and survives its eviction. */
+  durable?: CacheWindows;
   /** How long a cached result may still answer while refreshing it fails. Defaults to each tier's `staleMs`. */
   staleIfErrorMs?: number;
 };
 
-export type CacheTierName = 'memory' | 'location';
+export type CacheTierName = 'memory' | 'durable' | 'location';
 
-const tierNames: readonly CacheTierName[] = ['memory', 'location'];
+const tierNames: readonly CacheTierName[] = ['memory', 'durable', 'location'];
 
 type PlatformMethod =
   | 'alarm'
