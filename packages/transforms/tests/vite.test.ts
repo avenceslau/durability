@@ -654,6 +654,16 @@ const handWritten = cachePlan<Account>({ entrypoint: false })({});
     expect(result).not.toContain('AccountReads');
   });
 
+  it('skips every check for a plan with entrypoint: false', async () => {
+    await expect(
+      generate(`
+import { cachePlan } from '@durability/transforms/cache';
+import type { Service } from './service';
+const serviceCache = cachePlan<Service>({ entrypoint: false })({});
+`)
+    ).resolves.toBeNull();
+  });
+
   it('supports an aliased cachePlan import', async () => {
     const result = await generate(`
 import { DurableObject } from 'cloudflare:workers';
