@@ -21,6 +21,12 @@ declare global {
     PIPELINE_DO: TransformDurableObjectNamespace<
       import("./worker").PipelineDO
     >;
+    CACHE_DO: TransformDurableObjectNamespace<
+      import("./worker").CacheDO
+    >;
+    CACHE_CALLER_DO: TransformDurableObjectNamespace<
+      import("./worker").CacheCallerDO
+    >;
     WORKFLOW: TransformStub<Workflow<Parameters<import("./worker").EchoWorkflow['run']>[0]['payload']>>;
     KV: TransformStub<KVNamespace>;
     BUCKET: TransformStub<R2Bucket>;
@@ -34,6 +40,12 @@ declare global {
       >;
       PIPELINE_DO: TransformDurableObjectNamespace<
         import("./worker").PipelineDO
+      >;
+      CACHE_DO: TransformDurableObjectNamespace<
+        import("./worker").CacheDO
+      >;
+      CACHE_CALLER_DO: TransformDurableObjectNamespace<
+        import("./worker").CacheCallerDO
       >;
       WORKFLOW: TransformStub<Workflow<Parameters<import("./worker").EchoWorkflow['run']>[0]['payload']>>;
       KV: TransformStub<KVNamespace>;

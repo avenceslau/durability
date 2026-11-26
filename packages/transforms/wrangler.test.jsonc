@@ -14,7 +14,15 @@
       "service": "do-transforms-cross-worker",
       "entrypoint": "CrossWorkerContextService",
     },
+    {
+      "binding": "CACHE_READS",
+      "service": "do-transforms-test",
+      "entrypoint": "CacheDOReads",
+    },
   ],
+  "exports": {
+    "CacheDOReads": { "type": "worker", "cache": { "enabled": true } },
+  },
   "kv_namespaces": [{ "binding": "KV", "id": "transforms-test-kv" }],
   "r2_buckets": [
     { "binding": "BUCKET", "bucket_name": "transforms-test-bucket" },
@@ -36,12 +44,28 @@
         "name": "PIPELINE_DO",
         "class_name": "PipelineDO",
       },
+      {
+        "name": "CACHE_DO",
+        "class_name": "CacheDO",
+      },
+      {
+        "name": "CACHE_CALLER_DO",
+        "class_name": "CacheCallerDO",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["ContextDO", "PipelineDO"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["CacheDO"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["CacheCallerDO"],
     },
   ],
 }

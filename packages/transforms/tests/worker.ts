@@ -15,6 +15,7 @@ import {
   largeObjectStream,
   registerTransform,
 } from '@durability/transforms';
+import { cachePlan, durableTier } from '@durability/transforms/cache';
 
 export type TestContext = {
   requestId?: string;
@@ -154,5 +155,76 @@ export class PipelineDO extends DurableObject {
 
   async echo(value: string): Promise<string> {
     return value;
+  }
+}
+
+export class CacheDO extends DurableObject {
+  #reads = 0;
+
+  async countRead(key: string): Promise<{ key: string; reads: number }> {
+    this.#reads += 1;
+
+    return { key, reads: this.#reads };
+  }
+
+  async getNothing(): Promise<string | undefined> {
+    return undefined;
+  }
+
+  async failRead(key: string): Promise<string> {
+    throw new Error(`No value for ${key}`);
+  }
+
+  async setReadCount(count: number): Promise<void> {
+    this.#reads = count;
+  }
+
+  #failing = false;
+
+  async readOrFail(key: string): Promise<{ key: string; reads: number }> {
+    if (this.#failing) {
+      throw new Error(`Reading ${key} failed`);
+    }
+
+    return this.countRead(key);
+  }
+
+  async setFailing(failing: boolean): Promise<void> {
+    this.#failing = failing;
+  }
+}
+
+const cacheDOPolicy = { location: { freshMs: 60_000, staleMs: 120_000 } };
+
+export const cacheDOPlan = cachePlan<CacheDO>()({
+  countRead: cacheDOPolicy,
+  getNothing: cacheDOPolicy,
+  failRead: cacheDOPolicy,
+});
+
+export const durablePlan = cachePlan<CacheDO>({ entrypoint: false })({
+  countRead: { durable: { freshMs: 60_000, staleMs: 120_000 } },
+});
+
+export class CacheCallerDO extends DurableObject {
+  readonly #durable = durableTier(durablePlan, this.ctx.storage);
+
+  /** Reads through this object's tier, or through a new tier on the same storage. */
+  async readThroughStorage(
+    target: string,
+    key: string,
+    newTier: boolean
+  ): Promise<{ key: string; reads: number }> {
+    const tier = newTier
+      ? durableTier(durablePlan, this.ctx.storage)
+      : this.#durable;
+
+    return this.env.CACHE_DO.getByName(target).with(tier).countRead(key);
+  }
+
+  async storedKeys(): Promise<string[]> {
+    const stored = await this.ctx.storage.list({ prefix: 'durability-cache:' });
+
+    return [...stored.keys()];
   }
 }
