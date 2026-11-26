@@ -36,8 +36,12 @@ export class NonRetryableError extends Error {
  * @example
  * ```ts
  * if (response.status === 429) {
- *   const seconds = Number(response.headers.get('Retry-After') ?? 1);
- *   throw new RetryAfterError('Rate limited', seconds * 1000);
+ *   // Retry-After is either delay-seconds or an HTTP date.
+ *   const header = response.headers.get('Retry-After') ?? '';
+ *   const seconds = Number(header);
+ *   const at = Date.parse(header);
+ *   const delayMs = Number.isFinite(seconds) ? seconds * 1000 : at - Date.now();
+ *   throw new RetryAfterError('Rate limited', Math.max(0, delayMs || 0));
  * }
  * ```
  */

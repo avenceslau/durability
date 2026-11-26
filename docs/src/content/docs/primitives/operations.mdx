@@ -82,8 +82,15 @@ import { RetryAfterError } from 'durability';
 const response = await fetch(payload.url, { method: 'POST', signal });
 
 if (response.status === 429) {
-  const seconds = Number(response.headers.get('Retry-After') ?? 1);
-  throw new RetryAfterError('Receiver is rate limiting', seconds * 1000);
+  // Retry-After is either delay-seconds or an HTTP date.
+  const header = response.headers.get('Retry-After') ?? '';
+  const seconds = Number(header);
+  const at = Date.parse(header);
+  const delayMs = Number.isFinite(seconds) ? seconds * 1000 : at - Date.now();
+  throw new RetryAfterError(
+    'Receiver is rate limiting',
+    Math.max(0, delayMs || 0)
+  );
 }
 ```
 
