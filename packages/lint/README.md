@@ -20,6 +20,7 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
     "durability/alarm-runner-only": "error",
     "durability/durability-migrations-only": "error",
     "durability/no-alarm-changes-in-alarm-handler": "error",
+    "durability/no-alarm-changes-in-constructor": "error",
     "durability/no-delete-all-in-transaction": "error",
     "durability/no-deferred-storage-writes": "error",
     "durability/transaction-sync-callback": "error",
@@ -72,6 +73,36 @@ class Reports extends DurableObject<Env> {
 ```
 
 The rule checks calls written inside the handler; a helper method called from it is not followed.
+
+## `no-alarm-changes-in-constructor`
+
+The constructor runs every time the object is loaded: after an eviction, a deploy or a reset, and to deliver an alarm. A Durable Object has one alarm, so a constructor that calls `setAlarm()` or `deleteAlarm()` replaces or removes whatever was pending, such as the retry of a failed run or the alarm durability scheduled, on every load. Scheduling through durability there repeats the work on every load too: it moves the object's alarm, and a named alarm or schedule set there replaces its pending occurrence each time, so it may never fire.
+
+The rule rejects, in a constructor and in instance field initializers:
+
+- `setAlarm()` and `deleteAlarm()` on any receiver, including a transaction handle;
+- durability calls that schedule work: `Durability` and `DurabilityAlarms` handler methods, `purgeBefore()`, a named alarm's `cancel()`, and `alarm()` on every helper, `DurabilityFanout.enqueue()`, `DurabilityOutbox.stage()`, `DurabilitySchedule.set()`, `reschedule()` and `cancel()`, `DurabilityTopology.update()` and `delete()`, `DurabilitySemaphore.handle()`, and `DurabilitySemaphoreQueue.enqueue()`, `release()` and `cancel()`.
+
+Code that runs as part of the constructor counts: callbacks passed to `blockConcurrencyWhile()`, functions invoked in place, and `.then()`, `.catch()` and `.finally()` callbacks. Handlers and listeners declared there run later and are not checked. Constructing a helper, registering a `lifecycle()` listener and reads such as `getResult()` are accepted. Schedule from the request that creates the work instead:
+
+```ts
+class Subscription extends DurableObject<Env> {
+  private readonly alarms = new DurabilityAlarms({
+    context: this.ctx,
+    handlers,
+  });
+
+  subscribe(at: number) {
+    return this.alarms.renew(at);
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.alarms.alarm(info);
+  }
+}
+```
+
+Helpers are recognized as class fields, `this` fields assigned in the constructor and local variables created with `new`, under imported aliases too. A method called from the constructor is not followed.
 
 ## `no-delete-all-in-transaction`
 

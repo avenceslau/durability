@@ -931,6 +931,139 @@ describe('no-alarm-changes-in-alarm-handler', () => {
   });
 });
 
+describe('no-alarm-changes-in-constructor', () => {
+  it.each([
+    `
+      import { DurabilityAlarms } from 'durability';
+
+      class Example {
+        alarms = new DurabilityAlarms({
+          context: this.ctx,
+          handlers: { renew: async () => this.alarms.renew(Date.now() + 1_000) },
+        });
+
+        constructor(ctx: DurableObjectState) {
+          this.alarms.lifecycle(() => this.ctx.storage.setAlarm(Date.now()));
+          ctx.waitUntil(this.alarms.renew.getResult('renew'));
+          this.start = () => ctx.storage.setAlarm(Date.now());
+        }
+
+        async start() {
+          await this.ctx.storage.setAlarm(Date.now() + 1_000);
+          await this.alarms.renew(Date.now() + 1_000);
+        }
+      }
+    `,
+    `
+      import { DurabilitySchedule } from 'durability/experimental';
+
+      class Example {
+        schedule = new DurabilitySchedule({ context: this.ctx });
+        static alarm = (storage: DurableObjectStorage) => storage.setAlarm(0);
+
+        constructor() {
+          this.schedule.get();
+        }
+      }
+    `,
+  ])('accepts alarm changes outside construction', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-constructor');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        constructor(ctx: DurableObjectState) {
+          void ctx.storage.setAlarm(Date.now() + 60_000);
+        }
+      }
+    `,
+    `
+      class Example {
+        constructor(ctx: DurableObjectState) {
+          ctx.blockConcurrencyWhile(async () => {
+            if ((await ctx.storage.getAlarm()) === null) {
+              await ctx.storage.setAlarm(Date.now() + 60_000);
+            }
+          });
+        }
+      }
+    `,
+    `
+      class Example {
+        constructor(ctx: DurableObjectState) {
+          void ctx.storage.getAlarm().then(() => ctx.storage.deleteAlarm());
+        }
+      }
+    `,
+    `
+      class Example {
+        pending = this.ctx.storage.setAlarm(Date.now());
+      }
+    `,
+  ])('rejects physical alarm changes during construction', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-constructor');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'so setAlarm() or deleteAlarm() here replaces or removes the pending alarm'
+    );
+  });
+
+  it.each([
+    `
+      import { DurabilityAlarms } from 'durability';
+
+      class Example {
+        alarms = new DurabilityAlarms({ context: this.ctx, handlers });
+
+        constructor() {
+          void this.alarms.renew(Date.now() + 60_000);
+        }
+      }
+    `,
+    `
+      import { DurabilityAlarms as Alarms } from 'durability';
+
+      class Example {
+        constructor(ctx: DurableObjectState) {
+          this.alarms = new Alarms({ context: ctx, handlers });
+          void this.alarms.renew.cancel();
+        }
+      }
+    `,
+    `
+      import * as durability from 'durability';
+
+      class Example {
+        constructor(ctx: DurableObjectState) {
+          const jobs = new durability.Durability({ context: ctx, handlers });
+          void (async () => {
+            await jobs.resizeImage({ id: 'resize', payload: {} });
+          })();
+        }
+      }
+    `,
+    `
+      import { DurabilitySchedule } from 'durability/experimental';
+
+      class Example {
+        schedule = new DurabilitySchedule({ context: this.ctx });
+        started = this.schedule.set({ expression: '* * * * *', version: 1 });
+      }
+    `,
+  ])('rejects durability scheduling during construction', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-constructor');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'so this durability call schedules its work again on every load'
+    );
+  });
+});
+
 describe('no-delete-all-in-transaction', () => {
   it('accepts deleteAll() outside a transaction', () => {
     const result = lint(

@@ -59,6 +59,7 @@ type RuleContext = {
     messageId:
       | 'abortAfterSync'
       | 'alarmChangeInAlarm'
+      | 'alarmChangeInConstructor'
       | 'asyncTransactionSync'
       | 'deferredWrite'
       | 'delegateOnly'
@@ -66,6 +67,7 @@ type RuleContext = {
       | 'missingAlarm'
       | 'physicalAlarm'
       | 'nextOnce'
+      | 'scheduleInConstructor'
       | 'tableCreation'
       | 'tableName';
   }) => void;
@@ -139,6 +141,20 @@ const resolveVariable = (context: RuleContext, node: AstNode | undefined) => {
   return undefined;
 };
 
+const enclosingClass = (node: AstNode) => {
+  let current = node.parent;
+
+  while (
+    current &&
+    current.type !== 'ClassDeclaration' &&
+    current.type !== 'ClassExpression'
+  ) {
+    current = current.parent;
+  }
+
+  return current;
+};
+
 const durabilityConstructors = new Set([
   'Durability',
   'DurabilityAlarms',
@@ -163,10 +179,11 @@ const durabilityImportName = (
   );
 
   const definition = variable?.defs[0];
+  const source = propertyName(definition?.node.parent?.source) ?? '';
 
   if (
     definition?.type !== 'ImportBinding' ||
-    propertyName(definition.node.parent?.source) !== 'durability'
+    (source !== 'durability' && !source.startsWith('durability/'))
   ) {
     return undefined;
   }
@@ -327,15 +344,7 @@ const alarmRunnerRule = {
           return;
         }
 
-        let parent = node.parent;
-
-        while (
-          parent &&
-          parent.type !== 'ClassDeclaration' &&
-          parent.type !== 'ClassExpression'
-        ) {
-          parent = parent.parent;
-        }
+        const parent = enclosingClass(node);
 
         if (parent && durabilityClasses.has(parent)) {
           context.report({ node, messageId: 'physicalAlarm' });
@@ -1312,6 +1321,212 @@ const alarmHandlerRule = {
   },
 };
 
+/**
+ * Methods of each durability helper that schedule work, and so set or move the
+ * object's alarm. Methods of `Durability` and `DurabilityAlarms` are named
+ * after the application's handlers, so all of theirs except `lifecycle` count.
+ */
+const schedulingMethods = new Map([
+  ['DurabilityFanout', new Set(['alarm', 'enqueue'])],
+  ['DurabilityOutbox', new Set(['alarm', 'stage'])],
+  ['DurabilitySchedule', new Set(['alarm', 'cancel', 'reschedule', 'set'])],
+  ['DurabilityScheduler', new Set(['alarm'])],
+  ['DurabilitySemaphore', new Set(['alarm', 'handle'])],
+  [
+    'DurabilitySemaphoreQueue',
+    new Set(['alarm', 'cancel', 'enqueue', 'release']),
+  ],
+  ['DurabilityTopology', new Set(['alarm', 'delete', 'update'])],
+]);
+
+const handlerHelpers = new Set(['Durability', 'DurabilityAlarms']);
+
+const helperName = (context: RuleContext, node: AstNode | undefined) => {
+  if (node?.type !== 'NewExpression' || !node.callee) {
+    return undefined;
+  }
+
+  return (
+    durabilityImportName(context, node.callee) ??
+    (node.callee.type === 'Identifier' ? node.callee.name : undefined)
+  );
+};
+
+/**
+ * Whether a function written in the constructor runs as part of it: invoked
+ * in place, passed to `blockConcurrencyWhile()`, or chained onto a promise
+ * the constructor starts.
+ */
+const runsImmediately = (fn: AstNode) => {
+  const { child, parent } = unwrappedParent(fn);
+
+  if (parent?.type !== 'CallExpression') {
+    return false;
+  }
+
+  if (parent.callee === child) {
+    return true;
+  }
+
+  const callee =
+    parent.callee?.type === 'MemberExpression'
+      ? parent.callee.property
+      : parent.callee;
+
+  const name = propertyName(callee) ?? '';
+
+  return (
+    parent.arguments?.includes(child) === true &&
+    (name === 'blockConcurrencyWhile' || promiseCallbackMethods.has(name))
+  );
+};
+
+const runsDuringConstruction = (node: AstNode) => {
+  let current = node.parent;
+
+  while (current) {
+    if (current.type === 'PropertyDefinition') {
+      return current.static !== true;
+    }
+
+    if (functionTypes.has(current.type)) {
+      if (current.parent?.type === 'MethodDefinition') {
+        return current.parent.kind === 'constructor';
+      }
+
+      if (!runsImmediately(current)) {
+        return false;
+      }
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+};
+
+const alarmConstructorRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      alarmChangeInConstructor:
+        'The constructor runs every time the object is loaded, including to deliver an alarm. A Durable Object has one alarm, so setAlarm() or deleteAlarm() here replaces or removes the pending alarm, such as a retry or work durability scheduled, on every load. Change the alarm from the request that needs it.',
+      scheduleInConstructor:
+        "The constructor runs every time the object is loaded, including to deliver an alarm, so this durability call schedules its work again on every load: it moves the object's alarm, and a named alarm or schedule set here replaces its pending occurrence each time. Schedule from the request that creates the work.",
+    },
+  },
+  create(context: RuleContext) {
+    const helperFields = new Map<AstNode, Map<string, string>>();
+    const calls: AstNode[] = [];
+
+    const recordField = (
+      classNode: AstNode | undefined,
+      field: string | undefined,
+      helper: string | undefined
+    ) => {
+      if (!classNode || field === undefined || helper === undefined) {
+        return;
+      }
+
+      const fields = helperFields.get(classNode) ?? new Map<string, string>();
+      fields.set(field, helper);
+      helperFields.set(classNode, fields);
+    };
+
+    const helperOf = (receiver: AstNode | undefined, call: AstNode) => {
+      if (
+        receiver?.type === 'MemberExpression' &&
+        receiver.object?.type === 'ThisExpression'
+      ) {
+        const classNode = enclosingClass(call);
+        const field = propertyName(receiver.property) ?? '';
+
+        return classNode && helperFields.get(classNode)?.get(field);
+      }
+
+      const definition = resolveVariable(context, receiver)?.defs[0];
+
+      return definition?.type === 'Variable'
+        ? helperName(context, definition.node.init)
+        : undefined;
+    };
+
+    const schedules = (call: AstNode) => {
+      const callee = call.callee;
+
+      if (callee?.type !== 'MemberExpression') {
+        return false;
+      }
+
+      const method = propertyName(callee.property) ?? '';
+      const helper = helperOf(callee.object, call);
+
+      if (helper && handlerHelpers.has(helper)) {
+        return method !== 'lifecycle';
+      }
+
+      if (helper) {
+        return schedulingMethods.get(helper)?.has(method) === true;
+      }
+
+      return (
+        method === 'cancel' &&
+        callee.object?.type === 'MemberExpression' &&
+        helperOf(callee.object.object, call) === 'DurabilityAlarms'
+      );
+    };
+
+    return {
+      PropertyDefinition(node: AstNode) {
+        recordField(
+          enclosingClass(node),
+          propertyName(node.key),
+          helperName(context, nodeValue(node.value))
+        );
+      },
+      AssignmentExpression(node: AstNode) {
+        if (
+          node.left?.type !== 'MemberExpression' ||
+          node.left.object?.type !== 'ThisExpression'
+        ) {
+          return;
+        }
+
+        recordField(
+          enclosingClass(node),
+          propertyName(node.left.property),
+          helperName(context, node.right)
+        );
+      },
+      CallExpression(node: AstNode) {
+        if (runsDuringConstruction(node)) {
+          calls.push(node);
+        }
+      },
+      'Program:exit'() {
+        for (const call of calls) {
+          const callee = call.callee;
+
+          const method =
+            callee?.type === 'MemberExpression'
+              ? propertyName(callee.property)
+              : undefined;
+
+          if (method === 'setAlarm' || method === 'deleteAlarm') {
+            context.report({
+              node: call,
+              messageId: 'alarmChangeInConstructor',
+            });
+          } else if (schedules(call)) {
+            context.report({ node: call, messageId: 'scheduleInConstructor' });
+          }
+        }
+      },
+    };
+  },
+};
+
 const transactionMethods = new Set(['transaction', 'transactionSync']);
 
 const deleteAllInTransactionRule = {
@@ -1363,6 +1578,7 @@ export default {
     'abort-after-sync': abortAfterSyncRule,
     'alarm-runner-only': alarmRunnerRule,
     'no-alarm-changes-in-alarm-handler': alarmHandlerRule,
+    'no-alarm-changes-in-constructor': alarmConstructorRule,
     'durability-migrations-only': durabilityMigrationsRule,
     'no-delete-all-in-transaction': deleteAllInTransactionRule,
     'no-deferred-storage-writes': deferredStorageWritesRule,
