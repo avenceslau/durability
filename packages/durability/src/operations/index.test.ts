@@ -8,6 +8,7 @@ import {
   DurableResultSerializationError,
   DurableRetryPolicyError,
   NonRetryableError as DurabilityNonRetryableError,
+  RetryAfterError,
   type DurableCall,
   type DurabilityLifecycleEvent,
 } from '../index';
@@ -1131,5 +1132,97 @@ describe('Durability', () => {
       outcome: 'completed',
       result: { secret: 'token-abc' },
     });
+  });
+});
+
+describe('RetryAfterError in operations', () => {
+  const start = Date.parse('2026-01-01T00:00:00Z');
+
+  const pendingAfterFailure = async (
+    hintMs: number,
+    maxAttempts: number,
+    policyDelayMs: number
+  ) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(start);
+
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        work: async () => {
+          throw new RetryAfterError('rate limited', hintMs);
+        },
+      },
+      retries: { delay: () => policyDelayMs, maxAttempts },
+    });
+
+    await durability.work({ id: 'hinted', payload: null });
+    await vi.advanceTimersByTimeAsync(0);
+
+    return durability.work.getResult('hinted');
+  };
+
+  it('waits for a hint longer than the policy delay', async () => {
+    await expect(pendingAfterFailure(60_000, 3, 5_000)).resolves.toMatchObject({
+      status: 'pending',
+      attempt: 1,
+      nextAttemptAt: 1767225660000,
+    });
+  });
+
+  it('keeps the policy delay when the hint is shorter', async () => {
+    await expect(pendingAfterFailure(1_000, 3, 5_000)).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: 1767225605000,
+    });
+  });
+
+  it('rounds a fractional hint to whole milliseconds', async () => {
+    await expect(pendingAfterFailure(2_500.4, 3, 0)).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: 1767225602500,
+    });
+  });
+
+  it('stays terminal on the last attempt', async () => {
+    await expect(pendingAfterFailure(60_000, 1, 5_000)).resolves.toEqual({
+      status: 'failed',
+      attempt: 1,
+      error: { name: 'RetryAfterError', message: 'rate limited' },
+    });
+  });
+
+  it('retries a same-named error from another package copy', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(start);
+
+    class Foreign extends Error {
+      readonly retryAfterMs = 30_000;
+      override name = 'RetryAfterError';
+    }
+
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        work: async () => {
+          throw new Foreign('slow down');
+        },
+      },
+      retries: { delay: () => 0 },
+    });
+
+    await durability.work({ id: 'foreign', payload: null });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(durability.work.getResult('foreign')).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: 1767225630000,
+    });
+  });
+
+  it('rejects an invalid hint at construction', () => {
+    expect(() => new RetryAfterError('x', -1)).toThrow(RangeError);
+    expect(() => new RetryAfterError('x', Number.NaN)).toThrow(RangeError);
+    expect(() => new RetryAfterError('x', Infinity)).toThrow(RangeError);
+    expect(new RetryAfterError('x', 0).retryAfterMs).toBe(0);
   });
 });

@@ -58,6 +58,8 @@ Timed-out **operations** follow the retry policy. Timed-out **named alarms** are
 
 Throw `NonRetryableError` for a known terminal failure. Do not classify a transport timeout as a definite business rejection.
 
+Throw `RetryAfterError` to honour a receiver's `Retry-After`. It sets a floor on the next retry delay and still counts against `maxAttempts`.
+
 [Full retry policy](/reference/retries/#retries-timeouts-and-terminal-failures)
 
 ## Retention is destructive

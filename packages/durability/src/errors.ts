@@ -1,4 +1,8 @@
-import { isNonEmptyString, isObjectOrFunction } from './predicates.js';
+import {
+  isNonEmptyString,
+  isNumber,
+  isObjectOrFunction,
+} from './predicates.js';
 import type { Json } from './serialization.js';
 
 /**
@@ -18,6 +22,37 @@ export class NonRetryableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'NonRetryableError';
+  }
+}
+
+/**
+ * Asks for the next retry no sooner than `retryAfterMs` from the failure, for
+ * example to honour an HTTP `Retry-After` header.
+ *
+ * The delay is a floor. The retry policy's own delay still applies when it is
+ * longer, the retry still counts against `maxAttempts`, and the error is
+ * terminal on the last attempt like any other.
+ *
+ * @example
+ * ```ts
+ * if (response.status === 429) {
+ *   const seconds = Number(response.headers.get('Retry-After') ?? 1);
+ *   throw new RetryAfterError('Rate limited', seconds * 1000);
+ * }
+ * ```
+ */
+export class RetryAfterError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.name = 'RetryAfterError';
+
+    if (!Number.isFinite(retryAfterMs) || retryAfterMs < 0) {
+      throw new RangeError('retryAfterMs must be a non-negative finite number');
+    }
+
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -260,7 +295,12 @@ export class RoutingError extends Error {
 
 export type SerializedError = { name: string; message: string };
 
-type ErrorFields = { name?: unknown; message?: unknown; stack?: unknown };
+type ErrorFields = {
+  name?: unknown;
+  message?: unknown;
+  stack?: unknown;
+  retryAfterMs?: unknown;
+};
 
 const readString = (
   value: ErrorFields,
@@ -270,6 +310,17 @@ const readString = (
     const candidate = value[property];
 
     return isNonEmptyString(candidate) ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const readField = (
+  value: ErrorFields,
+  property: keyof ErrorFields
+): unknown => {
+  try {
+    return value[property];
   } catch {
     return undefined;
   }
@@ -326,6 +377,27 @@ export const isNonRetryable = (cause: unknown): boolean => {
   } catch {
     return false;
   }
+};
+
+/**
+ * Reads the retry floor from this package's RetryAfterError or a same-named
+ * error from another copy of the package. Returns 0 when there is none.
+ */
+export const retryAfterMsOf = (cause: unknown): number => {
+  if (isErrorInstance(cause, RetryAfterError)) {
+    return cause.retryAfterMs;
+  }
+
+  if (
+    !isObjectOrFunction(cause) ||
+    readString(cause, 'name') !== 'RetryAfterError'
+  ) {
+    return 0;
+  }
+
+  const value = readField(cause, 'retryAfterMs');
+
+  return isNumber(value) && Number.isFinite(value) && value > 0 ? value : 0;
 };
 
 /** Fields logged with a failure to identify the work that failed. */

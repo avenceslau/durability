@@ -4,6 +4,7 @@ import {
   DurableRetryPolicyError,
   isErrorInstance,
   isNonRetryable,
+  retryAfterMsOf,
   reportFailure,
   serializeError,
   type SerializedError,
@@ -243,7 +244,7 @@ const decideRetry = <Result>(
       throw new DurableRetryPolicyError(spec.label);
     }
 
-    const delay = Math.round(rawDelay);
+    const delay = Math.round(Math.max(rawDelay, retryAfterMsOf(cause)));
     const timestamp = Date.now();
 
     if (

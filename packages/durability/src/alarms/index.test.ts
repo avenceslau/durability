@@ -3,6 +3,7 @@ import {
   DurabilityAlarms,
   DurabilityScheduler,
   NonRetryableError as DurabilityNonRetryableError,
+  RetryAfterError,
 } from '../index';
 import { contextFor, FakeStorage } from '../test-fakes';
 
@@ -741,6 +742,62 @@ describe('DurabilityAlarms', () => {
         .toArray()
     ).toEqual([
       { last_error_name: 'DurableRetryPolicyError', status: 'failed' },
+    ]);
+  });
+});
+
+describe('RetryAfterError in named alarms', () => {
+  const start = Date.parse('2026-01-01T00:00:00Z');
+
+  const nextAttemptAfterFailure = async (
+    hintMs: number,
+    maxAttempts: number,
+    policyDelayMs: number
+  ) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(start);
+    const storage = new FakeStorage();
+
+    const alarms = new DurabilityAlarms({
+      context: contextFor(storage),
+      handlers: {
+        cleanup: async () => {
+          throw new RetryAfterError('rate limited', hintMs);
+        },
+      },
+      methods: {
+        cleanup: { retries: { delay: () => policyDelayMs, maxAttempts } },
+      },
+    });
+
+    await alarms.cleanup(start);
+    storage.alarmAt = null;
+    await alarms.alarm();
+
+    return storage.sql
+      .exec<{ status: string; attempt: number; next_attempt_at: number }>(
+        `SELECT status, attempt, next_attempt_at FROM durability_alarms WHERE name = 'cleanup'`
+      )
+      .toArray();
+  };
+
+  it('waits for a hint longer than the policy delay', async () => {
+    await expect(nextAttemptAfterFailure(60_000, 3, 5_000)).resolves.toEqual([
+      { status: 'pending', attempt: 1, next_attempt_at: 1767225660000 },
+    ]);
+  });
+
+  it('keeps the policy delay when the hint is shorter', async () => {
+    await expect(nextAttemptAfterFailure(1_000, 3, 5_000)).resolves.toEqual([
+      { status: 'pending', attempt: 1, next_attempt_at: 1767225605000 },
+    ]);
+  });
+
+  it('stays terminal on the last attempt', async () => {
+    const rows = await nextAttemptAfterFailure(60_000, 1, 5_000);
+
+    expect(rows).toEqual([
+      { status: 'failed', attempt: 1, next_attempt_at: 1767225600000 },
     ]);
   });
 });
