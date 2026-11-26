@@ -199,6 +199,19 @@ const durabilityImportName = (
     : undefined;
 };
 
+// An unimported bare name, or one imported through a local re-export, is
+// still recognized by its spelling.
+const helperClassName = (context: RuleContext, node: AstNode | undefined) => {
+  if (node?.type !== 'NewExpression' || !node.callee) {
+    return undefined;
+  }
+
+  return (
+    durabilityImportName(context, node.callee) ??
+    (node.callee.type === 'Identifier' ? node.callee.name : undefined)
+  );
+};
+
 /** Class fields holding a durability helper, by declared name. */
 const durabilityFields = (
   context: RuleContext,
@@ -213,15 +226,7 @@ const durabilityFields = (
 
     const name = propertyName(member.key);
     const value = nodeValue(member.value);
-    const callee = value?.type === 'NewExpression' ? value.callee : undefined;
-
-    // An unimported bare name, or one imported through a local re-export, is
-    // still recognized by its spelling.
-    const constructorName =
-      callee &&
-      (durabilityImportName(context, callee) ??
-        (callee.type === 'Identifier' ? callee.name : undefined));
-
+    const constructorName = helperClassName(context, value);
     const constructed = durabilityConstructors.has(constructorName ?? '');
 
     const created =
@@ -1189,6 +1194,13 @@ const unwrappedParent = (node: AstNode) => {
   return { child: current, parent: current.parent };
 };
 
+const calleeName = (call: AstNode) =>
+  propertyName(
+    call.callee?.type === 'MemberExpression'
+      ? call.callee.property
+      : call.callee
+  ) ?? '';
+
 const deferredStorageWritesRule = {
   meta: {
     type: 'problem',
@@ -1229,19 +1241,13 @@ const deferredStorageWritesRule = {
       }
 
       if (parent.arguments?.includes(child)) {
-        const calleeName = propertyName(
-          parent.callee?.type === 'MemberExpression'
-            ? parent.callee.property
-            : parent.callee
-        );
+        const name = calleeName(parent);
 
-        if (timerFunctions.has(calleeName ?? '')) {
+        if (timerFunctions.has(name)) {
           return true;
         }
 
-        return (
-          promiseCallbackMethods.has(calleeName ?? '') && isDetached(parent)
-        );
+        return promiseCallbackMethods.has(name) && isDetached(parent);
       }
 
       return (
@@ -1339,24 +1345,8 @@ const schedulingMethods = new Map([
   ['DurabilityTopology', new Set(['alarm', 'delete', 'update'])],
 ]);
 
-const handlerHelpers = new Set(['Durability', 'DurabilityAlarms']);
+const classesWithHandlerMethods = new Set(['Durability', 'DurabilityAlarms']);
 
-const helperName = (context: RuleContext, node: AstNode | undefined) => {
-  if (node?.type !== 'NewExpression' || !node.callee) {
-    return undefined;
-  }
-
-  return (
-    durabilityImportName(context, node.callee) ??
-    (node.callee.type === 'Identifier' ? node.callee.name : undefined)
-  );
-};
-
-/**
- * Whether a function written in the constructor runs as part of it: invoked
- * in place, passed to `blockConcurrencyWhile()`, or chained onto a promise
- * the constructor starts.
- */
 const runsImmediately = (fn: AstNode) => {
   const { child, parent } = unwrappedParent(fn);
 
@@ -1368,12 +1358,7 @@ const runsImmediately = (fn: AstNode) => {
     return true;
   }
 
-  const callee =
-    parent.callee?.type === 'MemberExpression'
-      ? parent.callee.property
-      : parent.callee;
-
-  const name = propertyName(callee) ?? '';
+  const name = calleeName(parent);
 
   return (
     parent.arguments?.includes(child) === true &&
@@ -1423,23 +1408,23 @@ const alarmConstructorRule = {
     const recordField = (
       classNode: AstNode | undefined,
       field: string | undefined,
-      helper: string | undefined
+      helperClass: string | undefined
     ) => {
-      if (!classNode || field === undefined || helper === undefined) {
+      if (!classNode || field === undefined || helperClass === undefined) {
         return;
       }
 
       const fields = helperFields.get(classNode) ?? new Map<string, string>();
-      fields.set(field, helper);
+      fields.set(field, helperClass);
       helperFields.set(classNode, fields);
     };
 
-    const helperOf = (receiver: AstNode | undefined, call: AstNode) => {
+    const helperClassOf = (receiver: AstNode | undefined) => {
       if (
         receiver?.type === 'MemberExpression' &&
         receiver.object?.type === 'ThisExpression'
       ) {
-        const classNode = enclosingClass(call);
+        const classNode = enclosingClass(receiver);
         const field = propertyName(receiver.property) ?? '';
 
         return classNode && helperFields.get(classNode)?.get(field);
@@ -1448,32 +1433,23 @@ const alarmConstructorRule = {
       const definition = resolveVariable(context, receiver)?.defs[0];
 
       return definition?.type === 'Variable'
-        ? helperName(context, definition.node.init)
+        ? helperClassName(context, definition.node.init)
         : undefined;
     };
 
-    const schedules = (call: AstNode) => {
-      const callee = call.callee;
+    const schedules = (callee: AstNode, method: string) => {
+      const helperClass = helperClassOf(callee.object);
 
-      if (callee?.type !== 'MemberExpression') {
-        return false;
-      }
-
-      const method = propertyName(callee.property) ?? '';
-      const helper = helperOf(callee.object, call);
-
-      if (helper && handlerHelpers.has(helper)) {
-        return method !== 'lifecycle';
-      }
-
-      if (helper) {
-        return schedulingMethods.get(helper)?.has(method) === true;
+      if (helperClass) {
+        return classesWithHandlerMethods.has(helperClass)
+          ? method !== 'lifecycle'
+          : schedulingMethods.get(helperClass)?.has(method) === true;
       }
 
       return (
         method === 'cancel' &&
         callee.object?.type === 'MemberExpression' &&
-        helperOf(callee.object.object, call) === 'DurabilityAlarms'
+        helperClassOf(callee.object.object) === 'DurabilityAlarms'
       );
     };
 
@@ -1482,7 +1458,7 @@ const alarmConstructorRule = {
         recordField(
           enclosingClass(node),
           propertyName(node.key),
-          helperName(context, nodeValue(node.value))
+          helperClassName(context, nodeValue(node.value))
         );
       },
       AssignmentExpression(node: AstNode) {
@@ -1496,7 +1472,7 @@ const alarmConstructorRule = {
         recordField(
           enclosingClass(node),
           propertyName(node.left.property),
-          helperName(context, node.right)
+          helperClassName(context, node.right)
         );
       },
       CallExpression(node: AstNode) {
@@ -1508,17 +1484,22 @@ const alarmConstructorRule = {
         for (const call of calls) {
           const callee = call.callee;
 
-          const method =
-            callee?.type === 'MemberExpression'
-              ? propertyName(callee.property)
-              : undefined;
+          if (callee?.type !== 'MemberExpression') {
+            continue;
+          }
+
+          const method = propertyName(callee.property) ?? '';
 
           if (method === 'setAlarm' || method === 'deleteAlarm') {
             context.report({
               node: call,
               messageId: 'alarmChangeInConstructor',
             });
-          } else if (schedules(call)) {
+
+            continue;
+          }
+
+          if (schedules(callee, method)) {
             context.report({ node: call, messageId: 'scheduleInConstructor' });
           }
         }
