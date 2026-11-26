@@ -176,6 +176,8 @@ type ScheduledOccurrence = {
   createdAt: number;
 };
 
+type OccurrenceChange = ScheduledOccurrence & { replaced: boolean };
+
 /** Policy configuration for named alarms. */
 export type DurabilityAlarmsOptions<Names extends string = string> =
   ExecutionPolicyOptions & {
@@ -449,7 +451,7 @@ class DurabilityAlarmsCore<Names extends string, Level extends string = never> {
     const now = Date.now();
 
     const scheduled = await this.#engine.transaction((sql) => {
-      const changes: (ScheduledOccurrence & { replaced: boolean })[] = [];
+      const changes: OccurrenceChange[] = [];
 
       for (const [name, { periods }] of this.#recurring) {
         const period = periodFor(periods, level);
@@ -482,13 +484,12 @@ class DurabilityAlarmsCore<Names extends string, Level extends string = never> {
     }
   }
 
-  /** Leaves an occurrence that is sooner, running, or waiting to retry alone. */
   #scheduleNoLaterThan(
     sql: SqlStorage,
     name: string,
     scheduledTime: number,
     now: number
-  ): (ScheduledOccurrence & { replaced: boolean }) | undefined {
+  ): OccurrenceChange | undefined {
     const row = readAlarm(sql, this.#channel, name);
 
     if (row?.status === 'pending') {
