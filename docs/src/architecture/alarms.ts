@@ -38,7 +38,16 @@ const schedule = sourceExcerpt(
   'schedule',
   'Schedule or replace an occurrence',
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
-  '      scheduledTime,\n    });\n  }'
+  '    this.#emitScheduled({ name, generation, scheduledTime, createdAt });\n  }'
+);
+
+const invoke = sourceExcerpt(
+  durabilityAlarms,
+  alarmsFile,
+  'invoke',
+  'Call the handler',
+  '  #invoke(',
+  '    return handler(alarmInfo);\n  }'
 );
 
 const cancel = sourceExcerpt(
@@ -64,8 +73,8 @@ const execute = sourceExcerpt(
   alarmsFile,
   'execute',
   'Run one attempt of an occurrence',
-  '  #execute(',
-  '        isErrorInstance(error, DurableAlarmTimeoutError) && !retryTimeouts,\n    });\n  }'
+  '  async #execute(',
+  '      this.#emitScheduled(next);\n    }\n  }'
 );
 
 const reconcile = sourceExcerpt(
@@ -235,7 +244,7 @@ export const walkthrough = validateWalkthrough({
       description:
         'Runs outside any storage transaction with the occurrence’s idempotencyKey, scheduled time, attempt number, and an AbortSignal for the attempt timeout.',
       href: '/reference/identity/',
-      source: 'execute',
+      source: 'invoke',
     },
     durability: {
       description:
@@ -257,6 +266,7 @@ export const walkthrough = validateWalkthrough({
     reconcile,
     runDue,
     execute,
+    invoke,
     register,
     cancel,
   ],
@@ -368,8 +378,8 @@ export const walkthrough = validateWalkthrough({
             'DurabilityAlarms selects the pending renew row, and the scheduler takes a permit and durably increments its attempt count before the handler runs. The handler receives an idempotencyKey derived from the stored generation, so every retry of this occurrence gets the same key.',
           stage: ['renew', 'focus:renew'],
           source: sourceFocus(
-            execute,
-            'return handler({',
+            invoke,
+            'const alarmInfo: DurableAlarmInfo = {',
             'idempotencyKey: `durability-alarm:v1:${row.generation_id}`,'
           ),
           durable: 'The attempt count is 1 before any external effect.',
@@ -403,7 +413,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             execute,
             'complete: (_result, attempt) => {',
-            'return removed ? timestamp : undefined;'
+            'return deleteAttempt(sql, this.#table, ref) ? timestamp : undefined;'
           ),
           durable: 'The renew row now describes next month’s occurrence.',
           volatile: 'The permit is released and the running entry removed.',
@@ -469,7 +479,7 @@ export const walkthrough = validateWalkthrough({
             'The interrupted attempt still counts toward maxAttempts. The generation did not change, so the retry receives the same idempotencyKey as attempt 1.',
           stage: ['focus:renew'],
           source: sourceFocus(
-            execute,
+            invoke,
             'idempotencyKey: `durability-alarm:v1:${row.generation_id}`,'
           ),
           durable: 'The stored attempt count becomes 2.',
@@ -523,7 +533,7 @@ export const walkthrough = validateWalkthrough({
           stage: ['*', 'focus:sqlite'],
           source: sourceFocus(
             schedule,
-            'ON CONFLICT(channel, name) DO UPDATE SET',
+            'upsertOccurrence(sql, {',
             'deleteMemos(sql, this.#table, key);'
           ),
           durable:
@@ -556,8 +566,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:sqlite'],
           source: sourceFocus(
             execute,
-            'const removed = deleteAttempt(this.#engine.sql, this.#table, {',
-            'return removed ? timestamp : undefined;'
+            'const ref = {',
+            'return deleteAttempt(sql, this.#table, ref) ? timestamp : undefined;'
           ),
           durable: 'The replacement row is untouched.',
           volatile: 'The old run’s result is discarded.',

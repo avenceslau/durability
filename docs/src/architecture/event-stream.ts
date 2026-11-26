@@ -110,7 +110,7 @@ const schedule = sourceExcerpt(
   'schedule',
   'Schedule or replace a named alarm',
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
-  '      scheduledTime,\n    });\n  }'
+  '    this.#emitScheduled({ name, generation, scheduledTime, createdAt });\n  }'
 );
 
 const execute = sourceExcerpt(
@@ -118,8 +118,8 @@ const execute = sourceExcerpt(
   alarmsFile,
   'execute',
   'Run one named alarm attempt',
-  '  #execute(\n    row: AlarmRow,',
-  '        isErrorInstance(error, DurableAlarmTimeoutError) && !retryTimeouts,\n    });\n  }'
+  '  async #execute(\n    row: AlarmRow,',
+  '      this.#emitScheduled(next);\n    }\n  }'
 );
 
 const decideRetry = sourceExcerpt(
@@ -459,7 +459,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             schedule,
             'await this.#engine.transaction((sql) => {',
-            'ON CONFLICT(channel, name) DO UPDATE SET'
+            'upsertOccurrence(sql, {'
           ),
           durable: 'The named alarm row and the object alarm commit together.',
           volatile:
@@ -574,7 +574,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             execute,
             'complete: (_result, attempt) => {',
-            'return removed ? timestamp : undefined;'
+            'return deleteAttempt(sql, this.#table, ref) ? timestamp : undefined;'
           ),
           durable: 'The finished occurrence is removed; a replacement stays.',
           volatile: 'The running entry for this name.',
