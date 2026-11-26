@@ -3,11 +3,16 @@ import { parse as parseJavaScript } from '@babel/parser';
 import MagicString from 'magic-string';
 import type { Plugin, ResolvedConfig } from 'vite';
 import { markConfiguredBindings } from './binding-kinds.js';
+import { cacheEntrypointCode, collectCacheEntrypoints } from './cache.js';
 import { writeBindingDeclarations } from './declarations.js';
 import { collectRoutingInjections } from './routing.js';
 import { clientFactories, indexScopes } from './scopes.js';
 import { syntaxNode } from './syntax.js';
-import { loadWranglerProject, type WranglerBindings } from './wrangler.js';
+import {
+  loadWranglerProject,
+  type WranglerBindings,
+  type WranglerProject,
+} from './wrangler.js';
 import { applyWrappers, findWrappers } from './wrap.js';
 
 /** Configuration for the durability transforms Vite plugin. */
@@ -22,6 +27,13 @@ export type DoTransformsPluginOptions = {
    * false.
    */
   restoreBrokenStubs?: boolean;
+  /**
+   * Generates a Workers cache entrypoint for every `cachePlan<Target>()(...)`
+   * declared at the top level of the Worker's main module. Each entrypoint
+   * answers cached calls with `serveCached`, and must have the cache enabled
+   * in the Wrangler `exports` map. Defaults to false.
+   */
+  cacheEntrypoints?: boolean;
 };
 
 /**
@@ -50,6 +62,9 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
     durableObjectClassNames: new Set(),
   };
 
+  let project: WranglerProject | undefined;
+  let mainPath: string | undefined;
+
   return {
     name: 'do-transforms',
     enforce: 'pre',
@@ -59,18 +74,18 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         options.wrangler ?? 'wrangler.jsonc'
       );
 
-      const project = loadWranglerProject(
-        wranglerPath,
-        await import('wrangler')
-      );
-
+      project = loadWranglerProject(wranglerPath, await import('wrangler'));
       bindings = project.bindings;
 
-      if (options.types === false || !project.config.main) {
+      if (!project.config.main) {
         return;
       }
 
-      const mainPath = resolve(dirname(wranglerPath), project.config.main);
+      mainPath = resolve(dirname(wranglerPath), project.config.main);
+
+      if (options.types === false) {
+        return;
+      }
 
       const typesPath = options.types
         ? resolve(config.root, options.types)
@@ -89,10 +104,15 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
         code.includes(name)
       );
 
+      const mayGenerateCacheEntrypoints =
+        options.cacheEntrypoints === true &&
+        cleanId === mainPath &&
+        code.includes('cachePlan');
+
       if (
         cleanId.includes('/node_modules/') ||
         !/\.[cm]?[jt]sx?$/.test(cleanId) ||
-        (!mayWrapBindings && !mayInjectRouting)
+        (!mayWrapBindings && !mayInjectRouting && !mayGenerateCacheEntrypoints)
       ) {
         return null;
       }
@@ -135,7 +155,16 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
           )
         : [];
 
-      if (wrappers.length === 0 && routingInjections.length === 0) {
+      const cacheEntrypoints =
+        mayGenerateCacheEntrypoints && program && project
+          ? collectCacheEntrypoints(program, scopes.rootScope, project)
+          : [];
+
+      if (
+        wrappers.length === 0 &&
+        routingInjections.length === 0 &&
+        cacheEntrypoints.length === 0
+      ) {
         return null;
       }
 
@@ -147,6 +176,10 @@ export function doTransforms(options: DoTransformsPluginOptions = {}): Plugin {
 
       if (wrappers.length > 0) {
         applyWrappers(transformed, code, wrappers);
+      }
+
+      if (cacheEntrypoints.length > 0) {
+        transformed.append(cacheEntrypointCode(code, cacheEntrypoints));
       }
 
       return {
