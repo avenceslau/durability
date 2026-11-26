@@ -7,9 +7,15 @@ import {
   type IsJson,
   type Json,
 } from '../src/cache/index';
-import { decodeResult, encodeResult, toJson } from '../src/cache/json';
+import {
+  CacheEntry,
+  decodeCacheEntry,
+  encodeCacheEntry,
+  toCacheEntry,
+} from '../src/cache/entry';
+import { toJson } from '../src/cache/json';
 import { cacheControl } from '../src/cache/plan';
-import { cacheDOPlan } from './worker';
+import { cacheDOPlan, type CacheDO } from './worker';
 
 type Metadata = { id: number; tags: string[]; note?: string };
 
@@ -100,6 +106,9 @@ describe('cachePlan', () => {
       plan({ getMetadata: { location: { freshMs: 2_000, staleMs: 1_000 } } })
     ).toThrow('location.staleMs of getMetadata');
     expect(() =>
+      plan({ getMetadata: { memory: { freshMs: 2_000, staleMs: 1_000 } } })
+    ).toThrow('memory.staleMs of getMetadata');
+    expect(() =>
       plan({
         getMetadata: {
           location: { freshMs: 1_000, staleMs: 1_000 },
@@ -112,14 +121,11 @@ describe('cachePlan', () => {
 
   it('builds Cache-Control from the location windows', () => {
     expect(
-      cacheControl({
-        location: { freshMs: 60_000, staleMs: 86_400_000 },
-        staleIfErrorMs: 3_600_500,
-      })
+      cacheControl({ freshMs: 60_000, staleMs: 86_400_000 }, 3_600_500)
     ).toBe(
       'public, max-age=60, stale-while-revalidate=86340, stale-if-error=3600'
     );
-    expect(cacheControl({ location: { freshMs: 1_000, staleMs: 1_000 } })).toBe(
+    expect(cacheControl({ freshMs: 1_000, staleMs: 1_000 }, undefined)).toBe(
       'public, max-age=1, stale-while-revalidate=0, stale-if-error=1'
     );
   });
@@ -139,11 +145,27 @@ describe('cache JSON', () => {
     expect(() => toJson(new Map(), 'value')).toThrow(TypeError);
   });
 
-  it('round-trips results, including undefined', () => {
-    expect(decodeResult(encodeResult({ a: [1] }))).toEqual({ a: [1] });
-    expect(decodeResult(encodeResult(null))).toBeNull();
-    expect(decodeResult(encodeResult(undefined))).toBeUndefined();
-    expect(() => decodeResult('[]')).toThrow(TypeError);
+  it('round-trips entries, keeping undefined distinct from null', () => {
+    const roundTrip = (value: unknown) =>
+      decodeCacheEntry(
+        encodeCacheEntry(new CacheEntry(toJson(value, 'value'), 7))
+      );
+
+    expect(roundTrip({ a: [1] })).toEqual(new CacheEntry({ a: [1] }, 7));
+    expect(roundTrip(null)).toEqual(new CacheEntry(null, 7));
+    expect(
+      decodeCacheEntry(encodeCacheEntry(new CacheEntry(undefined, 7)))
+    ).toEqual(new CacheEntry(undefined, 7));
+    expect(() => decodeCacheEntry('[]')).toThrow(TypeError);
+    expect(() => decodeCacheEntry('{"value":1}')).toThrow('no load time');
+  });
+
+  it('stamps results from the target and keeps entries from other tiers', () => {
+    const entry = new CacheEntry('cached', 7);
+
+    expect(toCacheEntry(entry)).toBe(entry);
+    expect(toCacheEntry({ a: 1 }).loadedAt).toBeGreaterThan(7);
+    expect(() => toCacheEntry(new Date(0))).toThrow(TypeError);
   });
 });
 
@@ -206,7 +228,10 @@ describe('serveCached', () => {
     expect(response.headers.get('cache-control')).toBe(
       'public, max-age=60, stale-while-revalidate=60, stale-if-error=120'
     );
-    expect(decodeResult(await response.text())).toEqual({ key: 'a', reads: 1 });
+    expect(decodeCacheEntry(await response.text()).value).toEqual({
+      key: 'a',
+      reads: 1,
+    });
   });
 
   it('answers everything else with no-store', async () => {
@@ -229,6 +254,27 @@ describe('serveCached', () => {
     for (const response of responses) {
       expect(response.headers.get('cache-control')).toBe('no-store');
     }
+  });
+
+  it('only serves methods with location windows', async () => {
+    const memoryOnly = cachePlan<CacheDO>()({
+      countRead: { memory: { freshMs: 1_000, staleMs: 1_000 } },
+    });
+
+    const response = await serveCached(
+      new Request(
+        cachedCallUrl({
+          planVersion: 1,
+          instance: id(),
+          method: 'countRead',
+          args: ['a'],
+        })
+      ),
+      memoryOnly,
+      { namespace: env.CACHE_DO }
+    );
+
+    expect(response.status).toBe(404);
   });
 
   it('reports a target that throws', async () => {
@@ -277,7 +323,10 @@ describe('serveCached', () => {
       target: new Account(),
     });
 
-    expect(decodeResult(await served.text())).toEqual({ id: 7, tags: [] });
+    expect(decodeCacheEntry(await served.text()).value).toEqual({
+      id: 7,
+      tags: [],
+    });
     expect(addressed.status).toBe(400);
   });
 });

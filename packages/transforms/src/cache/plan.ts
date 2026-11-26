@@ -8,12 +8,19 @@ export type CacheWindows = {
   staleMs: number;
 };
 
+/** Windows for each cache tier. A tier caches only the methods that have windows for it. */
 export type MethodCachePolicy = {
+  /** Windows for `memoryTier`, which is per isolate. */
+  memory?: CacheWindows;
   /** Windows for the Workers cache, which is shared by every caller in a location. */
-  location: CacheWindows;
-  /** How long a cached result may still answer while refreshing it fails. Defaults to `location.staleMs`. */
+  location?: CacheWindows;
+  /** How long a cached result may still answer while refreshing it fails. Defaults to each tier's `staleMs`. */
   staleIfErrorMs?: number;
 };
+
+export type CacheTierName = 'memory' | 'location';
+
+const tierNames: readonly CacheTierName[] = ['memory', 'location'];
 
 type PlatformMethod =
   | 'alarm'
@@ -91,7 +98,10 @@ function checkWindow(
  * @example
  * ```ts
  * export const accountCache = cachePlan<Account>()({
- *   getMetadata: { location: { freshMs: 60_000, staleMs: 86_400_000 } },
+ *   getMetadata: {
+ *     memory: { freshMs: 5_000, staleMs: 60_000 },
+ *     location: { freshMs: 60_000, staleMs: 86_400_000 },
+ *   },
  * });
  * ```
  */
@@ -108,16 +118,28 @@ export function cachePlan<Target extends object>(
 
   return (methods) => {
     for (const [method, policy] of Object.entries<MethodCachePolicy>(methods)) {
-      const { freshMs, staleMs } = policy.location;
+      for (const tierName of tierNames) {
+        const windows = policy[tierName];
 
-      checkWindow(method, 'location.freshMs', freshMs, minimumFreshMs);
-      checkWindow(method, 'location.staleMs', staleMs, freshMs);
-      checkWindow(
-        method,
-        'staleIfErrorMs',
-        policy.staleIfErrorMs ?? staleMs,
-        0
-      );
+        if (windows === undefined) {
+          continue;
+        }
+
+        checkWindow(
+          method,
+          `${tierName}.freshMs`,
+          windows.freshMs,
+          minimumFreshMs
+        );
+        checkWindow(
+          method,
+          `${tierName}.staleMs`,
+          windows.staleMs,
+          windows.freshMs
+        );
+      }
+
+      checkWindow(method, 'staleIfErrorMs', policy.staleIfErrorMs ?? 0, 0);
     }
 
     return { version, methods };
@@ -136,13 +158,16 @@ export function methodPolicy<Target>(
 const toSeconds = (ms: number): number =>
   Math.floor(ms / millisecondsPerSecond);
 
-export function cacheControl(policy: MethodCachePolicy): string {
-  const { freshMs, staleMs } = policy.location;
+export function cacheControl(
+  location: CacheWindows,
+  staleIfErrorMs: number | undefined
+): string {
+  const { freshMs, staleMs } = location;
 
   return [
     'public',
     `max-age=${toSeconds(freshMs)}`,
     `stale-while-revalidate=${toSeconds(staleMs - freshMs)}`,
-    `stale-if-error=${toSeconds(policy.staleIfErrorMs ?? staleMs)}`,
+    `stale-if-error=${toSeconds(staleIfErrorMs ?? staleMs)}`,
   ].join(', ');
 }

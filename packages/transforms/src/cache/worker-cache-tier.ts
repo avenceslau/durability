@@ -1,10 +1,8 @@
 import { defineTransform } from '../define.js';
-import { cachedCallUrl, nonDurableObjectInstance } from './call.js';
-import { decodeResult, encodeResult, toJson, type Json } from './json.js';
+import { callerCacheUrl } from './call.js';
+import { decodeCacheEntry, toCacheEntry, type CacheEntry } from './entry.js';
 import { methodPolicy, type CachePlan } from './plan.js';
 
-// Keeps cache URLs well under common URL length limits.
-const maxCacheUrlBytes = 4_096;
 const defaultTimeoutMs = 5_000;
 
 export type WorkerCacheRead = {
@@ -60,37 +58,9 @@ export class CachedCallError extends Error {
 }
 
 type CachedResponse = {
-  cachedResult: Json | undefined;
+  entry: CacheEntry;
   cfCacheStatus: string | null;
 };
-
-function cacheUrl<Target>(
-  plan: CachePlan<Target>,
-  instance: string,
-  method: string,
-  args: unknown[]
-): string | undefined {
-  if (methodPolicy(plan, method) === undefined) {
-    return undefined;
-  }
-
-  let url: string;
-
-  try {
-    url = cachedCallUrl({
-      planVersion: plan.version,
-      instance,
-      method,
-      args: args.map((arg, index) => toJson(arg, `args[${index}]`)),
-    });
-  } catch {
-    return undefined;
-  }
-
-  return new TextEncoder().encode(url).byteLength > maxCacheUrlBytes
-    ? undefined
-    : url;
-}
 
 async function fetchCachedResult(
   binding: Fetcher,
@@ -107,7 +77,7 @@ async function fetchCachedResult(
   }
 
   return {
-    cachedResult: decodeResult(await response.text()),
+    entry: decodeCacheEntry(await response.text()),
     cfCacheStatus: response.headers.get('cf-cache-status'),
   };
 }
@@ -139,21 +109,15 @@ export function workerCacheTier<Target extends object, Methods extends string>(
 
   return defineTransform<Target>().caller(
     (callOptions: WorkerCacheCallOptions | undefined) => async (context) => {
-      const { method, args, next } = context;
+      const { method, next } = context;
 
       const report = (read: Omit<WorkerCacheRead, 'method'>) =>
         options.onRead?.({ method, ...read });
 
-      // Caller transforms receive the Durable Object ID of the stub, and
-      // `undefined` for other targets; a generic Target cannot type it.
-      const actorId = 'actorId' in context ? context.actorId : undefined;
-
-      const url = cacheUrl(
-        plan,
-        actorId === undefined ? nonDurableObjectInstance : String(actorId),
-        method,
-        args
-      );
+      const url =
+        methodPolicy(plan, method)?.location === undefined
+          ? undefined
+          : callerCacheUrl(plan.version, context);
 
       if (url === undefined) {
         report({ outcome: 'direct' });
@@ -187,7 +151,7 @@ export function workerCacheTier<Target extends object, Methods extends string>(
 
         report({ outcome: 'fallback', error });
 
-        return decodeResult(encodeResult(await next()));
+        return toCacheEntry(await next());
       }
 
       report(
@@ -196,7 +160,7 @@ export function workerCacheTier<Target extends object, Methods extends string>(
           : { outcome: 'cache', cfCacheStatus: cached.cfCacheStatus }
       );
 
-      return cached.cachedResult;
+      return cached.entry;
     }
   );
 }

@@ -178,6 +178,20 @@ export class CacheDO extends DurableObject {
   async setReadCount(count: number): Promise<void> {
     this.#reads = count;
   }
+
+  #failing = false;
+
+  async readOrFail(key: string): Promise<{ key: string; reads: number }> {
+    if (this.#failing) {
+      throw new Error(`Reading ${key} failed`);
+    }
+
+    return this.countRead(key);
+  }
+
+  async setFailing(failing: boolean): Promise<void> {
+    this.#failing = failing;
+  }
 }
 
 const cacheDOPolicy = { location: { freshMs: 60_000, staleMs: 120_000 } };

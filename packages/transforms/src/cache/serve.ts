@@ -4,7 +4,7 @@ import {
   parseCachedCall,
   type CachedCall,
 } from './call.js';
-import { encodeResult } from './json.js';
+import { encodeCacheEntry, toCacheEntry } from './entry.js';
 import { cacheControl, methodPolicy, type CachePlan } from './plan.js';
 
 type ServeCachedReporting = {
@@ -82,7 +82,7 @@ export async function serveCached<
 
   const policy = methodPolicy(plan, call.method);
 
-  if (policy === undefined) {
+  if (policy?.location === undefined) {
     return notCached(404);
   }
 
@@ -109,7 +109,7 @@ export async function serveCached<
       call.args
     );
 
-    body = encodeResult(methodResult);
+    body = encodeCacheEntry(toCacheEntry(methodResult));
   } catch (error) {
     options.onError?.(error, call);
 
@@ -118,7 +118,7 @@ export async function serveCached<
 
   return new Response(body, {
     headers: {
-      'cache-control': cacheControl(policy),
+      'cache-control': cacheControl(policy.location, policy.staleIfErrorMs),
       'content-type': 'application/json',
     },
   });
