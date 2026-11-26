@@ -152,6 +152,101 @@ Other built-ins include:
 - `abortAsSuccess` to treat expected Durable Object resets as successful undefined results.
 - `largeObjectStream` to transfer large JSON object results. It requires a Standard Schema validator and enforces a caller decode limit, but it still buffers the complete serialized representation; use native streams for unbounded data.
 
+## Workers cache
+
+`@durability/transforms/cache` answers read methods through the Workers cache, so every caller in a location shares one cached result per Durable Object, method, and arguments, and concurrent misses reach the object once. It is experimental.
+
+Declare which methods to cache next to the Durable Object, in the Worker's main module:
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { cachePlan } from '@durability/transforms/cache';
+
+export class Account extends DurableObject<Env> {
+  async getMetadata(accountId: number): Promise<AccountMetadata> {
+    // ...
+  }
+}
+
+export const accountCache = cachePlan<Account>({ version: 1 })({
+  getMetadata: {
+    location: { freshMs: 60_000, staleMs: 86_400_000 },
+    staleIfErrorMs: 86_400_000,
+  },
+});
+```
+
+Only async methods whose arguments and result round-trip through JSON can be planned; anything else is a type error. `freshMs` is how long a result answers without calling the object, and `staleMs` is how long it keeps answering while one request refreshes it. Bump `version` when a cached result changes shape.
+
+With `cacheEntrypoints: true`, the Vite plugin generates a `WorkerEntrypoint` named `AccountReads` (the target's export name followed by `Reads`) for every plan declared at the top level of the main module. Enable the Workers cache for it in Wrangler:
+
+```ts
+doTransforms({ wrangler: './wrangler.jsonc', cacheEntrypoints: true });
+```
+
+```jsonc
+{
+  "cache": { "enabled": false, "cross_version_cache": true },
+  "exports": {
+    "AccountReads": { "type": "worker", "cache": { "enabled": true } },
+  },
+}
+```
+
+The build fails when the entrypoint is missing from `exports` or does not enable the cache. Pass `cachePlan<Account>({ entrypoint: 'Name' })` to rename it, or `entrypoint: false` and write it yourself:
+
+```ts
+import { WorkerEntrypoint } from 'cloudflare:workers';
+import { serveCached } from '@durability/transforms/cache';
+
+export class AccountReads extends WorkerEntrypoint<Env> {
+  fetch(request: Request) {
+    return serveCached(request, accountCache, {
+      namespace: this.env.ACCOUNTS,
+    });
+  }
+}
+```
+
+The generated entrypoint reaches the object through `exports` from `cloudflare:workers`. `@cloudflare/vitest-pool-workers` finds a Worker's exports without running Vite plugins, so list generated entrypoints in its `additionalExports` option.
+
+Callers bind to the entrypoint and attach `workerCacheTier` to stubs of the planned object:
+
+```jsonc
+{
+  "services": [
+    {
+      "binding": "ACCOUNT_READS",
+      "service": "accounts",
+      "entrypoint": "AccountReads",
+    },
+  ],
+}
+```
+
+```ts
+import { env } from 'cloudflare:workers';
+import { workerCacheTier } from '@durability/transforms/cache';
+import { accountCache } from 'accounts/cache';
+
+export const accountReads = workerCacheTier(accountCache, {
+  binding: () => env.ACCOUNT_READS,
+});
+
+const account = env.ACCOUNTS.getByName(String(accountId));
+
+await account.with(accountReads).getMetadata(accountId);
+await account.with(accountReads, { cache: 'no-cache' }).getMetadata(accountId);
+await account.with(accountReads).setPlan(accountId, 'pro');
+```
+
+- Methods outside the plan are called directly. Pass `{ cache: 'no-cache' }` to refresh the cached result before answering, or `{ cache: 'no-store' }` to skip the cache for one call.
+- When the cached request fails or takes longer than `timeoutMs` (5 seconds by default), the call goes to the object directly. Set `fallback: 'throw'` to get a `CachedCallError` instead.
+- Results come back as JSON whichever path answered, and `onRead` reports which one did, with the `CF-Cache-Status` header when present.
+- Calls whose arguments do not encode as JSON, or encode into a URL over 4 KiB, go to the object directly.
+- Attach the tier only to stubs of the plan's Durable Object class: transforms do not check the stub's class, and the entrypoint addresses objects by ID in the plan's namespace.
+- A cached result can be up to `staleMs` old, so cache only reads that tolerate it. Writes through the object do not update cached results.
+
 ## Manual wrapping
 
 When the Vite plugin is unavailable, wrap a target or namespace directly:
