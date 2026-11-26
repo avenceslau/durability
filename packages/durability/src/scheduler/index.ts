@@ -207,6 +207,11 @@ export type ExecutionSpec<Result> = {
    * a failure.
    */
   complete: (result: Result, attempt: number) => number | undefined;
+  /**
+   * Runs in the transaction that fails the record for good, after the failure
+   * is written, so a kind can replace the failed record atomically.
+   */
+  failed?: (sql: SqlStorage) => void;
   /** Kind-specific terminal rule beyond non-retryable errors and exhausted attempts. */
   isTerminal: (cause: unknown) => boolean;
 };
@@ -1349,6 +1354,7 @@ export class Engine {
 
       if (exhaustedAttempt !== undefined) {
         deleteMemos(sql, spec.table, key);
+        spec.failed?.(sql);
       }
 
       return exhaustedAttempt;
@@ -1393,6 +1399,7 @@ export class Engine {
 
       if (owned && decision.terminal) {
         deleteMemos(sql, spec.table, key);
+        spec.failed?.(sql);
       }
 
       return owned;

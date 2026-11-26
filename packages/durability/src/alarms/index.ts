@@ -27,7 +27,7 @@ import {
   type ExecutionPolicyOptions,
   type PolicyResolver,
 } from '../policy.js';
-import { isFunction } from '../predicates.js';
+import { isFunction, isNumber, isObject } from '../predicates.js';
 import {
   assertChannel,
   defaultChannel,
@@ -43,7 +43,12 @@ import {
   memoizedKeys,
   type DurableMemoize,
 } from '../memoize/index.js';
-import { deleteAttempt, listCreated, type DurableTable } from '../storage.js';
+import {
+  deleteAttempt,
+  listCreated,
+  updateAttempt,
+  type DurableTable,
+} from '../storage.js';
 import {
   registerTrackedSource,
   type UntypedRecord,
@@ -104,7 +109,169 @@ export type DurableAlarmHandler = (
   info: DurableAlarmInfo
 ) => void | Promise<void>;
 
-const alarmHandlerSchema = v.custom<DurableAlarmHandler>(isFunction);
+/** Milliseconds until the next occurrence, or a function returning them, such as one adding jitter. */
+export type AlarmPeriod = number | (() => number);
+
+/**
+ * One period for every level, or periods keyed by activity level. `'*'`
+ * applies to levels without their own key. A level with no period does not
+ * run the alarm.
+ */
+export type AlarmPeriods = AlarmPeriod | Readonly<Record<string, AlarmPeriod>>;
+
+/** Information passed to a recurring alarm handler, with the level it runs at. */
+export type RecurringAlarmInfo<Level extends string | undefined> =
+  DurableAlarmInfo & {
+    /** Activity level when the attempt started; undefined without `activity`. */
+    level: Level;
+  };
+
+type PeriodLevels<Periods> = Periods extends AlarmPeriod
+  ? never
+  : keyof Periods & string;
+
+type RunLevel<Periods> = Periods extends AlarmPeriod
+  ? string | undefined
+  : '*' extends keyof Periods
+    ? string | undefined
+    : keyof Periods & string;
+
+/** A handler built by {@link every}. */
+export type RecurringAlarm<Level extends string = string> = {
+  readonly periods: AlarmPeriods;
+  readonly options: DurabilityAlarmMethodOptions | undefined;
+  run(info: RecurringAlarmInfo<string | undefined>): void | Promise<void>;
+  /** Type-only: the levels `periods` lists, checked against `activity`. */
+  readonly levels?: readonly Level[];
+};
+
+type RecurringAlarmEntry = {
+  periods: AlarmPeriod | ReadonlyMap<string, AlarmPeriod>;
+  run: RecurringAlarm['run'];
+};
+
+const isAlarmPeriod = <Other>(
+  value: AlarmPeriod | Other
+): value is AlarmPeriod => isNumber(value) || isFunction(value);
+
+const assertPeriod = (period: number): void => {
+  if (!Number.isFinite(period) || period <= 0) {
+    throw new RangeError('every() periods must be positive numbers');
+  }
+};
+
+const alarmPeriodSchema = v.custom<AlarmPeriod>(
+  (value) => isNumber(value) || isFunction(value)
+);
+
+const recurringAlarmSchema = v.object({
+  periods: v.union([
+    alarmPeriodSchema,
+    v.record(v.string(), alarmPeriodSchema),
+  ]),
+  run: v.custom<RecurringAlarm['run']>(isFunction),
+  // Parsed with the other method policies by createPolicyResolver.
+  options: v.optional(v.custom<DurabilityAlarmMethodOptions>(isObject)),
+});
+
+const alarmHandlerSchema = v.union([
+  v.custom<DurableAlarmHandler>(isFunction),
+  recurringAlarmSchema,
+]);
+
+/**
+ * Makes a named alarm recur: after each run it schedules its next occurrence
+ * from the period of the current activity level.
+ *
+ * @example
+ * ```ts
+ * handlers: {
+ *   sweep: every({ draining: 5_000, active: 30_000 }, ({ level }) => sweep(level)),
+ *   snapshot: every(3_600_000, () => snapshot(), { retries: { maxAttempts: 2 } }),
+ * }
+ * ```
+ */
+export const every = <const Periods extends AlarmPeriods>(
+  periods: Periods,
+  run: (info: RecurringAlarmInfo<RunLevel<Periods>>) => void | Promise<void>,
+  options?: DurabilityAlarmMethodOptions
+): RecurringAlarm<PeriodLevels<Periods>> => {
+  const listed = isAlarmPeriod(periods) ? [periods] : Object.values(periods);
+
+  for (const period of listed) {
+    if (isNumber(period)) {
+      assertPeriod(period);
+    }
+  }
+
+  return { periods, run, options };
+};
+
+const periodFor = (
+  periods: RecurringAlarmEntry['periods'],
+  level: string | undefined
+): AlarmPeriod | undefined => {
+  if (isAlarmPeriod(periods)) {
+    return periods;
+  }
+
+  return (
+    (level === undefined ? undefined : periods.get(level)) ?? periods.get('*')
+  );
+};
+
+const nextRunAt = (period: AlarmPeriod, now: number): number => {
+  const delay = isFunction(period) ? period() : period;
+  assertPeriod(delay);
+
+  return Math.ceil(now + delay);
+};
+
+const upsertOccurrence = (
+  sql: SqlStorage,
+  occurrence: {
+    channel: string;
+    name: string;
+    generation: string;
+    scheduledTime: number;
+    createdAt: number;
+  }
+): void => {
+  sql.exec(
+    `INSERT INTO durability_alarms
+       (name, channel, generation_id, status, scheduled_at,
+        next_attempt_at, attempt, last_error, last_error_name, created_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, 0, NULL, NULL, ?)
+     ON CONFLICT(channel, name) DO UPDATE SET
+       generation_id = excluded.generation_id,
+       status = excluded.status,
+       scheduled_at = excluded.scheduled_at,
+       next_attempt_at = excluded.next_attempt_at,
+       attempt = excluded.attempt,
+       last_error = excluded.last_error,
+       last_error_name = excluded.last_error_name,
+       created_at = excluded.created_at`,
+    occurrence.name,
+    occurrence.channel,
+    occurrence.generation,
+    occurrence.scheduledTime,
+    occurrence.scheduledTime,
+    occurrence.createdAt
+  );
+};
+
+// Turns a settled occurrence into the next one in place, so no moment exists
+// where a recurring alarm has no row.
+const nextOccurrenceAssignments = `generation_id = ?, status = 'pending',
+  scheduled_at = ?, next_attempt_at = ?, attempt = 0, last_error = NULL,
+  last_error_name = NULL, created_at = ?`;
+
+type ScheduledOccurrence = {
+  name: string;
+  generation: string;
+  scheduledTime: number;
+  createdAt: number;
+};
 
 /** Policy configuration for named alarms. */
 export type DurabilityAlarmsOptions<Names extends string = string> =
@@ -120,20 +287,36 @@ export type DurabilityAlarmsOptions<Names extends string = string> =
  * shared `scheduler` or the Durable Object `context` (plus scheduler options)
  * to create a private one.
  */
-export type DurabilityAlarmsConfig<Names extends string = string> =
-  DurabilityAlarmsOptions<Names> &
-    SchedulerAttachment & {
-      /** Alarm handlers keyed by the scheduling method names they become. */
-      handlers: Record<Names, DurableAlarmHandler>;
-      /**
-       * Stable channel ID. Instances on one scheduler share storage,
-       * partitioned by channel; alarm names are unique within a channel, and
-       * each instance runs, lists and purges only its own. A library should
-       * use its own channel so its alarms never meet the application's.
-       * Defaults to `default`.
-       */
-      channel?: string;
-    };
+export type DurabilityAlarmsConfig<
+  Names extends string = string,
+  Level extends string = never,
+> = DurabilityAlarmsOptions<Names> &
+  SchedulerAttachment & {
+    /**
+     * Alarm handlers keyed by the scheduling method names they become. A
+     * handler built by {@link every} recurs at the period of the current
+     * activity level.
+     */
+    handlers: Record<
+      Names,
+      DurableAlarmHandler | RecurringAlarm<NoInfer<Level> | '*'>
+    >;
+    /**
+     * Returns the object's current activity level. Recurring alarms read it
+     * when an attempt starts, to skip a level they list no period for, and
+     * when it settles, to schedule the next occurrence. It must be
+     * synchronous and must not throw.
+     */
+    activity?: () => Level;
+    /**
+     * Stable channel ID. Instances on one scheduler share storage,
+     * partitioned by channel; alarm names are unique within a channel, and
+     * each instance runs, lists and purges only its own. A library should
+     * use its own channel so its alarms never meet the application's.
+     * Defaults to `default`.
+     */
+    channel?: string;
+  };
 
 /** A lifecycle event for one of this instance's named alarms. */
 export type DurabilityAlarmEvent =
@@ -204,31 +387,48 @@ const alarmEntity = (row: AlarmRow): AlarmLifecycleEntity => ({
   generation: row.generation_id,
 });
 
-class DurabilityAlarmsCore<Names extends string> {
+class DurabilityAlarmsCore<Names extends string, Level extends string = never> {
   readonly #engine: Engine;
   readonly #channel: string;
   readonly #table: DurableTable;
-  readonly #handlers: Map<string, DurableAlarmHandler>;
+  readonly #handlers = new Map<string, DurableAlarmHandler>();
+  readonly #recurring = new Map<string, RecurringAlarmEntry>();
+  readonly #activity: (() => string) | undefined;
   readonly #policy: PolicyResolver<AlarmMethodPolicy>;
   readonly #lifecycle: LifecycleHooks;
   readonly #emit: LifecycleHooks['emit'];
   readonly #active = new Map<string, ActiveExecution>();
 
-  constructor(config: DurabilityAlarmsConfig<Names>) {
+  constructor(config: DurabilityAlarmsConfig<Names, Level>) {
     this.#channel = assertChannel(
       'DurabilityAlarms',
       config.channel ?? defaultChannel
     );
     this.#table = { ...alarmsTable, channel: this.#channel };
     this.#engine = engineFor(config);
-    this.#handlers = new Map(
-      Object.entries<DurableAlarmHandler>(config.handlers).map(
-        ([name, handler]) => [name, v.parse(alarmHandlerSchema, handler)]
-      )
+    this.#activity = v.parse(
+      v.optional(v.custom<() => string>(isFunction)),
+      config.activity
     );
+
+    const methods: NonNullable<DurabilityAlarmsOptions['methods']> = {
+      ...config.methods,
+    };
+
+    for (const [name, value] of Object.entries<unknown>(config.handlers)) {
+      const handler = v.parse(alarmHandlerSchema, value);
+
+      if (isFunction(handler)) {
+        this.#handlers.set(name, handler);
+        continue;
+      }
+
+      this.#addRecurring(name, handler, methods);
+    }
+
     this.#policy = createPolicyResolver(
       config,
-      config.methods ?? {},
+      methods,
       alarmMethodOptionsSchema
     );
     this.#lifecycle = createLifecycleHooks(
@@ -241,7 +441,7 @@ class DurabilityAlarmsCore<Names extends string> {
       Object.getOwnPropertyNames(DurabilityAlarmsCore.prototype)
     );
 
-    for (const name of this.#handlers.keys()) {
+    for (const name of Object.keys(config.handlers)) {
       if (reserved.has(name)) {
         throw new Error(`"${name}" is reserved by DurabilityAlarms`);
       }
@@ -291,9 +491,124 @@ class DurabilityAlarmsCore<Names extends string> {
     return result;
   }
 
+  #addRecurring(
+    name: string,
+    recurring: v.InferOutput<typeof recurringAlarmSchema>,
+    methods: NonNullable<DurabilityAlarmsOptions['methods']>
+  ): void {
+    const { periods, run, options } = recurring;
+
+    const entryPeriods = isAlarmPeriod(periods)
+      ? periods
+      : new Map(Object.entries(periods));
+
+    const listsLevels =
+      !isAlarmPeriod(entryPeriods) &&
+      [...entryPeriods.keys()].some((level) => level !== '*');
+
+    if (listsLevels && this.#activity === undefined) {
+      throw new TypeError(
+        `Named alarm "${name}" lists activity levels but no activity is configured`
+      );
+    }
+
+    if (options !== undefined) {
+      if (methods[name] !== undefined) {
+        throw new TypeError(
+          `Named alarm "${name}" sets options in both every() and methods`
+        );
+      }
+
+      methods[name] = options;
+    }
+
+    this.#recurring.set(name, { periods: entryPeriods, run });
+  }
+
   /** Runs due named alarms and re-arms the physical alarm. */
   alarm(info?: AlarmInvocationInfo): Promise<void> {
     return this.#engine.alarm(info);
+  }
+
+  /**
+   * Moves recurring alarms earlier to the periods of `level`, after state
+   * changed that `activity` will report on. A pending occurrence that is
+   * already sooner, running, or waiting to retry keeps its time; a missing or
+   * failed one is scheduled. It never moves an occurrence later: the next
+   * settlement reads `activity` and schedules from the level it reports.
+   */
+  async raiseActivity(level: Level): Promise<void> {
+    if (this.#activity === undefined) {
+      throw new TypeError('raiseActivity requires the activity option');
+    }
+
+    const now = Date.now();
+
+    const scheduled = await this.#engine.transaction((sql) => {
+      const changes: (ScheduledOccurrence & { replaced: boolean })[] = [];
+
+      for (const [name, { periods }] of this.#recurring) {
+        const period = periodFor(periods, level);
+
+        if (period === undefined) {
+          continue;
+        }
+
+        const scheduledTime = nextRunAt(period, now);
+        const row = readAlarm(sql, this.#channel, name);
+
+        if (row?.status === 'pending') {
+          if (row.attempt > 0 || row.next_attempt_at <= scheduledTime) {
+            continue;
+          }
+
+          sql.exec(
+            `UPDATE durability_alarms SET scheduled_at = ?, next_attempt_at = ?
+             WHERE channel = ? AND name = ? AND generation_id = ?`,
+            scheduledTime,
+            scheduledTime,
+            this.#channel,
+            name,
+            row.generation_id
+          );
+          changes.push({
+            name,
+            generation: row.generation_id,
+            scheduledTime,
+            createdAt: now,
+            replaced: false,
+          });
+          continue;
+        }
+
+        const generation = crypto.randomUUID();
+        upsertOccurrence(sql, {
+          channel: this.#channel,
+          name,
+          generation,
+          scheduledTime,
+          createdAt: now,
+        });
+        deleteMemos(sql, this.#table, name);
+        changes.push({
+          name,
+          generation,
+          scheduledTime,
+          createdAt: now,
+          replaced: row !== undefined,
+        });
+      }
+
+      return changes;
+    });
+
+    for (const occurrence of scheduled) {
+      if (occurrence.replaced) {
+        this.#engine.notify(this.#table, occurrence.name);
+      }
+
+      this.#emitScheduled(occurrence);
+    }
   }
 
   /**
@@ -424,42 +739,45 @@ class DurabilityAlarmsCore<Names extends string> {
     const generation = crypto.randomUUID();
     const createdAt = Date.now();
     await this.#engine.transaction((sql) => {
-      sql.exec(
-        `INSERT INTO durability_alarms
-           (name, channel, generation_id, status, scheduled_at,
-            next_attempt_at, attempt, last_error, last_error_name, created_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, 0, NULL, NULL, ?)
-         ON CONFLICT(channel, name) DO UPDATE SET
-           generation_id = excluded.generation_id,
-           status = excluded.status,
-           scheduled_at = excluded.scheduled_at,
-           next_attempt_at = excluded.next_attempt_at,
-           attempt = excluded.attempt,
-           last_error = excluded.last_error,
-           last_error_name = excluded.last_error_name,
-           created_at = excluded.created_at`,
-        key,
-        this.#channel,
+      upsertOccurrence(sql, {
+        channel: this.#channel,
+        name: key,
         generation,
         scheduledTime,
-        scheduledTime,
-        createdAt
-      );
+        createdAt,
+      });
       // Memoized results belong to the replaced occurrence, never to the new one.
       deleteMemos(sql, this.#table, key);
     });
     // A waiter on the replaced occurrence resolves now instead of at its timeout.
     this.#engine.notify(this.#table, key);
+    this.#emitScheduled({ name, generation, scheduledTime, createdAt });
+  }
+
+  #emitScheduled(occurrence: ScheduledOccurrence): void {
     this.#emit({
       type: 'scheduled',
       entityKind: 'named_alarm',
-      alarm: name,
-      id: name,
-      generation,
-      timestamp: createdAt,
+      alarm: occurrence.name,
+      id: occurrence.name,
+      generation: occurrence.generation,
+      timestamp: occurrence.createdAt,
       attempt: 0,
-      scheduledTime,
+      scheduledTime: occurrence.scheduledTime,
     });
+  }
+
+  /** The next occurrence's time from the current level, or undefined when it should not recur. */
+  #nextRunAt(name: string, now: number): number | undefined {
+    const recurring = this.#recurring.get(name);
+
+    if (recurring === undefined) {
+      return undefined;
+    }
+
+    const period = periodFor(recurring.periods, this.#activity?.());
+
+    return period === undefined ? undefined : nextRunAt(period, now);
   }
 
   async #cancel(name: string): Promise<boolean> {
@@ -502,7 +820,7 @@ class DurabilityAlarmsCore<Names extends string> {
    * One name never has more than one attempt in progress in this instance. A
    * handler whose attempt timed out may still be running beside the next one.
    */
-  #execute(
+  async #execute(
     row: AlarmRow,
     platform: AlarmInvocationInfo | undefined
   ): Promise<void> {
@@ -515,8 +833,36 @@ class DurabilityAlarmsCore<Names extends string> {
     const name = row.name;
     const policy = this.#policy(name);
     const retryTimeouts = policy.method?.retryTimeouts ?? false;
+    let next: ScheduledOccurrence | undefined;
 
-    return this.#engine.startExecution({
+    // Replaces the settled row with the next occurrence of a recurring alarm,
+    // in the settlement's own transaction.
+    const scheduleNext = (
+      replace: (
+        generation: string,
+        scheduledTime: number,
+        createdAt: number
+      ) => boolean
+    ): boolean => {
+      const createdAt = Date.now();
+      const scheduledTime = this.#nextRunAt(name, createdAt);
+
+      if (scheduledTime === undefined) {
+        return false;
+      }
+
+      const generation = crypto.randomUUID();
+
+      if (!replace(generation, scheduledTime, createdAt)) {
+        return false;
+      }
+
+      next = { name, generation, scheduledTime, createdAt };
+
+      return true;
+    };
+
+    const execution = this.#engine.startExecution({
       table: this.#table,
       key: row.name,
       row,
@@ -534,15 +880,7 @@ class DurabilityAlarmsCore<Names extends string> {
       timeoutError: () =>
         new DurableAlarmTimeoutError(name, policy.attemptTimeoutMs),
       invoke: (attempt, signal) => {
-        const handler = this.#handlers.get(name);
-
-        if (!handler) {
-          throw new NonRetryableError(
-            `No named alarm handler registered for "${name}"`
-          );
-        }
-
-        return handler({
+        const info: DurableAlarmInfo = {
           name,
           scheduledTime: row.scheduled_at,
           attempt,
@@ -556,22 +894,96 @@ class DurabilityAlarmsCore<Names extends string> {
             attempt,
           }),
           platform,
-        });
+        };
+
+        const recurring = this.#recurring.get(name);
+
+        if (recurring !== undefined) {
+          const level = this.#activity?.();
+
+          // A recurring alarm runs only at the levels it lists a period for.
+          if (periodFor(recurring.periods, level) === undefined) {
+            return undefined;
+          }
+
+          return recurring.run({ ...info, level });
+        }
+
+        const handler = this.#handlers.get(name);
+
+        if (!handler) {
+          throw new NonRetryableError(
+            `No named alarm handler registered for "${name}"`
+          );
+        }
+
+        return handler(info);
       },
       complete: (_result, attempt) => {
         const timestamp = Date.now();
+        const sql = this.#engine.sql;
 
-        const removed = deleteAttempt(this.#engine.sql, this.#table, {
+        const ref = {
           key: row.name,
           generation: row.generation_id,
           attempt,
-        });
+        };
 
-        return removed ? timestamp : undefined;
+        const replaced = scheduleNext((generation, scheduledTime, createdAt) =>
+          updateAttempt(
+            sql,
+            this.#table,
+            ref,
+            nextOccurrenceAssignments,
+            generation,
+            scheduledTime,
+            scheduledTime,
+            createdAt
+          )
+        );
+
+        if (replaced) {
+          return timestamp;
+        }
+
+        return deleteAttempt(sql, this.#table, ref) ? timestamp : undefined;
+      },
+      // A recurring alarm keeps its cadence: the next occurrence replaces the
+      // failed one, whose error stays in the lifecycle events.
+      failed: (sql) => {
+        scheduleNext(
+          (generation, scheduledTime, createdAt) =>
+            sql
+              .exec(
+                `UPDATE durability_alarms SET ${nextOccurrenceAssignments}
+                 WHERE channel = ? AND name = ? AND generation_id = ?
+                 RETURNING name`,
+                generation,
+                scheduledTime,
+                scheduledTime,
+                createdAt,
+                this.#channel,
+                name,
+                row.generation_id
+              )
+              .toArray().length > 0
+        );
       },
       isTerminal: (error) =>
         isErrorInstance(error, DurableAlarmTimeoutError) && !retryTimeouts,
     });
+
+    await execution;
+
+    // A rolled-back settlement or a later replacement leaves another
+    // generation in the row, and that one reports its own scheduling.
+    if (
+      next !== undefined &&
+      readAlarm(this.#engine.sql, this.#channel, name)?.generation_id ===
+        next.generation
+    ) {
+      this.#emitScheduled(next);
+    }
   }
 }
 
@@ -602,16 +1014,18 @@ class DurabilityAlarmsCore<Names extends string> {
  * }
  * ```
  */
-export type DurabilityAlarms<Names extends string> =
-  DurabilityAlarmsCore<Names> & Record<Names, DurableNamedAlarm>;
+export type DurabilityAlarms<
+  Names extends string,
+  Level extends string = never,
+> = DurabilityAlarmsCore<Names, Level> & Record<Names, DurableNamedAlarm>;
 
 /** Any `DurabilityAlarms` instance, without the index signature of `DurabilityAlarms<string>`. */
-export type AnyDurabilityAlarms = DurabilityAlarmsCore<string>;
+export type AnyDurabilityAlarms = DurabilityAlarmsCore<string, string>;
 
 export interface DurabilityAlarmsConstructor {
-  new <const Names extends string>(
-    config: DurabilityAlarmsConfig<Names>
-  ): DurabilityAlarms<Names>;
+  new <const Names extends string, const Level extends string = never>(
+    config: DurabilityAlarmsConfig<Names, Level>
+  ): DurabilityAlarms<Names, Level>;
   migrate: typeof DurabilityAlarmsCore.migrate;
 }
 
