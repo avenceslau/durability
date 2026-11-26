@@ -1,14 +1,17 @@
 /**
  * Caches RPC results in tiers composed as caller transforms: per isolate with
- * {@link memoryTier}, and in the Workers cache, shared by every caller in a
- * location, with {@link workerCacheTier} and {@link serveCached}. Declare what
- * to cache with {@link cachePlan}.
+ * {@link memoryTier}, per calling Durable Object with {@link durableTier}, and
+ * in the Workers cache, shared by every caller in a location, with
+ * {@link workerCacheTier} and {@link serveCached}. Declare what to cache with
+ * {@link cachePlan}.
  *
  * @packageDocumentation
  */
 export type { CachedCall } from './call.js';
 
 export type { IsJson, Json } from './json.js';
+
+export { durableTier } from './durable-tier.js';
 
 export { memoryTier, type MemoryTierOptions } from './memory-tier.js';
 

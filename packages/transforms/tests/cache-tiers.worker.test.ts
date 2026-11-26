@@ -184,3 +184,21 @@ describe('composed tiers', () => {
     expect(sent).toHaveLength(2);
   });
 });
+
+describe('durableTier', () => {
+  it("keeps entries in the calling object's storage", async () => {
+    const caller = env.CACHE_CALLER_DO.getByName('durable-caller');
+
+    await expect(
+      caller.readThroughStorage('durable-target', 'a', false)
+    ).resolves.toEqual({ key: 'a', reads: 1 });
+    await expect(
+      caller.readThroughStorage('durable-target', 'a', true)
+    ).resolves.toEqual({ key: 'a', reads: 1 });
+
+    const keys = await caller.storedKeys();
+
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(/^durability-cache:[0-9a-f]{64}$/);
+  });
+});
