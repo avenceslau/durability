@@ -59,15 +59,24 @@ type RuleContext = {
     messageId:
       | 'abortAfterSync'
       | 'alarmChangeInAlarm'
+      | 'alarmChangeInAlarmThroughCall'
+      | 'alarmChangeInConstructor'
+      | 'alarmChangeInConstructorThroughCall'
+      | 'asyncCallInTransactionSync'
       | 'asyncTransactionSync'
       | 'deferredWrite'
+      | 'deferredWriteThroughCall'
       | 'delegateOnly'
       | 'deleteAllInTransaction'
+      | 'deleteAllInTransactionThroughCall'
       | 'missingAlarm'
       | 'physicalAlarm'
+      | 'physicalAlarmThroughCall'
       | 'nextOnce'
+      | 'scheduleInConstructor'
       | 'tableCreation'
       | 'tableName';
+    data?: Record<string, string>;
   }) => void;
   sourceCode: {
     getDeclaredVariables: (node: AstNode) => ScopeVariable[];
@@ -139,6 +148,20 @@ const resolveVariable = (context: RuleContext, node: AstNode | undefined) => {
   return undefined;
 };
 
+const enclosingClass = (node: AstNode) => {
+  let current = node.parent;
+
+  while (
+    current &&
+    current.type !== 'ClassDeclaration' &&
+    current.type !== 'ClassExpression'
+  ) {
+    current = current.parent;
+  }
+
+  return current;
+};
+
 const durabilityConstructors = new Set([
   'Durability',
   'DurabilityAlarms',
@@ -163,10 +186,11 @@ const durabilityImportName = (
   );
 
   const definition = variable?.defs[0];
+  const source = propertyName(definition?.node.parent?.source) ?? '';
 
   if (
     definition?.type !== 'ImportBinding' ||
-    propertyName(definition.node.parent?.source) !== 'durability'
+    (source !== 'durability' && !source.startsWith('durability/'))
   ) {
     return undefined;
   }
@@ -180,6 +204,19 @@ const durabilityImportName = (
   return definition.node.type === 'ImportSpecifier'
     ? propertyName(definition.node.imported)
     : undefined;
+};
+
+// durabilityImportName only follows direct imports from durability, so a class
+// imported through a local re-export falls back to its spelling.
+const helperClassName = (context: RuleContext, node: AstNode | undefined) => {
+  if (node?.type !== 'NewExpression' || !node.callee) {
+    return undefined;
+  }
+
+  return (
+    durabilityImportName(context, node.callee) ??
+    (node.callee.type === 'Identifier' ? node.callee.name : undefined)
+  );
 };
 
 /** Class fields holding a durability helper, by declared name. */
@@ -196,15 +233,7 @@ const durabilityFields = (
 
     const name = propertyName(member.key);
     const value = nodeValue(member.value);
-    const callee = value?.type === 'NewExpression' ? value.callee : undefined;
-
-    // An unimported bare name, or one imported through a local re-export, is
-    // still recognized by its spelling.
-    const constructorName =
-      callee &&
-      (durabilityImportName(context, callee) ??
-        (callee.type === 'Identifier' ? callee.name : undefined));
-
+    const constructorName = helperClassName(context, value);
     const constructed = durabilityConstructors.has(constructorName ?? '');
 
     const created =
@@ -264,10 +293,14 @@ const alarmRunnerRule = {
         'A class using createDurability must delegate alarm() directly to durability.alarm(alarmInfo).',
       physicalAlarm:
         'A class using createDurability must schedule logical alarms through durability named alarms instead of calling setAlarm() or deleteAlarm().',
+      physicalAlarmThroughCall:
+        '{{function}}() calls setAlarm() or deleteAlarm(); a class using createDurability must schedule logical alarms through durability named alarms instead.',
     },
   },
   create(context: RuleContext) {
     const durabilityClasses = new WeakSet<AstNode>();
+    const calledFunctions = createCalledFunctions(context);
+    const calls: AstNode[] = [];
 
     const checkClass = (node: AstNode) => {
       const members = bodyMembers(node);
@@ -313,35 +346,43 @@ const alarmRunnerRule = {
       }
     };
 
-    return {
+    return mergeVisitors(calledFunctions.visitors, {
       ClassDeclaration: checkClass,
       ClassExpression: checkClass,
       CallExpression(node: AstNode) {
-        if (node.callee?.type !== 'MemberExpression') {
-          return;
-        }
+        calls.push(node);
+      },
+      'Program:exit'() {
+        for (const call of calls) {
+          const classNode = enclosingClass(call);
 
-        const method = propertyName(node.callee.property);
+          if (!classNode || !durabilityClasses.has(classNode)) {
+            continue;
+          }
 
-        if (method !== 'setAlarm' && method !== 'deleteAlarm') {
-          return;
-        }
+          if (isAlarmChange(call)) {
+            context.report({ node: call, messageId: 'physicalAlarm' });
 
-        let parent = node.parent;
+            continue;
+          }
 
-        while (
-          parent &&
-          parent.type !== 'ClassDeclaration' &&
-          parent.type !== 'ClassExpression'
-        ) {
-          parent = parent.parent;
-        }
+          // Methods of the class are checked where they are written.
+          const called = referencedFunction(context, call.callee);
 
-        if (parent && durabilityClasses.has(parent)) {
-          context.report({ node, messageId: 'physicalAlarm' });
+          if (
+            called &&
+            !isAncestor(classNode, called) &&
+            calledFunctions.reaches(call, isAlarmChange, 'written')
+          ) {
+            context.report({
+              node: call,
+              messageId: 'physicalAlarmThroughCall',
+              data: { function: calleeName(call) },
+            });
+          }
         }
       },
-    };
+    });
   },
 };
 
@@ -938,30 +979,61 @@ const receiverPath = (node: AstNode | undefined): string | undefined => {
     : `${object}.${property}`;
 };
 
-const isStorageSyncAwait = (statement: AstNode | undefined, state: string) => {
-  const awaited =
-    statement?.type === 'ExpressionStatement' &&
-    statement.expression?.type === 'AwaitExpression'
-      ? statement.expression.argument
-      : undefined;
-
-  if (
-    awaited?.type !== 'CallExpression' ||
-    awaited.callee?.type !== 'MemberExpression' ||
-    propertyName(awaited.callee.property) !== 'sync'
-  ) {
-    return false;
-  }
-
-  return receiverPath(awaited.callee.object) === `${state}.storage`;
-};
-
 const statementList = (node: AstNode | undefined): AstNode[] => {
   if (node?.type === 'SwitchCase') {
     return node.consequent ?? [];
   }
 
   return Array.isArray(node?.body) ? node.body : [];
+};
+
+/**
+ * Whether `statement` awaits `<state>.storage.sync()`, or awaits a function
+ * whose last statement does, however deeply.
+ */
+const awaitsStorageSync = (
+  context: RuleContext,
+  statement: AstNode | undefined,
+  state: string,
+  visited = new Set<AstNode>()
+): boolean => {
+  const awaited =
+    statement?.type === 'ExpressionStatement' &&
+    statement.expression?.type === 'AwaitExpression'
+      ? statement.expression.argument
+      : undefined;
+
+  if (awaited?.type !== 'CallExpression') {
+    return false;
+  }
+
+  const syncs =
+    awaited.callee?.type === 'MemberExpression' &&
+    propertyName(awaited.callee.property) === 'sync' &&
+    receiverPath(awaited.callee.object) === `${state}.storage`;
+
+  if (syncs) {
+    return true;
+  }
+
+  const called = referencedFunction(context, awaited.callee);
+  const body = called?.body;
+
+  if (
+    !called ||
+    Array.isArray(body) ||
+    body?.type !== 'BlockStatement' ||
+    visited.has(called)
+  ) {
+    return false;
+  }
+
+  visited.add(called);
+
+  const statements = statementList(body);
+  const last = statements[statements.length - 1];
+
+  return awaitsStorageSync(context, last, state, visited);
 };
 
 const abortAfterSyncRule = {
@@ -1003,7 +1075,7 @@ const abortAfterSyncRule = {
         const synced =
           statement?.type === 'ExpressionStatement' &&
           index > 0 &&
-          isStorageSyncAwait(statements[index - 1], state);
+          awaitsStorageSync(context, statements[index - 1], state);
 
         if (!synced) {
           context.report({ node, messageId: 'abortAfterSync' });
@@ -1020,25 +1092,63 @@ const transactionSyncCallbackRule = {
     messages: {
       asyncTransactionSync:
         'transactionSync() commits when its callback returns; an async callback commits the writes before its first await and runs the rest outside the transaction, and its errors do not roll anything back.',
+      asyncCallInTransactionSync:
+        '{{function}}() leads to an async function that writes to storage after an await. transactionSync() commits when its callback returns, so those writes run outside the transaction, and their errors do not roll anything back.',
     },
   },
   create(context: RuleContext) {
-    return {
+    const calledFunctions = createCalledFunctions(context);
+    const callbacks: AstNode[] = [];
+
+    const writesAfterAwait = (call: AstNode) => {
+      const called = referencedFunction(context, call.callee);
+
+      return called !== undefined && calledFunctions.writesAfterAwait(called);
+    };
+
+    return mergeVisitors(calledFunctions.visitors, {
       CallExpression(node: AstNode) {
         if (
           node.callee?.type !== 'MemberExpression' ||
-          propertyName(node.callee.property) !== 'transactionSync'
+          calleeName(node) !== 'transactionSync'
         ) {
           return;
         }
 
-        const callback = node.arguments?.[0];
+        const argument = node.arguments?.[0];
+
+        const callback =
+          argument && functionTypes.has(argument.type)
+            ? argument
+            : referencedFunction(context, argument);
 
         if (callback?.async) {
-          context.report({ node: callback, messageId: 'asyncTransactionSync' });
+          context.report({
+            node: argument ?? node,
+            messageId: 'asyncTransactionSync',
+          });
+        } else if (callback) {
+          callbacks.push(callback);
         }
       },
-    };
+      'Program:exit'() {
+        for (const callback of callbacks) {
+          for (const call of calledFunctions.callsWhenRun(callback)) {
+            const reachesWrite =
+              writesAfterAwait(call) ||
+              calledFunctions.reaches(call, writesAfterAwait, 'run');
+
+            if (reachesWrite) {
+              context.report({
+                node: call,
+                messageId: 'asyncCallInTransactionSync',
+                data: { function: calleeName(call) },
+              });
+            }
+          }
+        }
+      },
+    });
   },
 };
 
@@ -1180,6 +1290,267 @@ const unwrappedParent = (node: AstNode) => {
   return { child: current, parent: current.parent };
 };
 
+const calleeName = (call: AstNode) =>
+  propertyName(
+    call.callee?.type === 'MemberExpression'
+      ? call.callee.property
+      : call.callee
+  ) ?? '';
+
+const runsImmediately = (fn: AstNode) => {
+  const { child, parent } = unwrappedParent(fn);
+
+  if (parent?.type !== 'CallExpression') {
+    return false;
+  }
+
+  if (parent.callee === child) {
+    return true;
+  }
+
+  const name = calleeName(parent);
+
+  return (
+    parent.arguments?.includes(child) === true &&
+    (name === 'blockConcurrencyWhile' || promiseCallbackMethods.has(name))
+  );
+};
+
+const classMethodCache = new WeakMap<AstNode, Map<string, AstNode>>();
+
+/** Non-static methods and function-valued fields of a class, by name. */
+const classMethods = (classNode: AstNode) => {
+  const cached = classMethodCache.get(classNode);
+
+  if (cached) {
+    return cached;
+  }
+
+  const methods = new Map<string, AstNode>();
+
+  for (const member of bodyMembers(classNode)) {
+    const name = propertyName(member.key);
+    const value = nodeValue(member.value);
+
+    const isMethod =
+      (member.type === 'MethodDefinition' && member.kind === 'method') ||
+      (member.type === 'PropertyDefinition' &&
+        value !== undefined &&
+        functionTypes.has(value.type));
+
+    if (isMethod && !member.static && name !== undefined && value) {
+      methods.set(name, value);
+    }
+  }
+
+  classMethodCache.set(classNode, methods);
+
+  return methods;
+};
+
+/** Whether `this` at `node` is the instance of its enclosing class. */
+const thisIsInstance = (node: AstNode) => {
+  let current = node.parent;
+
+  while (current) {
+    if (
+      current.type === 'MethodDefinition' ||
+      current.type === 'PropertyDefinition'
+    ) {
+      return current.static !== true;
+    }
+
+    const hasOwnThis =
+      current.type === 'StaticBlock' ||
+      current.type === 'FunctionDeclaration' ||
+      (current.type === 'FunctionExpression' &&
+        current.parent?.type !== 'MethodDefinition' &&
+        current.parent?.type !== 'PropertyDefinition');
+
+    if (hasOwnThis) {
+      return false;
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+};
+
+/**
+ * The function `node` refers to: a method of the enclosing class read
+ * through `this`, or a function declared in the same file.
+ */
+const referencedFunction = (
+  context: RuleContext,
+  node: AstNode | undefined
+): AstNode | undefined => {
+  if (
+    node?.type === 'MemberExpression' &&
+    node.object?.type === 'ThisExpression'
+  ) {
+    const classNode = enclosingClass(node);
+    const name = node.computed ? undefined : propertyName(node.property);
+
+    return classNode && name !== undefined && thisIsInstance(node)
+      ? classMethods(classNode).get(name)
+      : undefined;
+  }
+
+  const definition = resolveVariable(context, node)?.defs[0];
+
+  if (definition?.node.type === 'FunctionDeclaration') {
+    return definition.node;
+  }
+
+  const init =
+    definition?.type === 'Variable' ? definition.node.init : undefined;
+
+  return init && functionTypes.has(init.type) ? init : undefined;
+};
+
+type FunctionScope = 'run' | 'written';
+
+/**
+ * Indexes the calls and awaits in each function of a file, so a rule can
+ * follow a call into the function it calls and on through the functions that
+ * one calls. A function's `run` calls are those it makes when it runs,
+ * including in callbacks it runs in place; its `written` calls are every call
+ * written inside it, including in callbacks that run later.
+ */
+const createCalledFunctions = (context: RuleContext) => {
+  const runCalls = new Map<AstNode, AstNode[]>();
+  const writtenCalls = new Map<AstNode, AstNode[]>();
+  const awaits = new Map<AstNode, AstNode[]>();
+
+  const add = (
+    index: Map<AstNode, AstNode[]>,
+    owner: AstNode,
+    node: AstNode
+  ) => {
+    const nodes = index.get(owner) ?? [];
+    nodes.push(node);
+    index.set(owner, nodes);
+  };
+
+  const recordCall = (call: AstNode) => {
+    let owner = enclosingFunction(call);
+    let runsWithOwner = true;
+
+    while (owner) {
+      add(writtenCalls, owner, call);
+
+      if (runsWithOwner) {
+        add(runCalls, owner, call);
+      }
+
+      runsWithOwner = runsWithOwner && runsImmediately(owner);
+      owner = enclosingFunction(owner);
+    }
+  };
+
+  const recordAwait = (node: AstNode) => {
+    const owner = enclosingFunction(node);
+
+    if (owner) {
+      add(awaits, owner, node);
+    }
+  };
+
+  const awaitsBefore = (owner: AstNode, node: AstNode) =>
+    (awaits.get(owner) ?? []).some(
+      (awaited) =>
+        !isAncestor(awaited, node) &&
+        (awaited.range?.[1] ?? Infinity) <= (node.range?.[1] ?? 0)
+    );
+
+  const callsWhenRun = (fn: AstNode) => runCalls.get(fn) ?? [];
+
+  /**
+   * Whether `call` leads to a call matching `matches`, in the function it
+   * calls or in any function reached from that one.
+   */
+  const reaches = (
+    call: AstNode,
+    matches: (call: AstNode) => boolean,
+    scope: FunctionScope,
+    visited = new Set<AstNode>()
+  ): boolean => {
+    const called = referencedFunction(context, call.callee);
+
+    if (!called || visited.has(called)) {
+      return false;
+    }
+
+    visited.add(called);
+
+    const calls = (scope === 'run' ? runCalls : writtenCalls).get(called) ?? [];
+
+    return calls.some(
+      (inner) => matches(inner) || reaches(inner, matches, scope, visited)
+    );
+  };
+
+  /**
+   * Whether an async function writes to storage after its first await, itself
+   * or through the functions it calls from there.
+   */
+  const writesAfterAwait = (fn: AstNode) =>
+    fn.async === true &&
+    callsWhenRun(fn).some(
+      (call) =>
+        awaitsBefore(fn, call) &&
+        (isStorageWrite(call) || reaches(call, isStorageWrite, 'run'))
+    );
+
+  return {
+    awaitsBefore,
+    callsWhenRun,
+    reaches,
+    writesAfterAwait,
+    visitors: {
+      AwaitExpression: recordAwait,
+      CallExpression: recordCall,
+      ForOfStatement(node: AstNode) {
+        if (node.await) {
+          recordAwait(node);
+        }
+      },
+    },
+  };
+};
+
+type Visitors = Record<string, (node: AstNode) => void>;
+
+/** Combines visitors so several can handle the same node type. */
+const mergeVisitors = (...visitorSets: Visitors[]) => {
+  const merged: Visitors = {};
+
+  for (const visitors of visitorSets) {
+    for (const [type, visit] of Object.entries(visitors)) {
+      const previous = merged[type];
+
+      merged[type] = previous
+        ? (node) => {
+            previous(node);
+            visit(node);
+          }
+        : visit;
+    }
+  }
+
+  return merged;
+};
+
+const isAlarmChange = (call: AstNode) => {
+  const method = calleeName(call);
+
+  return (
+    call.callee?.type === 'MemberExpression' &&
+    (method === 'setAlarm' || method === 'deleteAlarm')
+  );
+};
+
 const deferredStorageWritesRule = {
   meta: {
     type: 'problem',
@@ -1187,30 +1558,15 @@ const deferredStorageWritesRule = {
     messages: {
       deferredWrite:
         'This storage write starts after the request can respond, so the output gate does not hold the response for it and the write is lost if the object resets first. Await the work, or persist it before responding and finish it from an alarm.',
+      deferredWriteThroughCall:
+        '{{function}}() makes a storage write that starts after the request can respond, so the output gate does not hold the response for it and the write is lost if the object resets first. Await the work, or persist it before responding and finish it from an alarm.',
     },
   },
   create(context: RuleContext) {
+    const calledFunctions = createCalledFunctions(context);
+    const { awaitsBefore } = calledFunctions;
     const writes: AstNode[] = [];
-    const awaitsByFunction = new Map<AstNode, AstNode[]>();
-
-    const recordAwait = (node: AstNode) => {
-      const owner = enclosingFunction(node);
-
-      if (!owner) {
-        return;
-      }
-
-      const awaits = awaitsByFunction.get(owner) ?? [];
-      awaits.push(node);
-      awaitsByFunction.set(owner, awaits);
-    };
-
-    const awaitsBefore = (owner: AstNode, write: AstNode) =>
-      (awaitsByFunction.get(owner) ?? []).some(
-        (awaited) =>
-          !isAncestor(awaited, write) &&
-          (awaited.range?.[1] ?? Infinity) <= (write.range?.[1] ?? 0)
-      );
+    const calls: AstNode[] = [];
 
     const runsLater = (owner: AstNode, write: AstNode) => {
       const { child, parent } = unwrappedParent(owner);
@@ -1220,19 +1576,13 @@ const deferredStorageWritesRule = {
       }
 
       if (parent.arguments?.includes(child)) {
-        const calleeName = propertyName(
-          parent.callee?.type === 'MemberExpression'
-            ? parent.callee.property
-            : parent.callee
-        );
+        const name = calleeName(parent);
 
-        if (timerFunctions.has(calleeName ?? '')) {
+        if (timerFunctions.has(name)) {
           return true;
         }
 
-        return (
-          promiseCallbackMethods.has(calleeName ?? '') && isDetached(parent)
-        );
+        return promiseCallbackMethods.has(name) && isDetached(parent);
       }
 
       return (
@@ -1243,32 +1593,62 @@ const deferredStorageWritesRule = {
       );
     };
 
-    return {
-      AwaitExpression: recordAwait,
-      ForOfStatement(node: AstNode) {
-        if (node.await) {
-          recordAwait(node);
-        }
-      },
+    const isDeferred = (node: AstNode) => {
+      let owner = enclosingFunction(node);
+
+      while (owner && !runsLater(owner, node)) {
+        owner = enclosingFunction(owner);
+      }
+
+      return Boolean(owner);
+    };
+
+    /**
+     * A call that writes later through the function it calls: from deferred
+     * work, or a dropped call to an async function that writes after an await.
+     */
+    const writesLaterThroughCall = (call: AstNode) => {
+      const called = referencedFunction(context, call.callee);
+
+      if (!called) {
+        return false;
+      }
+
+      if (isDetached(call) && calledFunctions.writesAfterAwait(called)) {
+        return true;
+      }
+
+      return (
+        isDeferred(call) && calledFunctions.reaches(call, isStorageWrite, 'run')
+      );
+    };
+
+    return mergeVisitors(calledFunctions.visitors, {
       CallExpression(node: AstNode) {
         if (isStorageWrite(node)) {
           writes.push(node);
+        } else {
+          calls.push(node);
         }
       },
       'Program:exit'() {
         for (const write of writes) {
-          let owner = enclosingFunction(write);
-
-          while (owner && !runsLater(owner, write)) {
-            owner = enclosingFunction(owner);
-          }
-
-          if (owner) {
+          if (isDeferred(write)) {
             context.report({ node: write, messageId: 'deferredWrite' });
           }
         }
+
+        for (const call of calls) {
+          if (writesLaterThroughCall(call)) {
+            context.report({
+              node: call,
+              messageId: 'deferredWriteThroughCall',
+              data: { function: calleeName(call) },
+            });
+          }
+        }
       },
-    };
+    });
   },
 };
 
@@ -1279,21 +1659,16 @@ const alarmHandlerRule = {
     messages: {
       alarmChangeInAlarm:
         'Calling setAlarm() or deleteAlarm() inside alarm() replaces the retry of a failed run: an error after it is never retried, or is rerun with no backoff and no retry limit. Schedule follow-up work through durability instead.',
+      alarmChangeInAlarmThroughCall:
+        '{{function}}() calls setAlarm() or deleteAlarm(), which inside alarm() replaces the retry of a failed run: an error after it is never retried, or is rerun with no backoff and no retry limit. Schedule follow-up work through durability instead.',
     },
   },
   create(context: RuleContext) {
-    return {
+    const calledFunctions = createCalledFunctions(context);
+    const calls: AstNode[] = [];
+
+    return mergeVisitors(calledFunctions.visitors, {
       CallExpression(node: AstNode) {
-        if (node.callee?.type !== 'MemberExpression') {
-          return;
-        }
-
-        const method = propertyName(node.callee.property);
-
-        if (method !== 'setAlarm' && method !== 'deleteAlarm') {
-          return;
-        }
-
         let member = node.parent;
 
         while (
@@ -1304,15 +1679,234 @@ const alarmHandlerRule = {
           member = member.parent;
         }
 
-        if (member && !member.static && propertyName(member.key) === 'alarm') {
+        if (member?.static || propertyName(member?.key) !== 'alarm') {
+          return;
+        }
+
+        if (isAlarmChange(node)) {
           context.report({ node, messageId: 'alarmChangeInAlarm' });
+        } else {
+          calls.push(node);
         }
       },
+      'Program:exit'() {
+        for (const call of calls) {
+          if (calledFunctions.reaches(call, isAlarmChange, 'written')) {
+            context.report({
+              node: call,
+              messageId: 'alarmChangeInAlarmThroughCall',
+              data: { function: calleeName(call) },
+            });
+          }
+        }
+      },
+    });
+  },
+};
+
+/**
+ * Methods of each durability helper that schedule work, and so set or move the
+ * object's alarm. Methods of `Durability` and `DurabilityAlarms` are named
+ * after the application's handlers, so all of theirs except `lifecycle` count.
+ */
+const schedulingMethods = new Map([
+  ['DurabilityFanout', new Set(['alarm', 'enqueue'])],
+  ['DurabilityOutbox', new Set(['alarm', 'stage'])],
+  ['DurabilitySchedule', new Set(['alarm', 'cancel', 'reschedule', 'set'])],
+  ['DurabilityScheduler', new Set(['alarm'])],
+  ['DurabilitySemaphore', new Set(['alarm', 'handle'])],
+  [
+    'DurabilitySemaphoreQueue',
+    new Set(['alarm', 'cancel', 'enqueue', 'release']),
+  ],
+  ['DurabilityTopology', new Set(['alarm', 'delete', 'update'])],
+]);
+
+const classesWithHandlerMethods = new Set(['Durability', 'DurabilityAlarms']);
+
+const runsDuringConstruction = (node: AstNode) => {
+  let current = node.parent;
+
+  while (current) {
+    if (current.type === 'PropertyDefinition') {
+      return current.static !== true;
+    }
+
+    if (functionTypes.has(current.type)) {
+      if (current.parent?.type === 'MethodDefinition') {
+        return current.parent.kind === 'constructor';
+      }
+
+      if (!runsImmediately(current)) {
+        return false;
+      }
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+};
+
+const alarmConstructorRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      alarmChangeInConstructor:
+        'The constructor runs every time the object is loaded, including to deliver an alarm. A Durable Object has one alarm, so setAlarm() or deleteAlarm() here replaces or removes the pending alarm, such as a retry or work durability scheduled, on every load. Change the alarm from the request that needs it.',
+      scheduleInConstructor:
+        "The constructor runs every time the object is loaded, including to deliver an alarm, so this durability call schedules its work again on every load: it moves the object's alarm, and a named alarm or schedule set here replaces its pending occurrence each time. Schedule from the request that creates the work.",
+      alarmChangeInConstructorThroughCall:
+        "{{function}}() changes the object's alarm or schedules durability work, and the constructor runs every time the object is loaded, including to deliver an alarm, so it replaces the pending alarm on every load. Call it from the request that creates the work.",
+    },
+  },
+  create(context: RuleContext) {
+    const calledFunctions = createCalledFunctions(context);
+    const helperFields = new Map<AstNode, Map<string, string>>();
+    const calls: AstNode[] = [];
+
+    const recordField = (
+      classNode: AstNode | undefined,
+      field: string | undefined,
+      helperClass: string | undefined
+    ) => {
+      if (!classNode || field === undefined || helperClass === undefined) {
+        return;
+      }
+
+      const fields = helperFields.get(classNode) ?? new Map<string, string>();
+      fields.set(field, helperClass);
+      helperFields.set(classNode, fields);
     };
+
+    const helperClassOf = (receiver: AstNode | undefined) => {
+      if (
+        receiver?.type === 'MemberExpression' &&
+        receiver.object?.type === 'ThisExpression'
+      ) {
+        const classNode = enclosingClass(receiver);
+        const field = propertyName(receiver.property) ?? '';
+
+        return classNode && helperFields.get(classNode)?.get(field);
+      }
+
+      const definition = resolveVariable(context, receiver)?.defs[0];
+
+      return definition?.type === 'Variable'
+        ? helperClassName(context, definition.node.init)
+        : undefined;
+    };
+
+    const schedules = (callee: AstNode, method: string) => {
+      const helperClass = helperClassOf(callee.object);
+
+      if (helperClass) {
+        return classesWithHandlerMethods.has(helperClass)
+          ? method !== 'lifecycle'
+          : schedulingMethods.get(helperClass)?.has(method) === true;
+      }
+
+      return (
+        method === 'cancel' &&
+        callee.object?.type === 'MemberExpression' &&
+        helperClassOf(callee.object.object) === 'DurabilityAlarms'
+      );
+    };
+
+    const alarmChangeMessage = (call: AstNode) => {
+      if (isAlarmChange(call)) {
+        return 'alarmChangeInConstructor';
+      }
+
+      const callee = call.callee;
+
+      return callee?.type === 'MemberExpression' &&
+        schedules(callee, propertyName(callee.property) ?? '')
+        ? 'scheduleInConstructor'
+        : undefined;
+    };
+
+    const changesAlarm = (call: AstNode) =>
+      alarmChangeMessage(call) !== undefined;
+
+    return mergeVisitors(calledFunctions.visitors, {
+      PropertyDefinition(node: AstNode) {
+        recordField(
+          enclosingClass(node),
+          propertyName(node.key),
+          helperClassName(context, nodeValue(node.value))
+        );
+      },
+      AssignmentExpression(node: AstNode) {
+        if (
+          node.left?.type !== 'MemberExpression' ||
+          node.left.object?.type !== 'ThisExpression'
+        ) {
+          return;
+        }
+
+        recordField(
+          enclosingClass(node),
+          propertyName(node.left.property),
+          helperClassName(context, node.right)
+        );
+      },
+      CallExpression(node: AstNode) {
+        if (runsDuringConstruction(node)) {
+          calls.push(node);
+        }
+      },
+      'Program:exit'() {
+        for (const call of calls) {
+          const messageId = alarmChangeMessage(call);
+
+          if (messageId) {
+            context.report({ node: call, messageId });
+
+            continue;
+          }
+
+          if (calledFunctions.reaches(call, changesAlarm, 'run')) {
+            context.report({
+              node: call,
+              messageId: 'alarmChangeInConstructorThroughCall',
+              data: { function: calleeName(call) },
+            });
+          }
+        }
+      },
+    });
   },
 };
 
 const transactionMethods = new Set(['transaction', 'transactionSync']);
+
+const insideTransactionCallback = (node: AstNode) => {
+  let owner = enclosingFunction(node);
+
+  while (owner) {
+    const { child, parent } = unwrappedParent(owner);
+
+    const transactionCallback =
+      parent?.type === 'CallExpression' &&
+      parent.arguments?.[0] === child &&
+      parent.callee?.type === 'MemberExpression' &&
+      transactionMethods.has(propertyName(parent.callee.property) ?? '');
+
+    if (transactionCallback) {
+      return true;
+    }
+
+    owner = enclosingFunction(owner);
+  }
+
+  return false;
+};
+
+const isDeleteAll = (call: AstNode) =>
+  call.callee?.type === 'MemberExpression' &&
+  propertyName(call.callee.property) === 'deleteAll';
 
 const deleteAllInTransactionRule = {
   meta: {
@@ -1321,39 +1915,38 @@ const deleteAllInTransactionRule = {
     messages: {
       deleteAllInTransaction:
         'deleteAll() cannot run inside a transaction: transaction() rejects it, and transactionSync() applies it immediately outside the transaction, so a later error does not roll it back. Call deleteAll() before or after the transaction.',
+      deleteAllInTransactionThroughCall:
+        '{{function}}() calls deleteAll(), which cannot run inside a transaction: transaction() rejects it, and transactionSync() applies it immediately outside the transaction, so a later error does not roll it back. Call it before or after the transaction.',
     },
   },
   create(context: RuleContext) {
-    return {
+    const calledFunctions = createCalledFunctions(context);
+    const calls: AstNode[] = [];
+
+    return mergeVisitors(calledFunctions.visitors, {
       CallExpression(node: AstNode) {
-        if (
-          node.callee?.type !== 'MemberExpression' ||
-          propertyName(node.callee.property) !== 'deleteAll'
-        ) {
+        if (!insideTransactionCallback(node)) {
           return;
         }
 
-        let owner = enclosingFunction(node);
-
-        while (owner) {
-          const { child, parent } = unwrappedParent(owner);
-
-          const transactionCallback =
-            parent?.type === 'CallExpression' &&
-            parent.arguments?.[0] === child &&
-            parent.callee?.type === 'MemberExpression' &&
-            transactionMethods.has(propertyName(parent.callee.property) ?? '');
-
-          if (transactionCallback) {
-            context.report({ node, messageId: 'deleteAllInTransaction' });
-
-            return;
-          }
-
-          owner = enclosingFunction(owner);
+        if (isDeleteAll(node)) {
+          context.report({ node, messageId: 'deleteAllInTransaction' });
+        } else {
+          calls.push(node);
         }
       },
-    };
+      'Program:exit'() {
+        for (const call of calls) {
+          if (calledFunctions.reaches(call, isDeleteAll, 'written')) {
+            context.report({
+              node: call,
+              messageId: 'deleteAllInTransactionThroughCall',
+              data: { function: calleeName(call) },
+            });
+          }
+        }
+      },
+    });
   },
 };
 
@@ -1363,6 +1956,7 @@ export default {
     'abort-after-sync': abortAfterSyncRule,
     'alarm-runner-only': alarmRunnerRule,
     'no-alarm-changes-in-alarm-handler': alarmHandlerRule,
+    'no-alarm-changes-in-constructor': alarmConstructorRule,
     'durability-migrations-only': durabilityMigrationsRule,
     'no-delete-all-in-transaction': deleteAllInTransactionRule,
     'no-deferred-storage-writes': deferredStorageWritesRule,
