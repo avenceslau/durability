@@ -154,7 +154,7 @@ Other built-ins include:
 
 ## Caching
 
-`@durability/transforms/cache` caches read methods in tiers, each a caller transform: `memoryTier` keeps results in the caller's isolate, and `workerCacheTier` answers through the Workers cache, so every caller in a location shares one cached result per Durable Object, method, and arguments, and concurrent misses reach the object once. It is experimental.
+`@durability/transforms/cache` caches read methods in tiers, each a caller transform: `memoryTier` keeps results in the caller's isolate, `durableTier` in the calling Durable Object's storage, and `workerCacheTier` answers through the Workers cache, so every caller in a location shares one cached result per Durable Object, method, and arguments, and concurrent misses reach the object once. It is experimental.
 
 Declare which methods to cache next to the Durable Object, in the Worker's main module:
 
@@ -267,6 +267,28 @@ await env.ACCOUNTS.getByName(id)
 - When a refresh fails, an entry younger than `staleIfErrorMs` keeps answering.
 - Entries are cloned in and out, so changing a result does not change the cache. The least recently used entries are evicted past `maxEntries` (1000 by default).
 - Tiers pass entries to each other with their load time, and the stub unwraps them, so the call returns the plain result. Transforms that change results, such as `betterResultCodec`, belong after the cache tiers.
+
+### Durable tier
+
+When the caller is a Durable Object, `durableTier` caches the plan's `durable` methods in its own storage, so cached results survive eviction. Create one per object and put it between the memory and Workers cache tiers:
+
+```ts
+import { durableTier } from '@durability/transforms/cache';
+
+export class Invoice extends DurableObject<Env> {
+  readonly #accountDurable = durableTier(accountCache, this.ctx.storage);
+
+  getAccount(accountId: number) {
+    return this.env.ACCOUNTS.getByName(String(accountId))
+      .with(accountMemory)
+      .with(this.#accountDurable)
+      .with(accountReads)
+      .getMetadata(accountId);
+  }
+}
+```
+
+Entries are stored under SHA-256 keys with the `durability-cache:` prefix. Expired entries are deleted when read; entries for calls that are never made again stay in storage until the object deletes them.
 
 ## Manual wrapping
 

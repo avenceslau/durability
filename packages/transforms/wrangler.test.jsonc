@@ -48,6 +48,10 @@
         "name": "CACHE_DO",
         "class_name": "CacheDO",
       },
+      {
+        "name": "CACHE_CALLER_DO",
+        "class_name": "CacheCallerDO",
+      },
     ],
   },
   "migrations": [
@@ -58,6 +62,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["CacheDO"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["CacheCallerDO"],
     },
   ],
 }

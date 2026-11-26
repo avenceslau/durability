@@ -1,6 +1,7 @@
 import type { TransformStub } from '@durability/transforms';
 import type { CrossWorkerContextService } from './cross-worker-service';
 import type {
+  CacheCallerDO,
   CacheDO,
   ContextDO,
   ContextService,
@@ -13,6 +14,7 @@ interface __BaseEnv_Env {
   CONTEXT_SERVICE: Service<typeof ContextService>;
   PIPELINE_DO: DurableObjectNamespace<PipelineDO>;
   CACHE_DO: DurableObjectNamespace<CacheDO>;
+  CACHE_CALLER_DO: DurableObjectNamespace<CacheCallerDO>;
   CACHE_READS: Fetcher;
   KV: KVNamespace;
   BUCKET: R2Bucket;

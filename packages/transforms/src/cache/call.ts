@@ -105,3 +105,19 @@ export function parseCachedCall(url: string): CachedCall | undefined {
     return undefined;
   }
 }
+
+const storageKeyPrefix = 'durability-cache:';
+
+/** A storage key for a cache URL, which can be longer than Durable Object storage's 2 KiB key limit. */
+export async function hashedCacheKey(url: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(url)
+  );
+
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('');
+
+  return `${storageKeyPrefix}${hex}`;
+}
