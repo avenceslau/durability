@@ -33,10 +33,17 @@ const objectHasProperty = (object: SyntaxNode, name: string): boolean => {
   });
 };
 
-function clientExportName(
+/**
+ * The name under which `program` exports the local class `targetName`, which
+ * must be a Durable Object class declared in the Wrangler configuration.
+ * Errors name the class as `subject` and suggest `remedy`.
+ */
+export function durableObjectExportName(
   program: SyntaxNode,
   targetName: string,
-  durableObjectClassNames: ReadonlySet<string>
+  durableObjectClassNames: ReadonlySet<string>,
+  subject: string,
+  remedy: string
 ): string {
   const statements = Array.isArray(program.body) ? program.body : [];
   const localClasses = new Set<string>();
@@ -100,23 +107,19 @@ function clientExportName(
     }
   }
 
-  if (!localClasses.has(targetName)) {
-    throw new Error(
-      `Durability client target "${targetName}" is not a declared local class export; set \`exportName\` explicitly`
-    );
-  }
-
-  const exportNames = [...(exportsByLocal.get(targetName) ?? [])];
+  const exportNames = localClasses.has(targetName)
+    ? [...(exportsByLocal.get(targetName) ?? [])]
+    : [];
 
   if (exportNames.length === 0) {
     throw new Error(
-      `Durability client target "${targetName}" is not a declared local class export; set \`exportName\` explicitly`
+      `${subject} "${targetName}" is not a declared local class export; ${remedy}`
     );
   }
 
   if (exportNames.length > 1) {
     throw new Error(
-      `Durability client target "${targetName}" has ambiguous class aliases (${exportNames.join(', ')}); set \`exportName\` explicitly`
+      `${subject} "${targetName}" has ambiguous class aliases (${exportNames.join(', ')}); ${remedy}`
     );
   }
 
@@ -124,7 +127,7 @@ function clientExportName(
 
   if (exportName === undefined || !durableObjectClassNames.has(exportName)) {
     throw new Error(
-      `Durability client target export "${exportName}" is not declared as a local Durable Object class in the Wrangler configuration`
+      `${subject} export "${exportName}" is not declared as a local Durable Object class in the Wrangler configuration`
     );
   }
 
@@ -208,10 +211,12 @@ export function collectRoutingInjections(
                 );
               }
 
-              const exportName = clientExportName(
+              const exportName = durableObjectExportName(
                 program,
                 targetName,
-                durableObjectClassNames
+                durableObjectClassNames,
+                'Durability client target',
+                'set `exportName` explicitly'
               );
 
               if (hasRange(config)) {

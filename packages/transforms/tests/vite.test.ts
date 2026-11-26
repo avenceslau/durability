@@ -592,3 +592,162 @@ DurabilityRouting.client({ target: Mailbox, invoke: () => {} });
     expect(result?.match(/createTransformStub as/g)).toHaveLength(1);
   });
 });
+
+describe('Workers cache entrypoint generation', () => {
+  const cacheMain = join(fixtureRoot, 'cache-worker.ts');
+  let cachePlugin: TestPlugin;
+
+  beforeAll(async () => {
+    cachePlugin = pluginHooks({
+      wrangler: './cache.jsonc',
+      types: false,
+      cacheEntrypoints: true,
+    });
+    await cachePlugin.configResolved(fixtureConfig);
+  });
+
+  const generate = (code: string) => cachePlugin.transform(code, cacheMain);
+
+  const accountModule = (plan: string) => `
+import { DurableObject } from 'cloudflare:workers';
+import { cachePlan } from '@durability/transforms/cache';
+export class Account extends DurableObject {
+  async getMetadata(id: number) { return { id }; }
+}
+${plan}
+`;
+
+  it('appends an entrypoint that serves the plan from the target namespace', async () => {
+    const result = await generate(
+      accountModule(
+        'export const accountCache = cachePlan<Account>()({ getMetadata: policy });'
+      )
+    );
+
+    expect(result).toContain(
+      "import { WorkerEntrypoint as __durabilityWorkerEntrypoint, exports as __durabilityWorkerExports } from 'cloudflare:workers';"
+    );
+    expect(result).toContain(
+      "import { serveCached as __durabilityServeCached } from '@durability/transforms/cache';"
+    );
+    expect(result).toContain(`
+export class AccountReads extends __durabilityWorkerEntrypoint {
+  fetch(request) {
+    return __durabilityServeCached(request, accountCache, {
+      namespace: __durabilityWorkerExports["Account"],
+    });
+  }
+}`);
+  });
+
+  it('uses the entrypoint name from the plan options and skips entrypoint: false', async () => {
+    const result = await generate(
+      accountModule(`
+const accountCache = cachePlan<Account>({ version: 2, entrypoint: 'CustomReads' })({});
+const handWritten = cachePlan<Account>({ entrypoint: false })({});
+`)
+    );
+
+    expect(result).toContain('export class CustomReads extends');
+    expect(result).toContain('__durabilityServeCached(request, accountCache,');
+    expect(result).not.toContain('handWritten,');
+    expect(result).not.toContain('AccountReads');
+  });
+
+  it('supports an aliased cachePlan import', async () => {
+    const result = await generate(`
+import { DurableObject } from 'cloudflare:workers';
+import { cachePlan as plan } from '@durability/transforms/cache';
+export class Account extends DurableObject {}
+const accountCache = plan<Account>()({});
+`);
+
+    expect(result).toContain('export class AccountReads extends');
+  });
+
+  it('leaves modules other than the main module and other cachePlan imports alone', async () => {
+    const plan = accountModule(
+      'const accountCache = cachePlan<Account>()({});'
+    );
+
+    await expect(
+      cachePlugin.transform(plan, join(fixtureRoot, 'other.ts'))
+    ).resolves.toBeNull();
+    await expect(
+      generate(`
+import type { cachePlan } from '@durability/transforms/cache';
+export class Account extends DurableObject {}
+const accountCache = cachePlan<Account>()({});
+`)
+    ).resolves.toBeNull();
+    await expect(
+      generate(`
+import { cachePlan } from 'somewhere-else';
+export class Account extends DurableObject {}
+const accountCache = cachePlan<Account>()({});
+`)
+    ).resolves.toBeNull();
+  });
+
+  it('does nothing unless cacheEntrypoints is enabled', async () => {
+    const disabled = pluginHooks({ wrangler: './cache.jsonc', types: false });
+    await disabled.configResolved(fixtureConfig);
+
+    await expect(
+      disabled.transform(
+        accountModule('const accountCache = cachePlan<Account>()({});'),
+        cacheMain
+      )
+    ).resolves.toBeNull();
+  });
+
+  it('requires the Workers cache enabled for the entrypoint in Wrangler', async () => {
+    await expect(
+      generate(
+        accountModule(
+          "const accountCache = cachePlan<Account>({ entrypoint: 'UncachedReads' })({});"
+        )
+      )
+    ).rejects.toThrow(
+      'Add {"exports":{"UncachedReads":{"type":"worker","cache":{"enabled":true}}}}'
+    );
+    await expect(
+      generate(
+        accountModule(
+          "const accountCache = cachePlan<Account>({ entrypoint: 'MissingReads' })({});"
+        )
+      )
+    ).rejects.toThrow('generates the entrypoint MissingReads');
+  });
+
+  it('rejects plans it cannot generate an entrypoint for', async () => {
+    await expect(
+      generate(accountModule('const accountCache = cachePlan()({});'))
+    ).rejects.toThrow('must name its Durable Object class');
+    await expect(
+      generate(accountModule('const accountCache = cachePlan<Other>()({});'))
+    ).rejects.toThrow(
+      'cachePlan "accountCache" target "Other" is not a declared local class export'
+    );
+    await expect(
+      generate(
+        accountModule('const accountCache = cachePlan<Account>(options)({});')
+      )
+    ).rejects.toThrow('options must be an object literal');
+    await expect(
+      generate(
+        accountModule(
+          'const accountCache = cachePlan<Account>({ entrypoint: name })({});'
+        )
+      )
+    ).rejects.toThrow('entrypoint must be false or a string literal');
+    await expect(
+      generate(
+        accountModule(`
+export class AccountReads {}
+const accountCache = cachePlan<Account>()({});
+`)
+      )
+    ).rejects.toThrow('the module already declares that name');
+  });
+});

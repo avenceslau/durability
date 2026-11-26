@@ -32,7 +32,8 @@ type Wrapper = {
     | undefined;
 };
 
-function unusedName(code: string, name: string): string {
+/** `name`, followed by underscores until it does not appear in `code`. */
+export function unusedName(code: string, name: string): string {
   let candidate = name;
 
   while (new RegExp(`\\b${candidate}\\b`).test(code)) {

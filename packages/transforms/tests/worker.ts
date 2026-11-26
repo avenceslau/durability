@@ -15,6 +15,7 @@ import {
   largeObjectStream,
   registerTransform,
 } from '@durability/transforms';
+import { cachePlan } from '@durability/transforms/cache';
 
 export type TestContext = {
   requestId?: string;
@@ -156,3 +157,31 @@ export class PipelineDO extends DurableObject {
     return value;
   }
 }
+
+export class CacheDO extends DurableObject {
+  #calls = 0;
+
+  async getValue(key: string): Promise<{ key: string; calls: number }> {
+    this.#calls += 1;
+
+    return { key, calls: this.#calls };
+  }
+
+  async getNothing(): Promise<string | undefined> {
+    return undefined;
+  }
+
+  async failValue(key: string): Promise<string> {
+    throw new Error(`No value for ${key}`);
+  }
+
+  async setValue(key: string): Promise<void> {
+    this.#calls = key.length;
+  }
+}
+
+export const cacheDOPlan = cachePlan<CacheDO>()({
+  getValue: { location: { fresh: 60_000, stale: 120_000 } },
+  getNothing: { location: { fresh: 60_000, stale: 120_000 } },
+  failValue: { location: { fresh: 60_000, stale: 120_000 } },
+});

@@ -34,6 +34,9 @@ export type SyntaxNode = {
   start?: number | null;
   superClass?: unknown;
   typeAnnotation?: unknown;
+  typeArguments?: unknown;
+  typeName?: unknown;
+  typeParameters?: unknown;
   value?: unknown;
 };
 

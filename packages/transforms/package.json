@@ -19,6 +19,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./cache": "./src/cache/index.ts",
     "./vite": "./src/vite/index.ts"
   },
   "publishConfig": {
@@ -28,6 +29,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./cache": {
+        "types": "./dist/cache/index.d.ts",
+        "import": "./dist/cache/index.js"
       },
       "./vite": {
         "types": "./dist/vite/index.d.ts",

@@ -26,6 +26,7 @@ export default defineConfig({
           doTransforms({
             wrangler: './wrangler.test.jsonc',
             restoreBrokenStubs: true,
+            cacheEntrypoints: true,
           }),
           cloudflareTest(async () => {
             const result = await build({
@@ -55,6 +56,9 @@ export default defineConfig({
 
             return {
               wrangler: { configPath: './wrangler.test.jsonc' },
+              // Exports are found by reading the main module without Vite
+              // plugins, so they miss the generated cache entrypoint.
+              additionalExports: { CacheDOReads: 'WorkerEntrypoint' },
               miniflare: {
                 workers: [
                   {
