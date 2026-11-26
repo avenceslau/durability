@@ -92,18 +92,17 @@ function planTargetName(planName: string, call: SyntaxNode): string {
 }
 
 /**
- * The entrypoint name from `cachePlan<Target>({ entrypoint })`: the default
- * when the option is absent, or `undefined` for `entrypoint: false`.
+ * The `entrypoint` option of `cachePlan<Target>({ entrypoint })`: a name,
+ * `false`, or `undefined` when the option is absent.
  */
 function entrypointOption(
   planName: string,
-  call: SyntaxNode,
-  defaultName: string
-): string | undefined {
+  call: SyntaxNode
+): string | false | undefined {
   const [options] = nodeList(call.arguments);
 
   if (options === undefined) {
-    return defaultName;
+    return undefined;
   }
 
   const unwrapped = unwrapExpression(options);
@@ -123,13 +122,13 @@ function entrypointOption(
   );
 
   if (entrypoint === undefined) {
-    return defaultName;
+    return undefined;
   }
 
   const value = unwrapExpression(syntaxNode(entrypoint.value));
 
   if (value?.type === 'BooleanLiteral' && value.value === false) {
-    return undefined;
+    return false;
   }
 
   if (isStringLiteral(value) && identifierPattern.test(value.value)) {
@@ -196,6 +195,13 @@ export function collectCacheEntrypoints(
       continue;
     }
 
+    const entrypoint = entrypointOption(planName, innerCall);
+
+    // A hand-written entrypoint may serve any target, so nothing is checked.
+    if (entrypoint === false) {
+      continue;
+    }
+
     const targetExportName = durableObjectExportName(
       program,
       planTargetName(planName, innerCall),
@@ -204,15 +210,7 @@ export function collectCacheEntrypoints(
       'set cachePlan({ entrypoint: false }) and write the entrypoint with serveCached'
     );
 
-    const entrypointName = entrypointOption(
-      planName,
-      innerCall,
-      `${targetExportName}Reads`
-    );
-
-    if (entrypointName === undefined) {
-      continue;
-    }
+    const entrypointName = entrypoint ?? `${targetExportName}Reads`;
 
     if (
       rootScope.bindings.has(entrypointName) ||
