@@ -86,7 +86,7 @@ describe('workerCacheTier requests', () => {
     const tier = cacheTier([], {
       binding: () =>
         fakeBinding(sent, () =>
-          Response.json({ value: { key: 'k', reads: 9 } })
+          Response.json({ value: { key: 'k', reads: 9 }, loadedAt: 0 })
         ),
     });
 
@@ -108,7 +108,7 @@ describe('workerCacheTier requests', () => {
     const sent: SentRequest[] = [];
 
     const tier = cacheTier([], {
-      binding: () => fakeBinding(sent, () => Response.json({})),
+      binding: () => fakeBinding(sent, () => Response.json({ loadedAt: 0 })),
     });
 
     const stub = env.CACHE_DO.getByName('modes');
@@ -130,7 +130,7 @@ describe('workerCacheTier requests', () => {
         fakeBinding(
           [],
           () =>
-            new Response('{}', {
+            new Response('{"loadedAt":0}', {
               headers: { 'cf-cache-status': 'HIT' },
             })
         ),
@@ -202,7 +202,7 @@ describe('workerCacheTier requests', () => {
     const reads: WorkerCacheRead[] = [];
 
     const tier = cacheTier(reads, {
-      binding: () => fakeBinding(sent, () => Response.json({})),
+      binding: () => fakeBinding(sent, () => Response.json({ loadedAt: 0 })),
     });
 
     const key = 'k'.repeat(5_000);

@@ -152,9 +152,9 @@ Other built-ins include:
 - `abortAsSuccess` to treat expected Durable Object resets as successful undefined results.
 - `largeObjectStream` to transfer large JSON object results. It requires a Standard Schema validator and enforces a caller decode limit, but it still buffers the complete serialized representation; use native streams for unbounded data.
 
-## Workers cache
+## Caching
 
-`@durability/transforms/cache` answers read methods through the Workers cache, so every caller in a location shares one cached result per Durable Object, method, and arguments, and concurrent misses reach the object once. It is experimental.
+`@durability/transforms/cache` caches read methods in tiers, each a caller transform: `memoryTier` keeps results in the caller's isolate, and `workerCacheTier` answers through the Workers cache, so every caller in a location shares one cached result per Durable Object, method, and arguments, and concurrent misses reach the object once. It is experimental.
 
 Declare which methods to cache next to the Durable Object, in the Worker's main module:
 
@@ -170,13 +170,14 @@ export class Account extends DurableObject<Env> {
 
 export const accountCache = cachePlan<Account>({ version: 1 })({
   getMetadata: {
+    memory: { freshMs: 5_000, staleMs: 60_000 },
     location: { freshMs: 60_000, staleMs: 86_400_000 },
     staleIfErrorMs: 86_400_000,
   },
 });
 ```
 
-Only async methods whose arguments and result round-trip through JSON can be planned; anything else is a type error. `freshMs` is how long a result answers without calling the object, and `staleMs` is how long it keeps answering while one request refreshes it. Bump `version` when a cached result changes shape.
+Only async methods whose arguments and result round-trip through JSON can be planned; anything else is a type error. Each tier caches only the methods that have windows for it: `freshMs` is how long a result answers without calling the tiers behind it, and `staleMs` is how long it keeps answering while one call refreshes it. Ages count from when the object returned the result, whichever tier holds it. Bump `version` when a cached result changes shape.
 
 With `cacheEntrypoints: true`, the Vite plugin generates a `WorkerEntrypoint` named `AccountReads` (the target's export name followed by `Reads`) for every plan declared at the top level of the main module. Enable the Workers cache for it in Wrangler:
 
@@ -246,6 +247,26 @@ await account.with(accountReads).setPlan(accountId, 'pro');
 - Calls whose arguments do not encode as JSON, or encode into a URL over 4 KiB, go to the object directly.
 - Attach the tier only to stubs of the plan's Durable Object class: transforms do not check the stub's class, and the entrypoint addresses objects by ID in the plan's namespace.
 - A cached result can be up to `staleMs` old, so cache only reads that tolerate it. Writes through the object do not update cached results.
+
+### Memory tier
+
+Create a `memoryTier` once at module scope and put it before the Workers cache tier, so each isolate answers from memory and refreshes from its location:
+
+```ts
+import { memoryTier } from '@durability/transforms/cache';
+
+export const accountMemory = memoryTier(accountCache, { maxEntries: 10_000 });
+
+await env.ACCOUNTS.getByName(id)
+  .with(accountMemory)
+  .with(accountReads)
+  .getMetadata(accountId);
+```
+
+- Concurrent misses for one key share one call to the tiers behind it. A stale entry answers at once while one background call refreshes it.
+- When a refresh fails, an entry younger than `staleIfErrorMs` keeps answering.
+- Entries are cloned in and out, so changing a result does not change the cache. The least recently used entries are evicted past `maxEntries` (1000 by default).
+- Tiers pass entries to each other with their load time, and the stub unwraps them, so the call returns the plain result. Transforms that change results, such as `betterResultCodec`, belong after the cache tiers.
 
 ## Manual wrapping
 

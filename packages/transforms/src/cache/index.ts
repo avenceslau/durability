@@ -1,8 +1,8 @@
 /**
- * Caches RPC results in the Workers cache, shared by every caller in a
- * location. Declare what to cache with {@link cachePlan}, answer cached calls
- * with {@link serveCached}, and route calls through the cache with the
- * {@link workerCacheTier} caller transform.
+ * Caches RPC results in tiers composed as caller transforms: per isolate with
+ * {@link memoryTier}, and in the Workers cache, shared by every caller in a
+ * location, with {@link workerCacheTier} and {@link serveCached}. Declare what
+ * to cache with {@link cachePlan}.
  *
  * @packageDocumentation
  */
@@ -10,9 +10,12 @@ export type { CachedCall } from './call.js';
 
 export type { IsJson, Json } from './json.js';
 
+export { memoryTier, type MemoryTierOptions } from './memory-tier.js';
+
 export {
   cachePlan,
   type CacheableMethod,
+  type CacheTierName,
   type CachePlan,
   type CachePlanOptions,
   type CacheWindows,
