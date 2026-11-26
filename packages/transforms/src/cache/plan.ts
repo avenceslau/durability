@@ -14,13 +14,15 @@ export type MethodCachePolicy = {
   memory?: CacheWindows;
   /** Windows for the Workers cache, which is shared by every caller in a location. */
   location?: CacheWindows;
+  /** Windows for `kvTier`, which is shared by every location. */
+  global?: CacheWindows;
   /** How long a cached result may still answer while refreshing it fails. Defaults to each tier's `staleMs`. */
   staleIfErrorMs?: number;
 };
 
-export type CacheTierName = 'memory' | 'location';
+export type CacheTierName = 'memory' | 'location' | 'global';
 
-const tierNames: readonly CacheTierName[] = ['memory', 'location'];
+const tierNames: readonly CacheTierName[] = ['memory', 'location', 'global'];
 
 type PlatformMethod =
   | 'alarm'
@@ -158,16 +160,21 @@ export function methodPolicy<Target>(
 const toSeconds = (ms: number): number =>
   Math.floor(ms / millisecondsPerSecond);
 
+/**
+ * The `Cache-Control` header that makes the Workers cache follow `location`
+ * for a result that is already `ageMs` old.
+ */
 export function cacheControl(
   location: CacheWindows,
-  staleIfErrorMs: number | undefined
+  staleIfErrorMs: number | undefined,
+  ageMs: number
 ): string {
   const { freshMs, staleMs } = location;
 
   return [
     'public',
-    `max-age=${toSeconds(freshMs)}`,
-    `stale-while-revalidate=${toSeconds(staleMs - freshMs)}`,
-    `stale-if-error=${toSeconds(staleIfErrorMs ?? staleMs)}`,
+    `max-age=${toSeconds(Math.max(0, freshMs - ageMs))}`,
+    `stale-while-revalidate=${toSeconds(Math.max(0, staleMs - Math.max(freshMs, ageMs)))}`,
+    `stale-if-error=${toSeconds(Math.max(0, (staleIfErrorMs ?? staleMs) - ageMs))}`,
   ].join(', ');
 }

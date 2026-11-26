@@ -32,7 +32,7 @@ export function cachedCallUrl(call: CachedCall): string {
 const maxCacheUrlBytes = 4_096;
 
 /** What a caller transform knows about a call. */
-type CallerCall = {
+export type CallerCall = {
   readonly method: string;
   readonly args: unknown[];
   /** The stub's Durable Object ID; a generic target cannot type it. */

@@ -4,12 +4,18 @@ import {
   parseCachedCall,
   type CachedCall,
 } from './call.js';
-import { encodeCacheEntry, toCacheEntry } from './entry.js';
+import { encodeCacheEntry, toCacheEntry, type CacheEntry } from './entry.js';
 import { cacheControl, methodPolicy, type CachePlan } from './plan.js';
+import type { StorageTier } from './storage-tier.js';
 
-type ServeCachedReporting = {
+type ServeCachedReporting<Target extends object> = {
   /** Called when the target throws; the response is `503` either way and is not cached. */
   onError?: (error: unknown, call: CachedCall) => void;
+  /**
+   * Tiers to read, in order, before calling the target, such as `kvTier`.
+   * The response's `Cache-Control` counts the age of the entry they answer with.
+   */
+  tiers?: readonly StorageTier<Target>[];
 };
 
 /** A Durable Object namespace binding, with or without the Vite plugin's transform stubs. */
@@ -18,14 +24,40 @@ type DurableObjectNamespaceBinding = {
   get(id: DurableObjectId): object;
 };
 
-export type ServeCachedOptions<Target> = ServeCachedReporting &
-  ({ namespace: DurableObjectNamespaceBinding } | { target: Target });
+export type ServeCachedOptions<Target extends object> =
+  ServeCachedReporting<Target> &
+    ({ namespace: DurableObjectNamespaceBinding } | { target: Target });
 
 const notCached = (status: number): Response =>
   new Response(null, {
     status,
     headers: { 'cache-control': 'no-store' },
   });
+
+function callThroughTiers<Target extends object>(
+  tiers: readonly StorageTier<Target>[],
+  call: CachedCall,
+  callTarget: () => Promise<unknown>
+): Promise<unknown> {
+  const run = (index: number): Promise<unknown> => {
+    const tier = tiers[index];
+
+    if (tier === undefined) {
+      return callTarget();
+    }
+
+    return tier.readThrough({
+      method: call.method,
+      args: call.args,
+      // The tiers key Durable Object calls by the ID a stub would give them.
+      actorId:
+        call.instance === nonDurableObjectInstance ? undefined : call.instance,
+      next: () => run(index + 1),
+    });
+  };
+
+  return run(0);
+}
 
 function resolveTarget<Target extends object>(
   options: ServeCachedOptions<Target>,
@@ -99,26 +131,31 @@ export async function serveCached<
     return notCached(404);
   }
 
-  let body: string;
+  // RPC stubs answer every property, `apply` included, with a remote member.
+  const callTarget = async (): Promise<unknown> =>
+    Function.prototype.apply.call(method, target, call.args);
+
+  let entry: CacheEntry;
 
   try {
-    // RPC stubs answer every property, `apply` included, with a remote member.
-    const methodResult: unknown = await Function.prototype.apply.call(
-      method,
-      target,
-      call.args
+    entry = toCacheEntry(
+      await callThroughTiers(options.tiers ?? [], call, callTarget)
     );
-
-    body = encodeCacheEntry(toCacheEntry(methodResult));
   } catch (error) {
     options.onError?.(error, call);
 
     return notCached(503);
   }
 
-  return new Response(body, {
+  const ageMs = Date.now() - entry.loadedAt;
+
+  return new Response(encodeCacheEntry(entry), {
     headers: {
-      'cache-control': cacheControl(policy.location, policy.staleIfErrorMs),
+      'cache-control': cacheControl(
+        policy.location,
+        policy.staleIfErrorMs,
+        ageMs
+      ),
       'content-type': 'application/json',
     },
   });

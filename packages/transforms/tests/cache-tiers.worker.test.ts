@@ -1,7 +1,18 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cachePlan, memoryTier, workerCacheTier } from '../src/cache/index';
-import { CacheEntry, encodeCacheEntry } from '../src/cache/entry';
+import {
+  cachePlan,
+  kvTier,
+  memoryTier,
+  serveCached,
+  workerCacheTier,
+} from '../src/cache/index';
+import { cachedCallUrl } from '../src/cache/call';
+import {
+  CacheEntry,
+  decodeCacheEntry,
+  encodeCacheEntry,
+} from '../src/cache/entry';
 import type { CacheDO } from './worker';
 
 const memoryWindows = { freshMs: 1_000, staleMs: 10_000 };
@@ -182,5 +193,83 @@ describe('composed tiers', () => {
     await settle();
 
     expect(sent).toHaveLength(2);
+  });
+});
+
+const globalPlan = cachePlan<CacheDO>()({
+  countRead: {
+    location: { freshMs: 60_000, staleMs: 120_000 },
+    global: { freshMs: 60_000, staleMs: 600_000 },
+  },
+});
+
+async function cacheKeys(): Promise<string[]> {
+  const { keys } = await env.KV.list({ prefix: 'durability-cache:' });
+
+  return keys.map((key) => key.name);
+}
+
+describe('kvTier', () => {
+  afterEach(async () => {
+    for (const key of await cacheKeys()) {
+      await env.KV.delete(key);
+    }
+  });
+
+  it('stores entries under hashed keys and answers later calls from KV', async () => {
+    const stub = env.CACHE_DO.getByName('kv-caller');
+
+    await expect(
+      stub.with(kvTier(globalPlan, () => env.KV)).countRead('a')
+    ).resolves.toEqual({ key: 'a', reads: 1 });
+    await settle();
+
+    const keys = await cacheKeys();
+
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(/^durability-cache:[0-9a-f]{64}$/);
+
+    await expect(
+      stub.with(kvTier(globalPlan, () => env.KV)).countRead('a')
+    ).resolves.toEqual({ key: 'a', reads: 1 });
+  });
+
+  it('counts the age of a KV entry in the Cache-Control serveCached returns', async () => {
+    const id = env.CACHE_DO.idFromName('kv-callee').toString();
+
+    const serve = () =>
+      serveCached(
+        new Request(
+          cachedCallUrl({
+            planVersion: 1,
+            instance: id,
+            method: 'countRead',
+            args: ['a'],
+          })
+        ),
+        globalPlan,
+        {
+          namespace: env.CACHE_DO,
+          tiers: [kvTier(globalPlan, () => env.KV)],
+        }
+      );
+
+    const first = await serve();
+
+    expect(first.headers.get('cache-control')).toBe(
+      'public, max-age=60, stale-while-revalidate=60, stale-if-error=120'
+    );
+
+    await settle();
+    advance(30_000);
+
+    const second = await serve();
+
+    expect(second.headers.get('cache-control')).toBe(
+      'public, max-age=30, stale-while-revalidate=60, stale-if-error=90'
+    );
+    expect(decodeCacheEntry(await second.text())).toEqual(
+      new CacheEntry({ key: 'a', reads: 1 }, startedAt)
+    );
   });
 });

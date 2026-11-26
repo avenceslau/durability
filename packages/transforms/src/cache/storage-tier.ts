@@ -1,6 +1,6 @@
 import { waitUntil } from 'cloudflare:workers';
 import { defineTransform } from '../define.js';
-import { callerCacheUrl } from './call.js';
+import { callerCacheUrl, type CallerCall } from './call.js';
 import { cloneCacheEntry, toCacheEntry, type CacheEntry } from './entry.js';
 import { methodPolicy, type CachePlan, type CacheTierName } from './plan.js';
 
@@ -10,6 +10,16 @@ export type CacheStore = {
   /** Keeps `entry` for at least `keepForMs` after it was loaded. */
   set(key: string, entry: CacheEntry, keepForMs: number): Promise<void>;
 };
+
+/** A call as a storage tier reads it, from a caller transform or from `serveCached`. */
+export type StorageTierCall = CallerCall & {
+  next(): Promise<unknown>;
+};
+
+/** A tier built on {@link storageTier}, such as `memoryTier` or `kvTier`. */
+export type StorageTier<Target extends object> = ReturnType<
+  typeof storageTier<Target, string>
+>;
 
 /**
  * A caller transform that answers planned methods from `store` while their
@@ -50,7 +60,7 @@ export function storageTier<Target extends object, Methods extends string>(
     return started;
   };
 
-  return defineTransform<Target>().caller(() => async (context) => {
+  const readThrough = async (context: StorageTierCall): Promise<unknown> => {
     const { method, next } = context;
     const policy = methodPolicy(plan, method);
     const windows = policy?.[tierName];
@@ -92,5 +102,11 @@ export function storageTier<Target extends object, Methods extends string>(
 
       throw error;
     }
-  });
+  };
+
+  return {
+    ...defineTransform<Target>().caller(() => readThrough),
+    /** Reads a call through this tier outside a transform stub, as `serveCached` does. */
+    readThrough,
+  };
 }

@@ -121,11 +121,11 @@ describe('cachePlan', () => {
 
   it('builds Cache-Control from the location windows', () => {
     expect(
-      cacheControl({ freshMs: 60_000, staleMs: 86_400_000 }, 3_600_500)
+      cacheControl({ freshMs: 60_000, staleMs: 86_400_000 }, 3_600_500, 0)
     ).toBe(
       'public, max-age=60, stale-while-revalidate=86340, stale-if-error=3600'
     );
-    expect(cacheControl({ freshMs: 1_000, staleMs: 1_000 }, undefined)).toBe(
+    expect(cacheControl({ freshMs: 1_000, staleMs: 1_000 }, undefined, 0)).toBe(
       'public, max-age=1, stale-while-revalidate=0, stale-if-error=1'
     );
   });

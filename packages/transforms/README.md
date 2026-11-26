@@ -154,7 +154,7 @@ Other built-ins include:
 
 ## Caching
 
-`@durability/transforms/cache` caches read methods in tiers, each a caller transform: `memoryTier` keeps results in the caller's isolate, and `workerCacheTier` answers through the Workers cache, so every caller in a location shares one cached result per Durable Object, method, and arguments, and concurrent misses reach the object once. It is experimental.
+`@durability/transforms/cache` caches read methods in tiers, each a caller transform: `memoryTier` keeps results in the caller's isolate, `kvTier` keeps them in Workers KV for every location, and `workerCacheTier` answers through the Workers cache, so every caller in a location shares one cached result per Durable Object, method, and arguments, and concurrent misses reach the object once. It is experimental.
 
 Declare which methods to cache next to the Durable Object, in the Worker's main module:
 
@@ -267,6 +267,38 @@ await env.ACCOUNTS.getByName(id)
 - When a refresh fails, an entry younger than `staleIfErrorMs` keeps answering.
 - Entries are cloned in and out, so changing a result does not change the cache. The least recently used entries are evicted past `maxEntries` (1000 by default).
 - Tiers pass entries to each other with their load time, and the stub unwraps them, so the call returns the plain result. Transforms that change results, such as `betterResultCodec`, belong after the cache tiers.
+
+### KV tier
+
+`kvTier` caches the plan's `global` methods in a KV namespace, so a location that misses its own cache reads what another location loaded instead of calling the object. Put it in the cache entrypoint, behind the Workers cache:
+
+```ts
+import { kvTier, serveCached } from '@durability/transforms/cache';
+
+export const accountGlobal = kvTier(accountCache, () => env.ACCOUNT_CACHE);
+
+export class AccountReads extends WorkerEntrypoint<Env> {
+  fetch(request: Request) {
+    return serveCached(request, accountCache, {
+      namespace: this.env.ACCOUNTS,
+      tiers: [accountGlobal],
+    });
+  }
+}
+```
+
+```ts
+export const accountCache = cachePlan<Account>({ entrypoint: false })({
+  getMetadata: {
+    location: { freshMs: 60_000, staleMs: 86_400_000 },
+    global: { freshMs: 300_000, staleMs: 86_400_000 },
+  },
+});
+```
+
+- `serveCached` subtracts the age of the entry a tier answered with from its `Cache-Control`, so a result that sat in KV for a while is not treated as freshly loaded.
+- Entries are stored under SHA-256 keys, written in the background, and expire after their stale windows (at least 60 seconds, the KV minimum). KV reads can lag writes from other locations, so keep `global.freshMs` at a minute or more.
+- `kvTier` also works in callers, as `stub.with(accountGlobal)`. The generated entrypoint has no tiers, so write the entrypoint by hand to use one there.
 
 ## Manual wrapping
 
