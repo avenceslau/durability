@@ -79,10 +79,11 @@ describe('durability in workerd', () => {
   it('retries a named alarm with the same idempotency key after eviction', async () => {
     const id = env.ALARM_TEST.newUniqueId();
     const stub = env.ALARM_TEST.get(id);
-    const scheduledTime = Date.now() + 100;
+    // Past alarmMinDelayMs, so the in-memory timer cannot run it before the test fires the alarm.
+    const scheduledTime = Date.now() + 1_100;
 
     await stub.scheduleCleanup(scheduledTime);
-    await scheduler.wait(110);
+    await scheduler.wait(1_110);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await stub.getRecorded()).toEqual([
       {
@@ -94,7 +95,7 @@ describe('durability in workerd', () => {
 
     await evictDurableObject(stub);
     const recovered = env.ALARM_TEST.get(id);
-    await scheduler.wait(60);
+    await scheduler.wait(1_110);
     await runDurableObjectAlarm(recovered);
 
     const recorded = await recovered.getRecorded();

@@ -148,7 +148,8 @@ export class NamedAlarmTestObject extends DurableObject {
         retries: { delay: () => 500, maxAttempts: 2 },
         retryTimeouts: true,
       },
-      cleanup: { retries: { delay: () => 50, maxAttempts: 2 } },
+      // Past alarmMinDelayMs, so only the physical alarm runs the retry and the test decides when.
+      cleanup: { retries: { delay: () => 1_100, maxAttempts: 2 } },
     },
   });
 
