@@ -28,6 +28,46 @@ export function cachedCallUrl(call: CachedCall): string {
   return `${cacheOrigin}/${path}?args=${encodeURIComponent(canonicalJson(call.args))}`;
 }
 
+// Keeps cache URLs well under common URL length limits.
+const maxCacheUrlBytes = 4_096;
+
+/** What a caller transform knows about a call. */
+type CallerCall = {
+  readonly method: string;
+  readonly args: unknown[];
+  /** The stub's Durable Object ID; a generic target cannot type it. */
+  readonly actorId?: unknown;
+};
+
+/**
+ * The cache URL of a call a caller transform sees, or `undefined` when its
+ * arguments are not JSON or the URL would be too long to cache.
+ */
+export function callerCacheUrl(
+  planVersion: number,
+  call: CallerCall
+): string | undefined {
+  let url: string;
+
+  try {
+    url = cachedCallUrl({
+      planVersion,
+      instance:
+        call.actorId === undefined
+          ? nonDurableObjectInstance
+          : String(call.actorId),
+      method: call.method,
+      args: call.args.map((arg, index) => toJson(arg, `args[${index}]`)),
+    });
+  } catch {
+    return undefined;
+  }
+
+  return new TextEncoder().encode(url).byteLength > maxCacheUrlBytes
+    ? undefined
+    : url;
+}
+
 export function parseCachedCall(url: string): CachedCall | undefined {
   try {
     const parsed = new URL(url);

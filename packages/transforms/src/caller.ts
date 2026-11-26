@@ -10,6 +10,7 @@ import type {
   TransformOptionsArguments,
   TransformTargetOf,
 } from './define.js';
+import { unwrapCacheEntry } from './cache/entry.js';
 import { isFunction, isObjectOrFunction, isString } from './predicates.js';
 
 // A transform typed for a Durable Object reads `actorId`, so it may only be
@@ -460,7 +461,11 @@ function createSourceStub<TTarget extends object>(
         },
         apply: (method, _thisArg, initialArgs: unknown[]) => {
           if (transforms.length > 0) {
-            return pipelinedPromise(callWithTransforms(initialArgs));
+            // Cache tiers pass entries with load times between each other;
+            // the caller only sees the value.
+            return pipelinedPromise(
+              callWithTransforms(initialArgs).then(unwrapCacheEntry)
+            );
           }
 
           if (!source.reopen) {

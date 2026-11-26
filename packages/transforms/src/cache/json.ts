@@ -83,21 +83,3 @@ export function canonicalJson(json: Json): string {
 
   return `{${members.join(',')}}`;
 }
-
-export function encodeResult(value: unknown): string {
-  return JSON.stringify(
-    value === undefined ? {} : { value: toJson(value, 'result') }
-  );
-}
-
-export function decodeResult(text: string): Json | undefined {
-  const parsed: unknown = JSON.parse(text);
-
-  if (!isPlainObject(parsed)) {
-    throw new TypeError('Cached result is not a JSON object');
-  }
-
-  return Object.prototype.hasOwnProperty.call(parsed, 'value')
-    ? toJson(parsed['value'], 'result')
-    : undefined;
-}
