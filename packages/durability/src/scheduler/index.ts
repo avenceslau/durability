@@ -1,3 +1,6 @@
+// The scheduler owns the object's physical alarm, so its own alarm() is the
+// one place allowed to set it.
+/* oxlint-disable durability/no-alarm-changes-in-alarm-handler */
 import * as v from 'valibot';
 import { trace, traceMethods, traceStorage } from '../dev.js';
 import {
@@ -1314,6 +1317,8 @@ export class Engine {
       this.releaseActive(spec.table.name, activeKey(spec.table.channel, key));
       // Re-arm the in-memory timer now that this key is eligible again, so work
       // the timer skipped while it executed is picked up at its exact time.
+      // Best effort: if this alarm write is lost, the next alarm reconciles it.
+      // oxlint-disable-next-line durability/no-deferred-storage-writes
       void this.scheduleNextAlarm().catch((error) =>
         reportFailure(
           'durability.scheduler.refresh_failed',

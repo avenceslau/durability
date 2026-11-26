@@ -278,6 +278,30 @@ describe('alarm-runner-only', () => {
 
     expect(result).toEqual({ status: 0, output: '' });
   });
+
+  it('rejects physical alarm calls through functions declared outside the class', () => {
+    const result = lint(
+      `
+        const arm = (storage: DurableObjectStorage) => storage.setAlarm(1000);
+
+        class Example {
+          durability = createDurability();
+          alarm(alarmInfo?: AlarmInvocationInfo) {
+            return this.durability.alarm(alarmInfo);
+          }
+          schedule() {
+            return arm(this.ctx.storage);
+          }
+        }
+      `,
+      'alarm-runner-only'
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'arm() calls setAlarm() or deleteAlarm(); a class using createDurability must schedule logical alarms'
+    );
+  });
 });
 
 describe('transform-next-once', () => {
@@ -714,6 +738,67 @@ describe('abort-after-sync', () => {
       'ctx.abort() discards storage writes that have not been flushed'
     );
   });
+
+  it.each([
+    `
+      class Example {
+        async reset() {
+          await this.flush();
+          this.ctx.abort('reset');
+        }
+
+        async flush() {
+          await this.ctx.storage.put('state', 'reset');
+          await this.ctx.storage.sync();
+        }
+      }
+    `,
+    `
+      class Example {
+        async reset() {
+          await this.flush();
+          this.ctx.abort('reset');
+        }
+
+        flush = async () => {
+          await this.ctx.storage.put('state', 'reset');
+          await this.syncStorage();
+        };
+
+        async syncStorage() {
+          await this.ctx.storage.sync();
+        }
+      }
+    `,
+  ])('accepts an abort after a function that ends by syncing', (source) => {
+    const result = lint(source, 'abort-after-sync');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it('rejects an abort after a function that does not end by syncing', () => {
+    const result = lint(
+      `
+        class Example {
+          async reset() {
+            await this.flush();
+            this.ctx.abort('reset');
+          }
+
+          async flush() {
+            await this.ctx.storage.sync();
+            await this.ctx.storage.put('state', 'reset');
+          }
+        }
+      `,
+      'abort-after-sync'
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'ctx.abort() discards storage writes that have not been flushed'
+    );
+  });
 });
 
 describe('transaction-sync-callback', () => {
@@ -748,6 +833,109 @@ describe('transaction-sync-callback', () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain(
       'transactionSync() commits when its callback returns'
+    );
+  });
+
+  it.each([
+    `
+      class Example {
+        reset() {
+          this.ctx.storage.transactionSync(() => this.clear());
+          this.ctx.storage.transactionSync(() => {
+            void this.notify();
+          });
+        }
+
+        clear() {
+          this.ctx.storage.sql.exec('DELETE FROM jobs');
+        }
+
+        async notify() {
+          await this.env.JOBS.reset();
+        }
+      }
+    `,
+    `
+      class Example {
+        reset() {
+          this.ctx.storage.transactionSync(() => {
+            void this.save();
+          });
+        }
+
+        async save() {
+          this.ctx.storage.sql.exec('DELETE FROM jobs');
+          await this.env.JOBS.reset();
+        }
+      }
+    `,
+  ])('accepts calls that write inside the transaction', (source) => {
+    const result = lint(source, 'transaction-sync-callback');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it('rejects an async method passed as the callback', () => {
+    const result = lint(
+      `
+        class Example {
+          reset() {
+            this.ctx.storage.transactionSync(this.clear);
+          }
+
+          async clear() {
+            this.ctx.storage.sql.exec('DELETE FROM jobs');
+          }
+        }
+      `,
+      'transaction-sync-callback'
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'transactionSync() commits when its callback returns'
+    );
+  });
+
+  it.each([
+    `
+      class Example {
+        reset() {
+          this.ctx.storage.transactionSync(() => {
+            void this.save();
+          });
+        }
+
+        async save() {
+          const jobs = await this.env.JOBS.list();
+          this.ctx.storage.sql.exec('DELETE FROM jobs WHERE id = ?', jobs[0]);
+        }
+      }
+    `,
+    `
+      async function save(storage: DurableObjectStorage) {
+        await flush();
+        storage.sql.exec('DELETE FROM jobs');
+      }
+
+      class Example {
+        reset() {
+          this.ctx.storage.transactionSync(() => {
+            this.prepare();
+          });
+        }
+
+        prepare() {
+          void save(this.ctx.storage);
+        }
+      }
+    `,
+  ])('rejects calls that write after an await', (source) => {
+    const result = lint(source, 'transaction-sync-callback');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      '() leads to an async function that writes to storage after an await'
     );
   });
 });
@@ -868,6 +1056,87 @@ describe('no-deferred-storage-writes', () => {
       'This storage write starts after the request can respond'
     );
   });
+
+  it.each([
+    `
+      class Example {
+        submit(job: Job) {
+          void this.save(job);
+        }
+
+        async save(job: Job) {
+          await this.ctx.storage.put('job', job);
+          await render(job);
+        }
+      }
+    `,
+    `
+      class Example {
+        async submit(job: Job) {
+          await this.renderAndSave(job);
+          return this.renderAndSave(job);
+        }
+
+        async renderAndSave(job: Job) {
+          const result = await render(job);
+          await this.ctx.storage.put('result', result);
+        }
+      }
+    `,
+  ])('accepts calls that write before the response', (source) => {
+    const result = lint(source, 'no-deferred-storage-writes');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        submit(job: Job) {
+          setTimeout(() => this.save(job), 10);
+        }
+
+        save(job: Job) {
+          void this.ctx.storage.put('job', job);
+        }
+      }
+    `,
+    `
+      class Example {
+        submit(job: Job) {
+          this.ctx.waitUntil(this.renderAndSave(job));
+        }
+
+        async renderAndSave(job: Job) {
+          const result = await render(job);
+          this.save(result);
+        }
+
+        save(result: Result) {
+          void this.ctx.storage.put('result', result);
+        }
+      }
+    `,
+    `
+      async function renderAndSave(storage: DurableObjectStorage, job: Job) {
+        const result = await render(job);
+        await storage.put('result', result);
+      }
+
+      class Example {
+        submit(job: Job) {
+          void renderAndSave(this.ctx.storage, job);
+        }
+      }
+    `,
+  ])('rejects calls that write after the response', (source) => {
+    const result = lint(source, 'no-deferred-storage-writes');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      '() makes a storage write that starts after the request can respond'
+    );
+  });
 });
 
 describe('no-alarm-changes-in-alarm-handler', () => {
@@ -927,6 +1196,65 @@ describe('no-alarm-changes-in-alarm-handler', () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain(
       'Calling setAlarm() or deleteAlarm() inside alarm() replaces the retry'
+    );
+  });
+
+  it('accepts alarm handlers that call functions without alarm changes', () => {
+    const result = lint(
+      `
+        class Example {
+          async alarm() {
+            await this.process();
+          }
+
+          async process() {
+            await this.ctx.storage.put('processed', true);
+          }
+
+          async start() {
+            await this.ctx.storage.setAlarm(Date.now() + 1_000);
+          }
+        }
+      `,
+      'no-alarm-changes-in-alarm-handler'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      class Example {
+        async alarm() {
+          await this.process();
+        }
+
+        async process() {
+          await this.reschedule();
+        }
+
+        reschedule() {
+          return this.ctx.storage.setAlarm(Date.now() + 60_000);
+        }
+      }
+    `,
+    `
+      function clear(storage: DurableObjectStorage) {
+        return storage.deleteAlarm();
+      }
+
+      class Example {
+        alarm = async () => {
+          await clear(this.ctx.storage);
+        };
+      }
+    `,
+  ])('rejects alarm changes through called functions', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-alarm-handler');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      '() calls setAlarm() or deleteAlarm(), which inside alarm() replaces the retry'
     );
   });
 });
@@ -1062,6 +1390,93 @@ describe('no-alarm-changes-in-constructor', () => {
       'so this durability call schedules its work again on every load'
     );
   });
+
+  it.each([
+    `
+      import { DurabilityAlarms } from 'durability';
+
+      class Example {
+        alarms = new DurabilityAlarms({ context: this.ctx, handlers });
+
+        constructor() {
+          this.listen();
+          this.first();
+        }
+
+        listen() {
+          this.alarms.lifecycle(() => this.subscribe(Date.now()));
+          setTimeout(() => this.ctx.storage.setAlarm(Date.now()), 10);
+        }
+
+        first() {
+          this.second();
+        }
+
+        second() {
+          this.first();
+        }
+
+        subscribe(at: number) {
+          return this.alarms.renew(at);
+        }
+      }
+    `,
+  ])('accepts calls to functions that change the alarm later', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-constructor');
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it.each([
+    `
+      import { DurabilityAlarms } from 'durability';
+
+      class Example {
+        alarms = new DurabilityAlarms({ context: this.ctx, handlers });
+
+        constructor() {
+          void this.subscribe(Date.now());
+        }
+
+        subscribe(at: number) {
+          return this.alarms.renew(at);
+        }
+      }
+    `,
+    `
+      class Example {
+        constructor(ctx: DurableObjectState) {
+          ctx.blockConcurrencyWhile(() => this.subscribe());
+        }
+
+        async subscribe() {
+          await this.ensureAlarm();
+        }
+
+        ensureAlarm = async () => {
+          if ((await this.ctx.storage.getAlarm()) === null) {
+            await this.ctx.storage.setAlarm(Date.now() + 60_000);
+          }
+        };
+      }
+    `,
+    `
+      function subscribe(storage: DurableObjectStorage) {
+        return storage.setAlarm(Date.now() + 60_000);
+      }
+
+      class Example {
+        pending = subscribe(this.ctx.storage);
+      }
+    `,
+  ])('rejects calls to functions that change the alarm', (source) => {
+    const result = lint(source, 'no-alarm-changes-in-constructor');
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      "subscribe() changes the object's alarm or schedules durability work"
+    );
+  });
 });
 
 describe('no-delete-all-in-transaction', () => {
@@ -1119,6 +1534,56 @@ describe('no-delete-all-in-transaction', () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain(
       'deleteAll() cannot run inside a transaction'
+    );
+  });
+
+  it('accepts a function that calls deleteAll() outside a transaction', () => {
+    const result = lint(
+      `
+        class Example {
+          async reset() {
+            await this.clear();
+            await this.ctx.storage.transaction(async (txn) => {
+              await txn.put('state', 'empty');
+            });
+          }
+
+          clear() {
+            return this.ctx.storage.deleteAll();
+          }
+        }
+      `,
+      'no-delete-all-in-transaction'
+    );
+
+    expect(result).toEqual({ status: 0, output: '' });
+  });
+
+  it('rejects deleteAll() through a function called in a transaction', () => {
+    const result = lint(
+      `
+        class Example {
+          async reset() {
+            await this.ctx.storage.transaction(async () => {
+              await this.clear();
+            });
+          }
+
+          async clear() {
+            await this.removeEverything();
+          }
+
+          removeEverything() {
+            return this.ctx.storage.deleteAll();
+          }
+        }
+      `,
+      'no-delete-all-in-transaction'
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      'clear() calls deleteAll(), which cannot run inside a transaction'
     );
   });
 });
