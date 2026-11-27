@@ -1139,7 +1139,7 @@ describe('RetryAfterError in operations', () => {
   const start = Date.parse('2026-01-01T00:00:00Z');
 
   const pendingAfterFailure = async (
-    hintMs: number,
+    error: unknown,
     maxAttempts: number,
     policyDelayMs: number
   ) => {
@@ -1150,7 +1150,7 @@ describe('RetryAfterError in operations', () => {
       context: contextFor(new FakeStorage()),
       handlers: {
         work: async () => {
-          throw new RetryAfterError('rate limited', hintMs);
+          throw error;
         },
       },
       retries: { delay: () => policyDelayMs, maxAttempts },
@@ -1163,7 +1163,9 @@ describe('RetryAfterError in operations', () => {
   };
 
   it('waits for a hint longer than the policy delay', async () => {
-    await expect(pendingAfterFailure(60_000, 3, 5_000)).resolves.toMatchObject({
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 60_000), 3, 5_000)
+    ).resolves.toMatchObject({
       status: 'pending',
       attempt: 1,
       nextAttemptAt: 1767225660000,
@@ -1171,21 +1173,27 @@ describe('RetryAfterError in operations', () => {
   });
 
   it('keeps the policy delay when the hint is shorter', async () => {
-    await expect(pendingAfterFailure(1_000, 3, 5_000)).resolves.toMatchObject({
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 1_000), 3, 5_000)
+    ).resolves.toMatchObject({
       status: 'pending',
       nextAttemptAt: 1767225605000,
     });
   });
 
   it('rounds a fractional hint to whole milliseconds', async () => {
-    await expect(pendingAfterFailure(2_500.4, 3, 0)).resolves.toMatchObject({
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 2_500.4), 3, 0)
+    ).resolves.toMatchObject({
       status: 'pending',
       nextAttemptAt: 1767225602500,
     });
   });
 
   it('stays terminal on the last attempt', async () => {
-    await expect(pendingAfterFailure(60_000, 1, 5_000)).resolves.toEqual({
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 60_000), 1, 5_000)
+    ).resolves.toEqual({
       status: 'failed',
       attempt: 1,
       error: { name: 'RetryAfterError', message: 'rate limited' },
@@ -1193,27 +1201,14 @@ describe('RetryAfterError in operations', () => {
   });
 
   it('retries a same-named error from another package copy', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(start);
-
     class Foreign extends Error {
       readonly retryAfterMs = 30_000;
       override name = 'RetryAfterError';
     }
 
-    const durability = new Durability({
-      context: contextFor(new FakeStorage()),
-      handlers: {
-        work: async () => {
-          throw new Foreign('slow down');
-        },
-      },
-      retries: { delay: () => 0 },
-    });
-
-    await durability.work({ id: 'foreign', payload: null });
-    await vi.advanceTimersByTimeAsync(0);
-    await expect(durability.work.getResult('foreign')).resolves.toMatchObject({
+    await expect(
+      pendingAfterFailure(new Foreign('slow down'), 3, 0)
+    ).resolves.toMatchObject({
       status: 'pending',
       nextAttemptAt: 1767225630000,
     });

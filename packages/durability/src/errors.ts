@@ -310,13 +310,9 @@ const readString = (
   value: ErrorFields,
   property: keyof ErrorFields
 ): string | undefined => {
-  try {
-    const candidate = value[property];
+  const candidate = readField(value, property);
 
-    return isNonEmptyString(candidate) ? candidate : undefined;
-  } catch {
-    return undefined;
-  }
+  return isNonEmptyString(candidate) ? candidate : undefined;
 };
 
 const readField = (
@@ -383,10 +379,7 @@ export const isNonRetryable = (cause: unknown): boolean => {
   }
 };
 
-/**
- * Reads the retry floor from this package's RetryAfterError or a same-named
- * error from another copy of the package. Returns 0 when there is none.
- */
+/** Reads RetryAfterError's retry floor, including same-named errors from other package copies. */
 export const retryAfterMsOf = (cause: unknown): number => {
   if (isErrorInstance(cause, RetryAfterError)) {
     return cause.retryAfterMs;
@@ -399,9 +392,13 @@ export const retryAfterMsOf = (cause: unknown): number => {
     return 0;
   }
 
-  const value = readField(cause, 'retryAfterMs');
+  const retryAfterMs = readField(cause, 'retryAfterMs');
 
-  return isNumber(value) && Number.isFinite(value) && value > 0 ? value : 0;
+  return isNumber(retryAfterMs) &&
+    Number.isFinite(retryAfterMs) &&
+    retryAfterMs > 0
+    ? retryAfterMs
+    : 0;
 };
 
 /** Fields logged with a failure to identify the work that failed. */

@@ -94,7 +94,7 @@ if (response.status === 429) {
 }
 ```
 
-The next attempt is scheduled `max(retries.delay(attempt), retryAfterMs)` after the failure. The hint is a floor, so a shorter hint keeps the policy delay. The retry still counts against `maxAttempts`, and a hint on the last attempt is terminal. The constructor throws `RangeError` for a negative or non-finite delay.
+The hint is a floor on the policy's retry delay (see [Retries and timeouts](/reference/retries/#retries-timeouts-and-terminal-failures)). The constructor throws `RangeError` for a negative or non-finite delay.
 
 ### Reading results
 
