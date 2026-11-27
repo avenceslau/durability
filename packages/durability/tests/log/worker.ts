@@ -136,4 +136,12 @@ export class LogTestObject extends DurableObject<Env> {
   load() {
     return this.log.load();
   }
+
+  countParts(): number {
+    return this.ctx.storage.sql
+      .exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM durability_log_parts'
+      )
+      .one().count;
+  }
 }

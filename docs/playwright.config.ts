@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './tests/browser',
   fullyParallel: true,
-  workers: 2,
+  workers: 4,
   expect: { timeout: 15_000 },
   use: {
     baseURL: 'http://localhost:8793',

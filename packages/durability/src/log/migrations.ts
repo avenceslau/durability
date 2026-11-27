@@ -175,6 +175,33 @@ export const durabilityLogMigrations = [
       DROP TABLE durability_log_seq_with_channels;
     `,
   },
+  {
+    name: 'durability_0025_log_parts',
+    up: `
+      ALTER TABLE durability_log_records
+        ADD COLUMN parts INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE durability_log_parts (
+        channel TEXT NOT NULL,
+        "offset" INTEGER NOT NULL,
+        part INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (channel, "offset", part)
+      );
+    `,
+    // Without its parts a split record's payload is a truncated string, so
+    // the downgrade refuses to run rather than corrupt it.
+    down: `
+      CREATE TABLE durability_log_parts_guard (
+        parts INTEGER CONSTRAINT cannot_downgrade_split_payloads CHECK (parts = 0)
+      );
+      INSERT INTO durability_log_parts_guard
+      SELECT parts FROM durability_log_records WHERE parts > 0;
+      DROP TABLE durability_log_parts_guard;
+
+      DROP TABLE durability_log_parts;
+      ALTER TABLE durability_log_records DROP COLUMN parts;
+    `,
+  },
 ] satisfies DurableMigrations;
 
 /**

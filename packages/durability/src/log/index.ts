@@ -32,11 +32,66 @@ const logRecordRowSchema = v.object({
   offset: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   dedup_key: v.string(),
   payload: v.string(),
+  parts: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   bytes: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   appended_at: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
 });
 
 type LogRecordRow = v.InferOutput<typeof logRecordRowSchema>;
+
+const oldestRowSchema = v.pick(logRecordRowSchema, [
+  'offset',
+  'bytes',
+  'appended_at',
+]);
+
+const removedRowSchema = v.pick(logRecordRowSchema, ['offset', 'bytes']);
+
+const partRowSchema = v.object({
+  data: v.string(),
+});
+
+/**
+ * UTF-8 bytes of payload per row. A larger payload is split across the record
+ * row and `durability_log_parts`: a Durable Object refuses a string of 2 MB or
+ * more.
+ */
+const logPartBytes = 1024 * 1024;
+
+const maxSegmentPayloadBytes = 64 * 1024 * 1024;
+
+/**
+ * Splits a payload into pieces of at most `logPartBytes` of UTF-8 each.
+ * `encodeInto` stops before a character that does not fit, so a surrogate
+ * pair is never split.
+ */
+const splitPayload = (
+  encoder: TextEncoder,
+  payload: string,
+  bytes: number
+): string[] => {
+  if (bytes <= logPartBytes) {
+    return [payload];
+  }
+
+  const buffer = new Uint8Array(logPartBytes);
+  const parts: string[] = [];
+  let rest = payload;
+
+  while (rest.length > 0) {
+    const { read } = encoder.encodeInto(rest, buffer);
+    parts.push(rest.slice(0, read));
+    rest = rest.slice(read);
+  }
+
+  return parts;
+};
+
+type LogAppendRow = {
+  dedup_key: string;
+  parts: string[];
+  bytes: number;
+};
 
 const logCursorRowSchema = v.object({
   consumer: v.string(),
@@ -127,7 +182,7 @@ export type LogBounds = {
 const appendRecords = (
   sql: SqlStorage,
   channel: string,
-  records: readonly Pick<LogRecordRow, 'dedup_key' | 'payload' | 'bytes'>[],
+  records: readonly LogAppendRow[],
   appendedAt: number
 ): number[] => {
   const assigned = new Map<string, number>();
@@ -179,18 +234,32 @@ const appendRecords = (
     const offset = first + index;
     assigned.set(dedupKey, offset);
     added += row.bytes;
+    const [inline = '', ...rest] = row.parts;
+
     sql.exec(
       `INSERT INTO durability_log_records
-         (channel, "offset", dedup_key, payload, bytes, appended_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+         (channel, "offset", dedup_key, payload, parts, bytes, appended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel, dedup_key) DO NOTHING`,
       channel,
       offset,
       dedupKey,
-      row.payload,
+      inline,
+      rest.length,
       row.bytes,
       appendedAt
     );
+
+    for (const [position, data] of rest.entries()) {
+      sql.exec(
+        `INSERT INTO durability_log_parts (channel, "offset", part, data)
+         VALUES (?, ?, ?, ?)`,
+        channel,
+        offset,
+        position + 1,
+        data
+      );
+    }
   });
   sql.exec(
     `UPDATE durability_log_seq SET total_bytes = total_bytes + ?
@@ -202,13 +271,45 @@ const appendRecords = (
   return records.map((record) => assigned.get(record.dedup_key)!);
 };
 
+const countWithinByteBudget = (
+  sql: SqlStorage,
+  channel: string,
+  from: number,
+  limit: number,
+  maxBytes: number
+): number =>
+  takeWithinBytesIncludingFirst(
+    v.parse(
+      v.array(v.pick(logRecordRowSchema, ['bytes'])),
+      sql
+        .exec(
+          `SELECT bytes FROM durability_log_records
+           WHERE channel = ? AND "offset" >= ?
+           ORDER BY "offset" ASC
+           LIMIT ?`,
+          channel,
+          from,
+          limit
+        )
+        .toArray()
+    ),
+    (row) => row.bytes,
+    maxBytes
+  ).length;
+
 const readRecords = (
   sql: SqlStorage,
   channel: string,
   from: number,
-  limit: number
-): LogRecordRow[] =>
-  v.parse(
+  limit: number,
+  maxBytes?: number
+): LogRecordRow[] => {
+  const count =
+    maxBytes === undefined
+      ? limit
+      : countWithinByteBudget(sql, channel, from, limit, maxBytes);
+
+  const rows = v.parse(
     v.array(logRecordRowSchema),
     sql
       .exec(
@@ -218,10 +319,35 @@ const readRecords = (
          LIMIT ?`,
         channel,
         from,
-        limit
+        count
       )
       .toArray()
   );
+
+  return rows.map((row) => {
+    if (row.parts === 0) {
+      return row;
+    }
+
+    const parts = v.parse(
+      v.array(partRowSchema),
+      sql
+        .exec(
+          `SELECT data FROM durability_log_parts
+           WHERE channel = ? AND "offset" = ?
+           ORDER BY part ASC`,
+          channel,
+          row.offset
+        )
+        .toArray()
+    );
+
+    return {
+      ...row,
+      payload: [row.payload, ...parts.map(({ data }) => data)].join(''),
+    };
+  });
+};
 
 const readBounds = (sql: SqlStorage, channel: string): LogBounds => {
   const row = v.parse(
@@ -277,17 +403,16 @@ const totalBytes = (sql: SqlStorage, channel: string): number =>
       .toArray()[0]
   ).total_bytes;
 
-/** Oldest retained records in offset order, for flush-or-delete decisions. */
-const listOldest = (
+const listOldestRecordMetadata = (
   sql: SqlStorage,
   channel: string,
   limit: number
-): LogRecordRow[] =>
+): v.InferOutput<typeof oldestRowSchema>[] =>
   v.parse(
-    v.array(logRecordRowSchema),
+    v.array(oldestRowSchema),
     sql
       .exec(
-        `SELECT * FROM durability_log_records
+        `SELECT "offset", bytes, appended_at FROM durability_log_records
          WHERE channel = ?
          ORDER BY "offset" ASC
          LIMIT ?`,
@@ -308,7 +433,7 @@ const trimThrough = (
   limit: number
 ): number => {
   const removed = v.parse(
-    v.array(logRecordRowSchema),
+    v.array(removedRowSchema),
     sql
       .exec(
         `DELETE FROM durability_log_records
@@ -318,7 +443,7 @@ const trimThrough = (
            ORDER BY "offset" ASC
            LIMIT ?3
          )
-         RETURNING *`,
+         RETURNING "offset", bytes`,
         channel,
         through,
         limit
@@ -329,6 +454,13 @@ const trimThrough = (
   if (removed.length === 0) {
     return 0;
   }
+
+  // The oldest records were removed, so none is left at or below the highest.
+  sql.exec(
+    `DELETE FROM durability_log_parts WHERE channel = ? AND "offset" <= ?`,
+    channel,
+    removed.reduce((highest, row) => Math.max(highest, row.offset), 0)
+  );
 
   sql.exec(
     `UPDATE durability_log_seq SET total_bytes = MAX(0, total_bytes - ?)
@@ -373,6 +505,11 @@ const discardBelow = (
 
   sql.exec(
     `DELETE FROM durability_log_records WHERE channel = ? AND "offset" < ?`,
+    channel,
+    end
+  );
+  sql.exec(
+    `DELETE FROM durability_log_parts WHERE channel = ? AND "offset" < ?`,
     channel,
     end
   );
@@ -692,7 +829,15 @@ export type LogPage<Body = unknown> = {
 export type LogReadOptions = {
   from: number;
   limit?: number;
+  /**
+   * Payload bytes the page may hold, counted as `retention.maxBytes` counts
+   * them. The page stops before the record that would exceed it, but always
+   * holds at least one record when any is available.
+   */
+  maxBytes?: number;
 };
+
+export type LogLeaseReadOptions = Pick<LogReadOptions, 'maxBytes'>;
 
 /** One contiguous run of records leaving the object, oldest first. */
 export type LogSegment<Body = unknown> = {
@@ -882,7 +1027,7 @@ export class DurabilityLog<Body = unknown> {
 
     try {
       const inputs = Array.isArray(records) ? records : [records];
-      let rows: Array<{ dedup_key: string; payload: string; bytes: number }>;
+      let rows: LogAppendRow[];
 
       try {
         if (inputs.length === 0) {
@@ -903,11 +1048,12 @@ export class DurabilityLog<Body = unknown> {
           }
 
           const payload = serialize(input.body);
+          const bytes = utf8Bytes(this.#encoder, payload);
 
           return {
             dedup_key: input.deduplicationKey ?? crypto.randomUUID(),
-            payload,
-            bytes: this.#encoder.encode(payload).byteLength,
+            parts: splitPayload(this.#encoder, payload, bytes),
+            bytes,
           };
         });
       } catch (error) {
@@ -942,6 +1088,7 @@ export class DurabilityLog<Body = unknown> {
   async read(options: LogReadOptions): Promise<LogPage<Body>> {
     const limit = options.limit ?? this.#maxBatchSize;
     assertPositiveInteger('limit', limit);
+    assertByteBudget(options.maxBytes);
 
     if (!Number.isInteger(options.from) || options.from < 0) {
       throw new LogAppendError('Read offset must be a non-negative integer');
@@ -955,15 +1102,12 @@ export class DurabilityLog<Body = unknown> {
 
     const capped = Math.min(limit, this.#maxBatchSize);
 
-    const records =
-      options.from < bounds.hotOffset
-        ? await this.#rehydrate(options.from, capped, bounds)
-        : readRecords(
-            this.#engine.sql,
-            this.#channel,
-            options.from,
-            capped
-          ).map((row) => this.#record(row));
+    const records = await this.#readFrom(
+      options.from,
+      capped,
+      bounds,
+      options.maxBytes
+    );
 
     const nextOffset =
       records.length === 0
@@ -984,7 +1128,8 @@ export class DurabilityLog<Body = unknown> {
   async #rehydrate(
     from: number,
     limit: number,
-    bounds: LogBounds
+    bounds: LogBounds,
+    maxBytes?: number
   ): Promise<LogRecord<Body>[]> {
     const segment = findSegment(this.#engine.sql, this.#channel, from);
 
@@ -997,10 +1142,21 @@ export class DurabilityLog<Body = unknown> {
       throw new LogTruncatedError(from, Math.max(from + 1, bounds.hotOffset));
     }
 
-    return records
+    const page = records
       .filter((record) => record.offset >= from)
       .sort((left, right) => left.offset - right.offset)
       .slice(0, limit);
+
+    if (maxBytes === undefined) {
+      return page;
+    }
+
+    // Segments hold records rather than stored rows, so their size is measured the way append measured it.
+    return takeWithinBytesIncludingFirst(
+      page,
+      (record) => utf8Bytes(this.#encoder, serialize(record.body)),
+      maxBytes
+    );
   }
 
   #record(row: LogRecordRow): LogRecord<Body> {
@@ -1061,7 +1217,7 @@ export class DurabilityLog<Body = unknown> {
     let removed = 0;
 
     for (;;) {
-      const oldest = listOldest(
+      const oldest = listOldestRecordMetadata(
         this.#engine.sql,
         this.#channel,
         this.#maxBatchSize
@@ -1101,11 +1257,26 @@ export class DurabilityLog<Body = unknown> {
         return removed;
       }
 
-      const first = expiring[0]!;
-      const last = expiring[expiring.length - 1]!;
+      const batch = takeWithinBytesIncludingFirst(
+        expiring,
+        (row) => row.bytes,
+        maxSegmentPayloadBytes
+      );
+
+      const [first] = batch;
+      const last = batch[batch.length - 1];
+
+      if (!first || !last) {
+        return removed;
+      }
 
       if (this.#cold) {
-        const records = expiring.map((row) => this.#record(row));
+        const records = readRecords(
+          this.#engine.sql,
+          this.#channel,
+          first.offset,
+          batch.length
+        ).map((row) => this.#record(row));
 
         // eslint-disable-next-line no-await-in-loop
         const locator = await this.#cold.write({
@@ -1125,20 +1296,20 @@ export class DurabilityLog<Body = unknown> {
           first_offset: first.offset,
           last_offset: last.offset,
           locator,
-          bytes: expiring.reduce((total, row) => total + row.bytes, 0),
+          bytes: batch.reduce((total, row) => total + row.bytes, 0),
           flushed_at: Date.now(),
         });
       }
 
       const deleted = this.#engine.transactionSync((sql) =>
-        trimThrough(sql, this.#channel, last.offset + 1, expiring.length)
+        trimThrough(sql, this.#channel, last.offset + 1, batch.length)
       );
 
       removed += deleted;
 
       // Records are flushed before deletion, so stopping on partial progress
       // keeps the next pass from writing the remainder a second time.
-      if (deleted < expiring.length) {
+      if (deleted < batch.length) {
         return removed;
       }
     }
@@ -1200,14 +1371,20 @@ export class DurabilityLog<Body = unknown> {
    * range is recorded durably before the records are returned, and a
    * redelivery rewrites the batch id so the previous holder can no longer
    * settle it.
+   *
+   * `maxBytes` bounds a new range only: a redelivered range keeps the offsets
+   * it was first leased with.
    */
   async lease(
     consumer: string,
-    limit?: number
+    limit?: number,
+    options: LogLeaseReadOptions = {}
   ): Promise<LogLease<Body> | undefined> {
     const leases = this.#requireLeases();
     const size = Math.min(limit ?? this.#maxBatchSize, this.#maxBatchSize);
     assertPositiveInteger('limit', size);
+    assertByteBudget(options.maxBytes);
+
     assertConsumer(consumer);
     const now = Date.now();
     const sql = this.#engine.sql;
@@ -1280,7 +1457,8 @@ export class DurabilityLog<Body = unknown> {
     const committed = readCursor(sql, this.#channel, consumer);
     const allocated = readAllocation(sql, this.#channel, consumer);
     const from = Math.max(bounds.oldestOffset, committed ?? 0, allocated ?? 0);
-    const records = await this.#readFrom(from, size, bounds);
+
+    const records = await this.#readFrom(from, size, bounds, options.maxBytes);
 
     if (records.length === 0) {
       return undefined;
@@ -1477,15 +1655,20 @@ export class DurabilityLog<Body = unknown> {
   async #readFrom(
     from: number,
     limit: number,
-    bounds: LogBounds
+    bounds: LogBounds,
+    maxBytes?: number
   ): Promise<LogRecord<Body>[]> {
     if (from < bounds.hotOffset && from < bounds.nextOffset) {
-      return this.#rehydrate(from, limit, bounds);
+      return this.#rehydrate(from, limit, bounds, maxBytes);
     }
 
-    return readRecords(this.#engine.sql, this.#channel, from, limit).map(
-      (row) => this.#record(row)
-    );
+    return readRecords(
+      this.#engine.sql,
+      this.#channel,
+      from,
+      limit,
+      maxBytes
+    ).map((row) => this.#record(row));
   }
 
   #requireLeases(): LogLeaseOptions {
@@ -1523,6 +1706,29 @@ const assertConsumer = (consumer: string): void => {
   if (!isNonEmptyString(consumer)) {
     throw new LogAppendError('Consumer must be a non-empty string');
   }
+};
+
+const utf8Bytes = (encoder: TextEncoder, text: string): number =>
+  encoder.encode(text).byteLength;
+
+const assertByteBudget = (maxBytes: number | undefined): void => {
+  if (maxBytes !== undefined) {
+    assertPositiveInteger('maxBytes', maxBytes);
+  }
+};
+
+const takeWithinBytesIncludingFirst = <T>(
+  items: readonly T[],
+  bytesOf: (item: T) => number,
+  maxBytes: number
+): T[] => {
+  let total = 0;
+
+  return takeWhile(items, (item, index) => {
+    total += bytesOf(item);
+
+    return index === 0 || total <= maxBytes;
+  });
 };
 
 const takeWhile = <T>(

@@ -1528,6 +1528,8 @@ export class Partition extends DurableObject<Env> {
 
 `append` mirrors `enqueue`: the batch commits atomically, definite input rejections return `success: false`, and storage or commit uncertainty throws. It returns each record's **offset** in input order. Passing a `key` makes an append idempotent — re-appending an existing key returns its original offset and consumes no new one — so a producer that retries after an uncertain commit does not duplicate records.
 
+A record's body may serialize to more than one SQLite value holds (a Durable Object refuses a string of 2 MB or more). A payload over 1 MiB of UTF-8 is stored in 1 MiB parts and reassembled when read, so it is still one record with one offset, and byte budgets count its whole payload. What bounds a record is the RPC message that carries it to the object and the memory that holds it.
+
 Consumers **pull** and own their position:
 
 ```ts
@@ -1538,6 +1540,8 @@ await log.commit('search', page.nextOffset);
 ```
 
 `commit` only ever advances, so a late or duplicated commit cannot rewind a cursor. Cursors are independent: `log.cursors()` returns every consumer's position, and `log.load()` reports the furthest-behind cursor as backlog so routing can weigh partitions by consumer lag rather than by queue depth.
+
+`read` returns at most `limit` records. Pass `maxBytes` as well to bound a page by payload bytes, counted as `retention.maxBytes` counts them, so a consumer never loads more than it can hold: the page stops before the record that would exceed the budget, always holds at least one record, and `nextOffset` is where it stopped. For records in the object the budget is decided from stored sizes before any payload is loaded. A read that reaches the cold tier loads a whole segment, at most 64 MiB of payload or one larger record, and then applies the budget.
 
 ### Retention is not acknowledgement
 
@@ -1571,7 +1575,7 @@ type LogColdStorage<Body> = {
 };
 ```
 
-`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
+`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite. Each segment holds at most 64 MiB of payload, or a single record when that record alone is larger, so a flush never loads more than that at once.
 
 `read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
 
@@ -1598,6 +1602,8 @@ if (lease) {
 ```
 
 `lease` claims a range of offsets durably **before** returning the records, so a second caller gets `undefined` rather than the same offsets. `undefined` means nothing is available right now — either the consumer is at `maxParallelism` or the log has no unleased records — so treat it as a signal to back off.
+
+`lease(consumer, limit, { maxBytes })` bounds a new range by payload bytes the same way and ends the range at the last record returned, so `ack` and `nack` cover exactly those records. A redelivered range keeps the offsets it was first leased with.
 
 A range is held until it is acked, nacked, or its lease expires after `leaseMs`. Redelivery always issues a **fresh `batchId`**, which fences the previous holder: its `ack` throws `LogLeaseError` rather than committing a range someone else now owns. Double settlement throws for the same reason.
 
