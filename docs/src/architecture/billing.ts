@@ -95,13 +95,13 @@ const scheduleAlarm = sourceExcerpt(
   '      deleteMemos(sql, this.#table, key);\n    });'
 );
 
-const executeAlarm = sourceExcerpt(
+const invokeAlarm = sourceExcerpt(
   alarmsSource,
   alarmsFile,
-  'execute-alarm',
-  'Run one occurrence',
-  '  #execute(',
-  '        return removed ? timestamp : undefined;\n      },'
+  'invoke-alarm',
+  'Call the handler',
+  '  #invoke(',
+  '    return handler(alarmInfo);\n  }'
 );
 
 const register = sourceExcerpt(
@@ -358,7 +358,7 @@ export const walkthrough = validateWalkthrough({
     cancel,
     alarm,
     scheduleAlarm,
-    executeAlarm,
+    invokeAlarm,
     register,
     runDue,
     runAlarm,
@@ -447,8 +447,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['focus:alarms'],
           source: sourceFocus(
             scheduleAlarm,
-            'ON CONFLICT(channel, name) DO UPDATE SET',
-            'generation_id = excluded.generation_id,'
+            'upsertOccurrence(sql, {',
+            'deleteMemos(sql, this.#table, key);'
           ),
           durable:
             'One renew row with a fresh generation_id and scheduled_at 30 days out.',
@@ -512,7 +512,7 @@ export const walkthrough = validateWalkthrough({
             'The handler receives scheduledTime and an idempotencyKey derived from the row’s generation. Every retry of this occurrence gets the same key; scheduling the name again creates a new one.',
           stage: ['renew', 'focus:renew'],
           source: sourceFocus(
-            executeAlarm,
+            invokeAlarm,
             'idempotencyKey: `durability-alarm:v1:${row.generation_id}`,'
           ),
           durable:
