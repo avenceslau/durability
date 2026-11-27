@@ -1,0 +1,21 @@
+{
+  "name": "@queues-example/push-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A Worker that sends orders to the queue and consumes them over RPC",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "lint": "oxlint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@queues-example/queue": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "typescript": "6.0.3",
+    "wrangler": "^4.156.0"
+  }
+}

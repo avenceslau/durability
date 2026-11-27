@@ -58,6 +58,7 @@ const nimbusConfig = defineNimbusConfig({
           'compositions/job-dashboard',
           'compositions/account-concurrency',
           'compositions/event-stream',
+          'compositions/fifo-queue',
         ],
       },
       {

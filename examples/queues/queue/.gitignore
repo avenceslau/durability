@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+.dev.vars
+public/app.js
+# Deploy configs for your own accounts; the committed one is wrangler.jsonc.
+wrangler.*.jsonc
+!wrangler.test.jsonc
