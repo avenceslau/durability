@@ -381,14 +381,15 @@ export const isNonRetryable = (cause: unknown): boolean => {
 
 /** Reads RetryAfterError's retry floor, including same-named errors from other package copies. */
 export const retryAfterMsOf = (cause: unknown): number => {
-  if (isErrorInstance(cause, RetryAfterError)) {
-    return cause.retryAfterMs;
+  if (!isObjectOrFunction(cause)) {
+    return 0;
   }
 
-  if (
-    !isObjectOrFunction(cause) ||
-    readString(cause, 'name') !== 'RetryAfterError'
-  ) {
+  const isRetryAfterError =
+    isErrorInstance(cause, RetryAfterError) ||
+    readString(cause, 'name') === 'RetryAfterError';
+
+  if (!isRetryAfterError) {
     return 0;
   }
 

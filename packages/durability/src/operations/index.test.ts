@@ -1214,6 +1214,21 @@ describe('RetryAfterError in operations', () => {
     });
   });
 
+  it('keeps the policy delay when the hint cannot be read', async () => {
+    const error = new RetryAfterError('rate limited', 60_000);
+
+    Object.defineProperty(error, 'retryAfterMs', {
+      get: () => {
+        throw new Error('unreadable');
+      },
+    });
+
+    await expect(pendingAfterFailure(error, 3, 5_000)).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: start + 5_000,
+    });
+  });
+
   it('rejects an invalid hint at construction', () => {
     expect(() => new RetryAfterError('x', -1)).toThrow(RangeError);
     expect(() => new RetryAfterError('x', Number.NaN)).toThrow(RangeError);
