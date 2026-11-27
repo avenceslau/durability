@@ -560,7 +560,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             schedule,
             'await this.#engine.transaction((sql) => {',
-            'ON CONFLICT(channel, name) DO UPDATE SET'
+            'upsertOccurrence(sql, {'
           ),
           durable: 'durability_alarms and the object alarm.',
           volatile: 'Nothing the sweep depends on.',

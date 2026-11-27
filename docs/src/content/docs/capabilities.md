@@ -17,7 +17,7 @@ Use `Durability` for an individually identified operation whose outcome you need
 
 Use `DurabilityAlarms` for deferred work keyed by a handler name. Scheduling that name again replaces its pending occurrence. A running handler continues; the replacement runs afterward. A successful occurrence is removed rather than retained as permanent history.
 
-A named alarm is not a cron parser. For simple recurrence, schedule the next occurrence from your handler. For independently tracked overlapping runs, consider experimental `DurabilitySchedule`.
+A named alarm is not a cron parser. For simple recurrence, wrap the handler in `every()`, which schedules the next occurrence from the period of the object's current activity level. For independently tracked overlapping runs, consider experimental `DurabilitySchedule`.
 
 [Named alarms reference](/primitives/alarms/#named-alarms) · [Subscription example](https://github.com/avenceslau/durability/tree/main/examples/subscription-renewals)
 

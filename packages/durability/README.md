@@ -172,6 +172,56 @@ Each occurrence receives a new internal generation. Its `idempotencyKey` stays s
 
 A timeout aborts the handler's `signal` and is terminal by default because the external outcome is unknown. Set `retryTimeouts: true` only when the handler's side effects use the idempotency key or reconcile their outcome before retrying. Named alarms remain at-least-once across eviction or restart.
 
+### Recurring alarms
+
+Wrap a handler in `every(periods, run, options?)` to make it recur. After each run, the alarm replaces its own occurrence with the next one, in the transaction that settles the run. The period comes from the object's current activity level, which the `activity` option reports:
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityAlarms, every } from 'durability';
+
+type Level = 'draining' | 'active' | 'idle';
+
+const jitter = (ms: number, spread: number) => () =>
+  ms + (Math.random() - 0.5) * spread;
+
+export class Shard extends DurableObject<Env> {
+  private readonly alarms = new DurabilityAlarms({
+    context: this.ctx,
+    activity: (): Level => this.activityLevel(),
+    handlers: {
+      sweep: every({ draining: 5_000, active: 30_000 }, ({ level }) =>
+        this.sweep(level === 'draining' ? 200 : 100)
+      ),
+      resendAcks: every({ active: 60_000 }, () => this.resendAcks(), {
+        retries: { maxAttempts: 3 },
+      }),
+      snapshot: every(
+        { '*': 3_600_000, idle: jitter(21_600_000, 3_600_000) },
+        () => this.snapshot()
+      ),
+    },
+  });
+
+  async enqueue(work: Work) {
+    this.store(work);
+    await this.alarms.raiseActivity('active');
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.alarms.alarm(info);
+  }
+}
+```
+
+- **Periods.** A period is milliseconds or a function returning them, such as one adding jitter. `periods` is one period for every level, or periods keyed by level, where `'*'` covers levels without their own key. The level keys are checked against `activity`'s return type, and `run` receives the `level` the attempt started at.
+- **Levels without a period.** An alarm runs only at the levels it lists a period for. An occurrence due at another level completes without calling `run` and is not scheduled again.
+- **Starting and raising.** Schedule the first occurrence with the alarm's method, as for any named alarm. When state changes that `activity` will report on, `await alarms.raiseActivity('active')` moves every recurring alarm to that level's period if that is sooner, and schedules the ones that have no occurrence. It never delays an occurrence, and it leaves one that is running or waiting to retry alone; the next run reads `activity` and settles the cadence.
+- **Failures.** Retries follow the alarm's policy. An occurrence that fails for good is replaced by the next one, so the alarm keeps its cadence; the failure is reported through lifecycle events only.
+- **Replacing and cancelling.** Scheduling the name by hand replaces the pending occurrence, and the run after it continues the cadence. `cancel()` stops it: a running attempt that settles after the cancel schedules nothing. `purgeBefore` also deletes a pending occurrence created before its cutoff, which stops the alarm until it is scheduled again.
+
+`activity` and period functions run inside storage transactions: they must be synchronous and must not throw. `options` holds the same policy as `methods.<name>`; setting both for one name throws.
+
 ## Using both in one Durable Object
 
 A Durable Object has one physical alarm. When one object uses both helpers, create a `DurabilityScheduler` and pass it to each so they share the alarm, the storage, and the concurrency pool:
