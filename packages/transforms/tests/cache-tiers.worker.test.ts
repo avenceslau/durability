@@ -17,11 +17,6 @@ function advance(ms: number) {
   vi.setSystemTime(Date.now() + ms);
 }
 
-/** Lets a background refresh started with waitUntil finish. */
-async function settle() {
-  await new Promise((resolve) => setTimeout(resolve, 20));
-}
-
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(startedAt);
@@ -75,8 +70,13 @@ describe('memoryTier', () => {
     advance(2_000);
 
     await expect(stub.countRead('a')).resolves.toEqual({ key: 'a', reads: 1 });
-    await settle();
-    await expect(stub.countRead('a')).resolves.toEqual({ key: 'a', reads: 2 });
+    // Calls during the refresh answer the stale entry and join the same load.
+    await vi.waitFor(() =>
+      expect(stub.countRead('a')).resolves.toEqual({ key: 'a', reads: 2 })
+    );
+    await expect(
+      env.CACHE_DO.getByName('memory-stale').countRead('b')
+    ).resolves.toEqual({ key: 'b', reads: 3 });
   });
 
   it('loads again once entries are older than the stale window', async () => {
@@ -179,9 +179,8 @@ describe('composed tiers', () => {
 
     // The location answer was already 5s old, past the memory fresh window.
     await stub.countRead('a');
-    await settle();
 
-    expect(sent).toHaveLength(2);
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
   });
 });
 
