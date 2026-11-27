@@ -1168,7 +1168,7 @@ describe('RetryAfterError in operations', () => {
     ).resolves.toMatchObject({
       status: 'pending',
       attempt: 1,
-      nextAttemptAt: 1767225660000,
+      nextAttemptAt: start + 60_000,
     });
   });
 
@@ -1177,7 +1177,7 @@ describe('RetryAfterError in operations', () => {
       pendingAfterFailure(new RetryAfterError('rate limited', 1_000), 3, 5_000)
     ).resolves.toMatchObject({
       status: 'pending',
-      nextAttemptAt: 1767225605000,
+      nextAttemptAt: start + 5_000,
     });
   });
 
@@ -1186,7 +1186,7 @@ describe('RetryAfterError in operations', () => {
       pendingAfterFailure(new RetryAfterError('rate limited', 2_500.4), 3, 0)
     ).resolves.toMatchObject({
       status: 'pending',
-      nextAttemptAt: 1767225602500,
+      nextAttemptAt: start + 2_500,
     });
   });
 
@@ -1210,7 +1210,7 @@ describe('RetryAfterError in operations', () => {
       pendingAfterFailure(new Foreign('slow down'), 3, 0)
     ).resolves.toMatchObject({
       status: 'pending',
-      nextAttemptAt: 1767225630000,
+      nextAttemptAt: start + 30_000,
     });
   });
 
