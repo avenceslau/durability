@@ -31,6 +31,7 @@ import {
   channelClause,
   claimAttempt,
   exhaustAttempts,
+  isAttemptDue,
   tableOwner,
   updateAttempt,
   type DurableTable,
@@ -1228,6 +1229,14 @@ export class Engine {
 
     const execution = (async (): Promise<void> => {
       releasePermit ??= await this.acquirePermit();
+
+      // An alarm pass lists due rows before it has permits for them, so by now
+      // this row may have failed and been rescheduled by another execution.
+      if (
+        !isAttemptDue(this.sql, spec.table, key, row.generation_id, Date.now())
+      ) {
+        return;
+      }
 
       const attempt = claimAttempt(
         this.sql,

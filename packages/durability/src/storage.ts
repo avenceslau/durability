@@ -38,6 +38,25 @@ const attemptRowSchema = v.object({
 export const pendingGeneration = (table: DurableTable): string =>
   `${table.key} = ? AND generation_id = ? AND status = 'pending'${channelClause(table)}`;
 
+/** Whether the generation is still pending and its next attempt is due by `now`. */
+export const isAttemptDue = (
+  sql: SqlStorage,
+  table: DurableTable,
+  key: string,
+  generation: string,
+  now: number
+): boolean =>
+  sql
+    .exec(
+      `SELECT 1 FROM ${table.name}
+       WHERE ${pendingGeneration(table)} AND next_attempt_at <= ?`,
+      key,
+      generation,
+      ...channelBindings(table),
+      now
+    )
+    .toArray().length > 0;
+
 /**
  * Starts the next attempt, optionally persisting its deadline in the same write.
  * Returns undefined when the generation is gone or out of attempts.
