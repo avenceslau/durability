@@ -434,6 +434,8 @@ Each attempt receives its own `AbortSignal`. A timed-out operation follows the n
 
 Throw `NonRetryableError` to move work directly to `failed` without another attempt. Errors named `NonRetryableError` from other packages, such as `cloudflare:workflows`, are recognized too.
 
+Throw `RetryAfterError` with a delay in milliseconds to ask for the next retry no sooner than that long from the failure, for example to honour an HTTP `Retry-After`. The delay is a floor. The retry waits for the longer of the policy's `delay` and the hint, still counts against `maxAttempts`, and is terminal on the last attempt. `NonRetryableError` wins over it. A same-named error from another copy of the package is recognized too. Fanout `retry(delayMs)` and outbox `retry(delayMs)` already set explicit delays and are unchanged.
+
 ## Identity and attempt numbers
 
 A handler receives several identifiers; only some are stable:

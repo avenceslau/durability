@@ -72,6 +72,30 @@ export class ImageJobs extends DurableObject<Env> {
 
 Every handler becomes a method on the instance. Handler names that collide with instance members (`alarm`, `purgeBefore`) are rejected at construction.
 
+### Honouring Retry-After
+
+A handler that delivers to an HTTP endpoint can pass the receiver's `Retry-After` to the retry schedule by throwing `RetryAfterError`.
+
+```ts
+import { RetryAfterError } from 'durability';
+
+const response = await fetch(payload.url, { method: 'POST', signal });
+
+if (response.status === 429) {
+  // Retry-After is either delay-seconds or an HTTP date.
+  const header = response.headers.get('Retry-After') ?? '';
+  const seconds = Number(header);
+  const at = Date.parse(header);
+  const delayMs = Number.isFinite(seconds) ? seconds * 1000 : at - Date.now();
+  throw new RetryAfterError(
+    'Receiver is rate limiting',
+    Math.max(0, delayMs || 0)
+  );
+}
+```
+
+The hint is a floor on the policy's retry delay (see [Retries and timeouts](/reference/retries/#retries-timeouts-and-terminal-failures)). The constructor throws `RangeError` for a negative or non-finite delay.
+
 ### Reading results
 
 ```ts

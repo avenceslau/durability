@@ -67,6 +67,8 @@ Scheduling a name again replaces its pending occurrence. If that name is already
 
 Named alarms inside the scheduler's `alarmMinDelayMs` window start from an in-memory timer at their requested time. The option accepts 1 to 15 seconds and defaults to 15 seconds; the scheduler never sets the physical alarm sooner than that delay; the physical alarm remains as a durable fallback for restarts. If concurrency capacity is full when the timer fires, execution waits in the shared FIFO queue. The scheduling method resolves after persistence and never waits for the handler to finish.
 
+A named alarm handler can throw `RetryAfterError(message, retryAfterMs)` to ask for its next retry no sooner than `retryAfterMs` from the failure (see [Retries and timeouts](/reference/retries/#retries-timeouts-and-terminal-failures)).
+
 Each occurrence receives a new internal generation. Its `idempotencyKey` stays stable across retries, while `attempt` records which attempt the handler is running. The ordinal advances each time an attempt is claimed and is retry context, not a unique per-handler-entry token (see [Identity and attempt numbers](/reference/identity/#identity-and-attempt-numbers)). A successful handler removes only the occurrence it executed, so it cannot delete a replacement scheduled while it was running.
 
 A timeout aborts the handler's `signal` and is terminal by default because the external outcome is unknown. Set `retryTimeouts: true` only when the handler's side effects use the idempotency key or reconcile their outcome before retrying. Named alarms remain at-least-once across eviction or restart.

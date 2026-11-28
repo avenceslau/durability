@@ -1,4 +1,8 @@
-import { isNonEmptyString, isObjectOrFunction } from './predicates.js';
+import {
+  isNonEmptyString,
+  isNumber,
+  isObjectOrFunction,
+} from './predicates.js';
 import type { Json } from './serialization.js';
 
 /**
@@ -18,6 +22,41 @@ export class NonRetryableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'NonRetryableError';
+  }
+}
+
+/**
+ * Asks for the next retry no sooner than `retryAfterMs` from the failure, for
+ * example to honour an HTTP `Retry-After` header.
+ *
+ * The delay is a floor. The retry policy's own delay still applies when it is
+ * longer, the retry still counts against `maxAttempts`, and the error is
+ * terminal on the last attempt like any other.
+ *
+ * @example
+ * ```ts
+ * if (response.status === 429) {
+ *   // Retry-After is either delay-seconds or an HTTP date.
+ *   const header = response.headers.get('Retry-After') ?? '';
+ *   const seconds = Number(header);
+ *   const at = Date.parse(header);
+ *   const delayMs = Number.isFinite(seconds) ? seconds * 1000 : at - Date.now();
+ *   throw new RetryAfterError('Rate limited', Math.max(0, delayMs || 0));
+ * }
+ * ```
+ */
+export class RetryAfterError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.name = 'RetryAfterError';
+
+    if (!Number.isFinite(retryAfterMs) || retryAfterMs < 0) {
+      throw new RangeError('retryAfterMs must be a non-negative finite number');
+    }
+
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -260,16 +299,28 @@ export class RoutingError extends Error {
 
 export type SerializedError = { name: string; message: string };
 
-type ErrorFields = { name?: unknown; message?: unknown; stack?: unknown };
+type ErrorFields = {
+  name?: unknown;
+  message?: unknown;
+  stack?: unknown;
+  retryAfterMs?: unknown;
+};
 
 const readString = (
   value: ErrorFields,
   property: keyof ErrorFields
 ): string | undefined => {
-  try {
-    const candidate = value[property];
+  const candidate = readField(value, property);
 
-    return isNonEmptyString(candidate) ? candidate : undefined;
+  return isNonEmptyString(candidate) ? candidate : undefined;
+};
+
+const readField = (
+  value: ErrorFields,
+  property: keyof ErrorFields
+): unknown => {
+  try {
+    return value[property];
   } catch {
     return undefined;
   }
@@ -326,6 +377,29 @@ export const isNonRetryable = (cause: unknown): boolean => {
   } catch {
     return false;
   }
+};
+
+/** Reads RetryAfterError's retry floor, including same-named errors from other package copies. */
+export const retryAfterMsOf = (cause: unknown): number => {
+  if (!isObjectOrFunction(cause)) {
+    return 0;
+  }
+
+  const isRetryAfterError =
+    isErrorInstance(cause, RetryAfterError) ||
+    readString(cause, 'name') === 'RetryAfterError';
+
+  if (!isRetryAfterError) {
+    return 0;
+  }
+
+  const retryAfterMs = readField(cause, 'retryAfterMs');
+
+  return isNumber(retryAfterMs) &&
+    Number.isFinite(retryAfterMs) &&
+    retryAfterMs > 0
+    ? retryAfterMs
+    : 0;
 };
 
 /** Fields logged with a failure to identify the work that failed. */

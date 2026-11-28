@@ -8,6 +8,7 @@ import {
   DurableResultSerializationError,
   DurableRetryPolicyError,
   NonRetryableError as DurabilityNonRetryableError,
+  RetryAfterError,
   type DurableCall,
   type DurabilityLifecycleEvent,
 } from '../index';
@@ -1185,5 +1186,107 @@ describe('Durability', () => {
       outcome: 'completed',
       result: { secret: 'token-abc' },
     });
+  });
+});
+
+describe('RetryAfterError in operations', () => {
+  const start = Date.parse('2026-01-01T00:00:00Z');
+
+  const pendingAfterFailure = async (
+    error: unknown,
+    maxAttempts: number,
+    policyDelayMs: number
+  ) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(start);
+
+    const durability = new Durability({
+      context: contextFor(new FakeStorage()),
+      handlers: {
+        work: async () => {
+          throw error;
+        },
+      },
+      retries: { delay: () => policyDelayMs, maxAttempts },
+    });
+
+    await durability.work({ id: 'hinted', payload: null });
+    await vi.advanceTimersByTimeAsync(0);
+
+    return durability.work.getResult('hinted');
+  };
+
+  it('waits for a hint longer than the policy delay', async () => {
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 60_000), 3, 5_000)
+    ).resolves.toMatchObject({
+      status: 'pending',
+      attempt: 1,
+      nextAttemptAt: start + 60_000,
+    });
+  });
+
+  it('keeps the policy delay when the hint is shorter', async () => {
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 1_000), 3, 5_000)
+    ).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: start + 5_000,
+    });
+  });
+
+  it('rounds a fractional hint to whole milliseconds', async () => {
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 2_500.4), 3, 0)
+    ).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: start + 2_500,
+    });
+  });
+
+  it('stays terminal on the last attempt', async () => {
+    await expect(
+      pendingAfterFailure(new RetryAfterError('rate limited', 60_000), 1, 5_000)
+    ).resolves.toEqual({
+      status: 'failed',
+      attempt: 1,
+      error: { name: 'RetryAfterError', message: 'rate limited' },
+    });
+  });
+
+  it('retries a same-named error from another package copy', async () => {
+    class Foreign extends Error {
+      readonly retryAfterMs = 30_000;
+      override name = 'RetryAfterError';
+    }
+
+    await expect(
+      pendingAfterFailure(new Foreign('slow down'), 3, 0)
+    ).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: start + 30_000,
+    });
+  });
+
+  it('keeps the policy delay when the hint cannot be read', async () => {
+    const error = new RetryAfterError('rate limited', 60_000);
+
+    Object.defineProperty(error, 'retryAfterMs', {
+      get: () => {
+        throw new Error('unreadable');
+      },
+    });
+
+    await expect(pendingAfterFailure(error, 3, 5_000)).resolves.toMatchObject({
+      status: 'pending',
+      nextAttemptAt: start + 5_000,
+    });
+  });
+
+  it('rejects an invalid hint at construction', () => {
+    expect(() => new RetryAfterError('x', -1)).toThrow(RangeError);
+    expect(() => new RetryAfterError('x', Number.NaN)).toThrow(RangeError);
+    expect(() => new RetryAfterError('x', Infinity)).toThrow(RangeError);
+    expect(new RetryAfterError('x', 0).retryAfterMs).toBe(0);
   });
 });

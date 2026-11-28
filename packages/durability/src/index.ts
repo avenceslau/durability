@@ -89,6 +89,7 @@ export {
   DurableMemoLimitError,
   DurableMemoSerializationError,
   NonRetryableError,
+  RetryAfterError,
   FanoutTimeoutError,
   FanoutSettlementError,
   FanoutEnqueueError,
