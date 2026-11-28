@@ -32,7 +32,7 @@ type Wrapper = {
     | undefined;
 };
 
-function unusedName(code: string, name: string): string {
+export function unusedName(code: string, name: string): string {
   let candidate = name;
 
   while (new RegExp(`\\b${candidate}\\b`).test(code)) {

@@ -20,6 +20,7 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
     "durability/alarm-runner-only": "error",
     "durability/durability-migrations-only": "error",
     "durability/no-alarm-changes-in-alarm-handler": "error",
+    "durability/no-alarm-changes-in-constructor": "error",
     "durability/no-delete-all-in-transaction": "error",
     "durability/no-deferred-storage-writes": "error",
     "durability/transaction-sync-callback": "error",
@@ -27,6 +28,10 @@ Add the JavaScript plugin and enable the rules in `.oxlintrc.json`:
   }
 }
 ```
+
+## Called functions
+
+Rules that check what runs in a place, such as the constructor, `alarm()` or a transaction callback, also follow the functions called there, through any number of calls: methods of the same class called through `this`, including function-valued fields, and functions declared in the same file. The call written in that place is reported. Inherited methods, functions imported from another file and functions passed around as values are not followed.
 
 ## `abort-after-sync`
 
@@ -39,7 +44,7 @@ async reset() {
 }
 ```
 
-Writes made after `sync()` resolves are not covered, so anything between the two statements, an abort inside a callback such as `queueMicrotask(() => this.ctx.abort())`, and an abort in a branch after the `sync()` are rejected. Abort calls on other receivers, such as `AbortController`, are ignored.
+The statement before `abort()` may also await a [called function](#called-functions) whose last statement awaits that `sync()`. Writes made after `sync()` resolves are not covered, so anything between the two statements, an abort inside a callback such as `queueMicrotask(() => this.ctx.abort())`, and an abort in a branch after the `sync()` are rejected. Abort calls on other receivers, such as `AbortController`, are ignored.
 
 ## `alarm-runner-only`
 
@@ -55,7 +60,7 @@ class ImageJobs extends DurableObject<Env> {
 }
 ```
 
-When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead. Helpers imported from `durability` under another name (`import { Durability as Jobs }`) or through a namespace import (`new durability.Durability(...)`) are recognized too.
+A `setAlarm()` or `deleteAlarm()` reached through a [function declared outside the class](#called-functions) is rejected too. When several helpers share a `DurabilityScheduler`, delegate to the scheduler instead. Helpers imported from `durability` under another name (`import { Durability as Jobs }`) or through a namespace import (`new durability.Durability(...)`) are recognized too.
 
 ## `no-alarm-changes-in-alarm-handler`
 
@@ -71,7 +76,37 @@ class Reports extends DurableObject<Env> {
 }
 ```
 
-The rule checks calls written inside the handler; a helper method called from it is not followed.
+[Functions called from the handler](#called-functions) are followed, and the call that leads to the alarm change is reported.
+
+## `no-alarm-changes-in-constructor`
+
+The constructor runs every time the object is loaded: after an eviction, a deploy or a reset, and to deliver an alarm. A Durable Object has one alarm, so a constructor that calls `setAlarm()` or `deleteAlarm()` replaces or removes whatever was pending, such as the retry of a failed run or the alarm durability scheduled, on every load. Scheduling through durability there repeats the work on every load too: it moves the object's alarm, and a named alarm or schedule set there replaces its pending occurrence each time, so it may never fire.
+
+The rule rejects, in a constructor and in instance field initializers:
+
+- `setAlarm()` and `deleteAlarm()` on any receiver, including a transaction handle;
+- durability calls that schedule work: `Durability` and `DurabilityAlarms` handler methods, `purgeBefore()`, a named alarm's `cancel()`, and `alarm()` on every helper, `DurabilityFanout.enqueue()`, `DurabilityOutbox.stage()`, `DurabilitySchedule.set()`, `reschedule()` and `cancel()`, `DurabilityTopology.update()` and `delete()`, `DurabilitySemaphore.handle()`, and `DurabilitySemaphoreQueue.enqueue()`, `release()` and `cancel()`.
+
+Code that runs as part of the constructor counts: callbacks passed to `blockConcurrencyWhile()`, functions invoked in place, and `.then()`, `.catch()` and `.finally()` callbacks. Handlers and listeners declared there run later and are not checked. Constructing a helper, registering a `lifecycle()` listener and reads such as `getResult()` are accepted. Schedule from the request that creates the work instead:
+
+```ts
+class Subscription extends DurableObject<Env> {
+  private readonly alarms = new DurabilityAlarms({
+    context: this.ctx,
+    handlers,
+  });
+
+  subscribe(at: number) {
+    return this.alarms.renew(at);
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.alarms.alarm(info);
+  }
+}
+```
+
+Helpers are recognized as class fields, `this` fields assigned in the constructor and local variables created with `new`, under imported aliases too. [Functions called during construction](#called-functions) are followed, and the call in the constructor is reported.
 
 ## `no-delete-all-in-transaction`
 
@@ -84,7 +119,7 @@ await this.ctx.storage.transaction(async (txn) => {
 });
 ```
 
-Writing after `deleteAll()` outside a transaction works. SQLite-backed objects lose their tables, so recreate the schema before inserting again.
+A `deleteAll()` reached through a [function called in the callback](#called-functions) is rejected too. Writing after `deleteAll()` outside a transaction works. SQLite-backed objects lose their tables, so recreate the schema before inserting again.
 
 ## `no-deferred-storage-writes`
 
@@ -103,11 +138,11 @@ this.ctx.waitUntil(
 );
 ```
 
-A write issued before the request returns is held by the output gate even when it is not awaited, so `void this.ctx.storage.put('job', job)` and `this.ctx.waitUntil(this.ctx.storage.put('job', job))` are accepted. Await the work, or store what is needed before responding and finish the work from an alarm. Best-effort writes that may be lost can be exempted with an `oxlint-disable-next-line` comment. Storage is recognised by a receiver named `storage`, and writes inside a separately declared function or method that is called without being awaited are not followed.
+A write issued before the request returns is held by the output gate even when it is not awaited, so `void this.ctx.storage.put('job', job)` and `this.ctx.waitUntil(this.ctx.storage.put('job', job))` are accepted. Await the work, or store what is needed before responding and finish the work from an alarm. Best-effort writes that may be lost can be exempted with an `oxlint-disable-next-line` comment. Storage is recognised by a receiver named `storage`. [Called functions](#called-functions) are followed: a call from deferred work to a function that writes is rejected, and so is a dropped call, such as `void this.save()`, to an async function that writes after an await.
 
 ## `transaction-sync-callback`
 
-`transactionSync()` commits when its callback returns. An async callback returns at its first `await`: the statements before it are committed, the rest run outside the transaction, and a later error rolls nothing back. The rule rejects an `async` function passed to `transactionSync()`.
+`transactionSync()` commits when its callback returns. An async callback returns at its first `await`: the statements before it are committed, the rest run outside the transaction, and a later error rolls nothing back. The rule rejects an `async` function passed to `transactionSync()`, including a method passed by reference such as `transactionSync(this.reset)`. It also follows the [functions the callback calls](#called-functions) and rejects a call that leads to an async function writing to storage after an await, since those writes land outside the transaction.
 
 ```ts
 this.ctx.storage.transactionSync(() => {

@@ -13,6 +13,9 @@ export {
 
 export {
   DurabilityAlarms,
+  every,
+  type AlarmPeriod,
+  type AlarmPeriods,
   type DurabilityAlarmsConfig,
   type DurabilityAlarmsConstructor,
   type DurabilityAlarmsOptions,
@@ -20,6 +23,8 @@ export {
   type DurableAlarmHandler,
   type DurableAlarmInfo,
   type DurableNamedAlarm,
+  type RecurringAlarm,
+  type RecurringAlarmInfo,
 } from './alarms/index.js';
 
 export {
@@ -46,6 +51,7 @@ export {
   type LogColdStorage,
   type LogLease,
   type LogLeaseOptions,
+  type LogLeaseReadOptions,
   type LogPage,
   type LogReadOptions,
   type LogRecord,

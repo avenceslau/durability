@@ -1,3 +1,6 @@
+// The scheduler owns the object's physical alarm, so its own alarm() is the
+// one place allowed to set it.
+/* oxlint-disable durability/no-alarm-changes-in-alarm-handler */
 import * as v from 'valibot';
 import { trace, traceMethods, traceStorage } from '../dev.js';
 import {
@@ -29,6 +32,7 @@ import {
   channelClause,
   claimAttempt,
   exhaustAttempts,
+  isAttemptDue,
   tableOwner,
   updateAttempt,
   type DurableTable,
@@ -205,6 +209,11 @@ export type ExecutionSpec<Result> = {
    * a failure.
    */
   complete: (result: Result, attempt: number) => number | undefined;
+  /**
+   * Runs in the transaction that fails the record for good, after the failure
+   * is written, so a kind can replace the failed record atomically.
+   */
+  failed?: (sql: SqlStorage) => void;
   /** Kind-specific terminal rule beyond non-retryable errors and exhausted attempts. */
   isTerminal: (cause: unknown) => boolean;
 };
@@ -1222,6 +1231,14 @@ export class Engine {
     const execution = (async (): Promise<void> => {
       releasePermit ??= await this.acquirePermit();
 
+      // An alarm pass lists due rows before it has permits for them, so by now
+      // this row may have failed and been rescheduled by another execution.
+      if (
+        !isAttemptDue(this.sql, spec.table, key, row.generation_id, Date.now())
+      ) {
+        return;
+      }
+
       const attempt = claimAttempt(
         this.sql,
         spec.table,
@@ -1315,6 +1332,8 @@ export class Engine {
       this.releaseActive(spec.table.name, activeKey(spec.table.channel, key));
       // Re-arm the in-memory timer now that this key is eligible again, so work
       // the timer skipped while it executed is picked up at its exact time.
+      // Best effort: if this alarm write is lost, the next alarm reconciles it.
+      // oxlint-disable-next-line durability/no-deferred-storage-writes
       void this.scheduleNextAlarm().catch((error) =>
         reportFailure(
           'durability.scheduler.refresh_failed',
@@ -1345,6 +1364,7 @@ export class Engine {
 
       if (exhaustedAttempt !== undefined) {
         deleteMemos(sql, spec.table, key);
+        spec.failed?.(sql);
       }
 
       return exhaustedAttempt;
@@ -1389,6 +1409,7 @@ export class Engine {
 
       if (owned && decision.terminal) {
         deleteMemos(sql, spec.table, key);
+        spec.failed?.(sql);
       }
 
       return owned;

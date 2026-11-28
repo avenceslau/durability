@@ -930,6 +930,60 @@ describe('Durability', () => {
     expect(handler).toHaveBeenCalledTimes(2);
   });
 
+  it('waits for the retry delay when an alarm pass listed the operation before it failed', async () => {
+    vi.useFakeTimers();
+    const start = Date.parse('2026-01-01T00:00:00Z');
+    vi.setSystemTime(start);
+    const storage = new FakeStorage();
+    let failRunning: (() => void) | undefined;
+
+    const running = new Promise<void>((resolve) => {
+      failRunning = resolve;
+    });
+
+    const attempts: Array<[string, number]> = [];
+
+    const durability = new Durability({
+      context: contextFor(storage),
+      handlers: {
+        work: async ({ id, attempt }: DurableCall<null>) => {
+          attempts.push([id, attempt]);
+
+          if (id === 'running') {
+            await running;
+            throw new Error('failed');
+          }
+        },
+      },
+      // One permit: the alarm pass waits for it while 'running' holds it.
+      alarmConcurrency: 1,
+      retries: { delay: () => 1_000, maxAttempts: 3 },
+    });
+
+    await durability.work({ id: 'running', payload: null });
+    await durability.work({ id: 'waiting', payload: null });
+    // 'waiting' is due first, so the pass reaches 'running' only after it has failed.
+    storage.sql.exec(
+      "UPDATE durability_calls SET next_attempt_at = ? WHERE id = 'waiting'",
+      start - 1
+    );
+
+    storage.alarmAt = null;
+    const pass = durability.alarm();
+    failRunning?.();
+    await pass;
+
+    expect(attempts).toEqual([
+      ['running', 1],
+      ['waiting', 1],
+    ]);
+    await expect(durability.work.getResult('running')).resolves.toMatchObject({
+      status: 'pending',
+      attempt: 1,
+      nextAttemptAt: start + 1_000,
+    });
+  });
+
   it('validates the winner of concurrent same-ID registration', async () => {
     const durability = new Durability({
       context: contextFor(new FakeStorage()),

@@ -92,7 +92,7 @@ const read = sourceExcerpt(
   'read',
   'Read hot rows or a cold segment',
   '  async read(options: LogReadOptions): Promise<LogPage<Body>> {',
-  '      .slice(0, limit);\n  }'
+  '      maxBytes\n    );\n  }'
 );
 
 const trim = sourceExcerpt(
@@ -101,7 +101,7 @@ const trim = sourceExcerpt(
   'trim',
   'Flush the oldest records to cold storage',
   '  async trim(): Promise<number> {',
-  '      if (deleted < expiring.length) {\n        return removed;\n      }\n    }\n  }'
+  '      if (deleted < batch.length) {\n        return removed;\n      }\n    }\n  }'
 );
 
 const schedule = sourceExcerpt(
@@ -110,7 +110,7 @@ const schedule = sourceExcerpt(
   'schedule',
   'Schedule or replace a named alarm',
   '  async #schedule(name: string, scheduledTime: number): Promise<void> {',
-  '      scheduledTime,\n    });\n  }'
+  '    this.#emitScheduled({ name, generation, scheduledTime, createdAt });\n  }'
 );
 
 const execute = sourceExcerpt(
@@ -118,8 +118,8 @@ const execute = sourceExcerpt(
   alarmsFile,
   'execute',
   'Run one named alarm attempt',
-  '  #execute(\n    row: AlarmRow,',
-  '        isErrorInstance(error, DurableAlarmTimeoutError) && !retryTimeouts,\n    });\n  }'
+  '  async #execute(\n    row: AlarmRow,',
+  '      this.#emitScheduled(next);\n    }\n  }'
 );
 
 const decideRetry = sourceExcerpt(
@@ -459,7 +459,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             schedule,
             'await this.#engine.transaction((sql) => {',
-            'ON CONFLICT(channel, name) DO UPDATE SET'
+            'upsertOccurrence(sql, {'
           ),
           durable: 'The named alarm row and the object alarm commit together.',
           volatile:
@@ -543,7 +543,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             trim,
             'insertSegment(this.#engine.sql, this.#channel, {',
-            'trimThrough(sql, this.#channel, last.offset + 1, expiring.length)'
+            'trimThrough(sql, this.#channel, last.offset + 1, batch.length)'
           ),
           durable:
             'The segment locator, then the deletion of the flushed rows.',
@@ -574,7 +574,7 @@ export const walkthrough = validateWalkthrough({
           source: sourceFocus(
             execute,
             'complete: (_result, attempt) => {',
-            'return removed ? timestamp : undefined;'
+            'return deleteAttempt(sql, this.#table, ref) ? timestamp : undefined;'
           ),
           durable: 'The finished occurrence is removed; a replacement stays.',
           volatile: 'The running entry for this name.',
@@ -709,8 +709,8 @@ export const walkthrough = validateWalkthrough({
           stage: ['r2', 'focus:log'],
           source: sourceFocus(
             read,
-            'options.from < bounds.hotOffset',
-            '? await this.#rehydrate(options.from, capped, bounds)'
+            'const records = await this.#readFrom(',
+            '      options.maxBytes'
           ),
           durable: 'The cursor is unchanged by reading.',
           volatile: 'The page of up to 100 records.',

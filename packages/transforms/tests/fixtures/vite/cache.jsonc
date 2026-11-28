@@ -1,0 +1,14 @@
+{
+  "name": "do-transforms-cache-test",
+  "main": "./cache-worker.ts",
+  "compatibility_date": "2026-07-07",
+  "exports": {
+    "AccountReads": { "type": "worker", "cache": { "enabled": true } },
+    "CustomReads": { "type": "worker", "cache": { "enabled": true } },
+    "UncachedReads": { "type": "worker", "cache": { "enabled": false } },
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "ACCOUNTS", "class_name": "Account" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Account"] }],
+}

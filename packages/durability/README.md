@@ -172,6 +172,56 @@ Each occurrence receives a new internal generation. Its `idempotencyKey` stays s
 
 A timeout aborts the handler's `signal` and is terminal by default because the external outcome is unknown. Set `retryTimeouts: true` only when the handler's side effects use the idempotency key or reconcile their outcome before retrying. Named alarms remain at-least-once across eviction or restart.
 
+### Recurring alarms
+
+Wrap a handler in `every(periods, run, options?)` to make it recur. After each run, the alarm replaces its own occurrence with the next one, in the transaction that settles the run. The period comes from the object's current activity level, which the `activity` option reports:
+
+```ts
+import { DurableObject } from 'cloudflare:workers';
+import { DurabilityAlarms, every } from 'durability';
+
+type Level = 'draining' | 'active' | 'idle';
+
+const jitter = (ms: number, spread: number) => () =>
+  ms + (Math.random() - 0.5) * spread;
+
+export class Shard extends DurableObject<Env> {
+  private readonly alarms = new DurabilityAlarms({
+    context: this.ctx,
+    activity: (): Level => this.activityLevel(),
+    handlers: {
+      sweep: every({ draining: 5_000, active: 30_000 }, ({ level }) =>
+        this.sweep(level === 'draining' ? 200 : 100)
+      ),
+      resendAcks: every({ active: 60_000 }, () => this.resendAcks(), {
+        retries: { maxAttempts: 3 },
+      }),
+      snapshot: every(
+        { '*': 3_600_000, idle: jitter(21_600_000, 3_600_000) },
+        () => this.snapshot()
+      ),
+    },
+  });
+
+  async enqueue(work: Work) {
+    this.store(work);
+    await this.alarms.raiseActivity('active');
+  }
+
+  alarm(info?: AlarmInvocationInfo) {
+    return this.alarms.alarm(info);
+  }
+}
+```
+
+- **Periods.** A period is milliseconds or a function returning them, such as one adding jitter. `periods` is one period for every level, or periods keyed by level, where `'*'` covers levels without their own key. The level keys are checked against `activity`'s return type, and `run` receives the `level` the attempt started at.
+- **Levels without a period.** An alarm runs only at the levels it lists a period for. An occurrence due at another level completes without calling `run` and is not scheduled again.
+- **Starting and raising.** Schedule the first occurrence with the alarm's method, as for any named alarm. When state changes that `activity` will report on, `await alarms.raiseActivity('active')` moves every recurring alarm to that level's period if that is sooner, and schedules the ones that have no occurrence. It never delays an occurrence, and it leaves one that is running or waiting to retry alone; the next run reads `activity` and settles the cadence.
+- **Failures.** Retries follow the alarm's policy. An occurrence that fails for good is replaced by the next one, so the alarm keeps its cadence; the failure is reported through lifecycle events only.
+- **Replacing and cancelling.** Scheduling the name by hand replaces the pending occurrence, and the run after it continues the cadence. `cancel()` stops it: a running attempt that settles after the cancel schedules nothing. `purgeBefore` also deletes a pending occurrence created before its cutoff, which stops the alarm until it is scheduled again.
+
+`activity` and period functions run inside storage transactions: they must be synchronous and must not throw. `options` holds the same policy as `methods.<name>`; setting both for one name throws.
+
 ## Using both in one Durable Object
 
 A Durable Object has one physical alarm. When one object uses both helpers, create a `DurabilityScheduler` and pass it to each so they share the alarm, the storage, and the concurrency pool:
@@ -1480,6 +1530,8 @@ export class Partition extends DurableObject<Env> {
 
 `append` mirrors `enqueue`: the batch commits atomically, definite input rejections return `success: false`, and storage or commit uncertainty throws. It returns each record's **offset** in input order. Passing a `key` makes an append idempotent — re-appending an existing key returns its original offset and consumes no new one — so a producer that retries after an uncertain commit does not duplicate records.
 
+A record's body may serialize to more than one SQLite value holds (a Durable Object refuses a string of 2 MB or more). A payload over 1 MiB of UTF-8 is stored in 1 MiB parts and reassembled when read, so it is still one record with one offset, and byte budgets count its whole payload. What bounds a record is the RPC message that carries it to the object and the memory that holds it.
+
 Consumers **pull** and own their position:
 
 ```ts
@@ -1490,6 +1542,8 @@ await log.commit('search', page.nextOffset);
 ```
 
 `commit` only ever advances, so a late or duplicated commit cannot rewind a cursor. Cursors are independent: `log.cursors()` returns every consumer's position, and `log.load()` reports the furthest-behind cursor as backlog so routing can weigh partitions by consumer lag rather than by queue depth.
+
+`read` returns at most `limit` records. Pass `maxBytes` as well to bound a page by payload bytes, counted as `retention.maxBytes` counts them, so a consumer never loads more than it can hold: the page stops before the record that would exceed the budget, always holds at least one record, and `nextOffset` is where it stopped. For records in the object the budget is decided from stored sizes before any payload is loaded. A read that reaches the cold tier loads a whole segment, at most 64 MiB of payload or one larger record, and then applies the budget.
 
 ### Retention is not acknowledgement
 
@@ -1523,7 +1577,7 @@ type LogColdStorage<Body> = {
 };
 ```
 
-`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite.
+`write` receives one contiguous run of records, oldest first, with the log's `channel`, and returns a locator — any string identifying where the segment went. The log stores that locator in a durable segment index **before** deleting the records, so a crash in between leaves a written, readable segment rather than records pointing nowhere. A failed write propagates with the records still in the object, so configured storage cannot be skipped, and writes are at-least-once, so key segments by first offset and refuse to overwrite. Each segment holds at most 64 MiB of payload, or a single record when that record alone is larger, so a flush never loads more than that at once.
 
 `read` is what makes a flush **rehydratable**. A consumer reading a flushed offset gets its records back transparently, so falling behind the hot window is no longer fatal; `bounds()` reports `oldestOffset` (oldest readable, including flushed segments) alongside `hotOffset` (lowest offset still in the object). Cold reads cost a round trip and open input gates, so they serve only consumers that fell behind — never the hot path.
 
@@ -1550,6 +1604,8 @@ if (lease) {
 ```
 
 `lease` claims a range of offsets durably **before** returning the records, so a second caller gets `undefined` rather than the same offsets. `undefined` means nothing is available right now — either the consumer is at `maxParallelism` or the log has no unleased records — so treat it as a signal to back off.
+
+`lease(consumer, limit, { maxBytes })` bounds a new range by payload bytes the same way and ends the range at the last record returned, so `ack` and `nack` cover exactly those records. A redelivered range keeps the offsets it was first leased with.
 
 A range is held until it is acked, nacked, or its lease expires after `leaseMs`. Redelivery always issues a **fresh `batchId`**, which fences the previous holder: its `ack` throws `LogLeaseError` rather than committing a range someone else now owns. Double settlement throws for the same reason.
 
