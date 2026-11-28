@@ -1,5 +1,13 @@
 # @durability/transforms
 
+## 0.7.1
+
+### Patch Changes
+
+- 4fb11d3: Add `durableTier` to `@durability/transforms/cache`, which caches planned methods with `durable` windows in the storage of the Durable Object making the calls, so cached results survive its eviction.
+- 8849a8b: Add `memoryTier` to `@durability/transforms/cache`, which caches planned methods in the caller's isolate with their own `memory` windows. Cache tiers now pass results to each other with the time the target returned them, so a tier judges the age of what the tiers behind it answered with. Plan windows are now per tier: `location` is optional, and only methods with `location` windows go through the Workers cache.
+- 39d97fa: Add experimental `@durability/transforms/cache`, which answers planned Durable Object methods through the Workers cache. `cachePlan<Target>()(...)` declares the cached methods and their fresh and stale windows, `serveCached` answers cached calls from an entrypoint with the cache enabled, and the `workerCacheTier` caller transform sends calls through that entrypoint and falls back to RPC when it fails. The Vite plugin's new `cacheEntrypoints` option generates the entrypoint for every plan in the main module and checks that Wrangler enables the cache for it.
+
 ## 0.7.0
 
 ### Minor Changes
