@@ -1,5 +1,21 @@
 # durability
 
+## 5.6.0
+
+### Minor Changes
+
+- 1b6de82: Add `RetryAfterError`, which a `Durability` operation handler or a named alarm handler can throw to ask for its next retry no sooner than `retryAfterMs` from the failure, for example to honour an HTTP `Retry-After`. The retry waits for the longer of the policy's `delay` and the hint, still counts against `maxAttempts`, and `NonRetryableError` and the last attempt remain terminal. The constructor throws `RangeError` for a negative or non-finite delay. Fanout and outbox already set explicit delays through `retry(delayMs)` and are unchanged.
+
+### Patch Changes
+
+- b1e601d: `DurabilityLog` now stores records whose serialized body is larger than one SQLite row, splitting payloads over 1 MiB into parts that are reassembled on read, so a large record is still one record with one offset. `read` and `lease` accept `maxBytes` to bound a page or leased range by payload bytes. Cold segments are capped at 64 MiB of payload, so a read from the cold tier or a flush loads at most that, or one larger record.
+- ff07275: Add `every()` recurring named alarms. A handler wrapped in `every(periods, run, options?)` schedules its next occurrence after each run, from the period of the level the new `activity` option reports. `raiseActivity(level)` moves recurring alarms earlier after a state change.
+- 3de9d87: Stop operations and named alarms from retrying before their retry delay. An alarm pass lists due rows before it has permits for them, so a row whose attempt failed and was rescheduled while the pass waited used to start its next attempt at once.
+- Updated dependencies [4fb11d3]
+- Updated dependencies [8849a8b]
+- Updated dependencies [39d97fa]
+  - @durability/transforms@0.7.1
+
 ## 5.5.1
 
 ### Patch Changes

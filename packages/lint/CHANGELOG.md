@@ -1,5 +1,12 @@
 # @durability/lint
 
+## 0.5.0
+
+### Minor Changes
+
+- 8265d64: Follow calls into methods of the same class and functions declared in the same file. `no-alarm-changes-in-constructor`, `no-alarm-changes-in-alarm-handler`, `no-delete-all-in-transaction`, `no-deferred-storage-writes`, `transaction-sync-callback` and `alarm-runner-only` now report a call that leads to the problem, and `abort-after-sync` accepts awaiting a function that ends by syncing.
+- 8265d64: Add `no-alarm-changes-in-constructor`, which rejects `setAlarm()`, `deleteAlarm()` and durability calls that schedule work in a Durable Object constructor or instance field initializer, where they run again on every load and replace the pending alarm.
+
 ## 0.4.0
 
 ### Minor Changes
